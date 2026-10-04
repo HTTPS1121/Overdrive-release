@@ -176,9 +176,9 @@
     "notify": {
       "started_title": "Parked",
       "ended_title": "Back at car",
-      "ended_body": "Away {0} · {1} events · {2} vehicles came or went",
+      "ended_body": "Away {0}\n{1} events · {2} vehicles came or went",
       "ended_body_short": "{0} vehicles came or went",
-      "ended_body_unwatched": "Away {0} · Sentry not armed ({1})",
+      "ended_body_unwatched": "Away {0}\nSentry not armed ({1})",
       "ended_events": "{0} events",
       "nothing_critical": "Nothing critical",
       "no_place": "Location unavailable",

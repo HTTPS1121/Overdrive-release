@@ -176,9 +176,9 @@
     "notify": {
       "started_title": "Đã đỗ xe",
       "ended_title": "Đã quay lại xe",
-      "ended_body": "Vắng mặt {0} · {1} sự kiện · {2} xe đến hoặc rời đi",
+      "ended_body": "Vắng mặt {0}\n{1} sự kiện · {2} xe đến hoặc rời đi",
       "ended_body_short": "{0} xe đến hoặc rời đi",
-      "ended_body_unwatched": "Vắng mặt {0} · Giám sát chưa bật ({1})",
+      "ended_body_unwatched": "Vắng mặt {0}\nGiám sát chưa bật ({1})",
       "ended_events": "{0} sự kiện",
       "nothing_critical": "Không có gì nghiêm trọng",
       "no_place": "Không có vị trí",

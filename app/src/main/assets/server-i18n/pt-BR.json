@@ -171,9 +171,9 @@
     "notify": {
       "started_title": "Estacionado",
       "ended_title": "De volta ao carro",
-      "ended_body": "Fora por {0} · {1} eventos · {2} veículos chegaram ou saíram",
+      "ended_body": "Fora por {0}\n{1} eventos · {2} veículos chegaram ou saíram",
       "ended_body_short": "{0} veículos chegaram ou saíram",
-      "ended_body_unwatched": "Fora por {0} · Vigilância não armada ({1})",
+      "ended_body_unwatched": "Fora por {0}\nVigilância não armada ({1})",
       "ended_events": "{0} eventos",
       "nothing_critical": "Nada crítico",
       "no_place": "Localização indisponível",

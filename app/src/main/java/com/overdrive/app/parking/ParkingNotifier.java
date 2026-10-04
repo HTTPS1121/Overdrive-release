@@ -65,7 +65,8 @@ public final class ParkingNotifier {
     }
 
     /**
-     * "Back at car · away 3 h 07 m · N events · M vehicles came or went".
+     * "Back at car", then the duration, the event line, and energy each on
+     * their own line.
      * {@code events < 0} = the recordings index was unavailable: the count is
      * omitted rather than reported as zero. A start stamped by an unset clock
      * has no meaningful duration, so "Away …" is dropped too.
@@ -82,13 +83,13 @@ public final class ParkingNotifier {
             // down): "0 events · Nothing critical" would read as "watched and saw
             // nothing". Say what actually happened instead.
             body = s.clockTrusted()
-                    ? msg("parking.notify.ended_body_unwatched", "Away {0} · Sentry not armed ({1})",
+                    ? msg("parking.notify.ended_body_unwatched", "Away {0}\nSentry not armed ({1})",
                             formatDuration(s.durationMs(env.nowMs())), sentryLabel(s.sentryState))
                     : msg("parking.notify.sentry_off", "Sentry not armed ({0})", sentryLabel(s.sentryState));
         } else if (events >= 0 && s.clockTrusted()) {
             String away = formatDuration(s.durationMs(env.nowMs()));
             body = msg("parking.notify.ended_body",
-                    "Away {0} · {1} events · {2} vehicles came or went", away, events, neighboursMoved);
+                    "Away {0}\n{1} events · {2} vehicles came or went", away, events, neighboursMoved);
         } else {
             body = msg("parking.notify.ended_body_short",
                     "{0} vehicles came or went", neighboursMoved);
@@ -100,7 +101,7 @@ public final class ParkingNotifier {
             body = body + " · " + msg("parking.notify.nothing_critical", "Nothing critical");
         }
         String energy = energySegment(s);
-        if (energy != null) body = body + " · " + energy;
+        if (energy != null) body = body + "\n" + energy;
         JSONObject data = baseData(s, "ended");
         try {
             if (events >= 0) data.put("events", events);

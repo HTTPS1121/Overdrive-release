@@ -1516,7 +1516,7 @@ public class TelegramBotDaemon {
                     String pTitle = cmd.optString("title", "");
                     String pBody = cmd.optString("body", "");
                     StringBuilder pText = new StringBuilder();
-                    if (!pTitle.isEmpty()) pText.append("*").append(mdEscape(pTitle)).append("*");
+                    if (!pTitle.isEmpty()) pText.append("**").append(mdEscape(pTitle)).append("**");
                     if (!pBody.isEmpty()) {
                         if (pText.length() > 0) pText.append("\n");
                         pText.append(mdEscape(pBody));
