@@ -3375,17 +3375,28 @@ select.md-input ~ .md-label {
         transform: translateX(-100%);
         width: 280px;
     }
+
+    /* Hebrew/Arabic: the sidebar is anchored to the right, so the off-screen
+       slide has to go right. translateX(-100%) pulls a slice of it back into
+       the viewport and leaves the menu cut in half. */
+    [dir="rtl"] .sidebar { transform: translateX(100%); }
     
     /* On mobile the sidebar must layer ABOVE the bottom-tab bar so the user
        sees the full nav when the hamburger is open. The tab bar is at z=400
        (set in app-tabs.css) so we sit above it; the overlay sits between. */
     .sidebar.open { transform: translateX(0); z-index: 500; }
+    [dir="rtl"] .sidebar.open { transform: translateX(0); }
     
     .sidebar-close {
         display: flex;
     }
     
     .main-content { margin-left: 0; }
+
+    /* The desktop RTL rule sets margin-right to --sidebar-width, and this
+       breakpoint redefines that variable as 100%. Without this reset the
+       whole page is pushed off-screen in Hebrew. */
+    [dir="rtl"] .main-content { margin-right: 0; }
     
     .mobile-header {
         display: flex;
