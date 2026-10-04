@@ -290,6 +290,27 @@
      * rather than baking page names into the picker. Re-runs on resize so
      * landscape rotation on the head unit picks the right corner each time.
      */
+    function isRtl() {
+        return document.documentElement.getAttribute('dir') === 'rtl';
+    }
+
+    // English keeps the picker on the right, opposite the left sidebar.
+    // Hebrew/Arabic flip it to the left, opposite the right sidebar, and
+    // the menu opens inward so it does not run off the screen edge.
+    function pinPickerEdge(wrap, px) {
+        if (isRtl()) {
+            wrap.style.left = px;
+            wrap.style.right = '';
+        } else {
+            wrap.style.right = px;
+            wrap.style.left = '';
+        }
+    }
+
+    function popupSide(vertical) {
+        return isRtl() ? vertical + '-left' : vertical;
+    }
+
     function applyPickerAnchor(wrap) {
         if (!wrap) return;
         // Reset all positioning properties; the branch below re-sets only
@@ -328,9 +349,9 @@
         // bar. Popup opens upward so it never clips the secondary row.
         if (document.querySelector('.vc-bar')) {
             wrap.style.top = '50%';
-            wrap.style.right = '14px';
+            pinPickerEdge(wrap, '14px');
             wrap.style.transform = 'translateY(-50%)';
-            wrap.setAttribute('data-popup', 'up');
+            wrap.setAttribute('data-popup', popupSide('up'));
             return;
         }
 
@@ -356,8 +377,8 @@
             // re-measures once layout completes.
             var clearance = Math.max(stickyH + 12, 80);
             wrap.style.bottom = 'calc(' + clearance + 'px + env(safe-area-inset-bottom, 0px))';
-            wrap.style.right = '16px';
-            wrap.setAttribute('data-popup', 'up');
+            pinPickerEdge(wrap, '16px');
+            wrap.setAttribute('data-popup', popupSide('up'));
             // Re-measure when the sticky bar resizes (Apply Changes button
             // toggling disabled state, footer becoming visible, soft keyboard
             // appearing). Stash the observer on the wrap so re-runs of
@@ -373,10 +394,10 @@
             return;
         }
 
-        // Default — bottom-right floating, popup opens upward.
+        // Default — bottom corner opposite the sidebar, popup opens upward.
         wrap.style.bottom = 'calc(16px + env(safe-area-inset-bottom, 0px))';
-        wrap.style.right = '16px';
-        wrap.setAttribute('data-popup', 'up');
+        pinPickerEdge(wrap, '16px');
+        wrap.setAttribute('data-popup', popupSide('up'));
     }
 
     function buildPickerDom() {
@@ -446,6 +467,16 @@
             if (anchorTimer) clearTimeout(anchorTimer);
             anchorTimer = setTimeout(function () { applyPickerAnchor(wrap); }, 80);
         });
+        // Language can flip dir after the picker has already mounted.
+        if (!document.documentElement._themeDirObs) {
+            document.documentElement._themeDirObs = new MutationObserver(function () {
+                applyPickerAnchor(wrap);
+            });
+            document.documentElement._themeDirObs.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['dir']
+            });
+        }
     }
 
     function mountPicker() {

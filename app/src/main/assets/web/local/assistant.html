@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title data-i18n="app.assistant_title">Assistant - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=8"></script>
+    <script src="../shared/theme.js?v=9"></script>
     <script src="../shared/app-shell.js?v=7"></script>
     <script>
         window.OT_TABS = [
@@ -304,12 +304,22 @@
                 right: 16px !important; bottom: auto !important;
                 left: auto !important; transform: none !important;
             }
+            /* English sits in the empty side of the mobile header (physical right).
+               Hebrew mirrors that slot to the physical left, same top and size. */
+            html[dir="rtl"] .assistant-page #bydThemePicker {
+                right: auto !important;
+                left: 16px !important;
+            }
             .assistant-page #bydThemePicker .byd-theme-fab {
                 width: 40px; height: 40px;
             }
             .assistant-page #bydThemePicker .byd-theme-popup {
                 top: 48px !important; right: 0 !important;
                 bottom: auto !important; left: auto !important;
+            }
+            html[dir="rtl"] .assistant-page #bydThemePicker .byd-theme-popup {
+                right: auto !important;
+                left: 0 !important;
             }
         }
         @media (max-width: 480px) {
