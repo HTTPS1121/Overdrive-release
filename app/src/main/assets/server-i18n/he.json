@@ -49,6 +49,9 @@
     "models_persist_failed": "השמירה נכשלה",
     "models_id_required": "נדרש מזהה (id)",
     "mqtt_invalid_connection_id": "מזהה חיבור לא תקין",
+    "wireguard_body_required": "שלח תצורת WireGuard כ-JSON: {\"config\": \"...\"}",
+    "wireguard_save_failed": "לא ניתן לשמור תצורת WireGuard: {0}",
+    "wireguard_delete_failed": "לא ניתן למחוק תצורת WireGuard",
     "ipc_communication_failed": "התקשורת עם תהליך הרקע (daemon) נכשלה",
     "invalid_request_body_with_detail": "גוף הבקשה אינו תקין: {0}",
     "performance_no_data": "ניטור הביצועים לא הופעל או שטרם נאסף מידע",
@@ -259,7 +262,7 @@
       "cloudflare_tunnel": "Cloudflare Tunnel",
       "zrok_tunnel": "Zrok Tunnel",
       "tailscale_tunnel": "Tailscale Tunnel",
-      "wireguard_tunnel": "WireGuard Tunnel",
+      "wireguard_tunnel": "מנהרת WireGuard",
       "sing_box": "Sing-Box"
     },
     "buttons": {

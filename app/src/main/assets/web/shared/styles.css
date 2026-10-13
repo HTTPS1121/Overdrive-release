@@ -917,6 +917,15 @@ select.text-input option {
     transform: translateX(20px);
 }
 
+[dir="rtl"] .toggle-slider::before {
+    left: auto;
+    right: 3px;
+}
+
+[dir="rtl"] .toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(-20px);
+}
+
 /* === BUTTON GROUPS === */
 .btn-group {
     display: flex;
