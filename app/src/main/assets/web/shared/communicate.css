@@ -376,6 +376,10 @@
     transform: translateX(12px);
 }
 
+[dir="rtl"] .talk-output-toggle input:checked + .toggle-slider::before {
+    transform: translateX(-12px);
+}
+
 .talk-output-slider-row output {
     min-width: 42px;
     color: var(--primary);

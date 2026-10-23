@@ -52,7 +52,18 @@ import com.overdrive.app.navmap.nav.NavGuidanceEngine
 import com.overdrive.app.navmap.nav.NavRoute
 import com.overdrive.app.navmap.nav.NavVoice
 import com.overdrive.app.navmap.nav.SearchResult
-import com.overdrive.app.navmap.nav.ValhallaRouteClient
+import com.overdrive.app.navmap.nav.CongestionSpan
+import com.overdrive.app.navmap.nav.GeoPoint
+import com.overdrive.app.navmap.nav.NavRouting
+import com.overdrive.app.navmap.nav.RouteProvider
+import com.overdrive.app.navmap.google.TrafficRefreshController
+import com.overdrive.app.navmap.google.GoogleAttributionView
+import com.overdrive.app.navmap.google.GoogleMapController
+import com.overdrive.app.navmap.google.GoogleMapStyle
+import com.overdrive.app.navmap.google.GoogleMapType
+import com.overdrive.app.navmap.google.GoogleMapsBudget
+import com.overdrive.app.navmap.google.GoogleMapsConfig
+import com.overdrive.app.navmap.google.GoogleUsageReporter
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -96,6 +107,9 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     private var map: MapLibreMap? = null
     private var hazardSource: GeoJsonSource? = null
 
+    /** Google basemap/traffic layer; returns the vector style untouched when Google is unusable. */
+    private lateinit var googleMap: GoogleMapController
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** Background executor for the daemon HTTP calls — never on the looper. */
@@ -121,25 +135,8 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     private var listenersWired = false
 
     // --- Navigation (route search + guidance) state ---
-    private var routeSource: GeoJsonSource? = null
-    // Handles to the two route LineLayers (casing + main) so the per-frame traveled-route
-    // trim can update their line-gradient paint property without a getLayerAs lookup each
-    // frame. Re-captured on every onStyleLoaded (theme reload recreates the layers),
-    // nulled in onDestroy. See applyRouteTrim.
-    private var routeMainLayer: LineLayer? = null
-    private var routeCasingLayer: LineLayer? = null
-    // Traveled-route trim state (per Activity instance — head unit + cluster each run
-    // their own guidance + render tick). lastRouteProgress = monotonic clamp accumulator
-    // (the trim boundary never walks backward on a GPS wobble / brief off-route, so the
-    // traveled part never re-appears); lastAppliedProgress = paint dead-band so a parked /
-    // sub-metre-creeping car emits no gradient writes. Both reset at every new-route site.
-    private var lastRouteProgress: Float = 0f
-    private var lastAppliedProgress: Float = -1f
-    // Route theme colors (m3 ints) captured in onStyleLoaded — reused to rebuild the trim
-    // gradient each frame and re-applied on a day/night flip so the un-trimmed remainder
-    // keeps the right color (the gradient program ignores the static lineColor recolor).
-    private var routeMainColor: Int = 0
-    private var routeCasingColor: Int = 0
+    // Route, alternates, congestion, turn arrow, hazards and pins; survives style reloads.
+    private val glassLayers = com.overdrive.app.navmap.glass.MapGlassLayers()
     private val guidance = NavGuidanceEngine()
     private var navVoice: NavVoice? = null
     @Volatile private var navigating = false
@@ -149,7 +146,10 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     // so saving never requires computing a route first.
     private val searchAdapter = NavSearchResultAdapter(
         onResultTap = { result -> onSearchResultChosen(result) },
-        onResultLongPress = { result -> showPlaceSheet(result, isDroppedPin = false) },
+        onResultLongPress = { result ->
+            if (result.needsResolve) resolvePlaceThen(result) { showPlaceSheet(it, isDroppedPin = false) }
+            else showPlaceSheet(result, isDroppedPin = false)
+        },
         onResultRemove = { result -> removeRecentSearch(result) }
     )
     @Volatile private var acToken: Long = 0L
@@ -159,6 +159,25 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     private val routeOptionAdapter = NavRouteOptionAdapter { idx -> onRouteOptionSelected(idx) }
     private var previewRoutes: List<NavRoute> = emptyList()
     private var previewDestLabel: String = ""
+
+    // --- Live traffic on the route (Google routes only; inert for Valhalla) ---
+    // What the congestion overlay shows.
+    private var displayedTrafficRoute: NavRoute? = null
+    private var displayedTrafficSpans: List<CongestionSpan> = emptyList()
+    // The car's along-route distance from the frame loop.
+    @Volatile private var trafficTraveledM = 0.0
+    // Head unit only; non-null while a Google route is being guided.
+    private var trafficRefresh: TrafficRefreshController? = null
+    // Traffic-aware remaining ETA for trafficEtaRoute, stamped with elapsedRealtime.
+    private var trafficEtaS = Double.NaN
+    private var trafficEtaAtMs = 0L
+    private var trafficEtaRoute: NavRoute? = null
+    private var clusterTrafficListener: NavSession.TrafficListener? = null
+    private var lastClusterTraffic: NavSession.Traffic? = null
+    private var fasterRouteBar: Snackbar? = null
+    private val dismissFasterRoute = Runnable { dismissFasterRoutePrompt() }
+    // Latest place-resolve request; an older in-flight lookup is discarded.
+    private var placeResolveToken = 0L
 
     // --- Multi-stop itinerary (Google-Maps-style waypoints) ---
     /**
@@ -188,18 +207,12 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     @Volatile private var rerouting = false
     private var lastRerouteMs: Long = 0L
     private var previewSelectedIdx: Int = 0
-    private var altRouteSource: GeoJsonSource? = null
     private var routeSheetBehavior:
         com.google.android.material.bottomsheet.BottomSheetBehavior<View>? = null
 
     // --- POI along route (EV charging / fuel) ---
     private var poiSource: GeoJsonSource? = null
     @Volatile private var poiEnabled = false
-
-    // --- Itinerary markers (destination pin + numbered stop pins) ---
-    private var markerSource: GeoJsonSource? = null
-    /** Largest stop-ordinal bitmap registered so far (so we only build each once). */
-    private var maxStopIconRegistered = 0
 
     // --- Dropped-pin marker (long-press the map to save/navigate a place) ---
     private var droppedPinSource: GeoJsonSource? = null
@@ -221,14 +234,13 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     private var pendingSaveKind: String? = null
 
     // --- Hazard visibility filter ---
-    private var hazardSymbolLayer: SymbolLayer? = null
     /** 0 = hidden, 1 = severe only, 2 = moderate+ (≥2), 3 = all (default). */
     private var hazardFilterMode = HAZARD_FILTER_ALL
 
     // --- 2D / 3D buildings ---
-    /** Persisted 2D/3D choice; DEFAULT 2D (false) for both themes — 3D extrusion
-     *  is GPU-heavy on the Adreno 610 and adds to the shared-GPU contention. */
-    private var map3dEnabled = false
+    /** Persisted 2D/3D choice; default 3D (vector basemap only). The low glass tier draws the extrusions opaque,
+     *  which keeps them affordable on the Adreno 610. */
+    private var map3dEnabled = true
 
     /**
      * Per-map day/night override, persisted independently of the app theme.
@@ -253,16 +265,11 @@ open class RoadSenseMapActivity : AppCompatActivity() {
 
 
     // ── Motion smoothing (dead-reckoning) ───────────────────────────────────────
-    // The 1s guidance tick is the TRUTH feeder (pulls a fix → estimator + engine);
-    // the ~12fps render tick GLIDES the puck + camera from the dead-reckoned estimate
-    // so motion is continuous instead of teleporting once per sparse GPS fix.
+    // GPS fixes (direct listener, daemon poll, guidance tick) feed the estimator; a vsync
+    // frame loop shows the puck + camera from it (motion/NavMotionModel, NavCameraRig).
     private val motionEstimator = com.overdrive.app.navmap.nav.VehicleMotionEstimator()
-    /** True while the render micro-tick should run (nav, or cluster idle-follow). */
+    /** True while the frame loop should run (nav, idle puck glide, or cluster follow). */
     @Volatile private var motionFollowActive = false
-    /** Last render frame saw the car moving (speed > gate). Drives the adaptive tick:
-     *  fast (RENDER_TICK_MS) when moving or navigating, idle (IDLE_RENDER_TICK_MS) when
-     *  parked, so a stationary map stops pegging the main thread + GL RenderThread. */
-    @Volatile private var lastFrameMoving = false
     /** HEAD-UNIT view of the daemon's navMap.clusterMapActive flag: true while the SAME
      *  drive is being mirrored live on the cluster display. When true, the head unit
      *  stops running its 30fps motion glide (the driver is watching the cluster, not the
@@ -373,46 +380,58 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         }
     }
 
-    /** Render micro-tick: dead-reckons the vehicle motion forward from the last
-     *  filtered fix and paints the puck + heading-up camera, so movement glides
-     *  between the sparse 1s GPS truth fixes. Cheap: instant moveCamera (no anim
-     *  thread) on an already-smooth interpolated pose. Self-reschedules at the FAST
-     *  RENDER_TICK_MS only while navigating (real motion to glide); the no-route idle
-     *  / cluster follow drops to IDLE_RENDER_TICK_MS — there's nothing to interpolate
-     *  when parked, and at 30fps the tick + per-frame puck rewrite pegged the GL
-     *  RenderThread on a stationary car (measured ~80% of a core, ×2 map instances). */
-    private val renderRunnable = object : Runnable {
-        override fun run() {
-            if (!motionFollowActive) return
-            try { renderMotionFrame() } catch (_: Throwable) {}
-            // Fast tick while there's real motion to glide (navigating, or a moving car
-            // on the no-route cluster follow); slow tick when parked so we stop waking
-            // the main thread 30×/s to recompute an unchanged pose. Motion-aware (not
-            // just nav-aware) so driving WITHOUT a route still glides smoothly.
-            //   PROJECTION GATE: on the HEAD UNIT while the same drive is mirrored live
-            //   on the cluster (projectionActive), don't run the 30fps glide — the driver
-            //   is watching the cluster, so rendering the smooth animated map a SECOND
-            //   time on the head unit is pure duplicate GPU. Drop to the idle rate; the
-            //   head-unit map stays truthful (1Hz puck) and fully interactive (search/
-            //   pan/zoom repaint on demand via WHEN_DIRTY). The cluster instance itself
-            //   leaves projectionActive=false and keeps the fast glide.
-            val fast = (navigating || lastFrameMoving) && !projectionActive
-            // Cluster glides at its own (lower) cap-matched rate; head unit at 30fps.
-            val fastTick = if (clusterMode) CLUSTER_RENDER_TICK_MS else RENDER_TICK_MS
-            mainHandler.postDelayed(this, if (fast) fastTick else IDLE_RENDER_TICK_MS)
+    private val motionModel = com.overdrive.app.navmap.motion.NavMotionModel()
+    private val cameraRig = com.overdrive.app.navmap.motion.NavCameraRig()
+    private var motionTrack: com.overdrive.app.navmap.motion.RouteTrack? = null
+    private var hud: com.overdrive.app.navmap.ui.NavHudController? = null
+    private var hudShown = false
+    /** Maneuver on the HUD card and its along-route position, for the live distance. */
+    private var hudManeuverRef: com.overdrive.app.navmap.nav.RouteManeuver? = null
+    private var hudManeuverS = Double.NaN
+    private var hudTickMs = 0L
+    /** Sole writer of the puck, and of the camera while navigating or on the cluster. */
+    private val frameLoop by lazy {
+        com.overdrive.app.navmap.motion.NavFrameLoop(
+            allowFull = !clusterMode && com.overdrive.app.navmap.motion.NavFrameLoop.fullRateCapable()
+        ) { now -> renderMotionFrame(now) }
+    }
+    private var frameCapFps = 0
+    private val perfMeter = com.overdrive.app.navmap.motion.NavPerfMeter()
+    /** Lighter overlay set and solid buildings below 8155-class SoCs and on the cluster. */
+    private val glassLowTier by lazy { clusterMode || !com.overdrive.app.navmap.motion.NavFrameLoop.fullRateCapable() }
+    private val routeSnap: (Double, Double, com.overdrive.app.navmap.motion.NavMotionModel.Snap) -> Boolean =
+        { la, lo, out ->
+            val s = guidance.snapToRoute(la, lo)
+            if (s == null) false else {
+                out.alongM = s.alongRouteM
+                out.offsetM = s.offsetM
+                true
+            }
+        }
+    private val recenterAfterFree = Runnable {
+        if (navigating && cameraRig.mode == com.overdrive.app.navmap.motion.NavCameraRig.Mode.FREE) {
+            recenterFollow(android.os.SystemClock.elapsedRealtime())
         }
     }
 
     private fun startMotionFollow() {
-        if (motionFollowActive) return
         motionFollowActive = true
-        mainHandler.removeCallbacks(renderRunnable)
-        mainHandler.post(renderRunnable)
+        if (!frameLoop.isRunning) frameLoop.start()
     }
 
     private fun stopMotionFollow() {
         motionFollowActive = false
-        mainHandler.removeCallbacks(renderRunnable)
+        frameLoop.stop()
+        capRenderRate(0)
+    }
+
+    /** Renderer cap: a third above the loop's rate while it runs, so the cap never delays a swap; never below the idle cap. */
+    private fun capRenderRate(loopFps: Int) {
+        val idle = if (clusterMode) CLUSTER_MAX_FPS else HEADUNIT_MAX_FPS
+        val fps = maxOf(idle, loopFps * 4 / 3)
+        if (fps == frameCapFps || !::mapView.isInitialized) return
+        frameCapFps = fps
+        mapView.setMaximumFps(fps)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -449,6 +468,15 @@ open class RoadSenseMapActivity : AppCompatActivity() {
             finishAndRemoveTask()
             return
         }
+        // Before the first style build: the controller decides Google vs vector in styleBuilderForTheme().
+        // On failure googleMap stays uninitialized and every call site falls back to the vector map.
+        try {
+            GoogleMapsBudget.init(applicationContext)
+            GoogleUsageReporter.restoreSoon()
+            googleMap = GoogleMapController(this, clusterMode, googleHost)
+        } catch (t: Throwable) {
+            Log.w("RoadSenseMap", "google map controller unavailable", t)
+        }
         if (clusterMode) {
             applyClusterChrome()
             registerClusterDisplayWatch()
@@ -479,6 +507,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // status bar and lift the FAB stack above the system nav bar so nothing
         // is clipped. MapLibre's own chrome is offset separately in onMapReady.
         applyWindowInsets()
+        setupNavHud()
 
         // Responsive: on a wide (landscape) screen, cap the floating panels to a
         // column + center them (full-width edge-to-edge reads stretched on the
@@ -486,13 +515,16 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         applyResponsiveLayout()
 
         findViewById<FloatingActionButton>(R.id.fabLocate).setOnClickListener {
-            recenter()
+            if (navigating && !clusterMode &&
+                cameraRig.mode != com.overdrive.app.navmap.motion.NavCameraRig.Mode.FOLLOW
+            ) recenterFollow(android.os.SystemClock.elapsedRealtime()) else recenter()
         }
 
         // Destination search — Gmap-style: type-ahead autocomplete (debounced
         // Photon) drives the dropdown; submit (IME / glyph) is the on-submit
         // fallback. Wired in setupSearch().
         setupSearch()
+        NavRouting.arrivalInstruction = getString(R.string.navmap_google_arrived)
         findViewById<FloatingActionButton>(R.id.fabEndNav)?.setOnClickListener {
             stopGuidance()
             showSnackbar(getString(R.string.roadsense_map_nav_ended))
@@ -502,6 +534,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         setupHazardFilter()
         findViewById<FloatingActionButton>(R.id.fabPoi)?.setOnClickListener { togglePoi() }
         findViewById<FloatingActionButton>(R.id.fabMap3d)?.setOnClickListener { toggleMap3d() }
+        findViewById<FloatingActionButton>(R.id.fabMapLayers)?.setOnClickListener { showMapLayersMenu(it) }
 
         // Per-map day/night override (Auto → Light → Dark). Loaded before the first
         // style URL is resolved so the basemap opens in the persisted scheme.
@@ -551,6 +584,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         ) { _, insets ->
             val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
             appBar?.setPadding(0, bars.top, 0, 0)
+            findViewById<View>(R.id.navHud)?.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             // The search COLUMN (bar + dropdown) is pinned to the top, just below
             // the status bar + toolbar. Offset the whole column (NOT the inner
             // card — that double-offset was the misalignment).
@@ -918,10 +952,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         // Re-kick the render tick so the rate change takes effect now
                         // (when projection ENDS we want the head unit back to the smooth
                         // glide immediately; when it STARTS we drop to idle next tick).
-                        if (motionFollowActive) {
-                            mainHandler.removeCallbacks(renderRunnable)
-                            mainHandler.post(renderRunnable)
-                        }
+                        if (motionFollowActive) startMotionFollow()
                     }
                 }
             }
@@ -1065,6 +1096,11 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                 px(CLUSTER_BANNER_PAD_H_DP), px(CLUSTER_BANNER_PAD_V_DP)
             )
         }
+        // The HUD's compact cluster stack takes the banner's band beside the speed badge.
+        findViewById<com.overdrive.app.navmap.ui.NavHudLayout>(R.id.navHud)?.clusterBounds = android.graphics.Rect(
+            CLUSTER_SPEED_BADGE_LEFT_PX, panelH / 2,
+            CLUSTER_SPEED_BADGE_LEFT_PX + px(CLUSTER_BANNER_WIDTH_DP), panelH - px(8)
+        )
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -1140,7 +1176,20 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         mapView.setRenderingRefreshMode(
             org.maplibre.android.maps.renderer.MapRenderer.RenderingRefreshMode.WHEN_DIRTY
         )
-        mapView.setMaximumFps(if (clusterMode) CLUSTER_MAX_FPS else HEADUNIT_MAX_FPS)
+        capRenderRate(0)
+        // Cluster counts and stop numbers are drawn the first time the style asks for them.
+        mapView.addOnStyleImageMissingListener { id ->
+            map?.style?.let { st -> com.overdrive.app.navmap.glass.MapGlassArt.drawMissing(this, st, id, isNightTheme()) }
+        }
+        mapView.addOnDidFinishRenderingFrameListener(
+            org.maplibre.android.maps.MapView.OnDidFinishRenderingFrameWithStatsListener { _, stats ->
+                frameLoop.onFrameRendered()
+                if (stats != null) perfMeter.onFrame(stats.encodingTime, stats.renderingTime)
+            }
+        )
+        mlMap.addOnCameraMoveStartedListener { reason ->
+            if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) onUserMovedMap()
+        }
 
         // App-like feel: lock rotation + tilt, hide the compass (irrelevant
         // when north-locked) but ENABLE on-screen zoom +/- controls (no
@@ -1201,6 +1250,42 @@ open class RoadSenseMapActivity : AppCompatActivity() {
             setAttributionMargins(dp(8), 0, 0, navBottom + dp(8))
             setLogoMargins(dp(40), 0, 0, navBottom + dp(8))
         }
+        applyAttributionChrome()
+    }
+
+    /**
+     * MapLibre's logo and attribution sit where the HUD's speed orb goes, so they hide while the HUD shows (its plate
+     * prints the attribution). The Google logo + copyright takes the MapLibre logo's slot, or the plate's slot
+     * bottom-right under the HUD. Cluster: flush with the speed badge's left edge, same inset from the bottom.
+     */
+    private fun applyAttributionChrome() {
+        val google = googleStyleActive()
+        if (!clusterMode) map?.uiSettings?.let { ui ->
+            ui.setLogoEnabled(!google && !hudShown)
+            ui.setAttributionEnabled(!hudShown)
+        }
+        val v = findViewById<View>(R.id.googleAttribution) ?: return
+        val lp = v.layoutParams as? androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams ?: return
+        val d = resources.displayMetrics.density
+        val navBottom = rootBottomInsetPx()
+        when {
+            clusterMode -> {
+                lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+                lp.marginStart = CLUSTER_SPEED_BADGE_LEFT_PX; lp.marginEnd = 0
+                lp.bottomMargin = CLUSTER_SPEED_BADGE_LEFT_PX
+            }
+            hudShown -> {
+                lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
+                lp.marginStart = 0; lp.marginEnd = (10 * d).toInt()
+                lp.bottomMargin = navBottom + (5 * d).toInt()
+            }
+            else -> {
+                lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+                lp.marginStart = (40 * d).toInt(); lp.marginEnd = 0
+                lp.bottomMargin = navBottom + (8 * d).toInt()
+            }
+        }
+        v.layoutParams = lp
     }
 
     /** Current bottom system-bar inset in px (0 if not yet laid out). */
@@ -1213,13 +1298,22 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         } catch (_: Throwable) { 0 }
     }
 
-    /** OpenFreeMap style URL chosen by the active app theme (day/night). */
-    private fun styleUrlForTheme(): String =
-        if (isNightTheme()) STYLE_URL_DARK else STYLE_URL_LIGHT
+    /** OpenFreeMap liberty for both themes; MapGlassBasemap recolours it at night. */
+    private fun styleUrlForTheme(): String = STYLE_URL_LIGHT
 
-    /** Bundled on-device style ASSET path chosen by the active app theme (day/night). */
-    private fun styleAssetForTheme(): String =
-        if (isNightTheme()) STYLE_ASSET_DARK else STYLE_ASSET_LIGHT
+    /** Bundled liberty style asset (both themes). */
+    private fun styleAssetForTheme(): String = STYLE_ASSET_LIGHT
+
+    /** Basemap for the current theme: Google raster when the controller allows it, else the vector style. */
+    private fun styleBuilderForTheme(): Style.Builder {
+        if (!::googleMap.isInitialized) return vectorStyleBuilder()
+        return try {
+            googleMap.buildStyle { vectorStyleBuilder() }
+        } catch (t: Throwable) {
+            Log.w("RoadSenseMap", "google style build failed, using the vector basemap", t)
+            vectorStyleBuilder()
+        }
+    }
 
     /**
      * Build the basemap [Style.Builder] for the current theme, preferring the
@@ -1239,7 +1333,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      * the previous URL-only path. MapLibre resolves {@code asset://} URLs against the
      * APK assets, so [readStyleAsset] only needs to confirm the asset opens.
      */
-    private fun styleBuilderForTheme(): Style.Builder {
+    private fun vectorStyleBuilder(): Style.Builder {
         val assetPath = styleAssetForTheme()
         val json = readStyleAsset(assetPath)
         return if (json != null) {
@@ -1288,9 +1382,25 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      * name is mistyped (defensive — a missing R.color would otherwise crash the walk).
      */
     private fun m3(role: String): Int {
-        val name = "md_sys_color_${role}_" + if (isNightTheme()) "dark" else "light"
-        val id = resources.getIdentifier(name, "color", packageName)
+        // A Dark map theme can be picked while the app runs in day mode, where _dark roles don't resolve.
+        if (isNightTheme()) return m3Night(role)
+        val id = resources.getIdentifier("md_sys_color_${role}_light", "color", packageName)
         return if (id != 0) ContextCompat.getColor(this, id) else 0xFF808080.toInt()
+    }
+
+    // The _dark roles live only in values-night, so they resolve through a night configuration.
+    private val nightColorContext: android.content.Context by lazy {
+        val cfg = android.content.res.Configuration(resources.configuration)
+        cfg.uiMode = (cfg.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK.inv()) or
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        createConfigurationContext(cfg)
+    }
+
+    /** Dark M3 role colour regardless of the current theme (styles the Google night basemap). */
+    private fun m3Night(role: String): Int {
+        val id = resources.getIdentifier("md_sys_color_${role}_dark", "color", packageName)
+        if (id == 0) return 0xFF808080.toInt()
+        return try { ContextCompat.getColor(nightColorContext, id) } catch (_: Throwable) { 0xFF808080.toInt() }
     }
 
     /** Hex string form of [m3], for paint properties set via a color string. */
@@ -1298,138 +1408,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
 
     /** "#AARRGGBB" for a packed ARGB int (MapLibre accepts rgba()/hex strings). */
     private fun colorToHex(color: Int): String = String.format("#%08X", color)
-
-    /**
-     * Recolor the bundled basemap to the Overdrive Material-3 palette at runtime, so
-     * the map matches the app shell (day + night) instead of rendering the stock
-     * OpenFreeMap colors. This walks the loaded style's layers ONCE (mirroring
-     * [localizeMapLabels]) and rewrites each layer's flat paint color onto an M3 role.
-     *
-     * <p>Cost: a single layer pass at style-load / theme-switch — NOT per frame. The
-     * GPU renders a recolored flat fill identically to the original, so there is zero
-     * added render cost (no new layers, no blur, no extrusion).
-     *
-     * <p>Safety: wrapped in try/catch like [localizeMapLabels] so basemap schema
-     * variance can never break the map — a failed recolor just leaves the stock colors.
-     * Roles are chosen to stay clear of the OVERLAY colors (route/puck = primary,
-     * hazard pins = fixed saturated hues) so those stay legible on the recolored map.
-     *
-     * <p>Expression-valued paints (zoom-interpolated road/landuse colors, the
-     * natural_earth relief raster-opacity) are intentionally LEFT ALONE — overwriting
-     * them with a flat color would drop their zoom ramp. We only rewrite layers whose
-     * id matches a bucket below, and {@link #setLayerColor} additionally skips a
-     * property that currently holds an Expression.
-     *
-     * <p>The set of paint properties recolored here was derived by inspecting OUR OWN
-     * bundled style assets (maps/liberty_style.json + maps/dark_style.json): they carry
-     * background-color, fill-color, fill-outline-color, line-color, fill-extrusion-color,
-     * text-color and text-halo-color — the standard MapLibre GL spec-v8 color paints.
-     * The text-halo is recolored to the surface (background) tone so labels keep the
-     * same "outlined in the background colour" legibility they have in the stock style.
-     */
-    private fun recolorBasemapForTheme(style: Style) {
-        try {
-            // Resolve every role once for this pass (cheap; avoids re-resolving per layer).
-            val land = m3("surface")
-            val water = m3("secondary_container")
-            val parks = m3("surface_container_high")
-            val roadFill = m3(if (isNightTheme()) "surface_container_high" else "surface_container_lowest")
-            val roadCasing = m3("outline_variant")
-            val building = m3("surface_container")
-            val outlineSoft = m3("outline_variant")
-            val boundary = m3("outline")
-            val label = m3("on_surface_variant")
-            val labelHalo = m3("surface")
-            val poiAccent = m3("tertiary")
-
-            for (layer in style.layers) {
-                val id = layer.id
-                // NEVER recolor our own overlay layers — they're added to the style
-                // before this pass and own their (theme-aware) colors. All of ours are
-                // "roadsense-…"; skipping the prefix also protects the 3D extrusion
-                // (roadsense-building-3d) so it keeps MAP_3D_COLOR_*.
-                if (id.startsWith("roadsense-")) continue
-                when {
-                    // Background / land.
-                    id == "background" -> setLayerColor(layer, land)
-
-                    // Water bodies + waterways (fill + line).
-                    id == "water" || id.startsWith("water") -> setLayerColor(layer, water)
-                    id.startsWith("waterway") -> setLayerColor(layer, water)
-
-                    // Parks / landcover / landuse fills.
-                    id == "park" -> setLayerColor(layer, parks)
-                    id == "park_outline" -> setLayerColor(layer, outlineSoft)
-                    id.startsWith("landcover") || id.startsWith("landuse") ||
-                        id.startsWith("aeroway_fill") -> setLayerColor(layer, parks)
-
-                    // Road casings (drawn under the fills) — soft outline tone.
-                    id.contains("_casing") -> setLayerColor(layer, roadCasing)
-
-                    // Road fills (incl. tunnels/bridges/links) — brighter than land.
-                    id.startsWith("road_") || id.startsWith("tunnel_") ||
-                        id.startsWith("bridge_") || id.startsWith("aeroway_runway") ||
-                        id.startsWith("aeroway_taxiway") -> setLayerColor(layer, roadFill)
-
-                    // Buildings (2D fill only; 3D extrusion keeps MAP_3D_COLOR_*).
-                    id == "building" -> setLayerColor(layer, building)
-
-                    // Administrative boundaries.
-                    id.startsWith("boundary") -> setLayerColor(layer, boundary)
-
-                    // Labels: transit/airport get a subtle tertiary accent; the rest the
-                    // neutral on-surface-variant. Halo is the base land tone for contrast.
-                    layer is SymbolLayer -> {
-                        val text = if (id == "poi_transit" || id == "airport") poiAccent else label
-                        layer.setProperties(
-                            PropertyFactory.textColor(colorToHex(text)),
-                            PropertyFactory.textHaloColor(colorToHex(labelHalo))
-                        )
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-            // Schema variance across basemaps — never break the map over a recolor.
-        }
-    }
-
-    /**
-     * Set the appropriate COLOR paint property for [layer] by its type, but ONLY when
-     * that property currently holds a flat color (skips Expression-valued paints so
-     * their zoom ramp survives). Fills also get their outline recolored to match.
-     */
-    private fun setLayerColor(layer: org.maplibre.android.style.layers.Layer, color: Int) {
-        val hex = colorToHex(color)
-        when (layer) {
-            is org.maplibre.android.style.layers.BackgroundLayer ->
-                layer.setProperties(PropertyFactory.backgroundColor(hex))
-            is org.maplibre.android.style.layers.FillLayer -> {
-                if (!layer.fillColor.isExpression) {
-                    layer.setProperties(PropertyFactory.fillColor(hex))
-                }
-                // Fill outline only when it's a flat color present (building's is an
-                // Expression; many fills have no outline at all).
-                if (!layer.fillOutlineColor.isExpression && layer.fillOutlineColor.value != null) {
-                    layer.setProperties(PropertyFactory.fillOutlineColor(hex))
-                }
-            }
-            is LineLayer -> {
-                if (!layer.lineColor.isExpression) {
-                    layer.setProperties(PropertyFactory.lineColor(hex))
-                }
-            }
-            is org.maplibre.android.style.layers.FillExtrusionLayer -> {
-                if (!layer.fillExtrusionColor.isExpression) {
-                    layer.setProperties(PropertyFactory.fillExtrusionColor(hex))
-                }
-            }
-            is CircleLayer -> {
-                if (!layer.circleColor.isExpression) {
-                    layer.setProperties(PropertyFactory.circleColor(hex))
-                }
-            }
-        }
-    }
 
     private fun onStyleLoaded(style: Style) {
         // CRASH GUARD (intermittent "clicking Map crashes the app"): this callback is
@@ -1444,90 +1422,28 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         if (isFinishing || isDestroyed || !::mapView.isInitialized) return
         if (!style.isFullyLoaded) return
         try {
+            com.overdrive.app.navmap.glass.MapGlassArt.registerStatic(this, style, isNightTheme())
+            hud?.setNight(isNightTheme())
+            hud?.setAttributionVisible(!googleStyleActive())
+        // Google raster + traffic go in first so every roadsense-* layer stacks above them.
+        // Isolated so a Google failure can never skip the overlay setup below.
+        try {
+            if (::googleMap.isInitialized) map?.let { googleMap.onStyleLoaded(style, it) }
+            bindGoogleAttribution()
+            updateMapLayersFab()
+        } catch (t: Throwable) {
+            Log.w("RoadSenseMap", "google style setup failed", t)
+        }
         // Record the scheme this style was loaded for, so onConfigurationChanged can tell
         // a real day/night flip (→ reload) from a pure rotation/density delta (→ skip).
         lastAppliedNight = isNightTheme()
-        // 0) Route line FIRST (added before hazards/clusters so the line draws
-        //    UNDER the hazard markers). Two-layer stroke: a wide casing under a
-        //    narrower bright main line. Empty until a route is computed.
-        // Theme-aware so the route stays legible on BOTH the light and dark recolored
-        // basemaps (was hardcoded _light). Resolved via the same m3() role helper the
-        // basemap recolor uses, so the whole map flips day/night coherently.
-        val routeColor = m3("primary")
-        val routeCasing = m3("on_primary_container")
-        routeMainColor = routeColor
-        routeCasingColor = routeCasing
-        // withLineMetrics(true) is REQUIRED for line-gradient (line-progress is otherwise
-        // never generated and the gradient silently renders nothing). It's a source-
-        // construction option that persists across all later setGeoJson() calls. This
-        // drives the traveled-route trim (the gradient goes transparent behind the car).
-        style.addSource(
-            GeoJsonSource(
-                ROUTE_SOURCE_ID, EMPTY_FEATURE_COLLECTION,
-                GeoJsonOptions().withLineMetrics(true)
-            )
-        )
-        style.addLayer(
-            LineLayer(ROUTE_CASING_LAYER_ID, ROUTE_SOURCE_ID).withProperties(
-                // Keep the flat lineColor as a base/fallback (it does NOT conflict — a
-                // CONSTANT line-color coexists with line-gradient; the gradient just wins
-                // where it's set). The day/night recolor (setLayerColor) re-tints this so
-                // a theme flip stays coherent; the gradient is re-applied below to match.
-                PropertyFactory.lineColor(routeCasing),
-                // Traveled portion (line-progress < p) transparent, ahead full color.
-                // Seeded at p=0 (whole route visible until guidance feeds progress).
-                PropertyFactory.lineGradient(routeGradient(0f, routeCasing)),
-                PropertyFactory.lineWidth(11f),
-                PropertyFactory.lineOpacity(0.9f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-            )
-        )
-        // Alternate routes — a SEPARATE source/layer drawn UNDER the selected
-        // route, dimmed + thinner but tappable (tap selects that alternate).
-        // Added before the bright route layers so the selected route sits on top.
-        val altColor = m3("outline")
-        style.addSource(GeoJsonSource(ALT_ROUTE_SOURCE_ID, EMPTY_FEATURE_COLLECTION))
-        style.addLayer(
-            LineLayer(ALT_ROUTE_LAYER_ID, ALT_ROUTE_SOURCE_ID).withProperties(
-                PropertyFactory.lineColor(altColor),
-                PropertyFactory.lineWidth(7f),
-                PropertyFactory.lineOpacity(0.55f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-            )
-        )
-        altRouteSource = style.getSourceAs(ALT_ROUTE_SOURCE_ID)
-
-        style.addLayer(
-            LineLayer(ROUTE_MAIN_LAYER_ID, ROUTE_SOURCE_ID).withProperties(
-                PropertyFactory.lineColor(routeColor),
-                PropertyFactory.lineGradient(routeGradient(0f, routeColor)),
-                PropertyFactory.lineWidth(6f),
-                PropertyFactory.lineOpacity(0.95f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-            )
-        )
-        routeSource = style.getSourceAs(ROUTE_SOURCE_ID)
-        routeCasingLayer = style.getLayerAs(ROUTE_CASING_LAYER_ID)
-        routeMainLayer = style.getLayerAs(ROUTE_MAIN_LAYER_ID)
-        // A style reload (day/night flip) mid-trip recreated the layers above at p=0 (full
-        // route). Re-apply the trim progress held across the reload so the traveled part
-        // stays hidden instead of flashing back in. lastAppliedProgress=-1 forces the
-        // next applyRouteTrim to repaint; here we paint the CURRENT clamp value directly.
-        if (navigating && lastRouteProgress > 0f) {
-            routeCasingLayer?.setProperties(PropertyFactory.lineGradient(routeGradient(lastRouteProgress, routeCasing)))
-            routeMainLayer?.setProperties(PropertyFactory.lineGradient(routeGradient(lastRouteProgress, routeColor)))
-            lastAppliedProgress = lastRouteProgress
+        val night = isNightTheme()
+        // Vector basemap set up for navigation (labels, night colours, buildings, light).
+        if (!googleStyleActive()) {
+            com.overdrive.app.navmap.glass.MapGlassBasemap.apply(style, night, com.overdrive.app.navmap.nav.MapNetworking.lang)
         }
 
-        // 1) Register the four hazard marker icons (rasterized from the
-        //    tintable vector drawables) once for this style.
-        registerHazardIcons(style)
-
-        // 2) Hazard source: empty FeatureCollection to start, clustered so
-        //    dense corridors collapse into a count bubble at low zoom.
+        // Hazards: clustered so dense corridors collapse into a count at low zoom; the glass layers draw them.
         val source = GeoJsonSource(
             HAZARD_SOURCE_ID,
             EMPTY_FEATURE_COLLECTION,
@@ -1539,87 +1455,17 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         style.addSource(source)
         hazardSource = source
 
-        // 3) Cluster bubble (CircleLayer) — only features carrying point_count.
-        val clusterColor = m3("primary")
-        val clusterCircle = CircleLayer(CLUSTER_CIRCLE_LAYER_ID, HAZARD_SOURCE_ID).apply {
-            setFilter(Expression.has(POINT_COUNT))
-            setProperties(
-                PropertyFactory.circleColor(clusterColor),
-                // Bubble grows in steps with the cluster size.
-                PropertyFactory.circleRadius(
-                    Expression.step(
-                        Expression.toNumber(Expression.get(POINT_COUNT)),
-                        Expression.literal(16f),
-                        Expression.stop(10, 20f),
-                        Expression.stop(50, 26f)
-                    )
-                ),
-                PropertyFactory.circleStrokeWidth(2f),
-                PropertyFactory.circleStrokeColor("#ffffff")
-            )
+        // 3D buildings before the overlay: the route ribbon goes right above the topmost extrusion.
+        // The Google raster basemap has no building footprints, so 3D is vector-only.
+        if (googleStyleActive()) {
+            findViewById<View>(R.id.fabMap3d)?.visibility = View.GONE
+        } else {
+            setup3dBuildings(style)
+            findViewById<View>(R.id.fabMap3d)?.visibility = View.VISIBLE
         }
-        style.addLayer(clusterCircle)
 
-        // 4) Cluster count text on top of the bubble.
-        val onPrimary = m3("on_primary")
-        val clusterCount = SymbolLayer(CLUSTER_COUNT_LAYER_ID, HAZARD_SOURCE_ID).apply {
-            setFilter(Expression.has(POINT_COUNT))
-            setProperties(
-                PropertyFactory.textField(Expression.get("point_count_abbreviated")),
-                PropertyFactory.textSize(13f),
-                PropertyFactory.textColor(onPrimary),
-                PropertyFactory.textIgnorePlacement(true),
-                PropertyFactory.textAllowOverlap(true)
-            )
-        }
-        style.addLayer(clusterCount)
-
-        // 5) Un-clustered hazard markers — the data-driven SOTA core.
-        val hazardSymbols = SymbolLayer(HAZARD_SYMBOL_LAYER_ID, HAZARD_SOURCE_ID).apply {
-            setFilter(Expression.not(Expression.has(POINT_COUNT)))
-            setProperties(
-                // icon-image = match(type): 0->breaker, 1->pothole, 3->rough, default->unknown
-                PropertyFactory.iconImage(
-                    Expression.match(
-                        Expression.toNumber(Expression.get(PROP_TYPE)),
-                        Expression.literal(0L), Expression.literal(ICON_BREAKER),
-                        Expression.literal(1L), Expression.literal(ICON_POTHOLE),
-                        Expression.literal(3L), Expression.literal(ICON_ROUGH),
-                        Expression.literal(ICON_UNKNOWN) // default (incl. type 2 = UNKNOWN)
-                    )
-                ),
-                // Pin tip marks the location — anchor at the bottom of the icon.
-                PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                // icon-size scales with severity (1..3). Pins are pre-rendered
-                // large/crisp, so the on-map scale is modest.
-                PropertyFactory.iconSize(
-                    Expression.interpolate(
-                        Expression.linear(),
-                        Expression.toNumber(Expression.get(PROP_SEVERITY)),
-                        Expression.stop(1, 0.5f),
-                        Expression.stop(3, 0.78f)
-                    )
-                ),
-                // icon-opacity by status: candidate(0) dimmed, local/cloud solid.
-                PropertyFactory.iconOpacity(
-                    Expression.match(
-                        Expression.toNumber(Expression.get(PROP_STATUS)),
-                        Expression.literal(0L), Expression.literal(0.6f),
-                        Expression.literal(1.0f) // default (status 1 local / 2 cloud)
-                    )
-                ),
-                PropertyFactory.iconAllowOverlap(true),
-                PropertyFactory.iconIgnorePlacement(true)
-            )
-        }
-        style.addLayer(hazardSymbols)
-        hazardSymbolLayer = hazardSymbols
-        // Apply the persisted hazard-filter mode to the fresh layer.
-        applyHazardFilter(hazardFilterMode)
-
-        // 5b) POI (EV charging / fuel) markers along the route — created empty,
-        //     populated when a route is chosen + the POI toggle is on. Drawn above
-        //     the route lines but below hazards.
+        // POI (EV charging / fuel) markers along the route — created empty,
+        // populated when a route is chosen + the POI toggle is on. Under the overlay's markers.
         registerPoiIcons(style)
         style.addSource(GeoJsonSource(POI_SOURCE_ID, EMPTY_FEATURE_COLLECTION))
         style.addLayer(
@@ -1639,31 +1485,17 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         )
         poiSource = style.getSourceAs(POI_SOURCE_ID)
 
-        // 5c) Itinerary markers (destination pin + numbered stop pins) — drawn LAST
-        //     (top of the stack) so the trip endpoints stay legible over the route
-        //     line, hazards and POIs. iconImage is data-driven from each feature's
-        //     "img" property (rs_dest / rs_stop_<n>), bitmaps registered on demand.
-        style.addSource(GeoJsonSource(MARKER_SOURCE_ID, EMPTY_FEATURE_COLLECTION))
-        style.addLayer(
-            SymbolLayer(MARKER_LAYER_ID, MARKER_SOURCE_ID).withProperties(
-                PropertyFactory.iconImage(Expression.get(MARKER_PROP_IMG)),
-                // Pin tip marks the exact coordinate.
-                PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                PropertyFactory.iconSize(0.82f),
-                PropertyFactory.iconAllowOverlap(true),
-                PropertyFactory.iconIgnorePlacement(true)
-            )
-        )
-        markerSource = style.getSourceAs(MARKER_SOURCE_ID)
+        // Glass overlay (alternates, route, congestion, turn arrow, hazards, pins); redraws the live trip.
+        glassLayers.install(style, night, glassLowTier)
+        glassLayers.installHazards(style, HAZARD_SOURCE_ID)
+        applyHazardFilter(hazardFilterMode)
 
-        // 5c-bis) Dropped-pin marker — a single transient pin shown where the user
-        //         long-presses the map (the "save a place" affordance). Its own
-        //         source/layer so it's independent of the itinerary markers and can
-        //         be cleared the moment the place sheet is dismissed. Drawn on top.
+        // Dropped-pin marker — a single transient pin shown where the user
+        // long-presses the map (the "save a place" affordance). Its own
+        // source/layer so it's independent of the itinerary markers and can
+        // be cleared the moment the place sheet is dismissed. Drawn on top.
         if (style.getImage(ICON_DROPPED_PIN) == null) {
-            // Brand primary (same source as the route line / cluster bubble), theme-
-            // aware so it stays legible on the dark recolored basemap too. A style
-            // reload (theme switch) wipes registered images, so onStyleLoaded re-runs
+            // A style reload (theme switch) wipes registered images, so onStyleLoaded re-runs
             // this with the fresh themed color.
             style.addImage(ICON_DROPPED_PIN, buildDestinationPinPlain(m3("primary")))
         }
@@ -1679,34 +1511,17 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         )
         droppedPinSource = style.getSourceAs(DROPPED_PIN_SOURCE_ID)
 
-        // 5d) 3D buildings: add a fill-extrusion layer over the openmaptiles vector
-        //     source (present in both the light + dark basemaps; only liberty ships
-        //     its own extrusion, so we add ours either way) and set its visibility
-        //     from the persisted 2D/3D choice. Drawn UNDER our route/markers (added
-        //     before nothing here — added last among basemap layers, but symbol
-        //     layers above still composite on top since they were added earlier with
-        //     their own draw order). Default 2D (hidden) — opt-in, GPU-heavier.
-        setup3dBuildings(style)
-
-        // 5e) Language-aware basemap labels: rewrite every label layer's text-field
-        //     to prefer the user's language name (name:<lang>) and fall back to the
-        //     local/default name. So "München"/"慕尼黑" etc. render to match the app.
-        localizeMapLabels(style)
-
-        // 5f) Recolor the basemap to the Overdrive M3 palette (day/night) so the map
-        //     matches the app shell instead of the stock OpenFreeMap colors. One layer
-        //     pass, no per-frame cost; re-runs here on every theme switch (setStyle →
-        //     onStyleLoaded). Done AFTER localizeMapLabels (same kind of one-time walk)
-        //     and BEFORE the overlay layers below so it never touches our route/puck.
-        recolorBasemapForTheme(style)
-
         // 6+7) Tap-to-verify (query the hazard symbol layer at the tap point) and
         //      refetch on every camera-idle (debounced inside). Wired ONCE — a style
         //      reload re-runs onStyleLoaded but the map listeners persist, so a guard
         //      stops a duplicate registration firing each callback twice.
         if (!listenersWired) {
             map?.addOnMapClickListener { latLng -> onMapTap(latLng) }
-            map?.addOnCameraIdleListener { scheduleRefetch() }
+            map?.addOnCameraIdleListener {
+                scheduleRefetch()
+                // Debounced Google copyright refresh.
+                if (::googleMap.isInitialized) map?.let { m -> googleMap.onCameraIdle(m) }
+            }
             // Long-press to drop a pin → place-action sheet (Navigate / Save). Touch
             // only — never on the glanceable, non-touch cluster.
             if (!clusterMode) {
@@ -1766,6 +1581,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // Activity closures into the process-wide NavSession singleton and dispatching
         // every route update N× over a long drive. Drop any prior registration first.
         navSessionListener?.let { NavSession.removeListener(it) }
+        clusterTrafficListener?.let { NavSession.removeTrafficListener(it) }
         navSessionListener = NavSession.addListener { st ->
             mainHandler.post {
                 if (isFinishing || isDestroyed) return@post
@@ -1779,6 +1595,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         navigating = true
                         clusterNavRoute = route
                         resetRouteTrim()   // new route → start un-trimmed
+                        onGuidanceRouteChanged(route)
                         // Reveal the turn-by-turn banner on the cluster. The cluster
                         // never runs startGuidance() (that's the head-unit-only entry
                         // point), so without this the banner stays at its XML default
@@ -1788,7 +1605,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         // ~1s until the first guidance tick fills in the next maneuver.
                         showManeuverBanner(
                             getString(R.string.roadsense_map_nav_started, st.destLabel), route)
-                        findViewById<View>(R.id.navBanner)?.visibility = View.VISIBLE
+                        showNavHud(true)
                         // Snap into the immersive follow view now (same reason as
                         // startGuidance) — renderRoute above left the cluster at the
                         // route-overview framing; without this the stationary cluster
@@ -1806,6 +1623,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         clusterNavRoute = route
                         guidance.start(route)
                         resetRouteTrim()   // rerouted → reset trim against the NEW arc length
+                        onGuidanceRouteChanged(route)
                         lastSpokenInstruction = null
                         // Reseed the banner to the NEW route immediately + drop the old
                         // route's turn glyph, so the prior route's maneuver text/ETA/icon
@@ -1814,10 +1632,8 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                             getString(R.string.roadsense_map_nav_started, st.destLabel), route)
                         setManeuverIcon(0)   // 0 → no glyph; next tick sets the real one
                         // renderRoute above re-framed to the whole-route OVERVIEW. Snap
-                        // back into immersive follow (mirrors the nav-start branch) —
-                        // otherwise a route switch while PARKED stays zoomed-out until
-                        // the car moves >CAM_DEADBAND_M (the per-frame follow's dead-band
-                        // short-circuits the camera write at a standstill).
+                        // back into immersive follow (mirrors the nav-start branch), so a
+                        // route switch while PARKED doesn't stay zoomed out.
                         moveCameraToImmersiveStart(route)
                     } else if (!st.navigating && navigating) {
                         // Defensive: a (route!=null, navigating=false) PREVIEW state.
@@ -1831,6 +1647,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         guidance.stop()
                         findViewById<View>(R.id.navBanner)?.visibility = View.GONE
                         findViewById<View>(R.id.navBannerIcon)?.visibility = View.GONE
+                        showNavHud(false)
                     }
                 } else {
                     // Trip cleared on infotainment → wipe + resume idle follow.
@@ -1838,104 +1655,17 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                     clusterNavRoute = null
                     mainHandler.removeCallbacks(guidanceRunnable)
                     guidance.stop()
-                    resetRouteTrim()   // route gone → reset trim (source emptied below)
                     findViewById<View>(R.id.navBanner)?.visibility = View.GONE
                     findViewById<View>(R.id.navBannerIcon)?.visibility = View.GONE
-                    routeSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
-                    altRouteSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
-                    clearItineraryMarkers()
+                    showNavHud(false)
+                    endLiveTraffic()
+                    glassLayers.clear()
                     startClusterFollow()
                 }
             }
         }
-    }
-
-    /**
-     * Register the four hazard markers as proper MAP PINS (not flat tinted
-     * glyphs). Each is a composited teardrop: a soft drop shadow, a filled
-     * type-colored body, a white circular glyph well, and the hazard symbol
-     * drawn in the body color inside the well. This reads as a real map marker
-     * at any zoom and encodes hazard type by color + glyph at a glance. The
-     * SymbolLayer anchors these at "bottom" so the pin tip marks the location.
-     */
-    private fun registerHazardIcons(style: Style) {
-        // Type colors — distinct, high-contrast, theme-stable (markers sit on
-        // both light and dark basemaps so we use saturated fixed hues, not
-        // theme-attr surface colors which would vanish on one theme).
-        val potholeColor = 0xFFE53935.toInt()  // red   — pothole (most severe-looking)
-        val breakerColor = 0xFFFB8C00.toInt()  // amber — speed breaker
-        val roughColor   = 0xFF8E24AA.toInt()  // purple— rough section
-        val unknownColor = 0xFF546E7A.toInt()  // slate — unknown
-
-        // Idempotent: only build + register a bitmap the style doesn't already have,
-        // so a future style reload doesn't needlessly re-rasterize each pin.
-        if (style.getImage(ICON_POTHOLE) == null)
-            style.addImage(ICON_POTHOLE, buildHazardPin(R.drawable.ic_hazard_pothole, potholeColor))
-        if (style.getImage(ICON_BREAKER) == null)
-            style.addImage(ICON_BREAKER, buildHazardPin(R.drawable.ic_hazard_breaker, breakerColor))
-        if (style.getImage(ICON_ROUGH) == null)
-            style.addImage(ICON_ROUGH, buildHazardPin(R.drawable.ic_hazard_rough, roughColor))
-        if (style.getImage(ICON_UNKNOWN) == null)
-            style.addImage(ICON_UNKNOWN, buildHazardPin(R.drawable.ic_hazard_unknown, unknownColor))
-    }
-
-    /**
-     * Compose one SOTA map pin bitmap: teardrop body in [bodyColor] with a
-     * drop shadow, a white inner disc, and the [glyphRes] hazard symbol tinted
-     * [bodyColor] centered in the disc. Drawn at [PIN_PX] so it stays crisp on
-     * the hi-dpi head-unit panel. The geometry leaves transparent margin for
-     * the shadow so SymbolLayer's "bottom" anchor lands on the pin tip.
-     */
-    private fun buildHazardPin(glyphRes: Int, bodyColor: Int): Bitmap {
-        val w = PIN_PX
-        val h = (PIN_PX * 1.3f).toInt()
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val cx = w / 2f
-        val bodyR = w * 0.34f           // circular head radius
-        val headCy = bodyR + w * 0.06f  // head center y (room for shadow at tip)
-        val tipY = h - w * 0.06f        // teardrop tip near the bottom
-
-        // NO blur drop-shadow: BlurMaskFilter renders as a hard dark RECTANGLE on
-        // this head unit (HW-layer blur unsupported / clipped to the bitmap bounds),
-        // which looks bad on the light basemap. The white rim below gives enough
-        // separation on both light + dark basemaps.
-
-        // Pin body (teardrop) + a thin white rim for separation.
-        val body = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = bodyColor; style = android.graphics.Paint.Style.FILL
-        }
-        c.drawPath(teardropPath(cx, headCy, bodyR, tipY), body)
-        val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.STROKE
-            strokeWidth = w * 0.035f
-        }
-        c.drawPath(teardropPath(cx, headCy, bodyR, tipY), rim)
-
-        // White inner disc (the glyph well).
-        val discR = bodyR * 0.62f
-        val disc = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.FILL
-        }
-        c.drawCircle(cx, headCy, discR, disc)
-
-        // Hazard glyph, tinted in the body color, centered in the disc. Use a
-        // SRC_IN color filter (not DrawableCompat.setTint) so it deterministically
-        // overrides the vector's own baked android:tint across API levels.
-        // Null-safe (was `!!`): if the vector fails to resolve under a freshly-applied
-        // night/day Configuration (resource-lookup race on a theme reload), return the
-        // pin body WITHOUT the glyph instead of throwing a KotlinNullPointerException
-        // that would propagate out of onStyleLoaded → addImage → process crash.
-        val glyph = ContextCompat.getDrawable(this, glyphRes)?.mutate() ?: return bmp
-        glyph.colorFilter = android.graphics.PorterDuffColorFilter(
-            bodyColor, android.graphics.PorterDuff.Mode.SRC_IN
-        )
-        val g = (discR * 1.7f).toInt()
-        val gl = (cx - g / 2f).toInt()
-        val gt = (headCy - g / 2f).toInt()
-        glyph.setBounds(gl, gt, gl + g, gt + g)
-        glyph.draw(c)
-        return bmp
+        // Live-traffic refreshes published by the head unit (congestion + banner ETA only).
+        clusterTrafficListener = NavSession.addTrafficListener { t -> mainHandler.post { onClusterTraffic(t) } }
     }
 
     /** Build a teardrop/pin path: a circle head at (cx,cy) r=[r] tapering to [tipY]. */
@@ -1998,6 +1728,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // Tapping the map dismisses the search dropdown + drops keyboard focus.
         if (findViewById<View>(R.id.navSearchDropdown)?.visibility == View.VISIBLE) {
             hideSearchDropdown()
+            ForwardGeocoder.endSession()   // abandoned without a pick
             findViewById<android.widget.EditText>(R.id.navSearchInput)?.let {
                 it.clearFocus(); hideKeyboard(it)
             }
@@ -2019,7 +1750,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         )
 
         // 1) Hazard markers (query a tolerance box too, so small pins are tappable).
-        val hazardHit = mlMap.queryRenderedFeatures(box, HAZARD_SYMBOL_LAYER_ID)
+        val hazardHit = mlMap.queryRenderedFeatures(box, com.overdrive.app.navmap.glass.MapGlassLayers.HAZARD_GEM_LAYER_ID)
             .firstOrNull { it.hasProperty(PROP_ID) }
         if (hazardHit != null) {
             val id = hazardHit.getStringProperty(PROP_ID) ?: return false
@@ -2051,7 +1782,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // 3) Route line LAST — only when no marker was hit. Tapping an alternate's
         //    line selects it (preview) / switches the active route (navigating).
         if (previewRoutes.isNotEmpty()) {
-            val altHit = mlMap.queryRenderedFeatures(box, ALT_ROUTE_LAYER_ID)
+            val altHit = mlMap.queryRenderedFeatures(box, com.overdrive.app.navmap.glass.MapGlassLayers.ALT_LAYER_ID)
                 .firstOrNull { it.hasProperty("idx") }
             if (altHit != null) {
                 val idx = altHit.getNumberProperty("idx").toInt()
@@ -2207,34 +1938,15 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Filter the hazard SymbolLayer live by severity (no refetch) via a data-driven
-     * filter expression. HIDDEN sets the layer invisible; the others gate on the
-     * `severity` property (>= threshold). Cheap — just swaps the layer filter.
-     */
+    /** Hazard filter by severity (no refetch); HIDDEN hides every hazard, clusters included. */
     private fun applyHazardFilter(mode: Int) {
         hazardFilterMode = mode
-        val layer = hazardSymbolLayer ?: return
-        val base = Expression.not(Expression.has(POINT_COUNT)) // never the cluster aggregate
-        when (mode) {
-            HAZARD_FILTER_HIDDEN ->
-                layer.setProperties(PropertyFactory.visibility(Property.NONE))
-            else -> {
-                layer.setProperties(PropertyFactory.visibility(Property.VISIBLE))
-                val minSeverity = when (mode) {
-                    HAZARD_FILTER_SEVERE -> 3L
-                    HAZARD_FILTER_MODERATE -> 2L
-                    else -> 1L
-                }
-                layer.setFilter(
-                    Expression.all(
-                        base,
-                        Expression.gte(Expression.toNumber(Expression.get(PROP_SEVERITY)),
-                            Expression.literal(minSeverity))
-                    )
-                )
-            }
+        val minSeverity = when (mode) {
+            HAZARD_FILTER_SEVERE -> 3
+            HAZARD_FILTER_MODERATE -> 2
+            else -> 1
         }
+        glassLayers.setHazardFilter(minSeverity, mode != HAZARD_FILTER_HIDDEN)
     }
 
     // ---------------------------------------------------------------------
@@ -2254,7 +1966,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      */
     private fun setup3dBuildings(style: Style) {
         map3dEnabled = getSharedPreferences(PREFS_NAVMAP, MODE_PRIVATE)
-            .getBoolean(KEY_MAP_3D, false)
+            .getBoolean(KEY_MAP_3D, true)
         // Only ADD our own extrusion layer when the style doesn't already provide
         // one (i.e. dark). If a native building-3d exists (liberty), we just toggle
         // ITS visibility — no second layer needed. Idempotent across style reloads.
@@ -2275,11 +1987,9 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         if (map3dEnabled) Property.VISIBLE else Property.NONE)
                 )
             }
-            // Place under our route casing (added first in onStyleLoaded) so the
-            // extruded volumes never occlude the route line or markers. If the
-            // casing isn't present yet for any reason, fall back to a plain add.
+            // Over the 2D footprints and under the labels; the route ribbon is added above it later.
             try {
-                style.addLayerBelow(ext, ROUTE_CASING_LAYER_ID)
+                style.addLayerAbove(ext, MAP_2D_BUILDING_LAYER_ID)
             } catch (_: Throwable) {
                 style.addLayer(ext)
             }
@@ -2414,41 +2124,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         style.getLayer(MAP_3D_LAYER_ID)?.setProperties(PropertyFactory.visibility(vis))
     }
 
-    /**
-     * Make the basemap's place labels language-aware. OpenFreeMap vector tiles
-     * carry localized name fields (`name:en`, `name:de`, `name:zh`, …) alongside
-     * the local `name`. For every SymbolLayer whose text-field is the plain
-     * `{name}` (or `get name`), swap in `coalesce(get name:<lang>, get name)` so a
-     * label shows the user's language when the tile has it and the local name
-     * otherwise. English is the tile default, so skip the rewrite for `en` (and
-     * for any layer that doesn't label by `name`, e.g. house numbers) to avoid
-     * needless churn. Best-effort per layer — a failure on one never aborts the
-     * rest or the style load.
-     */
-    private fun localizeMapLabels(style: Style) {
-        val lang = com.overdrive.app.navmap.nav.MapNetworking.lang
-        if (lang.isEmpty() || lang == "en") return  // tiles already default to name (latin/en)
-        val localized = Expression.coalesce(
-            Expression.get("name:$lang"),
-            Expression.get("name")
-        )
-        try {
-            for (layer in style.layers) {
-                if (layer !is SymbolLayer) continue
-                val tf = layer.textField ?: continue
-                // Only retarget layers that actually label by the generic name. The
-                // serialized expression mentions "name" for those (e.g. {name},
-                // get name, name:latin); leave number/ref/icon-only layers alone.
-                val asString = tf.toString()
-                if (!asString.contains("name")) continue
-                if (asString.contains("ref") && !asString.contains("name")) continue
-                layer.setProperties(PropertyFactory.textField(localized))
-            }
-        } catch (_: Throwable) {
-            // Style schema variance across basemaps — never break the map over labels.
-        }
-    }
-
     /** Tint the 3D FAB to reflect the active mode (accent when 3D is on). */
     private fun updateMap3dFab() {
         findViewById<FloatingActionButton>(R.id.fabMap3d)?.let { fab ->
@@ -2458,6 +2133,160 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                 com.google.android.material.color.MaterialColors.getColor(fab, attr)
             )
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Google basemap (bring your own key): host, attribution, layers menu
+    // ---------------------------------------------------------------------
+
+    /** True while the loaded basemap is the Google raster style. */
+    private fun googleStyleActive(): Boolean = ::googleMap.isInitialized && googleMap.googleStyleActive
+
+    /** Activity side of [GoogleMapController]; callbacks may arrive off the main thread. */
+    private val googleHost = object : GoogleMapController.Host {
+        override fun isNight(): Boolean = isNightTheme()
+
+        // Always the dark roles: this palette styles the night basemap whatever the current theme.
+        override fun nightPalette() = GoogleMapStyle.NightPalette(
+            land = m3Night("surface"),
+            water = m3Night("secondary_container"),
+            park = m3Night("surface_container_high"),
+            road = m3Night("surface_container_high"),
+            roadCasing = m3Night("outline_variant"),
+            highway = m3Night("surface_container_highest"),
+            label = m3Night("on_surface_variant"),
+            labelHalo = m3Night("surface"),
+            poi = m3Night("tertiary")
+        )
+
+        override fun backgroundHex(): String = m3Hex("surface")
+
+        override fun requestStyleReload() = runOnUiThread { requestGoogleStyleReload() }
+
+        override fun onGoogleNotice(notice: GoogleMapController.Notice, resetAtMs: Long) = runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            updateMapLayersFab()
+            if (clusterMode) return@runOnUiThread
+            val at = android.text.format.DateFormat.getTimeFormat(this@RoadSenseMapActivity)
+                .format(java.util.Date(resetAtMs))
+            showSnackbar(when (notice) {
+                GoogleMapController.Notice.TRAFFIC_PAUSED -> getString(R.string.navmap_google_traffic_paused, at)
+                GoogleMapController.Notice.MAP_PAUSED -> getString(R.string.navmap_google_map_paused, at)
+                GoogleMapController.Notice.MAP_UNAVAILABLE -> getString(R.string.navmap_google_map_unavailable)
+                GoogleMapController.Notice.KEY_PROBLEM -> getString(R.string.navmap_google_key_problem)
+            })
+        }
+
+        override fun mainHandler(): Handler = this@RoadSenseMapActivity.mainHandler
+
+        override fun onAttributionChanged() = runOnUiThread {
+            if (!isFinishing && !isDestroyed) bindGoogleAttribution()
+        }
+    }
+
+    /** Basemap swap asked by the controller or the layers menu; waits out an in-flight
+     *  theme reload (up to ~5 s) instead of being dropped by its coalescing guard. */
+    private val googleStyleReload = object : Runnable {
+        var waits = 0
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            if (styleReloadInFlight && waits++ < 20) {
+                mainHandler.postDelayed(this, 250L)
+                return
+            }
+            waits = 0
+            reloadStyleForTheme()
+        }
+    }
+
+    private fun requestGoogleStyleReload() {
+        mainHandler.removeCallbacks(googleStyleReload)
+        googleStyleReload.waits = 0
+        mainHandler.post(googleStyleReload)
+    }
+
+    /** Google logo + copyright while the Google basemap shows; MapLibre's logo hides meanwhile. */
+    private fun bindGoogleAttribution() {
+        if (!::googleMap.isInitialized) return
+        val google = googleMap.googleStyleActive
+        applyAttributionChrome()
+        // Satellite imagery is dark at any hour, so it takes the night (white) logo.
+        val imagery = googleMap.mapTypePref == GoogleMapType.SATELLITE ||
+            googleMap.mapTypePref == GoogleMapType.HYBRID
+        findViewById<GoogleAttributionView>(R.id.googleAttribution)?.bind(
+            visible = google,
+            night = isNightTheme() || (google && imagery),
+            copyright = if (clusterMode) null else googleMap.copyright()   // glanceable cluster: logo only
+        )
+    }
+
+    /** Layers FAB: head unit only, shown while a Google layer is usable; accented while traffic shows. */
+    private fun updateMapLayersFab() {
+        val fab = findViewById<FloatingActionButton>(R.id.fabMapLayers) ?: return
+        val caps = if (!clusterMode && ::googleMap.isInitialized) googleMap.caps() else null
+        if (caps == null || !(caps.googleBasemap || caps.traffic)) {
+            fab.visibility = View.GONE
+            return
+        }
+        fab.visibility = View.VISIBLE
+        val attr = if (googleMap.trafficShown) androidx.appcompat.R.attr.colorPrimary
+                   else com.google.android.material.R.attr.colorSurfaceContainerHighest
+        fab.backgroundTintList = android.content.res.ColorStateList.valueOf(
+            com.google.android.material.color.MaterialColors.getColor(fab, attr)
+        )
+    }
+
+    /** Map type (single choice) + live traffic (checkbox) popup, built like the hazard filter. */
+    private fun showMapLayersMenu(anchor: View) {
+        if (!::googleMap.isInitialized) return
+        val caps = googleMap.caps()
+        val types = listOf(
+            GoogleMapType.ROADMAP to R.string.navmap_google_type_default,
+            GoogleMapType.SATELLITE to R.string.navmap_google_type_satellite,
+            GoogleMapType.HYBRID to R.string.navmap_google_type_hybrid,
+            GoogleMapType.TERRAIN to R.string.navmap_google_type_terrain
+        )
+        // Item ids: 1..types.size map types, then OverDrive map, then traffic.
+        val idOverDrive = types.size + 1
+        val idTraffic = types.size + 2
+        val menu = androidx.appcompat.widget.PopupMenu(this, anchor)
+        if (caps.googleBasemap) {
+            types.forEachIndexed { i, (_, label) -> menu.menu.add(1, i + 1, i, getString(label)) }
+            menu.menu.add(1, idOverDrive, types.size, getString(R.string.navmap_google_type_overdrive))
+            menu.menu.setGroupCheckable(1, true, true)
+            val checkedId = if (!googleMap.googleBasemapPref) idOverDrive
+                            else types.indexOfFirst { it.first == googleMap.mapTypePref } + 1
+            menu.menu.findItem(checkedId)?.isChecked = true
+        }
+        if (caps.traffic) {
+            menu.menu.add(2, idTraffic, types.size + 1, getString(R.string.navmap_google_traffic)).apply {
+                isCheckable = true
+                isChecked = googleMap.trafficPref
+            }
+        }
+        menu.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                idTraffic -> {
+                    val on = !item.isChecked
+                    googleMap.setTraffic(map?.style, on)
+                    updateMapLayersFab()
+                    showSnackbar(getString(
+                        if (on) R.string.navmap_google_traffic_on else R.string.navmap_google_traffic_off))
+                }
+                idOverDrive -> selectMapLayer(google = false, type = googleMap.mapTypePref)
+                else -> types.getOrNull(item.itemId - 1)?.let { selectMapLayer(google = true, type = it.first) }
+            }
+            true
+        }
+        menu.show()
+    }
+
+    /** Persist the basemap choice and swap the style; no-op when it is already the choice. */
+    private fun selectMapLayer(google: Boolean, type: GoogleMapType) {
+        if (googleMap.googleBasemapPref == google && googleMap.mapTypePref == type) return
+        googleMap.googleBasemapPref = google
+        googleMap.mapTypePref = type
+        requestGoogleStyleReload()
     }
 
     // ---------------------------------------------------------------------
@@ -2509,103 +2338,22 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     // ---------------------------------------------------------------------
 
     /**
-     * Paint the itinerary markers for [route] onto the marker source: one
-     * numbered teardrop pin per intermediate via-stop (1..n) and a distinct
-     * destination flag pin at the final point. Origin is the live puck, so it's
-     * never marked here. [stops] is the ordered itinerary AFTER the origin
-     * ([stop1, …, destination]); when empty (e.g. the cluster mirror has no
-     * routeStops) the destination falls back to the route's last polyline point
-     * so a pin still lands at the end. Idempotent registration of each bitmap.
+     * Itinerary pins for [route]: numbered via-stops and the destination. [stops] is the ordered
+     * itinerary after the origin; without one (the cluster mirror) the destination is the route's end.
      */
     private fun renderItineraryMarkers(route: NavRoute, stops: List<SearchResult>) {
-        val style = map?.style ?: return
-        if (route.points.isEmpty()) { markerSource?.setGeoJson(EMPTY_FEATURE_COLLECTION); return }
-
-        // Destination color (route accent) + stop color (amber), theme-stable.
-        val destColor = 0xFFE53935.toInt()   // red — the trip endpoint
-        val stopColor = 0xFF1565C0.toInt()   // blue — intermediate via-stops
-
-        // Destination pin (registered once).
-        if (style.getImage(ICON_DEST) == null) {
-            style.addImage(ICON_DEST, buildDestinationPin(destColor))
-        }
-
-        val features = StringBuilder("[")
-        var first = true
-        fun addFeature(lat: Double, lng: Double, img: String) {
-            if (!first) features.append(","); first = false
-            features.append(
-                "{\"type\":\"Feature\",\"properties\":{\"$MARKER_PROP_IMG\":\"$img\"}," +
-                    "\"geometry\":{\"type\":\"Point\",\"coordinates\":[$lng,$lat]}}"
-            )
-        }
-
-        if (stops.size >= 2) {
-            // Numbered via-stops (all but the last entry), then the destination.
-            val lastIdx = stops.size - 1
-            for (i in 0 until lastIdx) {
-                val ordinal = i + 1
-                val img = ICON_STOP_PREFIX + ordinal
-                if (style.getImage(img) == null) {
-                    style.addImage(img, buildStopPin(stopColor, ordinal))
-                    if (ordinal > maxStopIconRegistered) maxStopIconRegistered = ordinal
-                }
-                addFeature(stops[i].lat, stops[i].lng, img)
-            }
-            addFeature(stops[lastIdx].lat, stops[lastIdx].lng, ICON_DEST)
-        } else if (stops.size == 1) {
-            addFeature(stops[0].lat, stops[0].lng, ICON_DEST)
+        if (route.points.isEmpty()) { clearItineraryMarkers(); return }
+        val vias = if (stops.size >= 2) {
+            stops.subList(0, stops.size - 1).map { com.overdrive.app.navmap.nav.GeoPoint(it.lat, it.lng) }
         } else {
-            // No itinerary metadata (cluster mirror) — pin the polyline's end.
-            val end = route.points.last()
-            addFeature(end.lat, end.lng, ICON_DEST)
+            emptyList()
         }
-        features.append("]")
-        markerSource?.setGeoJson("{\"type\":\"FeatureCollection\",\"features\":$features}")
+        val dest = stops.lastOrNull()?.let { com.overdrive.app.navmap.nav.GeoPoint(it.lat, it.lng) } ?: route.points.last()
+        glassLayers.setPins(vias, dest)
     }
 
-    /** Clear all itinerary markers. */
     private fun clearItineraryMarkers() {
-        markerSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
-    }
-
-    /**
-     * A SOTA destination marker: a teardrop pin (route-accent body + white rim)
-     * with a checkered-flag glyph in a white inner disc — the universal "trip
-     * end" affordance. Same teardrop geometry as the hazard pins so it reads as
-     * part of the same marker family; tip at the bottom for "bottom" anchoring.
-     */
-    private fun buildDestinationPin(bodyColor: Int): Bitmap {
-        val w = PIN_PX
-        val h = (PIN_PX * 1.3f).toInt()
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val cx = w / 2f
-        val bodyR = w * 0.34f
-        val headCy = bodyR + w * 0.06f
-        val tipY = h - w * 0.06f
-
-        val body = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = bodyColor; style = android.graphics.Paint.Style.FILL
-        }
-        c.drawPath(teardropPath(cx, headCy, bodyR, tipY), body)
-        val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.STROKE
-            strokeWidth = w * 0.035f
-        }
-        c.drawPath(teardropPath(cx, headCy, bodyR, tipY), rim)
-
-        // White glyph well.
-        val discR = bodyR * 0.62f
-        val disc = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.FILL
-        }
-        c.drawCircle(cx, headCy, discR, disc)
-
-        // Checkered flag inside the well, drawn in the body color so it reads at a
-        // glance. A 3x3 checker on a short pole — compact + unmistakable.
-        drawCheckeredFlag(c, cx, headCy, discR * 1.25f, bodyColor)
-        return bmp
+        glassLayers.setPins(emptyList(), null)
     }
 
     /**
@@ -2643,83 +2391,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
             color = bodyColor; style = android.graphics.Paint.Style.FILL
         }
         c.drawCircle(cx, headCy, bodyR * 0.30f, dot)
-        return bmp
-    }
-
-    /** Draw a small checkered flag centered on (cx,cy), fitting a [size] box, in [ink]. */
-    private fun drawCheckeredFlag(c: Canvas, cx: Float, cy: Float, size: Float, ink: Int) {
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = ink; style = android.graphics.Paint.Style.FILL
-        }
-        // Pole on the left.
-        val poleW = size * 0.10f
-        val poleLeft = cx - size * 0.42f
-        val flagTop = cy - size * 0.40f
-        val flagH = size * 0.52f
-        c.drawRect(poleLeft, cy - size * 0.46f, poleLeft + poleW, cy + size * 0.50f, paint)
-        // Checker grid (3 cols x 2 rows) to the right of the pole.
-        val gridLeft = poleLeft + poleW
-        val gridW = size * 0.74f
-        val cols = 3; val rows = 2
-        val cw = gridW / cols; val ch = flagH / rows
-        // Outline the flag area faintly so the white cells read on the white disc.
-        val outline = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = ink; style = android.graphics.Paint.Style.STROKE; strokeWidth = size * 0.04f
-        }
-        c.drawRect(gridLeft, flagTop, gridLeft + gridW, flagTop + flagH, outline)
-        for (row in 0 until rows) {
-            for (col in 0 until cols) {
-                if ((row + col) % 2 == 0) {
-                    val l = gridLeft + col * cw
-                    val t = flagTop + row * ch
-                    c.drawRect(l, t, l + cw, t + ch, paint)
-                }
-            }
-        }
-    }
-
-    /**
-     * A numbered intermediate-stop pin: a teardrop body in [bodyColor] with a
-     * white disc and the via-stop [ordinal] drawn in the body color. Matches the
-     * destination/hazard marker family. Tip at the bottom for "bottom" anchoring.
-     */
-    private fun buildStopPin(bodyColor: Int, ordinal: Int): Bitmap {
-        val w = PIN_PX
-        val h = (PIN_PX * 1.3f).toInt()
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val cx = w / 2f
-        val bodyR = w * 0.34f
-        val headCy = bodyR + w * 0.06f
-        val tipY = h - w * 0.06f
-
-        val body = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = bodyColor; style = android.graphics.Paint.Style.FILL
-        }
-        c.drawPath(teardropPath(cx, headCy, bodyR, tipY), body)
-        val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.STROKE
-            strokeWidth = w * 0.035f
-        }
-        c.drawPath(teardropPath(cx, headCy, bodyR, tipY), rim)
-
-        val discR = bodyR * 0.62f
-        val disc = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.FILL
-        }
-        c.drawCircle(cx, headCy, discR, disc)
-
-        val text = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = bodyColor
-            textAlign = android.graphics.Paint.Align.CENTER
-            typeface = android.graphics.Typeface.create(
-                android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            textSize = discR * 1.5f
-        }
-        // Vertically center the digit baseline in the disc.
-        val fm = text.fontMetrics
-        val baseline = headCy - (fm.ascent + fm.descent) / 2f
-        c.drawText(ordinal.toString(), cx, baseline, text)
         return bmp
     }
 
@@ -3205,6 +2876,10 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // losing focus hides the dropdown so it doesn't linger on top of the map.
         input?.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
+                // Pre-warm the Google search/routing connections (no-ops without Google).
+                ioExecutor().execute {
+                    try { ForwardGeocoder.warmUp(); NavRouting.warmUp() } catch (_: Throwable) {}
+                }
                 if (input.text.isNullOrEmpty()) showRecentSearches()
             } else {
                 hideSearchDropdown()
@@ -3221,6 +2896,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         clear?.setOnClickListener {
             input?.setText("")
             hideSearchDropdown()
+            ForwardGeocoder.endSession()   // abandoned without a pick
         }
     }
 
@@ -3244,7 +2920,9 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         }
         val r = Runnable { runAutocomplete(q) }
         pendingAutocomplete = r
-        mainHandler.postDelayed(r, AUTOCOMPLETE_DEBOUNCE_MS)
+        mainHandler.postDelayed(
+            r, if (ForwardGeocoder.googleActive()) GOOGLE_AUTOCOMPLETE_DEBOUNCE_MS else AUTOCOMPLETE_DEBOUNCE_MS
+        )
     }
 
     /** Photon typeahead off the looper; a monotonic token discards stale results. */
@@ -3354,6 +3032,11 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      * All three then recompute + re-preview the trip.
      */
     private fun onSearchResultChosen(result: SearchResult) {
+        // A Google place prediction has no coordinates yet: look them up, then continue.
+        if (result.needsResolve) {
+            resolvePlaceThen(result) { onSearchResultChosen(it) }
+            return
+        }
         // "Search to save" mode (armed by tapping an unset Home/Work chip): a place
         // PICKED FROM THE SEARCH PANEL (typed autocomplete row, recents row, or IME
         // submit) is SAVED into that slot instead of routed to. This consume path is
@@ -3372,6 +3055,21 @@ open class RoadSenseMapActivity : AppCompatActivity() {
             return
         }
         routeToResult(result)
+    }
+
+    /** Resolves a place prediction's coordinates off the main thread; only the latest request continues. */
+    private fun resolvePlaceThen(result: SearchResult, then: (SearchResult) -> Unit) {
+        showSnackbar(getString(R.string.navmap_google_finding_place))
+        val token = ++placeResolveToken
+        ioExecutor().execute {
+            val resolved = try { ForwardGeocoder.resolve(result) } catch (_: Throwable) { null }
+            mainHandler.post {
+                if (isFinishing || isDestroyed || token != placeResolveToken) return@post
+                val located = resolved?.takeIf { !it.needsResolve }
+                if (located != null) then(located)
+                else showSnackbar(getString(R.string.navmap_google_place_failed))
+            }
+        }
     }
 
     /**
@@ -3747,19 +3445,21 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      * failure stops masquerading as the catch-all "Could not find a route." The old
      * code only distinguished empty-key (need_key) from everything-else (route_failed),
      * so a wrong/expired BYOK key (HTTP 401) and a proxy timeout both showed the same
-     * unhelpful text. Reads ValhallaRouteClient.lastError, set on the call that just
+     * unhelpful text. Reads NavRouting.lastError, set on the call that just
      * returned empty (single foreground routing call at a time).
      */
-    private fun routeFailureMessage(): String = when (ValhallaRouteClient.lastError) {
-        ValhallaRouteClient.RouteError.NO_KEY -> getString(R.string.roadsense_map_need_key)
-        ValhallaRouteClient.RouteError.AUTH -> getString(R.string.roadsense_map_route_key_rejected)
-        ValhallaRouteClient.RouteError.TIMEOUT,
-        ValhallaRouteClient.RouteError.NETWORK -> getString(R.string.roadsense_map_route_network)
-        ValhallaRouteClient.RouteError.HTTP -> {
-            val code = ValhallaRouteClient.lastHttpCode
+    private fun routeFailureMessage(): String = when (NavRouting.lastError) {
+        NavRouting.Error.NO_KEY -> getString(R.string.roadsense_map_need_key)
+        NavRouting.Error.AUTH -> getString(R.string.roadsense_map_route_key_rejected)
+        NavRouting.Error.TIMEOUT,
+        NavRouting.Error.NETWORK -> getString(R.string.roadsense_map_route_network)
+        NavRouting.Error.HTTP -> {
+            val code = NavRouting.lastHttpCode
             if (code > 0) getString(R.string.roadsense_map_route_http, code)
             else getString(R.string.roadsense_map_route_failed)
         }
+        NavRouting.Error.GOOGLE_AUTH -> getString(R.string.navmap_google_route_key_problem)
+        NavRouting.Error.GOOGLE_LIMIT -> getString(R.string.navmap_google_route_limit)
         // EMPTY (200 but no path) / NONE — genuinely no route between the points.
         else -> getString(R.string.roadsense_map_route_failed)
     }
@@ -3792,9 +3492,9 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                 val pts = ArrayList<com.overdrive.app.navmap.nav.GeoPoint>(stopsSnapshot.size + 1)
                 pts.add(com.overdrive.app.navmap.nav.GeoPoint(origin.lat, origin.lng))
                 stopsSnapshot.forEach { pts.add(com.overdrive.app.navmap.nav.GeoPoint(it.lat, it.lng)) }
-                ValhallaRouteClient.routeVia(pts)
+                NavRouting.routeVia(pts)
             } else {
-                ValhallaRouteClient.routesWithAlternates(
+                NavRouting.routesWithAlternates(
                     origin.lat, origin.lng, destLat, destLng, ROUTE_ALTERNATES
                 )
             }
@@ -3834,6 +3534,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                     resetRouteTrim()
                     lastSpokenInstruction = null
                     NavSession.publishRoute(routes[0], destLabel)
+                    onGuidanceRouteChanged(routes[0])
                     loadHazardCountsForRoutes(routes)
                 } else if (autoStart) {
                     // Restoring an active nav trip → resume turn-by-turn straight
@@ -3942,127 +3643,26 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         return false
     }
 
-    /** Draw all candidate routes: alternates dimmed in one source, selected bright on top. */
+    /** Draw all candidate routes: alternates quiet underneath, the selected route on top. */
     private fun drawRoutePreview(routes: List<NavRoute>, selectedIdx: Int) {
-        // Alternates (everything except the selected) into the dimmed source,
-        // each tagged with its original index for tap-to-select.
-        val altFeatures = StringBuilder("[")
-        var first = true
-        routes.forEachIndexed { idx, r ->
-            if (idx == selectedIdx) return@forEachIndexed
-            if (!first) altFeatures.append(","); first = false
-            altFeatures.append(routeFeature(r, idx))
-        }
-        altFeatures.append("]")
-        altRouteSource?.setGeoJson(
-            "{\"type\":\"FeatureCollection\",\"features\":$altFeatures}"
-        )
-        // Selected route into the bright (primary) source.
-        routeSource?.setGeoJson(lineFeature(routes[selectedIdx]))
+        val selected = routes[selectedIdx]
+        glassLayers.setAlternates(routes, selectedIdx)
+        showGlassRoute(selected)
+        showRouteTraffic(selected)
         // Destination + numbered stop pins for the selected route's itinerary.
-        renderItineraryMarkers(routes[selectedIdx], routeStops)
+        renderItineraryMarkers(selected, routeStops)
     }
 
-    /** A LineString Feature carrying its route index (for queryRenderedFeatures). */
-    private fun routeFeature(route: NavRoute, idx: Int): String {
-        return "{\"type\":\"Feature\",\"properties\":{\"idx\":$idx}," +
-            "\"geometry\":{\"type\":\"LineString\",\"coordinates\":${coordArray(route)}}}"
+    /** Windowed ribbon while following during guidance; the whole route in preview and overview. */
+    private fun showGlassRoute(route: NavRoute?) {
+        glassLayers.setRoute(route, navigating && cameraRig.mode != com.overdrive.app.navmap.motion.NavCameraRig.Mode.OVERVIEW)
     }
 
-    /**
-     * Build the line-gradient Expression that hides the TRAVELED portion of the route.
-     * Transparent for line-progress in [0, p), then [fullColor] from p to the end, with a
-     * tiny feather band just before p so the cut antialiases instead of being a hard pixel
-     * edge. [p] is the traveled fraction in [0,1].
-     *
-     * Constraints honored: interpolate() REQUIRES strictly-ascending stop inputs, so p is
-     * clamped to [TRIM_FEATHER, 1−ε] and the feather stop (p−feather) stays below p > 0.
-     * Transparency lives in the gradient color stops (rgba alpha 0) — line-gradient cannot
-     * vary alpha via lineOpacity. p=0 ⇒ the feather stop clamps to 0 and the whole line is
-     * full color (no trim), which is the seed/preview state.
-     */
-    private fun routeGradient(p: Float, fullColor: Int): Expression {
-        val full = Expression.color(fullColor)
-        // p≈0 (seed / preview / pre-progress): SOLID full color, no transparent band — and
-        // critically, only TWO stops (0<1) so we never emit two stops at input 0 (which a
-        // feathered band at p=0 would, violating interpolate's strictly-ascending rule and
-        // throwing at layer build → crash on map open).
-        if (p <= TRIM_FEATHER) {
-            return Expression.interpolate(
-                Expression.linear(), Expression.lineProgress(),
-                Expression.stop(0f, full),
-                Expression.stop(1f, full)
-            )
-        }
-        // Trim case: transparent up to (pc−feather), feather to pc, full beyond. pc in
-        // (TRIM_FEATHER, 0.9999] guarantees 0 < (pc−feather) < pc < 1 — strictly ascending.
-        val pc = p.coerceIn(TRIM_FEATHER, 0.9999f)
-        val clear = Expression.rgba(0, 0, 0, 0)
-        return Expression.interpolate(
-            Expression.linear(), Expression.lineProgress(),
-            Expression.stop(0f, clear),
-            Expression.stop(pc - TRIM_FEATHER, clear),
-            Expression.stop(pc, full),
-            Expression.stop(1f, full)
-        )
-    }
-
-    /**
-     * Per-frame traveled-route trim: move the line-gradient boundary to the car's
-     * along-route progress so the path behind the puck disappears (Waze/GMaps style). A
-     * GPU PAINT-property update (setProperties(lineGradient)) — NOT setGeoJson, so it does
-     * NOT re-tessellate geometry / peg the RenderThread. Driven from renderMotionFrame with
-     * the SAME snapped point that paints the puck, so the boundary sits under the puck.
-     *
-     * Guards: only while navigating + on-route (off-route HOLDS the last boundary so the
-     * traveled part can't snap to a wrong spot or re-appear); MONOTONIC (never walks
-     * backward on a GPS wobble / global-rescan); paint dead-band (skip when p barely moved,
-     * so a parked car emits zero gradient writes). Each map instance runs its own.
-     */
-    private fun applyRouteTrim(snap: NavGuidanceEngine.Snapped?, onRoute: Boolean) {
-        if (!navigating || snap == null || !onRoute) return
-        val arc = guidance.routeArcLengthMeters()
-        if (arc <= 1.0) return
-        var p = (snap.alongRouteM / arc).toFloat().coerceIn(0f, 1f)
-        p = maxOf(p, lastRouteProgress)          // monotonic: traveled part never re-appears
-        lastRouteProgress = p
-        if (kotlin.math.abs(p - lastAppliedProgress) < TRIM_PROGRESS_EPS) return   // paint dead-band
-        lastAppliedProgress = p
-        routeMainLayer?.setProperties(PropertyFactory.lineGradient(routeGradient(p, routeMainColor)))
-        routeCasingLayer?.setProperties(PropertyFactory.lineGradient(routeGradient(p, routeCasingColor)))
-    }
-
-    /** Reset the traveled-route trim to "full route" (p=0) and repaint both layers. Called
-     *  at every new-route site (nav start / reroute / route switch) so the fresh route
-     *  starts un-trimmed and a stale boundary from the prior route can't hide it. */
+    /** A new guided route (start, reroute, switch) starts un-trimmed. */
     private fun resetRouteTrim() {
-        lastRouteProgress = 0f
-        lastAppliedProgress = -1f
-        routeMainLayer?.setProperties(PropertyFactory.lineGradient(routeGradient(0f, routeMainColor)))
-        routeCasingLayer?.setProperties(PropertyFactory.lineGradient(routeGradient(0f, routeCasingColor)))
-    }
-
-    private fun lineFeature(route: NavRoute): String =
-        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":${coordArray(route)}}}"
-
-    /**
-     * Cache of serialized coordinate arrays keyed on the route instance. The preview
-     * flow re-serializes the same routes repeatedly (select / redraw alternates), so
-     * memoize per route reference. Cleared in [clearRoutePreview] when the routes are
-     * discarded — the set of live routes is tiny (≤ ROUTE_ALTERNATES+1).
-     */
-    private val coordArrayCache = HashMap<NavRoute, String>()
-
-    private fun coordArray(route: NavRoute): String {
-        coordArrayCache[route]?.let { return it }
-        val sb = StringBuilder("[")
-        route.points.forEachIndexed { i, p ->
-            if (i > 0) sb.append(",")
-            sb.append("[").append(p.lng).append(",").append(p.lat).append("]")
-        }
-        val s = sb.append("]").toString()
-        coordArrayCache[route] = s
-        return s
+        trafficTraveledM = 0.0
+        guidance.activeRoute()?.let { showGlassRoute(it) }
+        glassLayers.resetProgress()
     }
 
     private fun frameRoutes(routes: List<NavRoute>) {
@@ -4105,6 +3705,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         }
         findViewById<com.google.android.material.button.MaterialButton>(R.id.btnRouteStart)
             ?.setOnClickListener { startSelectedRoute() }
+        bindRouteProvider(routes)
 
         // Hand the destination to the car's built-in navigation instead of OverDrive's route.
         // In the header (always visible) so it never scrolls off the short landscape screen.
@@ -4146,6 +3747,23 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                     scroll.requestLayout()
                 }
             }
+        }
+    }
+
+    /** Routing credit above Start: Google routes, or the Valhalla provider while Google map content is shown. */
+    private fun bindRouteProvider(routes: List<NavRoute>) {
+        val tv = findViewById<TextView>(R.id.tvRouteProvider) ?: return
+        val google = com.overdrive.app.navmap.google.GoogleMapsConfig.cached()
+        when {
+            routes.firstOrNull()?.provider == RouteProvider.GOOGLE -> {
+                tv.setText(R.string.navmap_google_routes_by_google)
+                tv.visibility = View.VISIBLE
+            }
+            google.basemapUsable || google.trafficUsable -> {
+                tv.text = getString(R.string.navmap_google_routing_provided_by, "Stadia Maps")
+                tv.visibility = View.VISIBLE
+            }
+            else -> tv.visibility = View.GONE
         }
     }
 
@@ -4409,7 +4027,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     /** Fully clear the preview: routes, lines, sheet, locked destination, stops. */
     private fun clearRoutePreview(keepActive: Boolean = false) {
         previewRoutes = emptyList()
-        coordArrayCache.clear()
         lockedDestLat = Double.NaN
         lockedDestLng = Double.NaN
         // Trip abandoned → drop the persisted itinerary too.
@@ -4420,9 +4037,11 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         addingStop = false
         editingStopIndex = -1
         findViewById<android.widget.LinearLayout>(R.id.routeStopsContainer)?.removeAllViews()
-        altRouteSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
+        glassLayers.setAlternates(emptyList(), -1)
         if (!keepActive) {
-            routeSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
+            glassLayers.setRoute(null, false)
+            glassLayers.setManeuverArrow(null, null)
+            showTraffic(null, emptyList())
             clearItineraryMarkers()
         }
         hideRouteSheet()
@@ -4443,21 +4062,14 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         drawRoutePreview(previewRoutes, idx)
         // Mirror the driver's mid-nav route switch to the cluster too.
         if (!clusterMode) NavSession.publishRoute(chosen, previewDestLabel)
+        onGuidanceRouteChanged(chosen)
         showSnackbar(getString(R.string.roadsense_map_route_switched))
     }
 
-    /** Paint the route polyline onto the route source + frame it on screen. */
+    /** Draw [route] and frame it on screen. */
     private fun renderRoute(route: NavRoute) {
-        val coords = StringBuilder("[")
-        route.points.forEachIndexed { i, p ->
-            if (i > 0) coords.append(",")
-            coords.append("[").append(p.lng).append(",").append(p.lat).append("]")
-        }
-        coords.append("]")
-        val geoJson =
-            "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\"," +
-                "\"coordinates\":$coords}}"
-        routeSource?.setGeoJson(geoJson)
+        showGlassRoute(route)
+        showRouteTraffic(route)
         // Pin the destination at the route end (the cluster mirror has no
         // routeStops itinerary, so renderItineraryMarkers falls back to the
         // polyline's last point).
@@ -4490,6 +4102,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // view-only cluster mirror renders it in real time. The cluster instance
         // itself never publishes (it's the consumer).
         if (!clusterMode) NavSession.publishRoute(route, destLabel)
+        onGuidanceRouteChanged(route)   // live-traffic refresh for a Google route
         if (navVoice == null) navVoice = NavVoice(applicationContext)
         enterImmersive()
         // Snap the camera into the immersive follow view IMMEDIATELY — do NOT wait
@@ -4501,23 +4114,21 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // transition here from the route origin + its initial heading.
         moveCameraToImmersiveStart(route)
         showManeuverBanner(getString(R.string.roadsense_map_nav_started, destLabel), route)
-        findViewById<View>(R.id.navBanner)?.visibility = View.VISIBLE
+        showNavHud(true)
         // Drop any prior trip's turn glyph until the first guidance tick repaints the
         // real one — switching destination mid-nav reaches here without a stopGuidance
         // in between, so the old arrow would otherwise linger ~1s against the new
         // trip's text. Mirrors the cluster route-changed branch.
         setManeuverIcon(0)
-        findViewById<FloatingActionButton>(R.id.fabEndNav)?.visibility = View.VISIBLE
+        if (hud == null) findViewById<FloatingActionButton>(R.id.fabEndNav)?.visibility = View.VISIBLE
         mainHandler.removeCallbacks(guidanceRunnable)
         mainHandler.post(guidanceRunnable)
     }
 
     /**
-     * Immediately glide the camera into the immersive driving view (close zoom, 3D
-     * tilt, heading-up) at the route's origin, so navigation doesn't appear "stuck"
-     * at the overview framing while the car is still stationary. Records the target
-     * as the dead-band baseline so the per-tick follow doesn't redundantly re-animate
-     * to the same spot, yet still animates once the car actually moves.
+     * Move into the immersive driving view (close zoom, 3D tilt, heading-up) at the
+     * route's origin right away, so navigation doesn't sit at the overview framing
+     * while the car is still stationary.
      */
     private fun moveCameraToImmersiveStart(route: NavRoute) {
         val m = map ?: return
@@ -4533,9 +4144,14 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         val bearing = if (pts.size >= 2)
             bearingBetween(pts[0].lat, pts[0].lng, pts[1].lat, pts[1].lng) else lastBearing
         lastBearing = bearing
-        // Seed the bearing EMA to the start heading so the first moving tick eases
-        // from here (not from a stale/0 value, which would whip the map around).
-        smoothedBearing = ((bearing % 360.0) + 360.0) % 360.0
+        motionModel.seedBearing(bearing)
+        cameraRig.reset()
+        mainHandler.removeCallbacks(recenterAfterFree)
+        // With a fix the frame loop eases into the follow view; without one, show the immersive view now.
+        if (motionEstimator.hasFix()) {
+            startMotionFollow()
+            return
+        }
         val pos = org.maplibre.android.camera.CameraPosition.Builder()
             .target(target)
             .zoom(IMMERSIVE_ZOOM)
@@ -4543,7 +4159,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
             .bearing(bearing)
             .build()
         m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), GUIDANCE_CAM_ANIM_MS)
-        rememberAnimatedTarget(target.latitude, target.longitude, bearing)
     }
 
     /** Initial-bearing (forward azimuth) from (lat1,lng1) to (lat2,lng2), degrees 0..360. */
@@ -4575,7 +4190,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // The toolbar (with its back chevron) is now hidden, so surface the
         // immersive back FAB in its place — but never on the non-touch cluster.
         findViewById<FloatingActionButton>(R.id.fabNavBack)?.visibility =
-            if (clusterMode) View.GONE else View.VISIBLE
+            if (clusterMode || hud != null) View.GONE else View.VISIBLE
     }
 
     /** Restore the standard map chrome when navigation ends. */
@@ -4590,13 +4205,14 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         findViewById<View>(R.id.mapControlsTop)?.visibility = View.VISIBLE
         // The toolbar back chevron is back — retire the immersive back FAB.
         findViewById<View>(R.id.fabNavBack)?.visibility = View.GONE
-        // Level the camera back to top-down north-up.
+        // Level the camera back to top-down north-up, dropping the follow camera's puck anchor padding.
         map?.let { m ->
             val pos = org.maplibre.android.camera.CameraPosition.Builder()
                 .target(m.cameraPosition.target)
                 .tilt(0.0)
                 .bearing(0.0)
                 .zoom(DEFAULT_ZOOM)
+                .padding(0.0, 0.0, 0.0, 0.0)
                 .build()
             m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), RECENTER_ANIM_MS)
         }
@@ -4614,101 +4230,226 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     private fun restingTilt(): Double =
         if (clusterMode || navigating) 0.0 else RESTING_TILT
 
-    /**
-     * True when an animateCamera to ([lat],[lng],[bearing]) is close enough to the
-     * last animated target to skip (within [CAM_DEADBAND_M] and [CAM_DEADBAND_DEG]).
-     * Records the new target as the last animated one only when we DON'T skip
-     * (callers gate the actual animate on the negation of this).
-     */
-    private fun cameraWithinDeadband(lat: Double, lng: Double, bearing: Double): Boolean {
-        if (lastAnimatedLat.isNaN() || lastAnimatedLng.isNaN() || lastAnimatedBearing.isNaN()) {
-            return false
-        }
-        val moved = guidance.haversineMeters(lastAnimatedLat, lastAnimatedLng, lat, lng)
-        var dBearing = kotlin.math.abs(bearing - lastAnimatedBearing) % 360.0
-        if (dBearing > 180.0) dBearing = 360.0 - dBearing
-        return moved < CAM_DEADBAND_M && dBearing < CAM_DEADBAND_DEG
-    }
-
-    /** Running heading-up bearing (EMA-smoothed); NaN until the first moving fix. */
-    private var smoothedBearing: Double = Double.NaN
-    /** elapsedRealtime of the last [smoothBearing] call, for the dt-aware alpha (the
-     *  bearing low-pass is called from BOTH the ~12fps render frame and the 1Hz cluster
-     *  idle follow, so the alpha must be derived from real dt to mean the same at both). */
-    private var lastBearingSmoothMs: Long = 0L
-
-    /** Running EMA of the speed-adaptive zoom; NaN until the first frame. */
-    private var smoothedZoom: Double = Double.NaN
-
-    /** Smoothed (eased) puck position actually painted, so a snapped↔raw mode flip
-     *  glides instead of teleporting; NaN until the first render frame seeds it. */
-    private var renderedPuckLat: Double = Double.NaN
-    private var renderedPuckLng: Double = Double.NaN
-    /** elapsedRealtime of the last render-frame positional ease, for its dt-aware alpha. */
-    private var lastPuckEaseMs: Long = 0L
-    /** Pose of the puck Feature ACTUALLY pushed to the GL source, so the per-frame
-     *  rewrite can be skipped when the puck hasn't meaningfully moved/turned (freezes
-     *  GL re-render on a parked car). NaN until the first paint seeds it. */
+    /** Pose of the puck last written to the GL layer, so a parked car rewrites (and re-renders) nothing. */
     private var puckPaintedLat: Double = Double.NaN
     private var puckPaintedLng: Double = Double.NaN
     private var puckPaintedBearing: Double = Double.NaN
-    /** Sticky on-route latch (hysteresis): true while the puck snaps to the line.
-     *  Enters below PUCK_SNAP_ENTER_M, leaves only above PUCK_SNAP_EXIT_M, so a GPS
-     *  offset hovering near the boundary can't chatter the puck on/off the line. */
-    private var puckOnRoute: Boolean = false
+    /** Camera pose last written by [driveCamera]; an unchanged pose is skipped so a parked map stays idle. */
+    private val lastCameraPose = com.overdrive.app.navmap.motion.NavCameraRig.Pose().apply { lat = Double.NaN }
 
-    /**
-     * Speed → camera zoom, EMA-smoothed so it drifts open on the highway and closed
-     * around town without stepping. [speedMps] is the filtered speed. Returns a
-     * zoom level bracketing [IMMERSIVE_ZOOM]. Reset via NaN on nav stop.
-     */
-    private fun speedAdaptiveZoom(speedMps: Double): Double {
-        val kmh = speedMps * 3.6
-        val target = when {
-            kmh < 25.0 -> ZOOM_SLOW
-            kmh < 55.0 -> ZOOM_CITY
-            kmh < 90.0 -> ZOOM_ARTERIAL
-            else -> ZOOM_HIGHWAY
+    private fun currentCameraPose(): com.overdrive.app.navmap.motion.NavCameraRig.Pose? {
+        val cp = map?.cameraPosition ?: return null
+        val t = cp.target ?: return null
+        return com.overdrive.app.navmap.motion.NavCameraRig.Pose().apply {
+            lat = t.latitude
+            lng = t.longitude
+            zoom = cp.zoom
+            tilt = cp.tilt
+            bearing = cp.bearing
+            paddingTop = cp.padding?.getOrNull(1) ?: 0.0
         }
-        val cur = smoothedZoom
-        smoothedZoom = if (cur.isNaN()) target else cur + (target - cur) * ZOOM_EMA_ALPHA
-        return smoothedZoom
     }
 
-    /**
-     * Shortest-arc exponential moving average for the heading-up camera bearing.
-     * The raw per-fix GPS heading is jittery (urban multipath), and even though the
-     * 1s animateCamera eases the TRANSITION it still chases each sample's full
-     * magnitude — so a noisy heading made the map visibly hunt/wobble. EMA-blend
-     * toward the new target along the SHORTEST arc (handles the 359°→1° wrap) so
-     * the rotation is smooth and monotonic. Returns a normalized 0..360 bearing.
-     * Reset (NaN) on nav start so the first heading snaps instead of easing from 0.
-     */
-    private fun smoothBearing(target: Double): Double {
-        val cur = smoothedBearing
+    /** Writes this frame's follow camera; true while it is still moving. */
+    private fun driveCamera(nowMono: Long): Boolean {
+        val mp = map ?: return false
+        if (!::mapView.isInitialized || mapView.height <= 0) return false
+        if (cameraRig.needsEntry) cameraRig.follow(nowMono, currentCameraPose(), GUIDANCE_CAM_ANIM_MS.toLong())
+        if (cameraRig.freeExpired(nowMono)) recenterFollow(nowMono)
+        val track = motionTrack
+        val s = motionModel.routeS
+        val onTrack = track != null && !s.isNaN()
+        val pose = cameraRig.update(
+            nowMono, motionModel.lat, motionModel.lng, motionModel.cameraBearing, motionModel.speedMps,
+            if (onTrack) track!!.distanceToNextKey(s) else Double.POSITIVE_INFINITY,
+            if (onTrack) track!!.distanceSinceLastKey(s) else Double.POSITIVE_INFINITY,
+            mapView.height, googleStyleActive(), clusterMode
+        ) ?: return false
+        val last = lastCameraPose
+        if (!last.lat.isNaN() &&
+            kotlin.math.abs(pose.lat - last.lat) < 1e-8 && kotlin.math.abs(pose.lng - last.lng) < 1e-8 &&
+            kotlin.math.abs(pose.zoom - last.zoom) < 1e-4 && kotlin.math.abs(pose.tilt - last.tilt) < 1e-3 &&
+            kotlin.math.abs(pose.bearing - last.bearing) < 1e-3 && kotlin.math.abs(pose.paddingTop - last.paddingTop) < 0.5
+        ) return cameraRig.transitioning
+        mp.moveCamera(
+            CameraUpdateFactory.newCameraPosition(
+                org.maplibre.android.camera.CameraPosition.Builder()
+                    .target(LatLng(pose.lat, pose.lng))
+                    .zoom(pose.zoom)
+                    .tilt(pose.tilt)
+                    .bearing(pose.bearing)
+                    .padding(0.0, pose.paddingTop, 0.0, 0.0)
+                    .build()
+            )
+        )
+        last.set(pose)
+        return true
+    }
+
+    /** Back to the follow camera from free pan or overview, easing from where the camera is. */
+    private fun recenterFollow(nowMono: Long) {
+        mainHandler.removeCallbacks(recenterAfterFree)
+        cameraRig.follow(nowMono, currentCameraPose(), RECENTER_ANIM_MS.toLong())
+        guidance.activeRoute()?.let { showGlassRoute(it) }
+        if (!clusterMode && navigating) findViewById<View>(R.id.fabLocate)?.visibility = View.GONE
+        hud?.setFree(false)
+        hud?.setOverview(false)
+        startMotionFollow()
+    }
+
+    private fun setupNavHud() {
+        val root = findViewById<com.overdrive.app.navmap.ui.NavHudLayout>(R.id.navHud) ?: return
+        hud = try {
+            com.overdrive.app.navmap.ui.NavHudController(root, object : com.overdrive.app.navmap.ui.NavHudController.Listener {
+                override fun onEnd() = stopGuidance()
+                override fun onOverview() = toggleRouteOverview()
+                override fun onMute() {
+                    val v = navVoice ?: return
+                    v.setMuted(!v.isMuted())
+                    hud?.bindMuted(v.isMuted())
+                }
+                override fun onRecenter() = recenterFollow(android.os.SystemClock.elapsedRealtime())
+                override fun onCompass() = toggleNorthUp()
+                override fun onBack() = onBackPressedDispatcher.onBackPressed()
+            }).apply {
+                setCluster(clusterMode)
+                setImperial(com.overdrive.app.navmap.nav.MapNetworking.useMiles)
+                setNight(isNightTheme())
+            }
+        } catch (t: Throwable) {
+            Log.w("RoadSenseMap", "nav HUD unavailable", t)
+            null
+        }
+    }
+
+    /** Guidance chrome: the glass HUD (the legacy banner stays hidden); falls back to the banner without a HUD. */
+    private fun showNavHud(visible: Boolean) {
+        val h = hud
+        if (h == null) {
+            findViewById<View>(R.id.navBanner)?.visibility = if (visible) View.VISIBLE else View.GONE
+            return
+        }
+        findViewById<View>(R.id.navBanner)?.visibility = View.GONE
+        if (!visible) {
+            h.bindManeuver(null)
+            h.bindThen(null, 0.0)
+            h.setFree(false)
+            h.setOverview(false)
+            hudManeuverRef = null
+            hudManeuverS = Double.NaN
+        }
+        h.setNight(isNightTheme())
+        h.setAttributionVisible(!googleStyleActive())
+        h.bindMuted(navVoice?.isMuted() == true)
+        h.setGuidanceVisible(visible)
+        if (hudShown != visible) {
+            hudShown = visible
+            applyAttributionChrome()
+        }
+    }
+
+    /** The route track for [route], rebuilt when the route changes (shared by the frame loop and the HUD). */
+    private fun trackFor(route: NavRoute?): com.overdrive.app.navmap.motion.RouteTrack? {
+        if (route !== motionTrack?.route) {
+            motionTrack = com.overdrive.app.navmap.motion.RouteTrack.of(route)
+            motionModel.setTrack(motionTrack)
+        }
+        return motionTrack
+    }
+
+    /** 1 Hz: on-road turn arrow, maneuver card, Then tab and trip bar from the guidance engine. */
+    private fun bindHudGuidance(state: NavGuidanceEngine.GuidanceState) {
+        val m = state.currentManeuver
+        val arrowWithin = if (motionModel.speedMps > ARROW_FAST_MPS) ARROW_FAST_M else ARROW_NEAR_M
+        glassLayers.setManeuverArrow(
+            guidance.activeRoute(), m?.takeIf { it.type in ARROW_TYPES && state.distanceToManeuverM <= arrowWithin }
+        )
+        val h = hud ?: return
+        val track = trackFor(guidance.activeRoute())
+        val lht = com.overdrive.app.navmap.nav.DrivingSide.isLeftHand(motionModel.lat, motionModel.lng)
+        if (m !== hudManeuverRef) {
+            hudManeuverRef = m
+            hudManeuverS = if (m != null && track != null) track.sAtIndex(m.beginShapeIndex) else Double.NaN
+            h.bindManeuver(m?.let { com.overdrive.app.navmap.ui.HudManeuver.of(it, lht) })
+        }
+        // Off the route the frame loop has no along-route position; the engine's distance stands in.
+        if (motionModel.routeS.isNaN() || hudManeuverS.isNaN()) h.bindDistance(state.distanceToManeuverM)
+        val next = state.nextManeuver
+        val gap = if (m != null && next != null && track != null) track.sAtIndex(next.beginShapeIndex) - hudManeuverS else Double.NaN
+        val thenWindow = (motionModel.speedMps * THEN_WINDOW_S).coerceIn(THEN_MIN_M, THEN_MAX_M)
+        if (next != null && gap.isFinite() && gap in 0.0..thenWindow) {
+            h.bindThen(com.overdrive.app.navmap.ui.HudManeuver.of(next, lht), gap)
+        } else {
+            h.bindThen(null, 0.0)
+        }
+        val eta = displayEtaSeconds(state.etaSeconds)
+        h.bindTrip(System.currentTimeMillis() + (eta * 1000.0).toLong(), eta, state.remainingDistanceM, trafficDelaySeconds(eta, state.remainingDistanceM))
+    }
+
+    /** Remaining delay against the free-flow time (Google routes carry one); null without traffic data. */
+    private fun trafficDelaySeconds(etaS: Double, remainingM: Double): Double? {
+        val route = guidance.activeRoute() ?: return null
+        val static = route.staticDurationSeconds
+        if (!static.isFinite() || static <= 0.0 || route.totalDistanceMeters <= 0.0) return null
+        val freeFlowLeft = static * (remainingM / route.totalDistanceMeters).coerceIn(0.0, 1.0)
+        return (etaS - freeFlowLeft).takeIf { it > 0.0 }
+    }
+
+    /** Overview key: frame the rest of the route north-up, or back to following. */
+    private fun toggleRouteOverview() {
         val now = android.os.SystemClock.elapsedRealtime()
-        if (cur.isNaN()) {
-            smoothedBearing = ((target % 360.0) + 360.0) % 360.0
-            lastBearingSmoothMs = now
-            return smoothedBearing
+        if (cameraRig.mode == com.overdrive.app.navmap.motion.NavCameraRig.Mode.OVERVIEW) {
+            recenterFollow(now)
+            return
         }
-        // dt-aware alpha so the time-constant is the SAME regardless of how often
-        // this is called (the ~12fps render frame vs the 1Hz cluster idle follow).
-        // alpha = 1 - exp(-dt/tau); clamp dt so a long gap (paused tick) can't snap.
-        val dtS = ((now - lastBearingSmoothMs).coerceIn(0L, 1000L)) / 1000.0
-        lastBearingSmoothMs = now
-        val alpha = (1.0 - kotlin.math.exp(-dtS / BEARING_TAU_S)).coerceIn(0.0, 1.0)
-        var delta = (target - cur + 540.0) % 360.0 - 180.0   // shortest signed arc, -180..180
-        val next = ((cur + delta * alpha) % 360.0 + 360.0) % 360.0
-        smoothedBearing = next
-        return next
+        val pose = overviewPose() ?: return
+        cameraRig.overview(now, currentCameraPose(), pose, RECENTER_ANIM_MS.toLong())
+        guidance.activeRoute()?.let { showGlassRoute(it) }
+        mainHandler.removeCallbacks(recenterAfterFree)
+        hud?.setFree(false)
+        hud?.setOverview(true)
+        startMotionFollow()
     }
 
-    /** Record the target just handed to animateCamera (for the next dead-band check). */
-    private fun rememberAnimatedTarget(lat: Double, lng: Double, bearing: Double) {
-        lastAnimatedLat = lat
-        lastAnimatedLng = lng
-        lastAnimatedBearing = bearing
+    private fun overviewPose(): com.overdrive.app.navmap.motion.NavCameraRig.Pose? {
+        val mp = map ?: return null
+        val route = guidance.activeRoute() ?: return null
+        val track = motionTrack
+        val s = motionModel.routeS
+        val b = LatLngBounds.Builder()
+        b.include(LatLng(motionModel.lat, motionModel.lng))
+        var n = 1
+        route.points.forEachIndexed { i, p ->
+            if (track == null || s.isNaN() || track.sAtIndex(i) >= s) { b.include(LatLng(p.lat, p.lng)); n++ }
+        }
+        if (n < 2) return null
+        val d = resources.displayMetrics.density
+        // Keep the maneuver card (left), compass (top right) and trip bar (bottom) clear of the route.
+        val pad = intArrayOf((500 * d).toInt(), (40 * d).toInt(), (110 * d).toInt(), (150 * d).toInt())
+        val cam = try { mp.getCameraForLatLngBounds(b.build(), pad) } catch (_: Throwable) { null } ?: return null
+        val t = cam.target ?: return null
+        return com.overdrive.app.navmap.motion.NavCameraRig.Pose().apply {
+            lat = t.latitude; lng = t.longitude; zoom = cam.zoom; tilt = 0.0; bearing = 0.0; paddingTop = 0.0
+        }
+    }
+
+    /** Compass: heading-up ↔ north-up while following. */
+    private fun toggleNorthUp() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (cameraRig.mode != com.overdrive.app.navmap.motion.NavCameraRig.Mode.FOLLOW) recenterFollow(now)
+        cameraRig.setNorthUp(now, currentCameraPose(), !cameraRig.northUp, NORTH_UP_ANIM_MS)
+        hud?.setCompass(if (lastCameraPose.lat.isNaN()) 0.0 else lastCameraPose.bearing, cameraRig.northUp)
+        startMotionFollow()
+    }
+
+    /** The driver panned or zoomed during guidance: hand them the camera until they recentre or leave it alone. */
+    private fun onUserMovedMap() {
+        if (!navigating || clusterMode) return
+        cameraRig.free(android.os.SystemClock.elapsedRealtime())
+        val h = hud
+        if (h != null) { h.setFree(true); h.setOverview(false) } else findViewById<View>(R.id.fabLocate)?.visibility = View.VISIBLE
+        mainHandler.removeCallbacks(recenterAfterFree)
+        mainHandler.postDelayed(recenterAfterFree, com.overdrive.app.navmap.motion.NavCameraRig.RECENTER_AFTER_MS)
     }
 
     /** One guidance step: pull a fresh fix, advance the engine, update UI + voice. */
@@ -4790,6 +4531,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                         return@post
                     }
                 }
+                bindHudGuidance(state)
                 val m = state.currentManeuver
                 if (m != null) {
                     // Bucketed turn distance (stable "50 m", not jittery "47 m").
@@ -4801,7 +4543,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                     val thenTxt = state.nextManeuver?.takeIf { state.distanceToManeuverM <= MANEUVER_ANNOUNCE_M }
                         ?.let { " ↱ ${getString(R.string.roadsense_map_then)} ${it.instruction}" } ?: ""
                     updateBannerText("$dist • $instr$thenTxt",
-                        "${formatDistance(state.remainingDistanceM)} • ${formatEta(state.etaSeconds)}")
+                        "${formatDistance(state.remainingDistanceM)} • ${formatEta(displayEtaSeconds(state.etaSeconds))}")
                     setManeuverIcon(m.type)
                     // Speak the instruction once when within the announce window.
                     // Prefer Valhalla's verbal_pre phrasing (purpose-built for TTS)
@@ -5135,171 +4877,56 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      *  the direct source ([onDirectFix]); the render tick extrapolates from it. */
     @Volatile private var lastFixCaptureMonoMs: Long = 0L
 
-    /**
-     * Paint one render frame from the dead-reckoned motion estimate: glide the puck
-     * to the predicted position and ease the heading-up camera to follow it. Runs at
-     * RENDER_TICK_MS (~30fps) so motion is continuous between the sparse ~2s truth
-     * fixes. Uses moveCamera (instant) on an already-interpolated pose — no animator
-     * thread, cheap on the Adreno 610. Below the moving-speed gate the bearing holds
-     * (GPS heading is noise when stationary). Skips the camera write inside the
-     * position/bearing dead-band so a parked car doesn't churn frames.
-     */
-    private fun renderMotionFrame() {
-        // Single MONOTONIC clock for the dead-reckon. Both truth feeders now stamp the
-        // estimator in the elapsedRealtime domain: the DIRECT source uses the fix's true
-        // HARDWARE-CAPTURE instant (Location.getElapsedRealtimeNanos), so the dead-reckon
-        // dt = (nowMono − capture) extrapolates the pose to the TRUE present INCLUDING the
-        // full transport age — the lag fix (the old path anchored to the INGESTION instant
-        // and could never shed the fix→ingestion latency); the daemon FALLBACK path stamps
-        // the ingestion instant (no capture time survives upstream), so it stays
-        // ingestion-anchored as before. `now` == `nowMono` so estimate()'s dt is correct
-        // for both; the second arg feeds the (disabled) gyro-silence check in the same epoch.
-        val nowMono = android.os.SystemClock.elapsedRealtime()
-        // FREEZE-GUARD (render-tick watchdog, GRID-INDEPENDENT). The dead-reckon caps at
-        // MAX_DEAD_RECKON_S (3 s): past it the puck FREEZES at the 3-s-ahead point until a
-        // fresh truth fix lands. The daemon fallback poll is quantized to the 1 Hz feeder
-        // grid (and can return null), so it cannot reliably re-feed BEFORE the cap. This
-        // watchdog runs at the sub-second render cadence: if the estimator baseline is
-        // approaching the cap and no truth fix has refreshed it, RE-ANCHOR the estimator to
-        // the last known REAL position (lastFix) at `nowMono`. That holds the puck at the
-        // last real fix (NOT flying off on a stale extrapolation) and resets the dead-reckon
-        // clock, so the puck can never sit frozen at the cap regardless of grid phase or a
-        // failed daemon poll. Only fires in a genuine truth STALL — during normal driving a
-        // truth fix refreshes the baseline every ~1 s, far inside this window.
-        // Guard lastFixCaptureMonoMs>0: a 0 baseline is "no truth anchored yet" (fresh /
-        // post-resume-reset) — NOT a 2.2s-old stale anchor — so don't let the elapsed-since-
-        // epoch-0 value (huge) trip the watchdog and re-anchor off a stale lastFix before the
-        // first real fix lands. Also requires the estimator to already hold a fix.
-        if (lastFixCaptureMonoMs > 0L &&
-            (nowMono - lastFixCaptureMonoMs) >= KEEP_WARM_BEFORE_CAP_MS) {
+    /** One vsync frame: pose from the estimate, then puck, traveled-route trim and camera. False = nothing left to animate. */
+    private fun renderMotionFrame(nowMono: Long): Boolean {
+        if (isFinishing || isDestroyed || !motionFollowActive) return false
+        // Truth stalled near the dead-reckon cap: hold the last real position instead of freezing at the cap.
+        if (lastFixCaptureMonoMs > 0L && (nowMono - lastFixCaptureMonoMs) >= KEEP_WARM_BEFORE_CAP_MS) {
             reanchorToLastFix(nowMono)
         }
-        val m = motionEstimator.estimate(nowMono, nowMono) ?: return
-
-        // Snap the dead-reckoned prediction onto the route polyline so the puck
-        // rides the LINE (not floating beside it) and the heading-up camera can
-        // steer by the smooth route TANGENT instead of noisy GPS heading. When we're
-        // genuinely off-route (snap offset large) or not navigating, fall back to the
-        // raw estimate + its filtered heading. Below the moving gate the heading is
-        // held (a parked car's heading is noise either way).
-        val moving = m.speedMps > IMMERSIVE_MIN_SPEED_MPS
-        lastFrameMoving = moving   // drives the adaptive render-tick rate (fast vs idle)
-        val snap = if (navigating) guidance.snapToRoute(m.lat, m.lng) else null
-        // Sticky on-route latch (hysteresis): enter snapping when comfortably close to
-        // the line, leave only when clearly off it, so a GPS offset hovering near a
-        // single threshold can't flicker the puck on/off the line every frame.
-        puckOnRoute = when {
-            snap == null -> false
-            puckOnRoute -> snap.offsetM <= PUCK_SNAP_EXIT_M    // already snapped → stay until clearly off
-            else -> snap.offsetM <= PUCK_SNAP_ENTER_M          // not snapped → enter only when close
+        val m = motionEstimator.estimate(nowMono, nowMono)
+        if (m == null) {
+            motionFollowActive = false
+            capRenderRate(0)
+            return false
         }
-        // Trim the traveled route behind the car (GPU line-gradient; uses this same
-        // snapped progress so the boundary rides under the puck). Off-route holds.
-        applyRouteTrim(snap, puckOnRoute)
-
-        val targetLat: Double; val targetLng: Double; val rawBearing: Double
-        if (puckOnRoute && snap != null) {
-            // Glue the target to the line; steer by the route tangent (jitter-free).
-            targetLat = snap.lat; targetLng = snap.lng
-            rawBearing = if (moving) snap.bearingDeg else (smoothedBearing.takeUnless { it.isNaN() } ?: snap.bearingDeg)
-        } else {
-            targetLat = m.lat; targetLng = m.lng
-            rawBearing = if (moving) m.bearingDeg else (smoothedBearing.takeUnless { it.isNaN() } ?: m.bearingDeg)
+        trackFor(if (navigating) guidance.activeRoute() else null)
+        motionModel.update(
+            nowMono, m.lat, m.lng, m.speedMps, m.bearingDeg, lastAcceptedFixMonoMs,
+            if (navigating) routeSnap else null
+        )
+        if (navigating && motionModel.onRoute) {
+            trafficTraveledM = motionModel.routeS
+            glassLayers.setProgress(motionModel.routeS)
         }
-        // Rate-limit the PAINTED puck position toward the target so a snapped↔raw mode
-        // flip — which can move the source up to ~PUCK_SNAP_EXIT_M in one frame — glides
-        // over a few frames instead of teleporting. A max-STEP clamp (not an EMA) is
-        // deliberate: it adds ZERO lag during normal driving (each real per-frame step
-        // is far below the clamp, so the puck tracks the target exactly), and ONLY a
-        // discontinuity bigger than the clamp gets spread out. First frame seeds directly.
-        val nowMs = android.os.SystemClock.elapsedRealtime()
-        val puckLat: Double; val puckLng: Double
-        if (renderedPuckLat.isNaN()) {
-            puckLat = targetLat; puckLng = targetLng
-        } else {
-            val dtS = ((nowMs - lastPuckEaseMs).coerceIn(0L, 1000L)) / 1000.0
-            val maxStepM = (PUCK_MAX_CATCHUP_MPS * dtS).coerceAtLeast(0.5)
-            val gapM = guidance.haversineMeters(renderedPuckLat, renderedPuckLng, targetLat, targetLng)
-            val frac = if (gapM <= maxStepM) 1.0 else (maxStepM / gapM)
-            puckLat = renderedPuckLat + (targetLat - renderedPuckLat) * frac
-            puckLng = renderedPuckLng + (targetLng - renderedPuckLng) * frac
-        }
-        renderedPuckLat = puckLat; renderedPuckLng = puckLng; lastPuckEaseMs = nowMs
-        // Bearing source for the painted heading:
-        //  (A) ON-ROUTE: the route tangent IS ground-truth heading (smooth by
-        //      construction — it only steps at vertices), so steer by it DIRECTLY
-        //      instead of low-passing it through smoothBearing. The EMA was added to
-        //      tame noisy GPS heading, but it also LAGS a real turn (corner-cut); the
-        //      tangent has no noise to tame, so skipping the lag makes turns crisp.
-        //  OFF-ROUTE / no route: keep the EMA over the (raw GPS or gyro-fused) heading.
-        //      When the gyro is healthy m.bearingDeg is already the real-time gyro-
-        //      integrated heading from estimate(), so the EMA just smooths its vertices.
-        val bearing = when {
-            puckOnRoute && snap != null && moving -> {
-                // Paint the crisp tangent, but ALSO keep smoothBearing's state primed with
-                // it (advances smoothedBearing + lastBearingSmoothMs). Otherwise the EMA
-                // freezes for the whole on-route stretch and, at a snap-EXIT flip (lane
-                // split / off-route), the next smoothBearing() would ease from a stale held
-                // value → a visible heading whip. Priming keeps the flip seamless.
-                smoothBearing(rawBearing)
-                rawBearing                                               // tangent, no EMA lag
+        lastBearing = motionModel.puckBearing
+        updateLocationPuckAt(motionModel.lat, motionModel.lng, motionModel.puckBearing)
+        // Puck only while idle-browsing on the head unit: the camera stays where the user put it.
+        val cameraMoving = (navigating || clusterMode) && driveCamera(nowMono)
+        hud?.let { h ->
+            if (!lastCameraPose.lat.isNaN() && cameraRig.mode != com.overdrive.app.navmap.motion.NavCameraRig.Mode.FREE) {
+                h.setCompass(lastCameraPose.bearing, cameraRig.northUp)
             }
-            moving -> smoothBearing(rawBearing)
-            else -> rawBearing
+            if (navigating && nowMono - hudTickMs >= HUD_TICK_MS) {
+                hudTickMs = nowMono
+                val s = motionModel.routeS
+                if (!s.isNaN() && !hudManeuverS.isNaN()) h.bindDistance((hudManeuverS - s).coerceAtLeast(0.0))
+                h.bindSpeed(motionModel.speedMps)
+                if (cameraRig.mode == com.overdrive.app.navmap.motion.NavCameraRig.Mode.FREE) {
+                    h.setFreeProgress(cameraRig.freeProgress(nowMono))
+                    map?.cameraPosition?.bearing?.let { h.setCompass(it, cameraRig.northUp) }
+                }
+            }
         }
-        lastBearing = bearing
-        // Puck at the eased pose — instant, it's already smooth.
-        updateLocationPuckAt(puckLat, puckLng, bearing)
-
-        // PUCK-ONLY when idle-browsing (not navigating, not the cluster mirror): the
-        // idle follow now runs this same render tick (SOTA idle glide), but the idle
-        // contract is "puck glides underneath, camera stays where the user panned". So
-        // gate the heading-up camera follow on an active follow regime. Navigating + the
-        // cluster mirror DO drive the camera (heading-up immersive view).
-        if (!navigating && !clusterMode) return
-        // Dead-band keyed on the PUCK position so a parked car doesn't churn frames.
-        // While moving we want EVERY frame to glide, so the gate is intentionally
-        // tiny (sub-metre) — its only job is to freeze a stationary vehicle.
-        if (cameraWithinDeadband(puckLat, puckLng, bearing)) return
-        map?.let { mp ->
-            val zoom = speedAdaptiveZoom(m.speedMps)
-            // Predictive look-ahead: push the camera TARGET ahead of the puck along
-            // the heading, scaled by speed (more lead at speed = see further down the
-            // road), so the puck sits lower in frame with the road ahead filling it.
-            // The puck itself is drawn at the true pose (above) — only the camera leads.
-            val (camLat, camLng) = if (moving) {
-                val leadM = (m.speedMps * LOOKAHEAD_SECONDS).coerceIn(LOOKAHEAD_MIN_M, LOOKAHEAD_MAX_M)
-                destinationPointAhead(puckLat, puckLng, bearing, leadM)
-            } else { puckLat to puckLng }
-            val pos = org.maplibre.android.camera.CameraPosition.Builder()
-                .target(LatLng(camLat, camLng))
-                .zoom(zoom)
-                .tilt(IMMERSIVE_TILT)
-                .bearing(bearing)
-                .build()
-            // moveCamera (INSTANT) — the pose is ALREADY interpolated by the 12 fps
-            // dead-reckon + bearing EMA, so each frame is a tiny step. A per-frame
-            // animateCamera would spawn overlapping 80 ms ValueAnimators that cancel
-            // each other (visible stutter + GC churn on the Adreno 610); instant
-            // writes on a pre-smoothed pose are what actually glides.
-            mp.moveCamera(CameraUpdateFactory.newCameraPosition(pos))
-            rememberAnimatedTarget(puckLat, puckLng, bearing)
-        }
-    }
-
-    /** A point [distM] meters from (lat,lng) along [bearingDeg] (great-circle). */
-    private fun destinationPointAhead(lat: Double, lng: Double, bearingDeg: Double, distM: Double): Pair<Double, Double> {
-        val r = 6371000.0
-        val d = distM / r
-        val br = Math.toRadians(bearingDeg)
-        val p1 = Math.toRadians(lat); val l1 = Math.toRadians(lng)
-        val p2 = kotlin.math.asin(
-            kotlin.math.sin(p1) * kotlin.math.cos(d) +
-                kotlin.math.cos(p1) * kotlin.math.sin(d) * kotlin.math.cos(br))
-        val l2 = l1 + kotlin.math.atan2(
-            kotlin.math.sin(br) * kotlin.math.sin(d) * kotlin.math.cos(p1),
-            kotlin.math.cos(d) - kotlin.math.sin(p1) * kotlin.math.sin(p2))
-        return Math.toDegrees(p2) to Math.toDegrees(l2)
+        // Head unit while the cluster mirrors this drive: the driver watches the cluster, so tick slowly.
+        val limit = if (projectionActive) PROJECTION_FRAME_DIVISOR else 0
+        frameLoop.limitDivisor(limit)
+        val keep = !motionModel.settled || cameraMoving
+        capRenderRate(if (keep) 60 / maxOf(frameLoop.divisor, limit) else 0)
+        perfMeter.summary(nowMono, navigating || clusterMode, maxOf(frameLoop.divisor, limit), glassLowTier)
+            ?.let { Log.i("NavPerf", it) }
+        if (!keep) motionFollowActive = false
+        return keep
     }
 
     /** Elapsed-realtime stamp captured when lastFix was set, to convert the daemon
@@ -5317,13 +4944,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
      *  puck-proximity arrival debounce, independent of the laggy daemon-poll engine state. */
     private var puckArrivedTicks: Int = 0
 
-    // Dead-band for the guidance/cluster camera follow: skip the animateCamera when
-    // the new target is within ~3m of the last animated target AND |Δbearing| < ~2°,
-    // so a near-stationary fix doesn't churn a 1s glide every tick. The puck + banner
-    // /voice still update — only the camera animate is elided.
-    private var lastAnimatedLat: Double = Double.NaN
-    private var lastAnimatedLng: Double = Double.NaN
-    private var lastAnimatedBearing: Double = Double.NaN
 
     /**
      * Auto-reroute: when the engine reports off-route, recompute a fresh route
@@ -5355,9 +4975,9 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                 val pts = ArrayList<com.overdrive.app.navmap.nav.GeoPoint>(remainingStops.size + 1)
                 pts.add(com.overdrive.app.navmap.nav.GeoPoint(fromLat, fromLng))
                 remainingStops.forEach { pts.add(com.overdrive.app.navmap.nav.GeoPoint(it.lat, it.lng)) }
-                ValhallaRouteClient.routeVia(pts)
+                NavRouting.routeVia(pts)
             } else {
-                ValhallaRouteClient.routesWithAlternates(
+                NavRouting.routesWithAlternates(
                     fromLat, fromLng, dLat, dLng, ROUTE_ALTERNATES, fromHeading
                 )
             }
@@ -5375,6 +4995,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
                 // the cluster keeps guiding on the STALE pre-divergence route after
                 // the head unit reroutes (NavSession was only published at nav start).
                 if (!clusterMode) NavSession.publishRoute(routes[0], previewDestLabel)
+                onGuidanceRouteChanged(routes[0])
             }
         }
     }
@@ -5400,6 +5021,179 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         return out
     }
 
+    // ---------------------------------------------------------------------
+    // Live traffic (Google routes): congestion overlay, refresh, ETA, faster route
+    // ---------------------------------------------------------------------
+
+    /** Shows [spans] on [route] (null clears) and remembers them for a style reload; empty→empty is a no-op. */
+    private fun showTraffic(route: NavRoute?, spans: List<CongestionSpan>) {
+        val stillEmpty = spans.isEmpty() && displayedTrafficSpans.isEmpty()
+        displayedTrafficRoute = route
+        displayedTrafficSpans = spans
+        if (!stillEmpty) glassLayers.setCongestion(route, spans)
+    }
+
+    /** Shows the newest congestion for [route]: its live refresh when there is one, else its own spans. */
+    private fun showRouteTraffic(route: NavRoute) {
+        showTraffic(route, NavSession.traffic?.takeIf { it.route === route }?.spans ?: route.congestion)
+    }
+
+    /** The route guidance is running: the cluster's mirrored route, else the selected preview entry. */
+    private fun currentGuidanceRoute(): NavRoute? = when {
+        !navigating -> null
+        clusterMode -> clusterNavRoute
+        else -> previewRoutes.getOrNull(previewSelectedIdx)
+    }
+
+    /** Re-arms live-traffic state after guidance moves to [route]; the refresh runs on the head unit only. */
+    private fun onGuidanceRouteChanged(route: NavRoute) {
+        clearTrafficEta()
+        dismissFasterRoutePrompt()
+        if (clusterMode) return
+        if (route.provider != RouteProvider.GOOGLE) { stopTrafficRefresh(); return }
+        val running = trafficRefresh
+        if (running != null) running.onRouteReplaced()
+        else trafficRefresh = TrafficRefreshController(trafficHost).also { it.start() }
+    }
+
+    private fun stopTrafficRefresh() {
+        trafficRefresh?.stop()
+        trafficRefresh = null
+    }
+
+    /** Drops all live-traffic state when guidance ends. */
+    private fun endLiveTraffic() {
+        stopTrafficRefresh()
+        clearTrafficEta()
+        dismissFasterRoutePrompt()
+        trafficTraveledM = 0.0
+        showTraffic(null, emptyList())
+    }
+
+    private fun setTrafficEta(route: NavRoute, etaS: Double, atMs: Long = android.os.SystemClock.elapsedRealtime()) {
+        if (!etaS.isFinite() || etaS < 0.0) return
+        trafficEtaRoute = route
+        trafficEtaS = etaS
+        trafficEtaAtMs = atMs
+    }
+
+    private fun clearTrafficEta() {
+        trafficEtaRoute = null
+        trafficEtaS = Double.NaN
+        trafficEtaAtMs = 0L
+    }
+
+    /** The traffic ETA counted down since its refresh while fresh and for the guided route, else [engineEtaS]. */
+    private fun displayEtaSeconds(engineEtaS: Double): Double {
+        val route = trafficEtaRoute ?: return engineEtaS
+        val ageMs = android.os.SystemClock.elapsedRealtime() - trafficEtaAtMs
+        if (route !== currentGuidanceRoute() || ageMs >= TRAFFIC_ETA_MAX_AGE_MS) return engineEtaS
+        return (trafficEtaS - ageMs / 1000.0).coerceAtLeast(0.0)
+    }
+
+    /**
+     * Stops still ahead for a traffic refresh: [remainingStopsAhead] minus via-stops whose
+     * along-route position on [route] is already behind the car; the destination is always last.
+     */
+    private fun trafficWaypoints(route: NavRoute?, fixLat: Double, fixLng: Double): List<GeoPoint> {
+        val stops = remainingStopsAhead(fixLat, fixLng)
+        if (stops.isEmpty()) return emptyList()
+        val pts = route?.points.orEmpty()
+        val out = ArrayList<GeoPoint>(stops.size)
+        var from = 0
+        var alongFrom = 0.0
+        for (k in 0 until stops.size - 1) {
+            val s = stops[k]
+            // Nearest vertex at or after the previous stop's (stops are visited in order).
+            var best = Double.MAX_VALUE; var bestIdx = from; var bestAlong = alongFrom; var along = alongFrom
+            for (i in from until pts.size) {
+                if (i > from) along += guidance.haversineMeters(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng)
+                val d = guidance.haversineMeters(s.lat, s.lng, pts[i].lat, pts[i].lng)
+                if (d < best) { best = d; bestIdx = i; bestAlong = along }
+            }
+            from = bestIdx
+            alongFrom = bestAlong
+            if (pts.isEmpty() || bestAlong > trafficTraveledM) out.add(GeoPoint(s.lat, s.lng))
+        }
+        stops.last().let { out.add(GeoPoint(it.lat, it.lng)) }
+        return out
+    }
+
+    private val trafficHost = object : TrafficRefreshController.Host {
+        override fun mainHandler(): Handler = this@RoadSenseMapActivity.mainHandler
+        override fun isNavigating(): Boolean = navigating
+        override fun currentRoute(): NavRoute? = currentGuidanceRoute()
+        override fun currentFix(): GeoPoint? = lastFix?.let { GeoPoint(it.lat, it.lng) }
+        // Heading only while moving, as for a reroute (a parked heading is noise).
+        override fun currentHeading(): Double? = lastFix?.let { f -> f.bearing?.takeIf { f.bestSpeedMps > 2.0 } }
+        override fun currentSpeedMps(): Double? = lastFix?.bestSpeedMps?.takeIf { it.isFinite() && it >= 0.0 }
+        override fun remainingWaypoints(): List<GeoPoint> {
+            val f = lastFix ?: return emptyList()
+            return trafficWaypoints(currentGuidanceRoute(), f.lat, f.lng)
+        }
+        override fun traveledMeters(): Double = trafficTraveledM
+        override fun onTrafficUpdate(route: NavRoute, spans: List<CongestionSpan>, remainingEtaSeconds: Double) =
+            onLiveTraffic(route, spans, remainingEtaSeconds)
+        override fun onFasterRoute(candidate: NavRoute, savesSeconds: Double) =
+            showFasterRoutePrompt(candidate, savesSeconds)
+    }
+
+    /** Head unit: a refresh for the guided route updates the overlay + ETA and reaches the cluster via publishTraffic. */
+    private fun onLiveTraffic(route: NavRoute, spans: List<CongestionSpan>, etaS: Double) {
+        if (isFinishing || isDestroyed || clusterMode || route !== currentGuidanceRoute()) return
+        showTraffic(route, spans)
+        setTrafficEta(route, etaS)
+        NavSession.publishTraffic(route, spans, etaS)
+    }
+
+    /** Cluster: applies a head-unit refresh for the route shown here; a replayed refresh keeps its first ETA stamp. */
+    private fun onClusterTraffic(t: NavSession.Traffic) {
+        if (isFinishing || isDestroyed) return
+        if (t.route !== clusterNavRoute && t.route !== displayedTrafficRoute) return
+        showTraffic(t.route, t.spans)
+        if (t !== lastClusterTraffic) {
+            lastClusterTraffic = t
+            setTrafficEta(t.route, t.remainingEtaSeconds, t.atMs)
+        }
+    }
+
+    /** Offers a faster route while navigating; auto-dismissed after [FASTER_ROUTE_PROMPT_MS]. */
+    private fun showFasterRoutePrompt(candidate: NavRoute, savesSeconds: Double) {
+        if (isFinishing || isDestroyed || clusterMode) return
+        val base = currentGuidanceRoute() ?: return
+        val root = findViewById<View>(R.id.mapRoot) ?: return
+        dismissFasterRoutePrompt()
+        val bar = Snackbar.make(
+            root, getString(R.string.navmap_google_faster_route, formatEta(savesSeconds)), Snackbar.LENGTH_INDEFINITE
+        ).setAction(R.string.navmap_google_faster_route_switch) { switchToFasterRoute(candidate, base) }
+        findViewById<View>(R.id.fabEndNav)?.takeIf { it.visibility == View.VISIBLE }?.let { bar.anchorView = it }
+        fasterRouteBar = bar
+        bar.show()
+        mainHandler.postDelayed(dismissFasterRoute, FASTER_ROUTE_PROMPT_MS)
+    }
+
+    private fun dismissFasterRoutePrompt() {
+        mainHandler.removeCallbacks(dismissFasterRoute)
+        fasterRouteBar?.dismiss()
+        fasterRouteBar = null
+    }
+
+    /** Moves guidance to [candidate] (same steps as a reroute) if the car is still on [base]. */
+    private fun switchToFasterRoute(candidate: NavRoute, base: NavRoute) {
+        mainHandler.removeCallbacks(dismissFasterRoute)
+        fasterRouteBar = null
+        if (isFinishing || isDestroyed || clusterMode || currentGuidanceRoute() !== base) return
+        previewRoutes = (listOf(candidate, base) + previewRoutes.filter { it !== base && it !== candidate })
+            .take(ROUTE_ALTERNATES + 1)
+        previewSelectedIdx = 0
+        guidance.start(candidate)
+        resetRouteTrim()
+        lastSpokenInstruction = null
+        drawRoutePreview(previewRoutes, 0)
+        NavSession.publishRoute(candidate, previewDestLabel)
+        onGuidanceRouteChanged(candidate)
+    }
+
     private fun stopGuidance() {
         navigating = false
         // Nav ended (arrived / end-nav) → drop the persisted trip so a later re-entry
@@ -5420,27 +5214,22 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         motionEstimator.reset()
         if (!clusterMode) NavSession.clear()   // tell the cluster mirror nav ended
         lastSpokenInstruction = null
-        smoothedBearing = Double.NaN   // reset bearing EMA so the next trip starts clean
-        smoothedZoom = Double.NaN       // reset zoom EMA too
-        renderedPuckLat = Double.NaN    // reset puck position-ease so it re-seeds next trip
-        renderedPuckLng = Double.NaN
+        motionModel.reset()             // next trip seeds the shown pose fresh
+        cameraRig.reset()
+        motionTrack = null
+        mainHandler.removeCallbacks(recenterAfterFree)
         puckPaintedLat = Double.NaN     // reset painted-pose dead-band so next trip re-seeds
         puckPaintedLng = Double.NaN
         puckPaintedBearing = Double.NaN
-        lastAnimatedLat = Double.NaN    // reset camera dead-band baseline too (hygiene:
-        lastAnimatedLng = Double.NaN    // a stale baseline could otherwise suppress the
-        lastAnimatedBearing = Double.NaN // first idle-follow camera frame of the next trip)
-        puckOnRoute = false             // reset the on-route snap latch
+        lastCameraPose.lat = Double.NaN // reset the camera dead-band baseline too
         lastFedFixTsMs = 0L             // reset the duplicate-fix dedup for the next trip
         nearStopTicks = 0               // reset the near-stop arrival debounce
         puckArrivedTicks = 0            // reset the puck-proximity arrival debounce
-        lastRouteProgress = 0f          // reset traveled-route trim (source emptied below)
-        lastAppliedProgress = -1f
-        routeSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
-        altRouteSource?.setGeoJson(EMPTY_FEATURE_COLLECTION)
-        clearItineraryMarkers()
+        endLiveTraffic()                // stop the traffic refresh + clear congestion/ETA
+        glassLayers.clear()
         findViewById<View>(R.id.navBanner)?.visibility = View.GONE
         findViewById<View>(R.id.navBannerIcon)?.visibility = View.GONE
+        showNavHud(false)
         findViewById<FloatingActionButton>(R.id.fabEndNav)?.visibility = View.GONE
         exitImmersive()
         // Clear the navigation POIs (they were route-specific).
@@ -5474,27 +5263,25 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     }
 
     /**
-     * Map a Valhalla `TripDirections::Maneuver::Type` to a turn glyph. Grouped by the
-     * documented Valhalla enum: 1=start, 4-6=destination, 8=continue, 9/10=slight
-     * right/left, 11/15=right/left, 12/16=sharp right/left, 13=uturn-right,
-     * 14=uturn-left, 17-21=ramp/exit/merge, 23/24=keep right/left, 26/27=roundabout
-     * enter/exit, 25=fork. Returns 0 for "no glyph" (continue/start/unknown).
+     * Map a Valhalla `DirectionsLeg.Maneuver.Type` to a turn glyph: 4-6 destination,
+     * 9/10/11 slight/turn/sharp right, 12/13 u-turn right/left, 14/15/16 sharp/turn/slight
+     * left, 17-21 ramp/exit, 22-24 stay, 25/37/38 merge, 26/27 roundabout. 0 = no glyph.
      */
     private fun maneuverIconRes(type: Int): Int = when (type) {
         4, 5, 6 -> R.drawable.ic_man_arrive
         9 -> R.drawable.ic_man_slight_right
-        10 -> R.drawable.ic_man_slight_left
-        11 -> R.drawable.ic_man_turn_right
+        10 -> R.drawable.ic_man_turn_right
+        11 -> R.drawable.ic_man_sharp_right
+        12, 13 -> R.drawable.ic_man_uturn              // u-turn right/left
+        14 -> R.drawable.ic_man_sharp_left
         15 -> R.drawable.ic_man_turn_left
-        12 -> R.drawable.ic_man_sharp_right
-        16 -> R.drawable.ic_man_sharp_left
-        13, 14 -> R.drawable.ic_man_uturn
+        16 -> R.drawable.ic_man_slight_left
         17, 18, 19 -> R.drawable.ic_man_ramp           // ramp straight/right/left
         20, 21 -> R.drawable.ic_man_ramp               // exit right/left
         22 -> R.drawable.ic_man_straight               // stay/continue on highway
         23 -> R.drawable.ic_man_slight_right           // keep right
         24 -> R.drawable.ic_man_slight_left            // keep left
-        25 -> R.drawable.ic_man_fork
+        25 -> R.drawable.ic_man_merge
         26, 27 -> R.drawable.ic_man_roundabout
         37, 38 -> R.drawable.ic_man_merge              // merge right/left
         else -> 0                                       // 0/1/7/8: none/start/becomes/continue
@@ -5559,156 +5346,68 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     }
 
     /**
-     * Draw/move the location puck — a soft accuracy halo (CircleLayer) with a
-     * DIRECTIONAL arrow on top (SymbolLayer) that rotates to the travel heading,
-     * Gmaps-style. The feature carries a `bearing` property driving iconRotate;
-     * when no bearing is known (stationary / no fix heading) it falls back to the
-     * last camera bearing so the arrow doesn't snap to north. Created lazily on
-     * the first fix; kept above the hazard layers so it's never occluded.
+     * Draw/move the location puck: MapLibre's native location-indicator layer with the
+     * directional arrow over a soft ground shadow. Its pose is a paint property, so it moves
+     * in the same frame as the camera (a GeoJSON source is re-tiled on a worker and lands a
+     * frame late). Falls back to the last bearing when the fix has none. Created lazily on
+     * the first fix, above the hazard layers.
      */
     private fun updateLocationPuck(fix: RoadSenseHazardApiClient.LatLngFix) {
         val bearing = fix.bearing?.takeIf { fix.bestSpeedMps > IMMERSIVE_MIN_SPEED_MPS } ?: lastBearing
         updateLocationPuckAt(fix.lat, fix.lng, bearing)
     }
 
-    /** Place the location puck at an explicit (lat,lng) + heading. Used by the
-     *  dead-reckoning render frame (interpolated pose) and the fix-based path. */
+    private var puckLayer: org.maplibre.android.style.layers.Layer? = null
+    private var puckLayerStyle: org.maplibre.android.maps.Style? = null
+    private val puckLocation = arrayOf(0.0, 0.0, 0.0)
+
+    /** Place the location puck at an explicit (lat,lng) + heading (the frame loop's pose, or a fix). */
     private fun updateLocationPuckAt(lat: Double, lng: Double, bearing: Double) {
         val style = map?.style ?: return
-        // Skip while a style is mid-load (theme reload): the ~30fps render tick is a
-        // SEPARATE caller from onStyleLoaded, so during the setStyle swap map.style points
-        // at a not-fully-loaded style — getSourceAs returns null → the addSource/addLayer
-        // path below would hit MapLibre's validateState ("newer style is loading") and
-        // crash. The reload's onStyleLoaded re-registers the puck right after, and the
-        // next render tick repaints it, so skipping this frame is invisible.
+        // A theme reload swaps the style; skip until it has loaded (onStyleLoaded repaints the puck).
         if (!style.isFullyLoaded) return
-        // Hot path: the puck source is rewritten EVERY render frame (~30fps from
-        // renderMotionFrame). Push a TYPED Feature, not a JSON string. setGeoJson(String)
-        // routes to nativeSetGeoJsonString, which runs a full JSON PARSER on the native
-        // side every frame — and we pay a Kotlin string-concat heap alloc to build it
-        // first (serialize → JNI → re-parse). setGeoJson(Feature) routes to
-        // nativeSetFeature: the geometry crosses JNI as an object with no parse step.
-        // The SymbolLayer's iconRotate(Expression.get("bearing")) reads the numeric
-        // "bearing" property identically, so the rendered arrow is unchanged — this is
-        // a pure cost cut on the per-frame path (less main-thread work + GC churn on
-        // the Adreno 610 that also drives the daemon encoder).
-        val existing = style.getSourceAs<GeoJsonSource>(PUCK_SOURCE_ID)
-        if (existing != null) {
-            // Dead-band the per-FRAME source rewrite. setGeoJson dirties the source and
-            // forces MapLibre's GL RenderThread to re-render the frame; the render tick
-            // calls this ~30fps, so a STATIONARY car (dead-reckon estimate holds, pose
-            // unchanged) was re-rendering an identical scene every frame — measured as
-            // ~80% of a core on the GL RenderThread, doubled by the cluster mirror's
-            // second map instance. Skip the rewrite when the pose hasn't meaningfully
-            // moved/turned: while driving each frame steps far beyond the gate, so this
-            // costs nothing in motion; it only freezes a parked map.
-            if (!puckPaintedLat.isNaN()) {
-                val moved = guidance.haversineMeters(puckPaintedLat, puckPaintedLng, lat, lng)
-                var dBearing = kotlin.math.abs(bearing - puckPaintedBearing) % 360.0
-                if (dBearing > 180.0) dBearing = 360.0 - dBearing
-                if (moved < PUCK_DEADBAND_M && dBearing < PUCK_DEADBAND_DEG) return
-            }
-            existing.setGeoJson(buildPuckFeature(lat, lng, bearing))
-            puckPaintedLat = lat; puckPaintedLng = lng; puckPaintedBearing = bearing
-            return
+        val layer = puckLayer?.takeIf { puckLayerStyle === style } ?: run {
+            puckPaintedLat = Double.NaN
+            createPuckLayer(style, lat, lng, bearing) ?: return
         }
-        val feature = buildPuckFeature(lat, lng, bearing)
+        // A held pose is not rewritten, so a parked map renders nothing.
+        if (!puckPaintedLat.isNaN()) {
+            val moved = guidance.haversineMeters(puckPaintedLat, puckPaintedLng, lat, lng)
+            var dBearing = kotlin.math.abs(bearing - puckPaintedBearing) % 360.0
+            if (dBearing > 180.0) dBearing = 360.0 - dBearing
+            if (moved < PUCK_DEADBAND_M && dBearing < PUCK_DEADBAND_DEG) return
+        }
+        puckLocation[0] = lat
+        puckLocation[1] = lng
+        layer.setProperties(
+            org.maplibre.android.style.layers.PaintPropertyValue("location", puckLocation),
+            org.maplibre.android.style.layers.PaintPropertyValue("bearing", bearing)
+        )
         puckPaintedLat = lat; puckPaintedLng = lng; puckPaintedBearing = bearing
-        // Theme-aware accent so the puck reads on the dark recolored basemap too. A
-        // theme switch wipes the registered arrow image + source (style reload), so
-        // this re-registers with the fresh themed color on the next paint.
-        val accent = m3("primary")
-        // Register the directional arrow bitmap once.
-        if (style.getImage(ICON_PUCK_ARROW) == null) {
-            style.addImage(ICON_PUCK_ARROW, buildDirectionArrow(accent))
-        }
-        style.addSource(GeoJsonSource(PUCK_SOURCE_ID, feature))
-        // Soft accuracy halo underneath.
-        style.addLayer(
-            CircleLayer(PUCK_HALO_LAYER_ID, PUCK_SOURCE_ID).withProperties(
-                PropertyFactory.circleRadius(18f),
-                PropertyFactory.circleColor(accent),
-                PropertyFactory.circleOpacity(0.18f)
-            )
-        )
-        // Directional arrow, rotated to the heading property (rotation aligned to
-        // the map so it points the travel direction regardless of map bearing).
-        style.addLayer(
-            SymbolLayer(PUCK_CORE_LAYER_ID, PUCK_SOURCE_ID).withProperties(
-                PropertyFactory.iconImage(ICON_PUCK_ARROW),
-                PropertyFactory.iconSize(0.85f),
-                PropertyFactory.iconRotate(Expression.get("bearing")),
-                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
-                PropertyFactory.iconAllowOverlap(true),
-                PropertyFactory.iconIgnorePlacement(true)
-            )
-        )
     }
 
-    /** Build the puck Feature: a Point at (lng,lat) carrying the numeric "bearing"
-     *  property that drives iconRotate. Typed (no JSON string) so the per-frame
-     *  setGeoJson(Feature) skips native JSON parsing. */
-    private fun buildPuckFeature(lat: Double, lng: Double, bearing: Double): Feature =
-        Feature.fromGeometry(Point.fromLngLat(lng, lat)).apply {
-            addNumberProperty("bearing", bearing)
-        }
-
-    /**
-     * Build a SOTA 3D-style navigation arrow puck (Gmaps/Waze look): a chevron
-     * with a vertical light→dark gradient (lit front edge, shaded tail) for a
-     * dimensional feel + a crisp white outline so it reads on any basemap. Points
-     * "up" (north) at rotation 0 so iconRotate(bearing) aims it at the travel
-     * heading. NO blur drop-shadow: BlurMaskFilter renders as a hard dark box on
-     * this head unit (same reason the marker pins dropped theirs) — the white
-     * outline provides the lift/separation instead.
-     */
-    private fun buildDirectionArrow(accent: Int): Bitmap {
-        val s = (PIN_PX * 0.78f).toInt()
-        val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val cx = s / 2f
-        val cy = s / 2f
-        val r = s * 0.40f
-
-        // Chevron geometry: a sharp arrowhead with a concave tail notch.
-        fun arrowPath(scale: Float, dy: Float) = android.graphics.Path().apply {
-            moveTo(cx, cy - r * 0.78f * scale + dy)            // tip
-            lineTo(cx + r * 0.62f * scale, cy + r * 0.66f * scale + dy) // back-right
-            lineTo(cx, cy + r * 0.30f * scale + dy)            // tail notch
-            lineTo(cx - r * 0.62f * scale, cy + r * 0.66f * scale + dy) // back-left
-            close()
-        }
-
-        // No blur shadow: it renders as a hard dark box on this HW (bad on light
-        // theme). The white outline (step 2) gives the lift/separation instead.
-
-        // 2) White outline (slightly larger arrow drawn behind the fill).
-        val outline = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.FILL
-        }
-        c.drawPath(arrowPath(1.18f, 0f), outline)
-
-        // 3) Gradient-filled body: a lighter tint at the tip → the accent at the
-        //    tail, giving the chevron a lit, dimensional 3D appearance.
-        val lit = lightenColor(accent, 0.35f)
-        val body = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.FILL
-            shader = android.graphics.LinearGradient(
-                cx, cy - r * 0.78f, cx, cy + r * 0.66f,
-                lit, accent, android.graphics.Shader.TileMode.CLAMP
-            )
-        }
-        c.drawPath(arrowPath(1.0f, 0f), body)
-        return bmp
-    }
-
-    /** Blend [color] toward white by [amount] (0..1). */
-    private fun lightenColor(color: Int, amount: Float): Int {
-        val a = android.graphics.Color.alpha(color)
-        val r = (android.graphics.Color.red(color) + (255 - android.graphics.Color.red(color)) * amount).toInt()
-        val g = (android.graphics.Color.green(color) + (255 - android.graphics.Color.green(color)) * amount).toInt()
-        val b = (android.graphics.Color.blue(color) + (255 - android.graphics.Color.blue(color)) * amount).toInt()
-        return android.graphics.Color.argb(a, r, g, b)
+    private fun createPuckLayer(
+        style: org.maplibre.android.maps.Style, lat: Double, lng: Double, bearing: Double
+    ): org.maplibre.android.style.layers.Layer? = try {
+        // Glass chevron + ground shadow for this theme; a theme switch swaps the style, so this re-registers them.
+        com.overdrive.app.navmap.glass.MapGlassArt.registerStatic(this, style, isNightTheme())
+        puckLocation[0] = lat
+        puckLocation[1] = lng
+        val l = org.maplibre.android.location.OverDrivePuckLayers.create(PUCK_CORE_LAYER_ID)
+        l.setProperties(*com.overdrive.app.navmap.glass.MapGlassArt.puckLayerProps())
+        l.setProperties(
+            org.maplibre.android.style.layers.PaintPropertyValue("accuracy-radius", 0f),
+            org.maplibre.android.style.layers.PaintPropertyValue("location", puckLocation),
+            org.maplibre.android.style.layers.PaintPropertyValue("bearing", bearing)
+        )
+        style.addLayer(l)
+        puckLayer = l
+        puckLayerStyle = style
+        puckPaintedLat = lat; puckPaintedLng = lng; puckPaintedBearing = bearing
+        l
+    } catch (t: Throwable) {
+        Log.w("RoadSenseMap", "puck layer unavailable: ${t.javaClass.simpleName}")
+        null
     }
 
     // ---------------------------------------------------------------------
@@ -5800,15 +5499,20 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         super.onResume()
         if (!::mapView.isInitialized) return
         mapView.onResume()
-        // RESUME-SNAP: while backgrounded the render tick was suspended, so the estimator's
-        // filtered state + the painted puck (renderedPuckLat) are frozen at the position
-        // from when we left. On return, resuming the loops would EMA-glide the estimator
-        // and ramp the painted puck (PUCK_MAX_CATCHUP_MPS clamp) from that stale spot toward
-        // the live fix — the "puck starts where I backgrounded and slides to where I am"
-        // artifact. SOTA is to resume at the EXACT current position with no glide. After a
-        // real away-period, hard-RESET the estimator (next truth fix SEEDS directly, no EMA
-        // blend) and clear the painted anchor (renderMotionFrame's NaN branch seeds the puck
-        // directly). The fresh direct-GPS subscription / daemon poll started below delivers
+        if (::googleMap.isInitialized) {
+            googleMap.onResume()
+            // The key/settings may have changed in the web UI: reload them off the looper, then the FAB.
+            // load() republishes the cached copy, so main-thread readers never hit an empty cache.
+            ioExecutor().execute {
+                try { GoogleMapsConfig.load() } catch (_: Throwable) {}
+                mainHandler.post { if (!isFinishing && !isDestroyed) updateMapLayersFab() }
+            }
+        }
+        // RESUME-SNAP: while backgrounded the frame loop was suspended, so the estimator's
+        // filtered state + the shown pose are frozen at the position from when we left;
+        // resuming would glide from that stale spot to the live fix. After a real
+        // away-period, hard-RESET the estimator (next truth fix SEEDS directly) and the
+        // shown pose (it re-seeds at the first fix). The fresh direct-GPS subscription / daemon poll started below delivers
         // that current fix within ~1s. A momentary flip (< the threshold) skips the reset so
         // a quick notification-shade peek doesn't re-seed needlessly.
         val awayMs = if (backgroundedAtMono > 0L)
@@ -5816,8 +5520,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         backgroundedAtMono = 0L
         if (awayMs >= RESUME_SNAP_AFTER_MS) {
             motionEstimator.reset()        // next onTruthPoint seeds directly (no glide)
-            renderedPuckLat = Double.NaN   // paint re-seeds at the target (no catchup ramp)
-            renderedPuckLng = Double.NaN
+            motionModel.reset()            // the shown pose re-seeds at the first fix (no catch-up)
             lastFixCaptureMonoMs = 0L       // force a fresh truth anchor on the next fix
             lastFedFixCaptureMonoMs = 0L
             lastFedFixTsMs = 0L
@@ -5869,6 +5572,11 @@ open class RoadSenseMapActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        if (::googleMap.isInitialized) {
+            googleMap.onPause()
+            GoogleMapsBudget.flush()
+            GoogleUsageReporter.maybeReport(true)
+        }
         if (::mapView.isInitialized) mapView.onPause()
         super.onPause()
     }
@@ -5963,21 +5671,21 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         if (!clusterMode) NavSession.clear()
         NavSession.removeListener(navSessionListener)
         navSessionListener = null
+        NavSession.removeTrafficListener(clusterTrafficListener)
+        clusterTrafficListener = null
+        stopTrafficRefresh()
+        glassLayers.detach()
         try { navVoice?.shutdown() } catch (_: Throwable) {}
         navVoice = null
         ioExecutor?.shutdownNow()
         ioExecutor = null
         MapTilePrefetcher.cancelPending()
         hazardSource = null
-        routeSource = null
-        routeMainLayer = null
-        routeCasingLayer = null
         // Null symmetry: drop the remaining style-bound source/layer + sheet refs
         // so they don't pin a destroyed Style/MapView (no-op safety; map is gone).
-        altRouteSource = null
         poiSource = null
-        hazardSymbolLayer = null
         routeSheetBehavior = null
+        if (::googleMap.isInitialized) googleMap.onDestroy()
         map = null
         // Forward last so MapLibre releases its GL resources after we've
         // dropped our references. Guarded: the display-0 early return finishes
@@ -5996,15 +5704,10 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         private const val CLUSTER_FINISH_POLL_MS = 500L
 
         /**
-         * OpenFreeMap hosted styles — always-current, no API key, no limits. The
-         * map picks light vs dark by the active app theme (styleUrlForTheme).
-         * "liberty" is the richer, more detailed light basemap (more premium than
-         * the minimal "positron"); "dark" is its night counterpart. STYLE_URL
-         * (light) is the prefetch reference (offline cache is theme-agnostic —
-         * tiles are shared across styles; only the style JSON differs).
+         * OpenFreeMap hosted liberty — no API key, no limits; both themes use it (MapGlassBasemap
+         * recolours it at night). STYLE_URL is also the prefetch reference.
          */
         const val STYLE_URL_LIGHT = "https://tiles.openfreemap.org/styles/liberty"
-        const val STYLE_URL_DARK = "https://tiles.openfreemap.org/styles/dark"
         const val STYLE_URL = STYLE_URL_LIGHT
 
         /**
@@ -6012,23 +5715,13 @@ open class RoadSenseMapActivity : AppCompatActivity() {
          * are the SAME OpenFreeMap basemap recipe shipped in the APK so the map opens
          * instantly without a style-document fetch, survives a flaky link, and is ours
          * to tune. The tiles/sprite/glyphs referenced inside are still streamed from
-         * OpenFreeMap. Loaded via Style.Builder().fromJson(asset) in styleBuilderForTheme();
+         * OpenFreeMap. Loaded via Style.Builder().fromJson(asset) in vectorStyleBuilder();
          * the hosted URL remains the fallback if an asset can't be read.
          */
         const val STYLE_ASSET_LIGHT = "maps/liberty_style.json"
-        const val STYLE_ASSET_DARK = "maps/dark_style.json"
 
-        // Source / layer ids.
+        // Clustered hazard source (drawn by MapGlassLayers).
         const val HAZARD_SOURCE_ID = "roadsense-hazards"
-        const val HAZARD_SYMBOL_LAYER_ID = "roadsense-hazard-markers"
-        const val CLUSTER_CIRCLE_LAYER_ID = "roadsense-hazard-clusters"
-        const val CLUSTER_COUNT_LAYER_ID = "roadsense-hazard-cluster-count"
-
-        // Marker icon ids registered via style.addImage.
-        const val ICON_BREAKER = "hz_breaker"
-        const val ICON_POTHOLE = "hz_pothole"
-        const val ICON_ROUGH = "hz_rough"
-        const val ICON_UNKNOWN = "hz_unknown"
 
         // GeoJSON property keys (match RoadSenseApiHandler output).
         const val PROP_ID = "id"
@@ -6037,14 +5730,13 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         const val PROP_CONFIDENCE = "confidence"
         const val PROP_STATUS = "status"
         const val PROP_OBSERVATIONS = "observations"
-        const val POINT_COUNT = "point_count"
 
         // Clustering.
         const val CLUSTER_RADIUS = 50
-        const val CLUSTER_MAX_ZOOM = 14
+        // Up to z16 nearby hazards merge into a count; the follow camera (≈z17) shows each one.
+        const val CLUSTER_MAX_ZOOM = 16
 
-        // Marker bitmap resolution (px) for style.addImage.
-        // Hazard pin bitmap width (px); height is 1.3x. Large for hi-dpi crispness.
+        // Pin bitmap width (px); height is 1.3x. Large for hi-dpi crispness.
         const val PIN_PX = 96
 
         const val REFETCH_DEBOUNCE_MS = 400L
@@ -6060,29 +5752,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         const val FOLLOW_ZOOM = 16.0
 
         // Location puck source + layers (kept above the hazard layers).
-        const val PUCK_SOURCE_ID = "roadsense-location"
-        const val ICON_PUCK_ARROW = "puck_arrow"
-        const val PUCK_HALO_LAYER_ID = "roadsense-location-halo"
         const val PUCK_CORE_LAYER_ID = "roadsense-location-core"
-
-        // Route line source + two-layer stroke (added UNDER the hazard markers).
-        const val ROUTE_SOURCE_ID = "roadsense-route"
-        const val ROUTE_CASING_LAYER_ID = "roadsense-route-casing"
-        const val ROUTE_MAIN_LAYER_ID = "roadsense-route-main"
-
-        // Alternate routes (dimmed, tappable) — separate source under the selected route.
-        const val ALT_ROUTE_SOURCE_ID = "roadsense-alt-routes"
-        const val ALT_ROUTE_LAYER_ID = "roadsense-alt-routes-line"
-
-        // Itinerary markers: a destination pin at the route end + numbered pins at
-        // each intermediate stop. Drawn ABOVE the route line + hazards so the trip
-        // endpoints are always legible. Each feature carries an "img" property =
-        // the registered image id (rs_dest / rs_stop_<n>) selected via iconImage(get).
-        const val MARKER_SOURCE_ID = "roadsense-route-markers"
-        const val MARKER_LAYER_ID = "roadsense-route-markers-layer"
-        const val MARKER_PROP_IMG = "img"
-        const val ICON_DEST = "rs_dest"
-        const val ICON_STOP_PREFIX = "rs_stop_"
 
         // Dropped-pin marker (long-press the map to save/navigate a place).
         const val DROPPED_PIN_SOURCE_ID = "roadsense-dropped-pin"
@@ -6120,6 +5790,12 @@ open class RoadSenseMapActivity : AppCompatActivity() {
 
         // Autocomplete debounce + minimum query length (don't spam the geocoder).
         const val AUTOCOMPLETE_DEBOUNCE_MS = 300L
+        /** Google Places autocomplete is fast and session-billed, so it debounces shorter. */
+        const val GOOGLE_AUTOCOMPLETE_DEBOUNCE_MS = 150L
+        /** A live-traffic ETA older than this falls back to the guidance engine's ETA. */
+        const val TRAFFIC_ETA_MAX_AGE_MS = 900_000L
+        /** The faster-route prompt auto-dismisses after this. */
+        const val FASTER_ROUTE_PROMPT_MS = 12_000L
         const val AUTOCOMPLETE_MIN_CHARS = 3
         /** Max local (saved + recent) rows surfaced above remote autocomplete hits. */
         const val LOCAL_MATCH_CAP = 4
@@ -6142,12 +5818,11 @@ open class RoadSenseMapActivity : AppCompatActivity() {
          *  while a genuinely-dead direct source (no permission / provider off, >2.5 s quiet)
          *  still lets the daemon poll resume as the fallback truth feed. */
         const val DIRECT_FIX_FALLBACK_MS = 2500L
-        /** Render-tick freeze-guard threshold (ms): when the estimator baseline is this old
+        /** Frame-loop freeze-guard threshold (ms): when the estimator baseline is this old
          *  and no truth fix has refreshed it, reanchorToLastFix() holds the puck at the last
          *  real position. MUST be < MAX_DEAD_RECKON_S (3000 ms) by a comfortable margin so a
-         *  re-anchor always lands before the dead-reckon caps. Sub-second render cadence
-         *  (RENDER_TICK_MS=33 / IDLE_RENDER_TICK_MS=200) makes this grid-independent — no
-         *  1 Hz quantization. 2200 ms leaves ~800 ms headroom below the cap. */
+         *  re-anchor always lands before the dead-reckon caps. The frame loop checks it every
+         *  frame, so there is no 1 Hz quantization. 2200 ms leaves ~800 ms headroom below the cap. */
         const val KEEP_WARM_BEFORE_CAP_MS = 2200L
         /** Accuracy (m) the freeze-guard re-anchor feeds the estimator — clamped to the
          *  estimator's GOOD bar (18m) so the re-anchor is ALWAYS accepted (never hits the
@@ -6189,12 +5864,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // (The old CLUSTER_OVERSCAN_X/Y_DP top-start insets are gone: the banner now anchors
         // to the speed-badge CENTRE, which sits well inside the panel — far clear of the
         // (80,50)px overscan band — so no separate overscan margin is needed.)
-        // Traveled-route trim (line-gradient). TRIM_FEATHER = the line-progress width of
-        // the antialiased fade at the trim boundary (~1.2% of the route). TRIM_PROGRESS_EPS
-        // = the paint dead-band: skip a gradient repaint until progress advances this much
-        // (~0.2% of the route ≈ a few metres), so a parked/creeping car emits zero writes.
-        const val TRIM_FEATHER = 0.012f
-        const val TRIM_PROGRESS_EPS = 0.002f
         // The speed badge (ClusterSpeedOverlay, a daemon SurfaceControl layer at z=MAX so it
         // always composites OVER this map) is a short strip on the LEFT whose BOTTOM sits just
         // above the panel vertical centre. The TBT banner stacks directly below it, sharing
@@ -6219,46 +5888,30 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         const val IMMERSIVE_ZOOM = 17.5
         const val IMMERSIVE_MIN_SPEED_MPS = 1.5 // below this, GPS bearing is noise → hold last
 
-        // Render micro-tick: dead-reckon the puck+camera between the GPS truth fixes
-        // for continuous (non-teleporting) motion. 30fps is the smoothness floor the
-        // eye reads as "fluid" for a moving map (12fps visibly stepped); each frame
-        // is a cheap moveCamera on an already-interpolated pose. Kept at 30 (not a
-        // 60fps Choreographer loop) so it stays light on the Adreno 610 which also
-        // runs the daemon encoder.
-        const val RENDER_TICK_MS = 33L
-
-        // Cluster fast-tick: the cluster's GL is capped at CLUSTER_MAX_FPS (15), so
-        // dead-reckoning the pose at the head unit's 30fps would just compute frames the
-        // FPS cap discards. Match the compute rate to the cap (≈67ms = 15fps) — same
-        // glance-smooth motion, half the per-frame pose math on the shared SoC.
-        const val CLUSTER_RENDER_TICK_MS = 67L
         /** Cluster keep-warm repaint interval (ms): bounds how long a silently-recreated
          *  WHEN_DIRTY surface can stay black before a triggerRepaint() repaints it. ~3s is
          *  a negligible GPU cost (one frame/3s) vs the parked-car black-out risk. */
         const val CLUSTER_KEEP_WARM_MS = 3000L
 
-        // Idle render tick: when the car is parked (no motion to interpolate) drop the
-        // dead-reckon tick from 30fps to 5fps. At 30fps the tick + per-frame puck
-        // source rewrite kept MapLibre's GL RenderThread pegged on a STATIONARY car
-        // (measured ~80% of a core, doubled by the cluster mirror's second map). The
-        // puck/camera dead-bands already elide the actual GL work when parked, so the
-        // residual cost is just waking the main thread — 5fps keeps the map responsive
-        // to the next fix while cutting that wakeup rate 6×. Snaps back to 30fps within
-        // one idle tick (≤200 ms) the instant the car starts moving.
-        const val IDLE_RENDER_TICK_MS = 200L
-
-        // Per-instance GL render-rate cap (MapView.setMaximumFps), applied ON TOP of
-        // WHEN_DIRTY mode. WHEN_DIRTY already drops a parked/idle map to ~0 frames; this
-        // bounds the MOVING-map rate. The head unit is the user-facing, touch-interactive
-        // surface — keep it at the 30fps smoothness floor. The cluster is a glanceable,
-        // non-touch driver panel mirroring the same drive — it doesn't need the full rate
-        // and shares the Adreno 610 with the recording encoder, so cap it at 15fps: still
-        // reads as smooth map-scroll at a glance (sub-12 starts looking stepped) but ~2×
-        // less GPU draw than 30 — directly cutting the second instance's cost. The render
-        // TICK matches this cap (CLUSTER_RENDER_TICK_MS) so we don't dead-reckon 30 poses
-        // /s only to drop half at the FPS cap.
+        // GL render-rate cap (MapView.setMaximumFps) on top of WHEN_DIRTY while the frame
+        // loop is idle (gestures, tile loads). While it runs, capRenderRate lifts the cap
+        // just above the loop's rate. The cluster shares the GPU with the camera pipeline.
         const val HEADUNIT_MAX_FPS = 30
         const val CLUSTER_MAX_FPS = 15
+        // Head unit while the cluster mirrors the drive: one frame in 12 (5 fps).
+        const val PROJECTION_FRAME_DIVISOR = 12
+        // HUD live values (distance, speed, re-centre countdown) refresh at 4 Hz.
+        const val HUD_TICK_MS = 250L
+        // "Then" tab: the next maneuver within ~30 s of travel after the current one (400 m – 1.2 km).
+        const val THEN_WINDOW_S = 30.0
+        const val THEN_MIN_M = 400.0
+        const val THEN_MAX_M = 1200.0
+        // On-road turn arrow: turns, ramps, exits, keeps, roundabouts and side merges, shown this close.
+        val ARROW_TYPES = setOf(9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 23, 24, 26, 27, 37, 38)
+        const val ARROW_NEAR_M = 600.0
+        const val ARROW_FAST_M = 900.0
+        const val ARROW_FAST_MPS = 70.0 / 3.6
+        const val NORTH_UP_ANIM_MS = 700L
 
         // Head-unit poll cadence for the daemon's clusterMapActive flag (dual-render
         // avoidance). 1s matches the GPS/guidance cadence — the head unit doesn't need
@@ -6267,22 +5920,6 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // role on the cluster side.
         const val PROJECTION_POLL_MS = 1000L
 
-        // Speed-adaptive zoom (km/h → zoom): open the view out at speed (see further
-        // ahead on the highway), close in around town. EMA-smoothed across thresholds
-        // so it doesn't step. Values bracket IMMERSIVE_ZOOM (the town default).
-        const val ZOOM_SLOW = 17.8     // < ~25 km/h (crawl / dense urban)
-        const val ZOOM_CITY = 17.2     // ~25-55 km/h
-        const val ZOOM_ARTERIAL = 16.2 // ~55-90 km/h
-        const val ZOOM_HIGHWAY = 15.2  // > ~90 km/h
-        const val ZOOM_EMA_ALPHA = 0.08 // gentle — zoom should drift, never snap
-
-        // Predictive camera look-ahead: lead the camera target this many SECONDS of
-        // travel ahead of the puck (clamped), so the puck sits low + road-ahead fills
-        // the frame. ~4s lead is the consumer-nav feel; clamps keep it sane at the
-        // extremes (stop-and-go vs highway).
-        const val LOOKAHEAD_SECONDS = 4.0
-        const val LOOKAHEAD_MIN_M = 30.0
-        const val LOOKAHEAD_MAX_M = 220.0
         const val REROUTE_MIN_INTERVAL_MS = 8000L // min gap between auto-reroutes
 
         // A via-stop within this distance of the car counts as "reached" — pruned
@@ -6301,51 +5938,10 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         const val NEAR_STOP_SPEED_MPS = 1.5  // ~5.4 km/h — genuinely stopped, not a slow crawl
         const val NEAR_STOP_ARRIVAL_TICKS = 2 // consecutive near-stop ticks (≈2s at 1Hz) to confirm
 
-        // Camera follow dead-band: skip the per-FRAME moveCamera when the puck has
-        // barely moved + barely turned since the last frame. With the 80 ms render
-        // tick we want EVERY frame to glide while moving (at 50 km/h that's ~1.1 m
-        // /frame), so the distance gate is sub-metre — its only job is to freeze a
-        // stationary vehicle (the dead-reckon estimate already holds when parked, so
-        // this is belt-and-suspenders). The old 3 m gate skipped ~3 frames at city
-        // speed → the camera lurched in 3 m steps instead of gliding.
-        const val CAM_DEADBAND_M = 0.6
-        const val CAM_DEADBAND_DEG = 0.4
-
-        // Puck SOURCE-rewrite dead-band: skip the per-frame setGeoJson on the puck
-        // GeoJsonSource when the painted pose has barely moved/turned. setGeoJson
-        // dirties the source → forces a GL re-render, so without this a parked car
-        // re-rendered an identical puck every render tick (the dominant idle-CPU cost,
-        // ×2 with the cluster mirror). Sub-metre / sub-degree so it NEVER skips a frame
-        // while driving (each real step dwarfs it); its only job is to freeze a parked
-        // map. Slightly below the camera dead-band so the puck can never lag the camera.
-        const val PUCK_DEADBAND_M = 0.5
-        const val PUCK_DEADBAND_DEG = 0.3
-
-        // On-route snap hysteresis (m). The render frame snaps the puck to the route
-        // line while the lateral offset is small and only releases it to the raw
-        // position once clearly off-route — a single threshold would let a GPS offset
-        // hovering near it flicker the puck on/off the line every frame. Enter when
-        // within ENTER; once snapped, stay until beyond EXIT (the gap is the deadband).
-        const val PUCK_SNAP_ENTER_M = 32.0
-        const val PUCK_SNAP_EXIT_M = 48.0
-
-        // Max speed (m/s) at which the PAINTED puck catches up to its target. Set well
-        // above any real vehicle speed (~60 m/s ≈ 216 km/h) so normal driving NEVER
-        // clips (the puck tracks the target with zero added lag); ONLY a discontinuity
-        // — the snapped↔raw mode flip, up to ~PUCK_SNAP_EXIT_M in one frame — is spread
-        // across a handful of frames so it glides instead of teleporting.
-        const val PUCK_MAX_CATCHUP_MPS = 60.0
-
-        // Heading-up bearing low-pass TIME CONSTANT (seconds). smoothBearing derives
-        // its per-call alpha = 1 - exp(-dt/tau) from the REAL elapsed dt, so the feel
-        // is identical whether it's called at ~30fps (render frame) or 1Hz (cluster
-        // idle follow) — a fixed alpha would silently collapse the time-constant ~30x
-        // at the faster cadence and make the camera whip through corners + pass GPS
-        // jitter. 0.35s = the consumer-nav feel: smooth heading-up rotation that still
-        // turns promptly into corners (0.6s felt laggy — the arrow/camera trailed the
-        // actual turn by a beat; now that bearing is steered by the route TANGENT when
-        // on-route, a shorter tau tracks the turn without re-exposing GPS jitter).
-        const val BEARING_TAU_S = 0.35
+        // Puck rewrite dead-band: a pose change this small is not written, so a parked
+        // map emits no frames. Far below one frame of travel while driving.
+        const val PUCK_DEADBAND_M = 0.02
+        const val PUCK_DEADBAND_DEG = 0.05
 
         // POI (EV charging / fuel) along-route layer.
         const val POI_SOURCE_ID = "roadsense-poi"
@@ -6374,6 +5970,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // The liberty (light) basemap ships its OWN fill-extrusion layer with this
         // id — we toggle ITS visibility for 2D/3D rather than adding a duplicate.
         const val LIBERTY_3D_LAYER_ID = "building-3d"
+        const val MAP_2D_BUILDING_LAYER_ID = "building"
         const val MAP_3D_SOURCE = "openmaptiles"
         const val MAP_3D_SOURCE_LAYER = "building"
         const val MAP_3D_MIN_ZOOM = 14f
@@ -6381,7 +5978,7 @@ open class RoadSenseMapActivity : AppCompatActivity() {
         // the basemap, so they track the BASEMAP theme, not the app M3 palette).
         const val MAP_3D_COLOR_LIGHT = "hsl(35,8%,85%)" // liberty's own building tint
         const val MAP_3D_COLOR_DARK = "#2b2d36"          // muted slate for night
-        const val KEY_MAP_3D = "map_3d_enabled" // persisted 2D/3D choice (default 2D)
+        const val KEY_MAP_3D = "map_3d_enabled" // persisted 2D/3D choice (default 3D)
 
         // Per-map day/night override (independent of the app theme). AUTO follows
         // the Overdrive app theme; LIGHT/DARK pin the basemap regardless.

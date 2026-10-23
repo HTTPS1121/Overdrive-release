@@ -1,0 +1,31 @@
+Third-party components used by the OverDrive voice assistant
+
+TensorFlow Lite Micro audio front-end (ported to Java in voice/wake/MicroFrontend.java)
+  Copyright 2018 The TensorFlow Authors. Apache License 2.0.
+
+KISS FFT (fixed-point real FFT, ported in voice/wake/MicroFrontend.java)
+  Copyright 2003-2010 Mark Borgerding. BSD-3-Clause.
+
+sherpa-onnx v1.13.8 (lib/arm64-v8a/libsherpa-onnx-jni.so, com.k2fsa.sherpa.onnx Kotlin API)
+  Copyright Xiaomi Corporation and the k2-fsa contributors. Apache License 2.0.
+  https://github.com/k2-fsa/sherpa-onnx
+
+ONNX Runtime (statically linked into libsherpa-onnx-jni.so)
+  Copyright Microsoft Corporation. MIT License.
+
+Keyword model voice/kws/ (sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20)
+  k2-fsa sherpa-onnx "kws-models" release.
+  https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models
+
+Wake word model voice/wake/ (when present)
+  Trained with microWakeWord (Apache License 2.0). https://github.com/kahrendt/microWakeWord
+
+Speech-to-text model voice/asr/moonshine-tiny-en/ (sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27)
+  Moonshine by Moonshine AI (formerly Useful Sensors). English models: MIT License.
+  https://github.com/moonshine-ai/moonshine
+SpeexDSP 1.2.1 echo canceller and preprocessor (lib/arm64-v8a/libvoice_frontend.so)
+  Copyright Jean-Marc Valin, Xiph.Org Foundation and contributors. BSD-3-Clause.
+  https://github.com/xiph/speexdsp
+Voice activity model voice/vad/silero_vad.onnx (Silero VAD, via the sherpa-onnx "asr-models" release)
+  Copyright Silero Team (snakers4/silero-vad). MIT License.
+  https://github.com/snakers4/silero-vad

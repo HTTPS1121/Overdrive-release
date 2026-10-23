@@ -95,7 +95,14 @@ public class CamViewOwnershipContractTest {
         assertFalse("the lenient lifecycle hide must not carry the API hide",
                 hideBody.contains("pipeline.disableCamView();"));
         assertTrue(hideBody.contains("singletonMap(\"enabled\", false)"));
-        assertFalse(hideBody.contains("hideCamViewIfAllowed("));
+        // Only an automation run's hide is ownership-checked; a superseded one returns
+        // before the enabled=false persist and leaves the newer view up.
+        int tokened = hideBody.indexOf("pipeline.hideCamViewIfAllowed(hideOwner)");
+        int notOwner = hideBody.indexOf("GpuSurveillancePipeline.CAMVIEW_HIDE_NOT_OWNER", tokened);
+        int persistOff = hideBody.indexOf("singletonMap(\"enabled\", false)");
+        assertTrue(hideBody.indexOf("if (hideOwner == null)") >= 0);
+        assertTrue(tokened >= 0);
+        assertTrue(notOwner > tokened && notOwner < persistOff);
 
         int persist = source.indexOf("persistCamViewGeometry(p, target);", show);
         // Fail-open contract: a FAILED geometry persist installs the requested
@@ -169,7 +176,7 @@ public class CamViewOwnershipContractTest {
         String handler = readRepositoryFile(HANDLER);
         // The show route mints ONE session per USER request...
         int mint = handler.indexOf(
-                "showSession = pipeline.noteCamViewShowRequest(null);");
+                "showSession = pipeline.noteCamViewShowRequest(showOwner);");
         assertTrue(mint >= 0);
         // ...at ENTRY, before any config I/O. The persist calls below the mint can
         // block on the cross-process config file lock for hundreds of ms; a mint
@@ -674,10 +681,11 @@ public class CamViewOwnershipContractTest {
                 "app/src/main/java/com/overdrive/app/camera/PanoramicCameraGpu.java");
         // Every closeCameraForPath must be preceded by a CHECKED drainer stop:
         // one helper definition plus one guarded call per close site (stop,
-        // yield, restart). Proceeding past a wedged drainer into the close is
-        // the FORTIFY destroyed-mutex abort — it kills the process before the
-        // async trip-safe restart coordinator can checkpoint the trip.
-        assertTrue(count(source, "if (!stopEncoderDrainersBeforeCameraClose(") == 3);
+        // yield, restart, DI4 HAL-death release, DI4 half-open close).
+        // Proceeding past a wedged drainer into the close is the FORTIFY
+        // destroyed-mutex abort — it kills the process before the async
+        // trip-safe restart coordinator can checkpoint the trip.
+        assertTrue(count(source, "if (!stopEncoderDrainersBeforeCameraClose(") == 5);
         // The unchecked fire-and-forget pattern must not come back outside the
         // helper itself (2 = the helper's own two calls).
         assertTrue(count(source, ".stopDrainerForCameraClose()") == 2);

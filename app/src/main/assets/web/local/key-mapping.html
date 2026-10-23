@@ -7,8 +7,8 @@
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest — two task-based tabs:
         Bindings — the enable switch + list of current key bindings
@@ -25,11 +25,54 @@
             return false;
         };
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
-        /* Big capture box — shows the last hardware key the user pressed while
-           arming. JetBrains Mono keycode, sized for a phone in a car cradle. */
+        /* Summary tile (mock status hero): icon | master switch row (title + ON/OFF badge over
+           the description) | switch. app-shell.js mirrors #kmStatusBadge into .is-off. */
+        .km-hero > .setting-row {
+            grid-column: 2 / -1;
+            grid-row: 1;
+            min-width: 0;
+            margin: 0;
+            padding: 0;
+            border-bottom: 0;
+        }
+        .km-hero .setting-info { display: flex; flex-wrap: wrap; align-items: center; min-width: 0; }
+        .km-hero .setting-info > .setting-name {
+            flex: 0 1 auto;
+            min-width: 0;
+            margin-right: 12px;
+            font-size: var(--fs-headline);
+            font-weight: 700;
+            line-height: 1.2;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+        [dir="rtl"] .km-hero .setting-info > .setting-name { margin-right: 0; margin-left: 12px; }
+        .km-hero .setting-info > .status-badge { flex: none; margin: 4px 0; }
+        .km-hero .setting-info > .setting-desc {
+            flex: 0 0 100%;
+            min-width: 0;
+            margin-top: 6px;
+            font-size: var(--fs-label);
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+        /* The switch stays beside the text on phones. */
+        @media (max-width: 768px) {
+            .km-hero > .setting-row { flex-direction: row; align-items: center; }
+            .km-hero > .setting-row > * + * { margin-top: 0; }
+            .km-hero > .setting-row > .setting-control { width: auto; margin-left: 16px; margin-right: 0; }
+            [dir="rtl"] .km-hero > .setting-row > .setting-control { margin-left: 0; margin-right: 16px; }
+        }
+        @media (max-width: 480px) {
+            .km-hero .setting-info > .setting-name { font-size: var(--fs-title); }
+        }
+
+        /* Capture box (native contract: #kmCaptureBox + .armed) — shows the last hardware key
+           the user pressed while arming. JetBrains Mono keycode, sized for a phone in a car cradle. */
         .km-capture {
             display: flex;
             flex-direction: column;
@@ -38,125 +81,225 @@
             gap: 6px; /* Chrome 58 ignores gap — vertical fallback added below */
             margin: 14px 0;
             padding: 22px 16px;
-            border: 1px dashed var(--brand-primary);
-            border-radius: 14px;
-            background: rgba(0, 212, 170, 0.06);
+            border: 1px dashed var(--outline);
+            border-radius: var(--radius-md);
+            background: var(--well);
             text-align: center;
         }
         .km-capture > * + * { margin-top: 6px; }
-        .km-capture.armed { border-style: solid; background: rgba(0, 212, 170, 0.12); }
+        .km-capture.armed { border-style: solid; border-color: var(--primary); background: var(--primary-soft); }
         .km-capture .km-keycode {
             font-family: 'JetBrains Mono', monospace;
             font-size: 40px;
             font-weight: 700;
-            color: var(--brand-primary);
+            color: var(--primary);
             line-height: 1;
         }
-        .km-capture .km-caphint { font-size: 12px; color: var(--text-muted); }
-        /* One binding row in the list */
+        .km-capture .km-caphint { font-size: var(--fs-caption); color: var(--on-surface-variant); }
+        /* Binding tiles (automations step-tile look): primary bar, key-code chip, action + press
+           detail, press tag, switch, tonal edit / delete. Quick-control rows share the tile. */
         .km-binding {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 12px 14px;
-            background: var(--bg-elevated);
-            border-radius: 12px;
-            margin-bottom: 10px;
+            padding: 10px 12px;
+            border-left: 3px solid var(--primary);
+            border-radius: var(--radius-md);
+            background-color: var(--well);
+            color: var(--on-surface);
         }
-        /* Chrome 58 (Android 7.1 head-unit WebView) does NOT support flex `gap`
-           (shipped Chrome 84) — it's silently ignored on-car, so the keycode chip,
-           action text and delete icon butt together with no spacing. Sibling-margin
-           fallback (same idiom as .btn-group / .btn in styles.css) works on Chrome 58
-           AND modern engines and adds no leading margin. Applied to every flex row
-           on this page that relies on gap. */
+        [dir="rtl"] .km-binding { border-left: 0; border-right: 3px solid var(--primary); }
+        /* Chrome 58 has no flex `gap` (Chrome 84): sibling margins instead. */
         .km-binding > * + * { margin-left: 12px; }
+        [dir="rtl"] .km-binding > * + * { margin-left: 0; margin-right: 12px; }
+        #kmQcList > .km-binding > span { flex: 1 1 auto; min-width: 0; font-size: var(--fs-body); overflow-wrap: break-word; word-wrap: break-word; }
+        #kmQcList > .km-binding > .btn { flex: none; }
+        #kmList > .km-binding {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+            grid-column-gap: 12px;
+            grid-row-gap: 8px;
+        }
+        #kmList > .km-binding + .km-binding { margin-top: 8px; }
+        #kmList > .km-binding > * + * { margin-left: 0; margin-right: 0; }
         .km-binding .km-key {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 48px;
+            height: 40px;
+            padding: 0 10px;
+            border-radius: var(--radius-sm);
+            background-color: var(--primary-soft);
+            color: var(--primary);
             font-family: 'JetBrains Mono', monospace;
+            font-size: var(--fs-body);
             font-weight: 700;
-            font-size: 15px;
-            color: var(--brand-primary);
-            min-width: 46px;
-            text-align: center;
-            padding: 6px 8px;
-            background: rgba(0, 212, 170, 0.08);
-            border-radius: 8px;
+            font-variant-numeric: tabular-nums;
         }
-        .km-binding .km-meta { flex: 1; min-width: 0; }
-        .km-binding .km-meta .km-action { font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .km-binding .km-meta .km-sub { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .km-press-pill {
-            font-size: 11px;
+        .km-binding .km-meta { min-width: 0; }
+        .km-binding .km-meta .km-action {
+            color: var(--on-surface);
+            font-size: var(--fs-body);
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            padding: 3px 8px;
-            border-radius: 999px;
-            background: var(--bg-subtle, rgba(255,255,255,0.06));
-            color: var(--text-secondary);
+            line-height: 1.3;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
         }
+        .km-binding .km-meta .km-sub {
+            margin-top: 2px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            line-height: 1.4;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+        .km-press-pill {
+            justify-self: start;
+            min-width: 0;
+            max-width: 100%;
+            padding: 4px 10px;
+            border-radius: var(--radius-xs);
+            background-color: var(--well-2);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 600;
+            line-height: 1.3;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+        #kmList .btn.btn-icon {
+            width: 40px;
+            height: 40px;
+            min-width: 0;
+            padding: 0;
+            border: 0;
+            border-radius: var(--radius-full);
+            background-color: var(--well-2);
+            color: var(--on-surface-variant);
+        }
+        #kmList .btn.btn-icon:hover { background-color: var(--well-2); color: var(--on-surface); }
+        #kmList .btn.btn-icon.btn-danger-ghost,
+        #kmList .btn.btn-icon.btn-danger-ghost:hover { background-color: var(--danger-soft); color: var(--danger); }
+        @supports ((-webkit-backdrop-filter: none) or (backdrop-filter: none)) {
+            #kmList .btn.btn-icon { -webkit-backdrop-filter: none; backdrop-filter: none; }
+        }
+        @media (pointer: coarse) {
+            #kmList .btn.btn-icon { width: 44px; height: 44px; }
+        }
+        :root[data-android-embed="1"] #kmList .btn.btn-icon { width: 56px; height: 56px; }
+        /* Narrow: key chip + action on the first line; tag, switch and buttons on the second. */
+        @media (max-width: 1023px) {
+            #kmList > .km-binding { grid-template-columns: auto minmax(0, 1fr) auto auto auto; }
+            #kmList > .km-binding > .km-key { grid-column: 1; grid-row: 1; }
+            #kmList > .km-binding > .km-meta { grid-column: 2 / -1; grid-row: 1; }
+            #kmList > .km-binding > .km-press-pill { grid-column: 1 / 3; grid-row: 2; }
+            #kmList > .km-binding > .toggle-switch { grid-column: 3; grid-row: 2; }
+            #kmList > .km-binding > .btn-icon { grid-column: 4; grid-row: 2; }
+            #kmList > .km-binding > .btn-danger-ghost { grid-column: 5; }
+        }
+
         .km-adv-warn {
-            display: flex; gap: 10px; align-items: flex-start;
-            margin-top: 12px; padding: 10px 14px; border-radius: 10px;
-            background: rgba(255, 179, 0, 0.10);
-            border: 1px solid rgba(255, 179, 0, 0.35);
-            font-size: 12.5px; color: var(--text-secondary); line-height: 1.5;
+            display: flex;
+            align-items: flex-start;
+            margin-top: 12px;
+            padding: 12px 14px;
+            border-radius: var(--radius-md);
+            background-color: var(--warning-soft);
+            color: var(--on-surface);
+            font-size: var(--fs-label);
+            line-height: 1.5;
         }
         /* Chrome 58 gap fallback — keep the warning icon off its text. */
         .km-adv-warn > * + * { margin-left: 10px; }
-        .km-adv-warn svg { width: 18px; height: 18px; flex: none; color: #ffb300; margin-top: 1px; }
-        /* Uniform width for every dropdown in the Add form so the right-hand
-           control column lines up regardless of the longest option's text. */
-        #kmKnownButton, #kmPressType, #kmActionKind, #kmCuratedAction, #kmPayload, #kmOpenApp, #kmClipPreset {
-            width: 190px;
-            max-width: 55vw;
+        [dir="rtl"] .km-adv-warn > * + * { margin-left: 0; margin-right: 10px; }
+        .km-adv-warn svg { width: 18px; height: 18px; flex: none; color: var(--warning); margin-top: 1px; }
+        /* Accessibility / restart notes: warning tint; a neutral well while the service starts. */
+        .km-note.info-box-framed { border: 0; background-color: var(--warning-soft); color: var(--on-surface); }
+        .km-note .info-icon { stroke: var(--warning); }
+        .km-note.km-note-info { background-color: var(--well); }
+        .km-note.km-note-info .info-icon { stroke: var(--primary); }
+        /* Uniform width for every dropdown in the Add form so the right-hand control column
+           lines up; stacked rows (768px and below) let them fill the row instead. */
+        @media (min-width: 769px) {
+            #kmKnownButton, #kmPressType, #kmActionKind, #kmCuratedAction, #kmPayload, #kmOpenApp, #kmClipPreset {
+                width: 240px;
+                max-width: 100%;
+            }
         }
-        /* Chrome 58 fallback for the value-to-slider gap in the custom clip
-           window controls (shared .slider-control relies on flex gap). */
-        #kmClipCustomWrap .slider-control > * + * { margin-left: 12px; }
-        /* Sequence step chips — numbered actions the user has chained. */
-        .km-steps { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
-        /* Chrome 58 gap fallback — vertical spacing between step chips. */
-        .km-steps > * + * { margin-top: 6px; }
+        :root[data-android-embed="1"] .setting-control > .select-control { min-height: 56px; }
+        /* Double-tap speed read-out beside its slider; sliders fill stacked rows. */
+        .km-dt-val { display: inline-block; min-width: 40px; margin-left: 10px; text-align: right; font-variant-numeric: tabular-nums; }
+        [dir="rtl"] .km-dt-val { margin-left: 0; margin-right: 10px; text-align: left; }
+        @media (max-width: 768px) {
+            .km-dt-ctl > .slider,
+            #kmClipCustomWrap .slider-control > .slider { flex: 1 1 auto; width: auto; min-width: 0; }
+        }
+        /* Sequence steps — numbered actions the user has chained, as small step tiles. */
+        .km-steps { display: flex; flex-direction: column; margin-top: 14px; }
+        /* Chrome 58 gap fallback — vertical spacing between step tiles. */
+        .km-steps > * + * { margin-top: 8px; }
         .km-step {
-            display: flex; align-items: center; gap: 8px;
-            padding: 8px 10px 8px 12px;
-            background: var(--bg-elevated); border-radius: 10px;
-            font-size: 13px; color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            min-height: 48px;
+            padding: 4px 6px 4px 12px;
+            border-left: 3px solid var(--primary);
+            border-radius: var(--radius-md);
+            background-color: var(--well);
+            color: var(--on-surface);
+            font-size: var(--fs-label);
         }
-        /* Chrome 58 gap fallback — step number/text off the ✕ remove button. */
+        [dir="rtl"] .km-step { padding: 4px 12px 4px 6px; border-left: 0; border-right: 3px solid var(--primary); }
+        /* Chrome 58 gap fallback — step text off the reorder / remove buttons. */
         .km-step > * + * { margin-left: 8px; }
-        .km-step span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        [dir="rtl"] .km-step > * + * { margin-left: 0; margin-right: 8px; }
+        .km-step span { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; word-wrap: break-word; }
+        /* Reorder arrows + remove ✕: round tonal buttons (remove in the danger tone);
+           arrows dim and stop responding at the ends. */
+        .km-step-move,
         .km-step-x {
-            flex: none; border: none; background: transparent; cursor: pointer;
-            color: var(--text-muted); font-size: 20px; line-height: 1; padding: 0 4px;
+            display: flex;
+            flex: none;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            padding: 0;
+            border: 0;
+            border-radius: var(--radius-full);
+            background-color: var(--well-2);
+            color: var(--on-surface-variant);
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
         }
-        .km-step-x:hover { color: var(--danger); }
-        /* Reorder arrows on a sequence step — same muted-icon treatment as the
-           remove ✕, brand-tinted on hover; dimmed + non-interactive at the ends. */
-        .km-step-move {
-            flex: none; border: none; background: transparent; cursor: pointer;
-            color: var(--text-muted); font-size: 15px; line-height: 1; padding: 0 2px;
+        .km-step-x { background-color: var(--danger-soft); color: var(--danger); font-size: 22px; }
+        .km-step-move:disabled { opacity: 0.38; cursor: default; }
+        @media (hover: hover) {
+            .km-step-move:not(:disabled):hover { color: var(--primary); }
         }
-        .km-step-move:hover { color: var(--brand-primary); }
-        .km-step-move:disabled { opacity: 0.3; cursor: default; }
-        /* Disabled binding row — muted so the user can see it's inactive. */
-        .km-binding.km-disabled { opacity: 0.5; }
-        .km-binding.km-disabled .km-key { color: var(--text-muted); background: rgba(128,128,128,0.08); }
-        /* Small toggle switch for inline use in binding rows. Shares the
-           .toggle-switch/toggle-slider classes but scaled down so it fits
-           the compact binding-row height without bloating it. */
-        .toggle-switch-sm { transform: scale(0.75); flex: none; }
-        /* Empty-state styling. The shared .empty-state rules live in
-           automations.css, which this page does NOT load — without these the
-           bindings empty-state icon renders at its full intrinsic size with no
-           text spacing (the "big weird icon" bug). Mirror automations.css. */
-        .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted); }
-        .empty-state svg { width: 48px; height: 48px; margin-bottom: 16px; opacity: 0.4; }
-        .empty-state p { font-size: 14px; margin-bottom: 6px; color: var(--text-secondary); }
-        .empty-state .empty-state-hint { font-size: 13px; margin-bottom: 20px; color: var(--text-muted); }
+        @media (pointer: coarse) {
+            .km-step-move, .km-step-x { width: 44px; height: 44px; }
+        }
+        :root[data-android-embed="1"] .km-step-move,
+        :root[data-android-embed="1"] .km-step-x { width: 56px; height: 56px; }
+        /* Disabled binding: neutral bar and chip, muted action; the sub-line also says so. */
+        .km-binding.km-disabled { border-left-color: var(--outline-variant); }
+        [dir="rtl"] .km-binding.km-disabled { border-right-color: var(--outline-variant); }
+        .km-binding.km-disabled .km-key { background-color: var(--well-2); color: var(--on-surface-variant); }
+        .km-binding.km-disabled .km-meta .km-action { color: var(--on-surface-variant); }
+        /* Binding-row switch: full-size M3 switch (no longer scaled down to a small target). */
+        .toggle-switch-sm { flex: none; }
+        /* Empty state (this page does not load automations.css). */
+        .empty-state { text-align: center; padding: 40px 24px; color: var(--on-surface-variant); }
+        .empty-state svg { display: block; width: 48px; height: 48px; margin: 0 auto 16px; color: var(--outline); }
+        .empty-state p { margin: 0 0 6px; color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; }
+        .empty-state .empty-state-hint { max-width: 46ch; margin: 0 auto 20px; color: var(--on-surface-variant); font-size: var(--fs-label); font-weight: 400; }
     </style>
 </head>
-<body>
+<body class="r-settings">
     <div class="app-layout">
         <div id="app-shell-mount"></div>
         <main class="main-content">
@@ -170,10 +313,27 @@
 
             <header class="page-header">
                 <h1 class="page-title" data-i18n="keymap.page_title">Key Mapping</h1>
-                <div class="header-actions">
-                    <span class="status-badge inactive" id="kmStatusBadge" data-i18n="keymap.badge_off">OFF</span>
-                </div>
+                <div class="header-actions"></div>
             </header>
+
+            <!-- Summary tile above the section tabs (mock status hero): the master switch row with
+                 the ON/OFF badge, moved here from the header so phones and the car show it too. -->
+            <div class="r-hero km-hero" data-hero-badge="kmStatusBadge">
+                <span class="r-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M7 13h10"/></svg></span>
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-name r-hero-title" data-i18n="keymap.enable">Enable key mapping</div>
+                        <span class="status-badge inactive" id="kmStatusBadge" data-i18n="keymap.badge_off">OFF</span>
+                        <div class="setting-desc r-hero-sub" data-i18n="keymap.enable_desc">Master switch. When off, all hardware buttons behave exactly as stock — no key is intercepted.</div>
+                    </div>
+                    <div class="setting-control">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="kmEnable" onchange="KM.saveConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
 
             <div class="page-body">
                 <!-- ===== BINDINGS TAB ===== -->
@@ -186,14 +346,14 @@
                              on. Mutually exclusive with #kmA11yPending below — updateA11yCard()
                              shows exactly one, and hides the settings button in the pending case
                              (there is nothing to go and change). Both need ids for that. -->
-                        <div class="info-box-note info-box-framed" id="kmA11yNeeded" style="background:rgba(255,179,0,0.10);border:1px solid rgba(255,179,0,0.35);">
+                        <div class="info-box-note info-box-framed km-note" id="kmA11yNeeded">
                             <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="#ffb300" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                             <div data-i18n="keymap.a11y_needed">Key mapping needs the OverDrive accessibility service turned on to intercept hardware buttons. Bindings are saved but won't fire until you enable it.</div>
                         </div>
                         <!-- Shown INSTEAD of the amber note when the service is enabled but the
                              system hasn't finished starting it — the normal window right after a
                              car power-on, which clears on its own. -->
-                        <div class="info-box-note info-box-framed" id="kmA11yPending" style="display:none;background:rgba(3,169,244,0.10);border:1px solid rgba(3,169,244,0.35);">
+                        <div class="info-box-note info-box-framed km-note km-note-info" id="kmA11yPending" style="display:none;">
                             <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="#03a9f4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                             <div data-i18n="keymap.a11y_pending">The service is enabled and starting up — hardware buttons become active in a few seconds. No action needed.</div>
                         </div>
@@ -206,7 +366,7 @@
 
                 <div class="card" data-tab="bindings" id="kmReplayRestartCard" style="display:none;">
                     <div class="card-body">
-                        <div class="info-box-note info-box-framed" style="background:rgba(255,179,0,0.10);border:1px solid rgba(255,179,0,0.35);">
+                        <div class="info-box-note info-box-framed km-note">
                             <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="#ffb300" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                             <div data-i18n="keymap.clip_restart_required">Instant replay is saved. The full window becomes available after a cold restart of Camera daemon from Daemons. The current dashcam recording was not interrupted.</div>
                         </div>
@@ -215,18 +375,6 @@
 
                 <div class="card" data-tab="bindings">
                     <div class="card-body">
-                        <div class="setting-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="keymap.enable">Enable key mapping</div>
-                                <div class="setting-desc" data-i18n="keymap.enable_desc">Master switch. When off, all hardware buttons behave exactly as stock — no key is intercepted.</div>
-                            </div>
-                            <div class="setting-control">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="kmEnable" onchange="KM.saveConfig()">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                            </div>
-                        </div>
                         <div class="setting-row">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="keymap.allow_advanced">Advanced actions</div>
@@ -244,11 +392,11 @@
                                 <div class="setting-name" data-i18n="keymap.double_tap_window">Double-tap speed</div>
                                 <div class="setting-desc" data-i18n="keymap.double_tap_window_desc">How long to wait for a second tap before a double-tap binding gives up and the single-tap fires. Raise it if your double-taps often trigger the single action; lower it if a single tap feels laggy.</div>
                             </div>
-                            <div class="setting-control" style="display:flex;align-items:center;">
+                            <div class="setting-control km-dt-ctl" style="display:flex;align-items:center;">
                                 <input type="range" class="slider" id="kmDoubleTapWindow" min="250" max="1500" step="50"
                                        oninput="KM.onDoubleTapWindowInput()" onchange="KM.onDoubleTapWindowChange()"
                                        style="vertical-align:middle;">
-                                <span id="kmDoubleTapWindowVal" style="margin-left:10px;min-width:40px;display:inline-block;text-align:right;">0.5s</span>
+                                <span id="kmDoubleTapWindowVal" class="km-dt-val">0.5s</span>
                             </div>
                         </div>
                         <!-- Shared driver-cluster size, injected by cluster-projection.js.
@@ -386,6 +534,7 @@
                                     <select id="kmPayload" class="select-control"></select>
                                 </div>
                             </div>
+                            <div class="setting-hint" id="kmVoiceAssistantHint" style="display:none;margin:12px 0 4px;" data-i18n="keymap.voice_assistant_hint">Starts a voice command, the same as saying “OverDrive”. Works while the voice assistant is turned on in Assistant settings and the car is on.</div>
 
                             <!-- Instant replay has two numeric dimensions instead
                                  of the regular one-value payload. Presets cover the
@@ -519,8 +668,8 @@
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/key-mapping.js?v=36"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/key-mapping.js?v=38"></script>
     <script src="../shared/cluster-projection.js?v=1"></script>
     <script>
         function toggleSidebar() {

@@ -6,6 +6,7 @@ import com.overdrive.app.surveillance.SurveillanceConfig;
 import com.overdrive.app.surveillance.SurveillanceConfigManager;
 import com.overdrive.app.surveillance.SurveillanceEngineGpu;
 import com.overdrive.app.surveillance.MotionPipelineV2;
+import com.overdrive.app.surveillance.MotionGridGeometry;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -21,7 +22,7 @@ import java.io.OutputStream;
  */
 public class SurveillanceApiHandler {
     
-    private static final String UNIFIED_CONFIG_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json");
+    private static final String UNIFIED_CONFIG_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_config.json");
     
     /**
      * Handle surveillance API requests.
@@ -37,6 +38,23 @@ public class SurveillanceApiHandler {
         }
         if (cleanPath.equals("/api/surveillance/config") && method.equals("POST")) {
             handleConfigPost(out, body);
+            return true;
+        }
+        // POST /api/surveillance/impact — one confirmed hit from the app-side impact watch.
+        if (cleanPath.equals("/api/surveillance/impact") && method.equals("POST")) {
+            double peak = Double.NaN;
+            try {
+                peak = new JSONObject(body == null ? "{}" : body).optDouble("peak", Double.NaN);
+            } catch (Exception ignored) {}
+            JSONObject resp = new JSONObject();
+            if (Double.isNaN(peak) || peak <= 0 || peak > 200) {
+                resp.put("success", false);
+                resp.put("error", "peak must be a positive number of m/s²");
+            } else {
+                resp.put("success", true);
+                resp.put("accepted", com.overdrive.app.surveillance.impact.ParkedImpactController.onImpact(peak));
+            }
+            HttpResponse.sendJson(out, resp.toString());
             return true;
         }
         if (cleanPath.equals("/api/surveillance/status")) {
@@ -523,6 +541,11 @@ public class SurveillanceApiHandler {
         response.put("success", true);
         
         JSONObject config = new JSONObject();
+        config.put("roiGridVersion", MotionGridGeometry.NATIVE_ABI_VERSION);
+        config.put("motionGrid", motionGridJson(MotionGridGeometry.GRID_ROWS));
+        for (int q = 0; q < 4; q++) {
+            config.put("roiGridVersion_Q" + q, 1);
+        }
         
         SurveillanceConfig sentryConfig = null;
         SurveillanceEngineGpu sentry = null;
@@ -550,9 +573,8 @@ public class SurveillanceApiHandler {
             config.put("sadThreshold", sentry != null ? sentry.getSadThreshold() : 0.05f);
             config.put("preRecordSeconds", sentryConfig.getPreRecordSeconds());
             config.put("postRecordSeconds", sentryConfig.getPostRecordSeconds());
-            // Fallback must match the real per-quadrant grid (10×7=70), not the
-            // old dead 640×480 figure — the ROI editor posts back a length-70
-            // roiBlocks_Q* array and applyEffectiveRoi drops any other length.
+            // The fallback uses the full-height 80-cell per-quadrant grid;
+            // legacy 70-cell roiBlocks_Q* arrays are explicitly migrated.
             config.put("totalBlocks", sentry != null ? sentry.getTotalBlocks()
                     : com.overdrive.app.surveillance.MotionPipelineV2.TOTAL_BLOCKS);
             config.put("flashImmunity", sentryConfig.getFlashImmunity());
@@ -660,6 +682,9 @@ public class SurveillanceApiHandler {
         if (survConfig == null) survConfig = new JSONObject();
         config.put("deterrentAction", survConfig.optString("deterrentAction", "silent"));
         config.put("deterrentCooldownSeconds", survConfig.optInt("deterrentCooldownSeconds", 60));
+        config.put("deterrentTrigger", survConfig.optString("deterrentTrigger", "any"));
+        config.put("impactDetection", survConfig.optBoolean("impactDetection", false));
+        config.put("impactSensitivity", survConfig.optString("impactSensitivity", "medium"));
         config.put("screenDeterrentEnabled", survConfig.optBoolean("screenDeterrentEnabled", false));
         config.put("screenDeterrentDurationSeconds", survConfig.optInt("screenDeterrentDurationSeconds", 8));
         config.put("screenDeterrentMessage", survConfig.optString("screenDeterrentMessage", ""));
@@ -688,15 +713,29 @@ public class SurveillanceApiHandler {
         // Parked cellular keep-alive. Default FALSE (opt-in) — see the daemon's
         // keep-alive loop; only needed where the data module sleeps after ACC OFF.
         config.put("mobileDataKeepAlive", survConfig.optBoolean("mobileDataKeepAlive", false));
+        config.put("bluetoothKeepAlive", com.overdrive.app.config.UnifiedConfigManager
+                .isBluetoothKeepAliveEnabled());
         // Experimental DiLink 5 cloud heartbeat. Keep capability/readiness
         // separate so the UI can hide it on other generations and explain why
         // it is disabled when a BYD account has not been verified.
+        boolean di5CloudKeepAlivePollerEnabled =
+                com.overdrive.app.config.UnifiedConfigManager
+                        .isDi5CloudKeepAlivePollerEnabled();
+        boolean di5CloudKeepAliveConfigured =
+                survConfig.optBoolean("di5CloudKeepAlive", false);
         boolean di5CloudKeepAliveSupported =
-                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+                di5CloudKeepAlivePollerEnabled
+                        && com.overdrive.app.camera.dilink5.DiLink5Platform
+                                .isSelected();
         com.overdrive.app.byd.cloud.BydCloudConfig bydCloudConfig =
                 com.overdrive.app.byd.cloud.BydCloudConfig.fromUnifiedConfig();
         config.put("di5CloudKeepAlive",
-                survConfig.optBoolean("di5CloudKeepAlive", false));
+                di5CloudKeepAlivePollerEnabled
+                        && di5CloudKeepAliveConfigured);
+        config.put("di5CloudKeepAliveConfigured",
+                di5CloudKeepAliveConfigured);
+        config.put("di5CloudKeepAlivePollerEnabled",
+                di5CloudKeepAlivePollerEnabled);
         config.put("di5CloudKeepAliveSupported",
                 di5CloudKeepAliveSupported);
         config.put("di5CloudKeepAliveCloudReady",
@@ -710,14 +749,21 @@ public class SurveillanceApiHandler {
         // the user's own platform declaration.
         config.put("di5ParkedKeepAlive",
                 survConfig.optBoolean("di5ParkedKeepAlive", false));
-        // DiLink 5 QNX common-network keep-alive (Experimental). Shown only when
-        // the firmware exposes the QnxMessage service.
-        config.put("di5QnxNetworkKeepAlive",
-                survConfig.optBoolean("di5QnxNetworkKeepAlive", false));
-        config.put("di5QnxNetworkKeepAliveMaxMinutes",
-                survConfig.optInt("di5QnxNetworkKeepAliveMaxMinutes", 60));
-        config.put("di5QnxNetworkKeepAliveSupported",
-                com.overdrive.app.byd.dilink5.QnxMessageBus.get().isAvailable());
+        // Opt-in DiLink 5 assist-off profile (per control, all default OFF). The
+        // preferences live in the "vehicle" section next to the model selection
+        // they depend on. assistOffAvailable is true only in DiLink 5 mode with
+        // the model EXPLICITLY confirmed as the Sealion 7 (never the
+        // modelSource=unset renderer default); the toggles stay disabled otherwise.
+        org.json.JSONObject vehicleConfig =
+                com.overdrive.app.config.UnifiedConfigManager.getVehicle();
+        config.put("assistOff",
+                com.overdrive.app.byd.assist.DiLink5AssistOffProfile
+                        .fromVehicle(vehicleConfig).toJson());
+        config.put("assistOffAvailable",
+                com.overdrive.app.byd.assist.DiLink5AssistOffGate.modelConfirmedForProfile(
+                        com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected(),
+                        vehicleConfig.optString("modelId", ""),
+                        vehicleConfig.optString("modelSource", "")));
         // HV-battery SoC surveillance cutoff (%). Lives in the "power" section
         // (the key SocCutoffMonitor reads), NOT "surveillance" — surface it on
         // the surveillance config so the General-tab slider can hydrate. 0=Off.
@@ -816,8 +862,14 @@ public class SurveillanceApiHandler {
                 // Per-quadrant block mask and enabled flag from unified config (source of truth)
                 try {
                     org.json.JSONObject survCfg = com.overdrive.app.config.UnifiedConfigManager.getSurveillance();
+                    String gridVersionKey = "roiGridVersion_" + qKeys[q];
+                    config.put(gridVersionKey, survCfg.optInt(gridVersionKey, 1));
                     org.json.JSONArray blocks = survCfg.optJSONArray("roiBlocks_" + qKeys[q]);
-                    if (blocks != null) config.put("roiBlocks_" + qKeys[q], blocks);
+                    byte[] migrated = MotionPipelineV2.roiMaskFromJson(blocks);
+                    if (migrated != null) {
+                        JSONArray effectiveBlocks = MotionPipelineV2.roiMaskToJson(migrated);
+                        config.put("roiBlocks_" + qKeys[q], effectiveBlocks);
+                    }
                     // Read enabled flag from persisted config, not in-memory sentryConfig
                     if (survCfg.has("roiEnabled_" + qKeys[q])) {
                         config.put("roiEnabled_" + qKeys[q], survCfg.optBoolean("roiEnabled_" + qKeys[q], false));
@@ -870,6 +922,15 @@ public class SurveillanceApiHandler {
                             camCfg.optString(
                                 com.overdrive.app.camera.dilink5.DiLink5QCarCamBackend
                                     .CONFIG_CAMERA_MAPPING_KEY,
+                                ""));
+                    }
+                    if (com.overdrive.app.camera.camera2.Camera2Platform.isMode(cameraMode)) {
+                        config.put(
+                            com.overdrive.app.camera.camera2.Camera2AvmBackend
+                                .CONFIG_SLICE_ORDER_KEY,
+                            camCfg.optString(
+                                com.overdrive.app.camera.camera2.Camera2AvmBackend
+                                    .CONFIG_SLICE_ORDER_KEY,
                                 ""));
                     }
                     // Red-calibration-overlay GL mask fallback. The dialog
@@ -954,6 +1015,8 @@ public class SurveillanceApiHandler {
         
         java.util.Map<String, Object> statusMap = CameraDaemon.getSurveillanceStatus();
         JSONObject statusJson = new JSONObject(statusMap);
+        statusJson.put("bluetoothKeepAlive", com.overdrive.app.config.UnifiedConfigManager
+                .isBluetoothKeepAliveEnabled());
         response.put("status", statusJson);
         HttpResponse.sendJson(out, response.toString());
     }
@@ -963,6 +1026,11 @@ public class SurveillanceApiHandler {
 
         try {
             JSONObject configJson = new JSONObject(body);
+            if (configJson.has("bluetoothKeepAlive")
+                    && !(configJson.opt("bluetoothKeepAlive") instanceof Boolean)) {
+                HttpResponse.sendJsonError(out, "Bluetooth setting must be a boolean");
+                return;
+            }
 
             // ---- Camera profile selection (vehicle class) ----
             // Surfaces save failures back to the caller — saveCameraProfile
@@ -1105,6 +1173,38 @@ public class SurveillanceApiHandler {
                 CameraDaemon.log(normalized.isEmpty()
                     ? "DiLink 5 camera mapping reset to Auto"
                     : "DiLink 5 camera mapping set to " + normalized);
+                configChanged = true;
+            }
+
+            // Camera2 360 slice order. Empty means Auto (the camera's own order).
+            if (configJson.has(
+                    com.overdrive.app.camera.camera2.Camera2AvmBackend.CONFIG_SLICE_ORDER_KEY)) {
+                if (!com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+                    HttpResponse.sendJsonError(out,
+                        "The 360 camera order is only available in Camera2 360 mode");
+                    return;
+                }
+                String normalized = com.overdrive.app.camera.camera2.Camera2AvmBackend
+                    .normalizeSliceOrder(configJson.optString(
+                        com.overdrive.app.camera.camera2.Camera2AvmBackend
+                            .CONFIG_SLICE_ORDER_KEY, ""));
+                if (normalized == null) {
+                    HttpResponse.sendJsonError(out,
+                        "The 360 camera order must name F, R, L and B once each, e.g. B;L;R;F");
+                    return;
+                }
+                org.json.JSONObject camCfg = new org.json.JSONObject();
+                camCfg.put(
+                    com.overdrive.app.camera.camera2.Camera2AvmBackend.CONFIG_SLICE_ORDER_KEY,
+                    normalized);
+                if (!com.overdrive.app.config.UnifiedConfigManager
+                        .updateSection("camera", camCfg)) {
+                    HttpResponse.sendJsonError(out, "Could not persist the 360 camera order");
+                    return;
+                }
+                CameraDaemon.log(normalized.isEmpty()
+                    ? "360 camera order reset to Auto"
+                    : "360 camera order set to " + normalized);
                 configChanged = true;
             }
             
@@ -1345,6 +1445,29 @@ public class SurveillanceApiHandler {
                 }
             }
             
+            if (configJson.has("impactDetection") || configJson.has("impactSensitivity")) {
+                java.util.Map<String, Object> impactUpdates = new java.util.HashMap<>();
+                Object enabled = configJson.opt("impactDetection");
+                if (enabled instanceof Boolean) impactUpdates.put("impactDetection", enabled);
+                String sens = configJson.optString("impactSensitivity", null);
+                if ("low".equals(sens) || "medium".equals(sens) || "high".equals(sens)) {
+                    impactUpdates.put("impactSensitivity", sens);
+                }
+                if (!impactUpdates.isEmpty()) {
+                    com.overdrive.app.config.UnifiedConfigManager.updateValues("surveillance", impactUpdates);
+                    com.overdrive.app.surveillance.impact.ParkedImpactController.reconcileNow();
+                }
+            }
+
+            if (configJson.has("deterrentTrigger")) {
+                String trigger = configJson.optString("deterrentTrigger", "any");
+                if ("any".equals(trigger) || "person".equals(trigger)
+                        || "person_or_vehicle".equals(trigger)) {
+                    com.overdrive.app.config.UnifiedConfigManager.updateValues(
+                            "surveillance", java.util.Collections.singletonMap("deterrentTrigger", trigger));
+                }
+            }
+
             if (configJson.has("deterrentCooldownSeconds")) {
                 int cooldown = configJson.optInt("deterrentCooldownSeconds", 60);
                 if (cooldown >= 10 && cooldown <= 600) {
@@ -1565,6 +1688,20 @@ public class SurveillanceApiHandler {
                         + " (takes effect next ACC-OFF cycle)");
             }
 
+            // The shared Bluetooth preference applies immediately to the app-owned
+            // adapter, and is also rechecked by the existing parked maintenance tick.
+            if (configJson.has("bluetoothKeepAlive")) {
+                boolean bluetoothKeepAlive = configJson.getBoolean("bluetoothKeepAlive");
+                if (!com.overdrive.app.config.UnifiedConfigManager
+                        .setBluetoothKeepAliveEnabled(bluetoothKeepAlive)) {
+                    HttpResponse.sendJsonError(out, "Failed to save Bluetooth setting");
+                    return;
+                }
+                boolean applied = RemoteAccessApiHandler.reconcileBluetoothKeepAlive(true);
+                CameraDaemon.log("Shared parked Bluetooth set to: " + bluetoothKeepAlive
+                        + " (app reconciliation " + (applied ? "accepted" : "pending") + ")");
+            }
+
             // DiLink 5 BYD-cloud heartbeat. Unlike the mobile-data bearer hold,
             // this sends the existing realtime-status request every 15 seconds,
             // which asks BYD's backend to wake/poll the T-Box. It is opt-in and
@@ -1574,6 +1711,13 @@ public class SurveillanceApiHandler {
             if (configJson.has("di5CloudKeepAlive")) {
                 boolean cloudKeepAlive =
                         configJson.optBoolean("di5CloudKeepAlive", false);
+                if (cloudKeepAlive
+                        && !com.overdrive.app.config.UnifiedConfigManager
+                                .isDi5CloudKeepAlivePollerEnabled()) {
+                    HttpResponse.sendJsonError(
+                            out, "DI5 cloud keep-alive polling is disabled by configuration");
+                    return;
+                }
                 if (cloudKeepAlive
                         && !com.overdrive.app.camera.dilink5.DiLink5Platform
                                 .isSelected()) {
@@ -1606,29 +1750,6 @@ public class SurveillanceApiHandler {
                 CameraDaemon.log("DI5 BYD-cloud keep-alive set to: "
                         + cloudKeepAlive);
                 reconcileDi5CloudKeepAlive = true;
-            }
-
-            // DiLink 5 QNX common-network keep-alive (Experimental). Pure persist:
-            // the ACC sentry daemon re-reads both keys on its next parked tick.
-            if (configJson.has("di5QnxNetworkKeepAlive")
-                    || configJson.has("di5QnxNetworkKeepAliveMaxMinutes")) {
-                java.util.Map<String, Object> qnxValues = new java.util.HashMap<>();
-                if (configJson.has("di5QnxNetworkKeepAlive")) {
-                    qnxValues.put("di5QnxNetworkKeepAlive",
-                            configJson.optBoolean("di5QnxNetworkKeepAlive", false));
-                }
-                if (configJson.has("di5QnxNetworkKeepAliveMaxMinutes")) {
-                    int minutes = configJson.optInt("di5QnxNetworkKeepAliveMaxMinutes", 60);
-                    qnxValues.put("di5QnxNetworkKeepAliveMaxMinutes",
-                            Math.max(5, Math.min(minutes, 480)));
-                }
-                if (!com.overdrive.app.config.UnifiedConfigManager
-                        .updateValues("surveillance", qnxValues)) {
-                    HttpResponse.sendJsonError(
-                            out, "Failed to save DI5 QNX network keep-alive setting");
-                    return;
-                }
-                CameraDaemon.log("DI5 QNX network keep-alive set to: " + qnxValues);
             }
 
             // DiLink 5 parked keep-alive (Experimental). Pure persist: the lease
@@ -1679,6 +1800,41 @@ public class SurveillanceApiHandler {
                 CameraDaemon.log("Low-battery surveillance cutoff set to: "
                         + (pct == 0 ? "Off" : pct + "%")
                         + " (SocCutoffMonitor reads live on next SoC tick)");
+            }
+
+            // Opt-in DiLink 5 assist-off profile: {assistOff: {cpd|lda|elka|dms: bool}}.
+            // Pure persist into the "vehicle" section; the app-process applier re-reads
+            // it on the next ACC-ON transition and itself gates on DiLink 5 mode plus an
+            // explicitly confirmed Sealion 7 selection, so an off-platform preference is
+            // inert. Only the named controls change; absent keys are left alone.
+            if (configJson.has("assistOff")) {
+                org.json.JSONObject assistOff = configJson.optJSONObject("assistOff");
+                java.util.Map<String, Object> assistOffValues = new java.util.LinkedHashMap<>();
+                if (assistOff != null) {
+                    for (com.overdrive.app.byd.assist.DiLink5AssistOffGate.Control control
+                            : com.overdrive.app.byd.assist.DiLink5AssistOffGate.Control.values()) {
+                        if (assistOff.has(control.key())) {
+                            assistOffValues.put(
+                                    com.overdrive.app.byd.assist.DiLink5AssistOffProfile
+                                            .keyFor(control),
+                                    assistOff.optBoolean(control.key(), false));
+                        }
+                    }
+                }
+                if (assistOffValues.isEmpty()) {
+                    HttpResponse.sendJsonError(out,
+                            "assistOff must name at least one of cpd, lda, elka, dms");
+                    return;
+                }
+                boolean persisted = com.overdrive.app.config.UnifiedConfigManager
+                        .updateValues("vehicle", assistOffValues);
+                if (!persisted) {
+                    CameraDaemon.log("Failed to persist assistOff=" + assistOffValues);
+                    HttpResponse.sendJsonError(out, "Failed to save DI5 assist-off setting");
+                    return;
+                }
+                CameraDaemon.log("DI5 assist-off profile set to: " + assistOffValues
+                        + " (the app process applies it on the next ignition cycle)");
             }
 
             if (configJson.has("clearScreenDeterrentImage") && configJson.optBoolean("clearScreenDeterrentImage", false)) {
@@ -1934,6 +2090,13 @@ public class SurveillanceApiHandler {
                                     polygon[v][1] = (float) pt.getDouble("y");
                                 }
                                 sentryConfig.setRoiPolygon(q, polygon);
+                                // Per-quadrant versions preserve saved polygon rasterization.
+                                org.json.JSONObject survCfg =
+                                        com.overdrive.app.config.UnifiedConfigManager.getSurveillance();
+                                String gridVersionKey = "roiGridVersion_" + quadrantKeys[q];
+                                survCfg.put(gridVersionKey, configJson.optInt(gridVersionKey,
+                                        configJson.optInt("roiGridVersion", 1)));
+                                com.overdrive.app.config.UnifiedConfigManager.setSurveillance(survCfg);
                                 // Only apply to C++ if ROI is enabled for this quadrant
                                 if (sentryConfig.isRoiEnabled(q) && sentry != null) {
                                     sentry.applyQuadrantRoi(q, polygon);
@@ -1994,26 +2157,26 @@ public class SurveillanceApiHandler {
             }
             
             // Direct block mask per quadrant (from block-tap UI)
-            // Accepts roiBlocks_Q0: [1,1,0,0,...] (70 elements, 1=active 0=inactive)
+            // Accept current full-height masks and migrate legacy 70-cell clients.
             {
                 String[] quadrantKeys = {"Q0", "Q1", "Q2", "Q3"};
                 for (int q = 0; q < 4; q++) {
                     String blocksKey = "roiBlocks_" + quadrantKeys[q];
                     if (configJson.has(blocksKey)) {
                         org.json.JSONArray arr = configJson.optJSONArray(blocksKey);
-                        if (arr != null && arr.length() == 70) {
-                            byte[] blockMask = new byte[70];
+                        byte[] blockMask = MotionPipelineV2.roiMaskFromJson(arr);
+                        if (blockMask != null) {
                             boolean anyActive = false;
-                            for (int i = 0; i < 70; i++) {
-                                blockMask[i] = (byte)(arr.optInt(i, 1) != 0 ? 1 : 0);
-                                if (blockMask[i] != 0) anyActive = true;
+                            for (byte enabledBlock : blockMask) {
+                                if (enabledBlock != 0) anyActive = true;
                             }
                             if (anyActive) {
                                 sentryConfig.setRoiEnabled(q, true);
                                 // Store block mask as a synthetic polygon (not used, blocks are direct)
                                 // Apply directly to C++ via JNI
                                 try {
-                                    com.overdrive.app.surveillance.NativeMotion.setQuadrantRoi(q, blockMask);
+                                    com.overdrive.app.surveillance.NativeMotion.setQuadrantRoi(
+                                            q, MotionPipelineV2.toNativeRoiMask(blockMask));
                                     CameraDaemon.log("ROI blocks applied to Q" + q + " via direct mask");
                                 } catch (Exception e) {
                                     CameraDaemon.log("ROI blocks apply failed Q" + q + ": " + e.getMessage());
@@ -2025,7 +2188,7 @@ public class SurveillanceApiHandler {
                             // Persist the block array in unified config
                             try {
                                 org.json.JSONObject survCfg = com.overdrive.app.config.UnifiedConfigManager.getSurveillance();
-                                survCfg.put(blocksKey, arr);
+                                survCfg.put(blocksKey, MotionPipelineV2.roiMaskToJson(blockMask));
                                 survCfg.put("roiEnabled_" + quadrantKeys[q], anyActive);
                                 com.overdrive.app.config.UnifiedConfigManager.setSurveillance(survCfg);
                             } catch (Exception e) {
@@ -2261,6 +2424,9 @@ public class SurveillanceApiHandler {
             if (configJson.has("cameraMode")) {
                 String mode = configJson.optString("cameraMode", "default")
                     .toLowerCase(java.util.Locale.US);
+                if (com.overdrive.app.camera.camera2.Camera2Platform.isMode(mode)) {
+                    mode = com.overdrive.app.camera.camera2.Camera2Platform.MODE;
+                } else
                 if (!"default".equals(mode)
                         && !"dilink4".equals(mode)
                         && !"dilink5".equals(mode)) {
@@ -2436,7 +2602,7 @@ public class SurveillanceApiHandler {
         // reporting a plain success the user reads as "surveillance is on now".
         JSONObject response = new JSONObject();
         response.put("success", true);
-        response.put("deferred", accIsOn);
+        response.put("deferred", accIsOn || !CameraDaemon.isAccOffAdmitted());
         HttpResponse.sendJson(out, response.toString());
     }
 
@@ -2543,7 +2709,15 @@ public class SurveillanceApiHandler {
             tripCheckpointFailure = "trip checkpoint threw "
                     + t.getClass().getSimpleName();
         }
-        if (!tripCheckpointDurable) {
+        // Force-forward callers (the app update) are killed regardless, so a missing
+        // checkpoint must not also cost them the clean camera release.
+        boolean allowUncheckpointedTrip =
+                request.optBoolean("allowUncheckpointedTrip", false);
+        if (!tripCheckpointDurable && allowUncheckpointedTrip) {
+            CameraDaemon.log("prepare-restart: " + tripCheckpointFailure
+                    + " — releasing cameras anyway (" + restartReason + ")");
+        }
+        if (!tripCheckpointDurable && !allowUncheckpointedTrip) {
             shutdownInProgress = false;
             JSONObject failure = new JSONObject();
             failure.put("success", false);
@@ -2583,6 +2757,7 @@ public class SurveillanceApiHandler {
         success.put("success", true);
         success.put("requestId", requestId);
         success.put("reason", restartReason);
+        success.put("tripCheckpointed", tripCheckpointDurable);
         HttpResponse.sendJson(out, success.toString());
     }
 
@@ -2604,15 +2779,14 @@ public class SurveillanceApiHandler {
      *       "threatLevel": 2, "confidence": [0.0, 0.0, 0.3, 0.7, ...] },
      *     ...
      *   ],
-     *   "gridCols": 10, "gridRows": 7
+     *   Pixel geometry is explicit; the final row may be shorter than blockSize.
      * }
      */
     private static void sendHeatmap(OutputStream out) throws Exception {
         GpuSurveillancePipeline gpuPipeline = CameraDaemon.getGpuPipeline();
         
         JSONObject response = new JSONObject();
-        response.put("gridCols", 10);
-        response.put("gridRows", 7);
+        int nativeRows = MotionGridGeometry.GRID_ROWS;
         
         // Include current stream view mode so the UI knows whether to draw
         // a 2x2 mosaic heatmap or a single full-frame quadrant heatmap.
@@ -2643,6 +2817,16 @@ public class SurveillanceApiHandler {
         
         SurveillanceEngineGpu sentry = (gpuPipeline != null) ? gpuPipeline.getSentry() : null;
         MotionPipelineV2.QuadrantResult[] results = (sentry != null) ? sentry.getV2Results() : null;
+        if (results != null && results.length > 0 && results[0] != null) {
+            nativeRows = results[0].nativeBlockCount / MotionGridGeometry.GRID_COLS;
+        }
+        JSONObject grid = motionGridJson(nativeRows);
+        response.put("gridCols", MotionGridGeometry.GRID_COLS);
+        response.put("gridRows", nativeRows);
+        response.put("blockSize", MotionGridGeometry.BLOCK_SIZE);
+        response.put("quadrantWidth", MotionGridGeometry.QUADRANT_WIDTH);
+        response.put("quadrantHeight", MotionGridGeometry.QUADRANT_HEIGHT);
+        response.put("motionGrid", grid);
         
         for (int q = 0; q < 4; q++) {
             JSONObject qObj = new JSONObject();
@@ -2658,9 +2842,9 @@ public class SurveillanceApiHandler {
                 qObj.put("threatLevel", results[q].threatLevel);
                 qObj.put("componentSize", results[q].componentSize);
                 
-                // Block confidence array (70 floats, rounded to 2 decimal places)
+                // Serialize the validated native count, including legacy libraries.
                 JSONArray conf = new JSONArray();
-                for (int i = 0; i < results[q].blockConfidence.length; i++) {
+                for (int i = 0; i < results[q].nativeBlockCount; i++) {
                     conf.put(Math.round(results[q].blockConfidence[i] * 100) / 100.0);
                 }
                 qObj.put("confidence", conf);
@@ -2674,6 +2858,20 @@ public class SurveillanceApiHandler {
         
         response.put("quadrants", quadrants);
         HttpResponse.sendJson(out, response.toString());
+    }
+
+    private static JSONObject motionGridJson(int rows) throws org.json.JSONException {
+        JSONObject grid = new JSONObject();
+        grid.put("version", MotionGridGeometry.NATIVE_ABI_VERSION);
+        grid.put("gridCols", MotionGridGeometry.GRID_COLS);
+        grid.put("gridRows", rows);
+        grid.put("blockSize", MotionGridGeometry.BLOCK_SIZE);
+        grid.put("quadrantWidth", MotionGridGeometry.QUADRANT_WIDTH);
+        grid.put("quadrantHeight", MotionGridGeometry.QUADRANT_HEIGHT);
+        grid.put("coveredHeight", Math.min(rows * MotionGridGeometry.BLOCK_SIZE,
+                MotionGridGeometry.QUADRANT_HEIGHT));
+        grid.put("policyRows", MotionGridGeometry.POLICY_ROWS);
+        return grid;
     }
     
     /**

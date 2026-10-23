@@ -280,6 +280,8 @@ object ValhallaRouteClient {
         // "alternates" = how many ALTERNATE routes to also return (primary is
         // always returned separately). Only set when > 0.
         if (alternates > 0) body.put("alternates", alternates)
+        // Lane guidance; Valhalla only honours this at the top level.
+        body.put("turn_lanes", true)
         return body.toString()
     }
 
@@ -299,6 +301,7 @@ object ValhallaRouteClient {
             .put("directions_options", JSONObject()
                 .put("units", MapNetworking.valhallaUnits)
                 .put("language", MapNetworking.valhallaLanguage))
+            .put("turn_lanes", true)
             .toString()
     }
 
@@ -435,7 +438,12 @@ object ValhallaRouteClient {
                             bearingBefore = m.optInt("bearing_before", -1),
                             bearingAfter = m.optInt("bearing_after", -1),
                             verbalPre = m.optString("verbal_pre_transition_instruction", ""),
-                            verbalPost = m.optString("verbal_post_transition_instruction", "")
+                            verbalPost = m.optString("verbal_post_transition_instruction", ""),
+                            streetNames = texts(m.optJSONArray("street_names")),
+                            lanes = lanes(m.optJSONArray("lanes")),
+                            exitNumber = signTexts(m.optJSONObject("sign"), "exit_number_elements").firstOrNull().orEmpty(),
+                            towards = signTexts(m.optJSONObject("sign"), "exit_toward_elements")
+                                .ifEmpty { signTexts(m.optJSONObject("sign"), "exit_branch_elements") }
                         )
                     )
                 }
@@ -478,5 +486,32 @@ object ValhallaRouteClient {
             totalDistanceMeters = totalDistanceMeters,
             totalDurationSeconds = totalDurationSeconds
         )
+    }
+
+    private fun texts(arr: JSONArray?): List<String> {
+        if (arr == null) return emptyList()
+        val out = ArrayList<String>(arr.length())
+        for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let(out::add)
+        return out
+    }
+
+    /** `sign.<key>` element texts in order; an empty or missing sign reads as none. */
+    private fun signTexts(sign: JSONObject?, key: String): List<String> {
+        val arr = sign?.optJSONArray(key) ?: return emptyList()
+        val out = ArrayList<String>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.optString("text", "")?.trim()?.takeIf { it.isNotEmpty() }?.let(out::add)
+        }
+        return out
+    }
+
+    private fun lanes(arr: JSONArray?): List<RouteLane> {
+        if (arr == null) return emptyList()
+        val out = ArrayList<RouteLane>(arr.length())
+        for (i in 0 until arr.length()) {
+            val l = arr.optJSONObject(i) ?: return emptyList()
+            out.add(RouteLane(l.optInt("directions", 0), l.optInt("active", 0), l.optInt("valid", 0)))
+        }
+        return out
     }
 }

@@ -2,11 +2,14 @@ package com.overdrive.app.power;
 
 import android.content.Context;
 import android.os.SystemClock;
+import android.util.Log;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 /**
  * Cross-process "the vehicle was just switched on" hint.
@@ -46,6 +49,7 @@ import java.nio.file.Files;
  * cannot resurrect a stale ON.
  */
 public final class IgnitionBroadcastHint {
+    private static final String TAG = "IgnitionBroadcastHint";
 
     /** File name inside the app's external files directory. */
     public static final String FILE_NAME = "acc_on_broadcast_hint";
@@ -86,15 +90,50 @@ public final class IgnitionBroadcastHint {
      * and emulated-storage writes go through FUSE.
      */
     public static void publishAsync(Context context) {
-        if (context == null) return;
+        publishAsync(context, null);
+    }
+
+    /**
+     * Async publisher with a completion hook for
+     * {@link android.content.BroadcastReceiver#goAsync()} callers. The hook is
+     * always invoked, including thread-creation and write failures, so a manifest
+     * receiver never leaks its PendingResult.
+     */
+    public static void publishAsync(Context context, Runnable completion) {
+        if (context == null) {
+            runCompletion(completion);
+            return;
+        }
         Context app = context.getApplicationContext();
         final Context target = app != null ? app : context;
         try {
-            Thread t = new Thread(() -> publish(target), "IgnitionHint-publish");
+            Thread t = new Thread(() -> {
+                boolean published = false;
+                try {
+                    published = publish(target);
+                    if (published) {
+                        Log.i(TAG, "Published ACC-ON hint");
+                    } else {
+                        Log.w(TAG, "Failed to publish ACC-ON hint");
+                    }
+                } finally {
+                    runCompletion(completion);
+                }
+            }, "IgnitionHint-publish");
             t.setDaemon(true);
             t.start();
+        } catch (Throwable failure) {
+            Log.w(TAG, "ACC-ON hint worker could not start: "
+                    + failure.getMessage());
+            runCompletion(completion);
+        }
+    }
+
+    private static void runCompletion(Runnable completion) {
+        if (completion == null) return;
+        try {
+            completion.run();
         } catch (Throwable ignored) {
-            // Nothing to do — the hint is advisory.
         }
     }
 
@@ -104,28 +143,75 @@ public final class IgnitionBroadcastHint {
      * arrive back to back and must not rename each other's partial write.
      */
     static boolean publish(Context context) {
+        File tmp = null;
         try {
             File dir = context.getExternalFilesDir(null);
             if (dir == null) return false;
             if (!dir.isDirectory() && !dir.mkdirs()) return false;
             File target = new File(dir, FILE_NAME);
-            File tmp = new File(dir, FILE_NAME + ".tmp." + Thread.currentThread().getId());
-            String value = SystemClock.elapsedRealtime() + " " + System.currentTimeMillis();
+            tmp = new File(dir, FILE_NAME + ".tmp."
+                    + Thread.currentThread().getId());
+            Stamp expected = new Stamp(
+                    SystemClock.elapsedRealtime(),
+                    System.currentTimeMillis());
+            String value = expected.elapsedMs + " " + expected.wallMs;
             try (FileOutputStream out = new FileOutputStream(tmp, false)) {
                 out.write(value.getBytes(StandardCharsets.US_ASCII));
                 out.flush();
                 out.getFD().sync();
             }
-            if (!tmp.renameTo(target)) {
-                tmp.delete();
+            if (!replaceAtomically(tmp, target)) {
                 return false;
             }
             try {
                 // The UID-2000 daemon is the reader.
                 target.setReadable(true, false);
             } catch (Throwable ignored) {}
+            Stamp verified = readStamp(target);
+            return verified != null
+                    && verified.elapsedMs == expected.elapsedMs
+                    && verified.wallMs == expected.wallMs;
+        } catch (Throwable failure) {
+            return false;
+        } finally {
+            if (tmp != null && tmp.exists()) {
+                try {
+                    tmp.delete();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Replace an older hint without a delete-then-rename visibility gap. Some
+     * emulated-storage/FUSE implementations reject {@link File#renameTo(File)}
+     * when the destination already exists; REPLACE_EXISTING is required for the
+     * second and later ignition cycles.
+     */
+    static boolean replaceAtomically(File temporary, File target) {
+        if (temporary == null || target == null) return false;
+        try {
+            Files.move(
+                    temporary.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
             return true;
-        } catch (Throwable t) {
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            // Same-directory replacement is still safe enough when the backing
+            // FUSE layer does not expose atomic moves.
+        } catch (Throwable atomicFailure) {
+            // Retry without ATOMIC_MOVE below. Android's emulated storage has
+            // shipped implementations that reject only the atomic flag.
+        }
+        try {
+            Files.move(
+                    temporary.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (Throwable replacementFailure) {
             return false;
         }
     }
@@ -142,6 +228,27 @@ public final class IgnitionBroadcastHint {
                 SystemClock.elapsedRealtime(), System.currentTimeMillis());
     }
 
+    /**
+     * Compact diagnostic for the daemon log. This is evaluated only when an
+     * observation is already being logged, not on every heartbeat.
+     */
+    public static String describeLatest(long notBeforeElapsedMs) {
+        Stamp stamp = readStamp();
+        if (stamp == null) return "missing-or-unreadable";
+        long nowElapsedMs = SystemClock.elapsedRealtime();
+        long nowWallMs = System.currentTimeMillis();
+        long age = nowElapsedMs - stamp.elapsedMs;
+        if (age < 0L) return "future-elapsed";
+        if (Math.abs(nowWallMs - stamp.wallMs) > WALL_SANITY_MS) {
+            return "wall-clock-invalid";
+        }
+        if (age > MAX_AGE_MS) return "stale(ageMs=" + age + ")";
+        if (stamp.elapsedMs <= notBeforeElapsedMs) {
+            return "predates-sentry(ageMs=" + age + ")";
+        }
+        return "fresh(ageMs=" + age + ")";
+    }
+
     /** Pure freshness rule, separated so it can be reasoned about without I/O. */
     static boolean isFresh(Stamp stamp, long notBeforeElapsedMs,
             long nowElapsedMs, long nowWallMs) {
@@ -155,19 +262,26 @@ public final class IgnitionBroadcastHint {
     /** Last published stamp, or null when absent/unreadable. */
     static Stamp readStamp() {
         for (File candidate : daemonCandidates()) {
-            try {
-                if (!candidate.isFile()) continue;
-                byte[] raw = Files.readAllBytes(candidate.toPath());
-                String value = new String(raw, StandardCharsets.US_ASCII).trim();
-                if (value.isEmpty() || value.length() > 48) continue;
-                String[] parts = value.split("\\s+");
-                if (parts.length != 2) continue;
-                return new Stamp(Long.parseLong(parts[0]), Long.parseLong(parts[1]));
-            } catch (Throwable ignored) {
-                // Try the next path spelling.
-            }
+            Stamp parsed = readStamp(candidate);
+            if (parsed != null) return parsed;
         }
         return null;
+    }
+
+    static Stamp readStamp(File candidate) {
+        try {
+            if (candidate == null || !candidate.isFile()) return null;
+            byte[] raw = Files.readAllBytes(candidate.toPath());
+            String value = new String(raw, StandardCharsets.US_ASCII).trim();
+            if (value.isEmpty() || value.length() > 48) return null;
+            String[] parts = value.split("\\s+");
+            if (parts.length != 2) return null;
+            return new Stamp(
+                    Long.parseLong(parts[0]),
+                    Long.parseLong(parts[1]));
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     /**

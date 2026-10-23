@@ -3,6 +3,7 @@ package com.overdrive.app.ui.view
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.net.Uri
@@ -12,8 +13,11 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import android.view.animation.PathInterpolator
 import java.io.File
+import kotlin.math.ceil
+import kotlin.math.floor
 
 /**
  * SOTA single-camera zoom over the AVM recording mosaic.
@@ -30,8 +34,8 @@ import java.io.File
  *       left / rear / right cameras tiled across the bottom band in thirds.
  *
  * There is no per-camera stream on disk. To play "just the front camera in
- * fullscreen" we keep the same MP4 and apply a TextureView matrix that maps
- * the chosen camera's sub-rectangle of the frame to fill the view — the user
+ * fullscreen" we keep the same MP4 and apply a TextureView matrix that fits
+ * the chosen camera's sub-rectangle of the frame to the view — the user
  * sees a single camera at native source resolution (1280×960 Seal / 1280×720
  * Tang) with zero re-encode, full audio, working scrub. Which sub-rectangle a
  * [Quadrant] denotes depends on the clip's [Layout].
@@ -142,11 +146,17 @@ class ZoomableVideoView @JvmOverloads constructor(
     // (quadrant zoom, size changes) are safe because the binding is
     // established.
     private var firstFrameSeen: Boolean = false
+    // A resize or re-show made TextureView refresh the layer without a new frame;
+    // the next onSurfaceTextureUpdated must not count as the first frame.
+    private var layerRefreshPending: Boolean = false
 
     // Reused per-frame matrix. applyTransform runs once per animator tick
     // (~14 calls per gesture) plus on size changes; allocating fresh would
     // be ~harmless but the reuse pattern keeps the GL/UI thread quiet.
     private val scratchMatrix = Matrix()
+    private val scratchClip = Rect()
+    // Frame aspect the last applied transform fitted (0 = unfitted); taps are hit-tested against it.
+    private var fitFrameAspect: Float = 0f
 
     // Listener pass-through — VideoView API parity for the fragment.
     private var preparedListener: MediaPlayer.OnPreparedListener? = null
@@ -202,6 +212,8 @@ class ZoomableVideoView @JvmOverloads constructor(
         // in fragment_video_player.xml, which is what the user sees during
         // the brief "surface detached" window between clips anyway.
         isClickable = true
+        // The fit transform leaves letterbox bands uncovered; TextureView requires non-opaque then.
+        setOpaque(false)
     }
 
     @SuppressWarnings("ClickableViewAccessibility")
@@ -220,24 +232,31 @@ class ZoomableVideoView @JvmOverloads constructor(
 
     /**
      * Map a view-local touch point to a [Quadrant]. When already zoomed,
-     * double-tap is "reset to ALL". When zoomed out the texture fills the
-     * entire view edge-to-edge, so the hit-test mirrors the on-screen camera
-     * regions for the active [layout]:
+     * double-tap is "reset to ALL". When zoomed out the hit-test mirrors the
+     * on-screen camera regions of the fitted frame for the active [layout]:
      *   STANDARD — a 2x2 halves split.
      *   DASHCAM  — top [DASHCAM_SPLIT] band → FRONT; bottom band split into
      *              left/middle/right thirds → LEFT / REAR / RIGHT.
+     * Taps on the letterbox bands resolve to the nearest region.
      */
     private fun quadrantAtPoint(x: Float, y: Float): Quadrant {
         if (quadrant != Quadrant.ALL) return Quadrant.ALL
         val vw = width.toFloat()
         val vh = height.toFloat()
         if (vw <= 0f || vh <= 0f) return Quadrant.ALL
+        var cw = vw
+        var ch = vh
+        val frameAspect = fitFrameAspect
+        if (frameAspect > 0f) {
+            if (frameAspect < vw / vh) cw = vh * frameAspect else ch = vw / frameAspect
+        }
+        val fx = ((x - (vw - cw) / 2f) / cw).coerceIn(0f, 1f)
+        val fy = ((y - (vh - ch) / 2f) / ch).coerceIn(0f, 1f)
         return when (layout) {
             Layout.DASHCAM ->
-                if (y < DASHCAM_SPLIT * vh) {
+                if (fy < DASHCAM_SPLIT) {
                     Quadrant.FRONT
                 } else {
-                    val fx = if (vw > 0f) x / vw else 0f
                     when {
                         fx < DASHCAM_THIRD -> Quadrant.LEFT
                         fx < 2f * DASHCAM_THIRD -> Quadrant.REAR
@@ -245,8 +264,8 @@ class ZoomableVideoView @JvmOverloads constructor(
                     }
                 }
             Layout.STANDARD -> {
-                val left = x < vw / 2f
-                val top = y < vh / 2f
+                val left = fx < 0.5f
+                val top = fy < 0.5f
                 when {
                     top && left -> Quadrant.FRONT
                     top && !left -> Quadrant.RIGHT
@@ -584,11 +603,11 @@ class ZoomableVideoView @JvmOverloads constructor(
     /**
      * Compose the active matrix for this frame.
      *
-     * Region-based edge-to-edge fill — events.html parity (object-fit: fill).
-     * Each [Quadrant] maps, for the active [layout], to a normalized
-     * sub-rectangle of the source frame ([regionFor]); the matrix scales +
-     * translates that rectangle to fill the whole view, edge to edge, with no
-     * black bars. ALL → the full frame → identity matrix.
+     * Region-based fit. Each [Quadrant] maps, for the active [layout], to a
+     * normalized sub-rectangle of the source frame ([regionFor]); the matrix
+     * scales + translates that rectangle to fill the view, then shrinks one
+     * axis about the centre so it keeps its true pixel aspect, and clips the
+     * view to that rectangle (letterbox bands show the parent's black background).
      *
      * For the STANDARD 2x2 regions this is identical to the previous
      * postScale(2, 2)-around-a-view-corner formulation (e.g. FRONT = the
@@ -597,8 +616,7 @@ class ZoomableVideoView @JvmOverloads constructor(
      *
      * Transitions interpolate the source rectangle (x, y, w, h) over
      * [progress] (Material 3 emphasized decelerate, set by the animator), so
-     * scale and offset move together. A small stretch is accepted on
-     * aspect-mismatched views — same trade-off as events.html's CSS fill.
+     * scale and offset move together.
      */
     private fun applyTransform(progress: Float, from: Quadrant, to: Quadrant) {
         val vw = width.toFloat()
@@ -620,7 +638,30 @@ class ZoomableVideoView @JvmOverloads constructor(
         val matrix = scratchMatrix
         matrix.setScale(sx, sy)
         matrix.postTranslate(-rx * vw * sx, -ry * vh * sy)
+        var clip: Rect? = null
+        if (videoWidth > 0 && videoHeight > 0 && rw > 0f && rh > 0f) {
+            val regionAspect = (rw * videoWidth) / (rh * videoHeight)
+            val viewAspect = vw / vh
+            var fw = vw
+            var fh = vh
+            if (regionAspect < viewAspect) {
+                fw = vw * regionAspect / viewAspect
+                matrix.postScale(regionAspect / viewAspect, 1f, vw / 2f, vh / 2f)
+            } else if (regionAspect > viewAspect) {
+                fh = vh * viewAspect / regionAspect
+                matrix.postScale(1f, viewAspect / regionAspect, vw / 2f, vh / 2f)
+            }
+            // The texture extends past the region; clip so neighbouring cameras stay out of the bands.
+            clip = scratchClip.apply {
+                set(ceil((vw - fw) / 2f).toInt(), ceil((vh - fh) / 2f).toInt(),
+                    floor((vw + fw) / 2f).toInt(), floor((vh + fh) / 2f).toInt())
+            }
+            fitFrameAspect = videoWidth.toFloat() / videoHeight
+        } else {
+            fitFrameAspect = 0f
+        }
         setTransform(matrix)
+        setClipBounds(clip)
         invalidate()
     }
 
@@ -677,12 +718,8 @@ class ZoomableVideoView @JvmOverloads constructor(
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
         Log.d(TAG, "onSurfaceTextureAvailable: ${width}x${height}")
         surfaceReady = true
-        // Constrain the SurfaceTexture's default buffer size to the view's
-        // pixel size. Without this, BYD-era SurfaceTexture allocates
-        // buffers at the producer's native dimensions (2560×1920 = ~30MB
-        // each × 3 buffers), and on a 770×541 view the head-unit's GPU
-        // sometimes fails to allocate the third buffer silently — producer
-        // queue stalls without an error event.
+        // Same value TextureView already sets. Decoder output is unaffected: MediaCodec
+        // sets explicit buffer dimensions, so frames keep the stream's native size.
         try {
             surface.setDefaultBufferSize(width, height)
         } catch (_: Exception) { /* best effort */ }
@@ -696,6 +733,9 @@ class ZoomableVideoView @JvmOverloads constructor(
         try {
             setTransform(scratchMatrix.apply { reset() })
         } catch (_: Exception) { /* best effort */ }
+        // Identity has no fit; the new surface's first frame re-applies clip + fit.
+        setClipBounds(null)
+        fitFrameAspect = 0f
         if (pendingUri != null && mediaPlayer == null) startPreparing()
     }
 
@@ -736,6 +776,8 @@ class ZoomableVideoView @JvmOverloads constructor(
             }
         }
         surfaceReady = false
+        // A re-created surface is a new binding: its first frame must re-apply the transform.
+        firstFrameSeen = false
         releasePlayer()
         return true  // safe to release the texture
     }
@@ -746,7 +788,11 @@ class ZoomableVideoView @JvmOverloads constructor(
         // when it's finally safe to apply our matrix transform on Android
         // 7.1. Doing it earlier silently breaks playback (start() works,
         // audio runs, but no frames paint — see firstFrameSeen comment).
-        if (!firstFrameSeen) {
+        // TextureView also replays a stale pending update after re-attach or a player
+        // swap; the current player can only have drawn once it is prepared.
+        val refreshOnly = layerRefreshPending
+        layerRefreshPending = false
+        if (!firstFrameSeen && prepared && !refreshOnly) {
             firstFrameSeen = true
             Log.d(TAG, "first frame queued — applying transform")
             applyTransform(progress = 1f, from = quadrant, to = quadrant)
@@ -760,6 +806,16 @@ class ZoomableVideoView @JvmOverloads constructor(
         // we used to make here was the original instance of the bug.
         if (firstFrameSeen) {
             applyTransform(progress = 1f, from = quadrant, to = quadrant)
+        } else if (isAvailable) {
+            layerRefreshPending = true
+        }
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        // Mirrors TextureView: becoming VISIBLE with a surface refreshes the layer without a frame.
+        if (visibility == VISIBLE && isAvailable && !firstFrameSeen) {
+            layerRefreshPending = true
         }
     }
 

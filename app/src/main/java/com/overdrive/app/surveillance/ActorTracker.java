@@ -165,6 +165,12 @@ public final class ActorTracker {
     private static final float PROX_VERY_CLOSE = 0.60f;
     private static final float PROX_CLOSE      = 0.35f;
     private static final float PROX_MID        = 0.15f;
+    // People only: feet in the bottom third of the camera image means right at the car,
+    // whatever the box height (legs-only / crouching people read small). Set from field clips.
+    static final float PROX_FEET_VERY_CLOSE = 0.65f;
+    // Consecutive feet-low looks a track needs before the feet rule counts, so one bad box
+    // can't latch a lifetime VERY_CLOSE.
+    private static final int FEET_LOW_FRAMES_NEEDED = 2;
 
     private long nextActorId = 1;
     private final List<Track> tracks = new ArrayList<>();
@@ -172,6 +178,12 @@ public final class ActorTracker {
 
     public ActorTracker() {
         this.bornWallMs = System.currentTimeMillis();
+    }
+
+    /** Person proximity: box-height tier, raised to VERY_CLOSE when the feet sit low in the frame. */
+    static Proximity personProximity(float heightRatio, float bottomRatio) {
+        Proximity p = Track.ratioToProximity(heightRatio);
+        return (p != Proximity.UNKNOWN && bottomRatio >= PROX_FEET_VERY_CLOSE) ? Proximity.VERY_CLOSE : p;
     }
 
     /**
@@ -553,6 +565,7 @@ public final class ActorTracker {
         // single-frame VERY_CLOSE/CLOSE spike (the exact flicker MIN_ESCALATION_FRAMES
         // guards against) can't manufacture CRITICAL/ALERT via the lifetime latch.
         int peakProxFrames = 0;
+        int feetLowStreak = 0;
         float peakConfidence = 0f;
         int peakBboxX, peakBboxY, peakBboxW, peakBboxH;
         // Crop dimensions peakBbox was measured against — see Actor.peakBboxQuadW/H.
@@ -585,6 +598,7 @@ public final class ActorTracker {
             if (handoff) {
                 historyCount = 0;
                 stableFrames = 0;
+                feetLowStreak = 0;
             }
 
             if (firstSeenWallMs == 0) {
@@ -794,6 +808,12 @@ public final class ActorTracker {
                 ratio = qQuadH > 0 ? (float) qh / qQuadH : 0f;
             }
             Proximity prox = ratioToProximity(ratio);
+            if (classGroup == ClassGroup.PERSON) {
+                boolean feetLow = prox != Proximity.UNKNOWN && qQuadH > 0
+                        && (float) (qy + qh) / qQuadH >= PROX_FEET_VERY_CLOSE;
+                feetLowStreak = feetLow ? feetLowStreak + 1 : 0;
+                if (feetLowStreak >= FEET_LOW_FRAMES_NEEDED) prox = Proximity.VERY_CLOSE;
+            }
 
             // Update peak proximity (smaller ordinal = closer)
             if (peakProximity == Proximity.UNKNOWN
@@ -971,7 +991,9 @@ public final class ActorTracker {
             } else {
                 ratio = qLastQuadH > 0 ? (float) qLastH / qLastQuadH : 0f;
             }
-            Proximity lastProx = ratioToProximity(ratio);
+            Proximity lastProx = classGroup == ClassGroup.PERSON && feetLowStreak >= FEET_LOW_FRAMES_NEEDED
+                    ? Proximity.VERY_CLOSE
+                    : ratioToProximity(ratio);
             int staticThreshold = (classGroup == ClassGroup.VEHICLE)
                     ? STATIC_FRAMES_NEEDED_VEHICLE : STATIC_FRAMES_NEEDED;
             boolean isStatic = stableFrames >= staticThreshold;

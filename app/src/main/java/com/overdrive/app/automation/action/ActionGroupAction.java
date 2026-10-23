@@ -57,9 +57,20 @@ public class ActionGroupAction extends BaseAction {
             logger.warn("ActionGroupAction: no groupId, skipping");
             return;
         }
-        if (!ActionGroups.exists(gid)) {
-            logger.warn("ActionGroupAction: unknown group " + gid + ", skipping");
-            return;
+        // A queued run resuming after a yielded wait replays the list it started, even if
+        // the group was edited or deleted meanwhile.
+        Object recorded = Automations.queuedFlowRecord(automationAction);
+        List<AutomationAction> actions;
+        if (recorded instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<AutomationAction> started = (List<AutomationAction>) recorded;
+            actions = started;
+        } else {
+            if (!ActionGroups.exists(gid)) {
+                logger.warn("ActionGroupAction: unknown group " + gid + ", skipping");
+                return;
+            }
+            actions = ActionGroups.getActions(gid);
         }
         Set<String> stack = STACK.get();
         if (!stack.add(gid)) {
@@ -67,8 +78,9 @@ public class ActionGroupAction extends BaseAction {
             logger.warn("ActionGroupAction: cycle detected on group " + gid + ", skipping");
             return;
         }
+        Automations.recordQueuedFlow(automationAction, actions);
         try {
-            Automations.runActionList(ActionGroups.getActions(gid));
+            Automations.runActionList(actions);
         } finally {
             stack.remove(gid);
         }

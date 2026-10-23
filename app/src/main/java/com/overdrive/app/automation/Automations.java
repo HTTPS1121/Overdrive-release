@@ -35,7 +35,7 @@ public class Automations {
     private static final DaemonLogger logger = DaemonLogger.getInstance("Automations");
     static final String AUTOMATION_HOME_PROPERTY = "overdrive.automation.home";
     private static final File AUTOMATION_HOME = new File(System.getProperty(
-            AUTOMATION_HOME_PROPERTY, com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.automations")));
+            AUTOMATION_HOME_PROPERTY, com.overdrive.app.util.ScratchRoot.path(".automations")));
     private static final File AUTOMATION_CONFIG = new File(AUTOMATION_HOME, "config.json");
     // Last-known-good backup + scratch file for the atomic write. loadFromFile falls back to .bak when
     // the live file is truncated/corrupt (e.g. daemon killed mid-write on ACC-off), so a torn write can
@@ -154,8 +154,12 @@ public class Automations {
                 () -> com.overdrive.app.automation.condition.GearEvent.refresh());
         runIsolatedStartupStep("climate poller",
                 () -> com.overdrive.app.automation.condition.ClimateEvent.refresh());
+        runIsolatedStartupStep("charging-power poller",
+                () -> com.overdrive.app.automation.condition.ChargingPowerEvent.refresh());
         runIsolatedStartupStep("door fallback poller",
                 () -> com.overdrive.app.automation.condition.DoorEvent.refresh());
+        runIsolatedStartupStep("lock poller",
+                () -> com.overdrive.app.automation.condition.LockEvent.refresh());
     }
 
     /**
@@ -453,6 +457,21 @@ public class Automations {
     public static Long currentExecutionToken() {
         return CURRENT_EXECUTION_TOKEN.get();
     }
+
+    // Id of the automatic automation whose execution is running on this thread.
+    private static final ThreadLocal<String> CURRENT_EXECUTION_AUTOMATION = new ThreadLocal<>();
+
+    /** Id of the automatic automation executing on THIS thread; null for manual callers
+     *  (web UI, overlay, key mapping, Run now). */
+    public static String currentExecutionAutomationId() {
+        return CURRENT_EXECUTION_AUTOMATION.get();
+    }
+
+    /** Whether {@code id} names an automation that runs automatically right now. */
+    public static boolean isAutomaticallyEnabled(String id) {
+        Automation automation = id == null ? null : automations.get(id);
+        return automation != null && !automation.isDisabled();
+    }
     private static final ThreadLocal<java.util.IdentityHashMap<AutomationAction, Integer>>
             QUEUE_ACTION_OCCURRENCES = new ThreadLocal<>();
     private static final ThreadLocal<Automation> ACTIVE_QUEUED_DEFINITION = new ThreadLocal<>();
@@ -482,31 +501,53 @@ public class Automations {
     public static boolean chainAborted() { return CHAIN_ABORTED.get(); }
 
     /**
-     * Yield a top-level queued action without parking the singleton automation worker.
-     * Nested flow actions keep their existing blocking semantics so loop/group replay
-     * and wall-clock caps remain unchanged.
+     * Yield a queued action without parking the singleton automation worker. A nested
+     * action yields too: If/Loop/group decisions are replayed from the cursor on resume.
      */
     public static boolean deferQueuedAction(
             AutomationAction action, long delayMs, boolean actionCompleted) {
         QueueActionCursor cursor = QUEUE_ACTION_CURSOR.get();
-        if (cursor == null || action == null || delayMs <= 0L || RUN_DEPTH.get() != 1) {
+        if (cursor == null || action == null || delayMs <= 0L || !queuedYieldAllowed()) {
             return false;
         }
         cursor.deferredAction = action;
         cursor.deferredActionCompleted = actionCompleted;
         cursor.resumeAtNanos = System.nanoTime()
                 + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(delayMs);
+        commitQueuedYield(cursor, action, actionCompleted);
         return true;
     }
 
+    // Everything that returned in this attempt counts as done, refused actions included;
+    // open control-flow frames, and a wait that must poll again, replay on resume.
+    private static void commitQueuedYield(
+            QueueActionCursor cursor, AutomationAction yielding, boolean yieldingCompleted) {
+        java.util.IdentityHashMap<AutomationAction, Integer> visits =
+                QUEUE_ACTION_OCCURRENCES.get();
+        if (visits == null) return;
+        java.util.IdentityHashMap<AutomationAction, Integer> open =
+                new java.util.IdentityHashMap<>();
+        for (AutomationAction frame : cursor.openFrames) open.merge(frame, 1, Integer::sum);
+        for (java.util.Map.Entry<AutomationAction, Integer> visit : visits.entrySet()) {
+            AutomationAction visited = visit.getKey();
+            int done = visit.getValue() - open.getOrDefault(visited, 0)
+                    - (visited == yielding && !yieldingCompleted ? 1 : 0);
+            if (done > cursor.completedOccurrences.getOrDefault(visited, 0)) {
+                cursor.completedOccurrences.put(visited, done);
+            }
+        }
+        if (!ACTION_CHAIN_SUCCEEDED.get()) cursor.currentActionRefused = true;
+        cursor.yieldCommitted = true;
+    }
+
     /**
-     * Return one stable timeout deadline for the current top-level queued wait.
-     * A non-queued or nested wait returns 0 and uses its legacy blocking path.
+     * Return one stable timeout deadline for the current queued wait. A non-queued wait,
+     * or one that may not yield (see {@link #queuedYieldAllowed}), returns 0 and blocks.
      */
     public static long queuedWaitDeadlineNanos(
             AutomationAction action, long timeoutMs) {
         QueueActionCursor cursor = QUEUE_ACTION_CURSOR.get();
-        if (cursor == null || action == null || timeoutMs <= 0L || RUN_DEPTH.get() != 1) {
+        if (cursor == null || action == null || timeoutMs <= 0L || !queuedYieldAllowed()) {
             return 0L;
         }
         if (cursor.pendingWaitAction != action) {
@@ -524,6 +565,43 @@ public class Automations {
             cursor.pendingWaitAction = null;
             cursor.pendingWaitDeadlineNanos = 0L;
         }
+    }
+
+    private static boolean queuedYieldAllowed() {
+        return RUN_DEPTH.get() >= 1;
+    }
+
+    /** True while a queued action has yielded and the current attempt is unwinding. */
+    public static boolean queuedDeferralPending() {
+        QueueActionCursor cursor = QUEUE_ACTION_CURSOR.get();
+        return cursor != null && cursor.hasDeferredAction();
+    }
+
+    /**
+     * The value a control-flow action recorded for its current occurrence in this queued
+     * execution, so a resumed attempt takes the same path. Null off the queue path.
+     */
+    public static Object queuedFlowRecord(AutomationAction action) {
+        QueueActionCursor cursor = QUEUE_ACTION_CURSOR.get();
+        Integer occurrence = currentQueuedOccurrence(action);
+        if (cursor == null || occurrence == null) return null;
+        java.util.Map<Integer, Object> records = cursor.flowRecords.get(action);
+        return records == null ? null : records.get(occurrence);
+    }
+
+    /** Record {@code value} for the action's current occurrence. No-op off the queue path. */
+    public static void recordQueuedFlow(AutomationAction action, Object value) {
+        QueueActionCursor cursor = QUEUE_ACTION_CURSOR.get();
+        Integer occurrence = currentQueuedOccurrence(action);
+        if (cursor == null || occurrence == null) return;
+        cursor.flowRecords.computeIfAbsent(action, ignored -> new java.util.HashMap<>())
+                .put(occurrence, value);
+    }
+
+    private static Integer currentQueuedOccurrence(AutomationAction action) {
+        java.util.IdentityHashMap<AutomationAction, Integer> occurrences =
+                QUEUE_ACTION_OCCURRENCES.get();
+        return action == null || occurrences == null ? null : occurrences.get(action);
     }
 
     /**
@@ -544,6 +622,86 @@ public class Automations {
             } else {
                 SILENT_SEED.remove();
             }
+        }
+    }
+
+    /** True inside {@link #runSilentSeed} on this thread, e.g. a conditional poller's first tick. */
+    public static boolean isSilentSeedActive() {
+        return SILENT_SEED.get();
+    }
+
+    /**
+     * Trigger deliveries ({@code stateChanged} calls) held back while a {@link #publishTogether}
+     * scope is open on this thread. Null when no scope is open, which is the normal case: a
+     * publish then delivers immediately, exactly as before this scope existed.
+     */
+    private static final ThreadLocal<java.util.ArrayDeque<Object[]>> DEFERRED_DELIVERY =
+            new ThreadLocal<>();
+
+    /**
+     * Publish several keys as ONE observation: every store (and its delivered mark) commits
+     * first, trigger evaluation runs afterwards.
+     *
+     * <p>Why: {@link #update} evaluates triggers synchronously against the LIVE state map the
+     * moment a key is stored. A publisher that derives a second key from the same physical event
+     * (DoorEvent: the per-door key and the "any door" aggregate) therefore had its first key's
+     * triggers evaluated while the second key still held the pre-event value. A rule "when the
+     * driver door changes, if any door == closed → …" was enqueued when the door OPENED (the
+     * aggregate still read closed) and cancelled when it CLOSED (the aggregate still read open),
+     * so it could never fire (2026-09-23 field log; the user's only workaround was to trigger on
+     * "any door" instead). Simply reordering the two publishes would move the staleness to the
+     * mirror rule ("when any door changes, if driver door == …").
+     *
+     * <p>Only the delivery call moves — from "right after this store" to "after the last store
+     * in the scope". The seed rule, the exactly-once delivered mark, forceStore and expiry are
+     * still decided per key under {@code STATE_LOCK} exactly as before, on the same thread and
+     * in the same call frame, so the queue-side publication context (thread-locals read by
+     * {@code AutomationQueue.addToQueue}) is unchanged. Publishers that do not opt in behave
+     * byte-for-byte as before. Nested scopes fold into the outermost one, which flushes.
+     *
+     * <p>The flush runs in {@code finally}: a store that decided {@code fire} has already
+     * claimed delivery of its value in {@code stateDelivered}, so an exception in a later
+     * publish must not strand that edge (it would never be re-delivered).
+     *
+     * @param publishes the publish calls that describe one physical event
+     */
+    public static void publishTogether(Runnable publishes) {
+        if (publishes == null) return;
+        if (DEFERRED_DELIVERY.get() != null) {
+            publishes.run(); // nested: the outermost scope owns the flush
+            return;
+        }
+        java.util.ArrayDeque<Object[]> pending = new java.util.ArrayDeque<>();
+        DEFERRED_DELIVERY.set(pending);
+        try {
+            publishes.run();
+        } finally {
+            DEFERRED_DELIVERY.remove();
+            for (Object[] delivery : pending) {
+                EventData key = (EventData) delivery[0];
+                try {
+                    stateChanged(key, (Value) delivery[1]);
+                } catch (Throwable t) {
+                    // Each deferred key already holds its delivered mark; a throw here must
+                    // not skip the keys behind it (their edges would never be re-delivered).
+                    // Undeferred publishes let the same throw escape to the publisher, so
+                    // this only changes what happens to the OTHER keys in the scope.
+                    logger.error("Deferred trigger delivery failed for " + key + ": " + t);
+                }
+            }
+        }
+    }
+
+    /**
+     * Deliver a fired publish: immediately, or at the end of the enclosing
+     * {@link #publishTogether} scope when one is open on this thread.
+     */
+    private static void deliver(EventData key, Value oldForEdge) {
+        java.util.ArrayDeque<Object[]> pending = DEFERRED_DELIVERY.get();
+        if (pending != null) {
+            pending.add(new Object[] {key, oldForEdge});
+        } else {
+            stateChanged(key, oldForEdge);
         }
     }
 
@@ -583,6 +741,8 @@ public class Automations {
                 // it returns into (a wait inside an If/Loop body stops the whole run, not just
                 // that body) — the precondition it was guarding never came true.
                 if (chainAborted() || Thread.currentThread().isInterrupted()) break;
+                // A yielded wait unwinds the attempt; nothing may start until it resumes.
+                if (queuedDeferralPending()) break;
                 if (automationAction == null) continue;
                 Action action = getAction(automationAction.getType());
                 if (action == null) continue;
@@ -602,26 +762,50 @@ public class Automations {
                     occurrences.put(automationAction, occurrence);
                     if (occurrence <= queueCursor.completedOccurrences.getOrDefault(
                             automationAction, 0)) {
+                        if (controlFlow) {
+                            queueCursor.replaySubtreeVisits(
+                                    automationAction, occurrence, occurrences);
+                        }
                         continue;
                     }
                 }
-                boolean actionSucceeded = stateSetterOnly && stateSetter
-                        ? ((VehicleControlAction) action)
-                                .triggerLatestStateSetterWithResult(automationAction)
-                        : action.triggerWithResult(automationAction);
+                boolean openFrame = controlFlow && queueCursor != null && occurrence != 0;
+                java.util.IdentityHashMap<AutomationAction, Integer> visitsBefore = openFrame
+                        ? new java.util.IdentityHashMap<>(occurrences) : null;
+                if (openFrame) queueCursor.openFrames.push(automationAction);
+                boolean actionSucceeded;
+                try {
+                    actionSucceeded = stateSetterOnly && stateSetter
+                            ? ((VehicleControlAction) action)
+                                    .triggerLatestStateSetterWithResult(automationAction)
+                            : action.triggerWithResult(automationAction);
+                } finally {
+                    if (openFrame) queueCursor.openFrames.pop();
+                }
+                if (openFrame && !queueCursor.hasDeferredAction()
+                        && !Thread.currentThread().isInterrupted()) {
+                    queueCursor.recordSubtreeVisits(
+                            automationAction, occurrence, visitsBefore, occurrences);
+                }
                 successful &= actionSucceeded;
                 if (!actionSucceeded) {
                     ACTION_CHAIN_SUCCEEDED.set(false);
+                    // Keeps the "did not succeed" warning for a step a requeue will not repeat.
+                    if (queueCursor != null && !Thread.currentThread().isInterrupted()) {
+                        queueCursor.currentActionRefused = true;
+                    }
                 }
+                // A returned step is done, refused or not, so a requeue never repeats it; only
+                // a step that failed while interrupted is retried.
                 if (queueCursor != null && occurrence != 0
-                        && actionSucceeded
-                        && ACTION_CHAIN_SUCCEEDED.get()
+                        && !queueCursor.yieldCommitted
+                        && (actionSucceeded || !Thread.currentThread().isInterrupted())
                         && !chainAborted()
                         && (!queueCursor.hasDeferredAction()
                                 || queueCursor.deferredActionCompleted(automationAction))
                         && (!Thread.currentThread().isInterrupted() || !controlFlow)) {
                     queueCursor.completedOccurrences.merge(
-                            automationAction, 1, Integer::sum);
+                            automationAction, occurrence, Math::max);
                 }
                 if (queueCursor != null && queueCursor.hasDeferredAction()) break;
             }
@@ -671,6 +855,16 @@ public class Automations {
      */
     public static boolean exists(String id) {
         return id != null && automations.containsKey(id);
+    }
+
+    /**
+     * The primary (conditions-met) action list of a stored automation, or null when the id is
+     * unknown. Lets the voice execution policy inspect what a spoken "run automation" would do
+     * without running it.
+     */
+    public static List<AutomationAction> primaryActionsOf(String id) {
+        Automation automation = id == null ? null : automations.get(id);
+        return automation == null ? null : automation.getActions();
     }
 
     /**
@@ -970,7 +1164,7 @@ public class Automations {
      */
     public static boolean updateAutomation(String id, JSONObject json) {
         Automation automation = Automation.fromJson(json);
-        if (automation == null) return false;
+        if (automation == null || hasInvalidMqttChannel(automation)) return false;
         updateAutomation(id, automation);
         return true;
     }
@@ -1137,6 +1331,82 @@ public class Automations {
             }
         } catch (Exception ignored) {}
         return arr;
+    }
+
+    /**
+     * [{id, name, mode, glyph}] sorted by name, for the glass widgets' shortcut keys. {@code glyph}
+     * names an icon for what the automation does first, read from its first action that acts on
+     * something (pauses, waits and variables are skipped; if/loop look inside).
+     */
+    public static JSONArray listForShortcuts() {
+        java.util.List<JSONObject> rows = new java.util.ArrayList<>();
+        try {
+            for (Map.Entry<String, Automation> e : automations.entrySet()) {
+                Automation a = e.getValue();
+                String nm = a.getName();
+                if (nm.isEmpty()) {
+                    String k = e.getKey();
+                    nm = "Automation " + (k.length() > 8 ? k.substring(0, 8) : k);
+                }
+                rows.add(new JSONObject().put("id", e.getKey()).put("name", nm)
+                        .put("mode", a.getMode()).put("glyph", glyphOrBolt(a.getActions())));
+            }
+        } catch (Exception ignored) {}
+        rows.sort((x, y) -> x.optString("name").compareToIgnoreCase(y.optString("name")));
+        JSONArray arr = new JSONArray();
+        for (JSONObject o : rows) arr.put(o);
+        return arr;
+    }
+
+    private static String glyphOrBolt(java.util.List<AutomationAction> actions) {
+        String g = glyphOf(actions);
+        return g != null ? g : "bolt";
+    }
+
+    /** The first action that acts on something decides; null when nothing in the list does. */
+    private static String glyphOf(java.util.List<AutomationAction> actions) {
+        if (actions == null) return null;
+        for (AutomationAction a : actions) {
+            if (a == null) continue;
+            String t = a.getType() == null ? "" : a.getType();
+            if (t.equals("if") || t.equals("loop")) {
+                String inner = glyphOf(a.getChildActions());
+                if (inner == null && t.equals("if")) inner = glyphOf(a.getElseChildActions());
+                if (inner != null) return inner;
+                continue;
+            }
+            if (t.equals("pause") || t.startsWith("waitUntil") || t.endsWith("Variable")) continue;
+            String g = glyphForType(t);
+            return g != null ? g : "bolt";
+        }
+        return null;
+    }
+
+    /** Action ids from the catalog, matched exactly; anything else gets the generic bolt. */
+    private static String glyphForType(String t) {
+        switch (t) {
+            case "lock": case "unlock": case "child_lock": return "lock";
+            case "windows": case "windowsPreset": case "windowsAll": case "windowsVent": case "rainCloseWindows":
+            case "sunroof": case "sunshade": return "window";
+            case "tailgate": return "boot";
+            case "setAc": case "acAuto": case "acSync": case "acAutoOff": case "fanOnly": case "maxCool": case "airPurify":
+            case "setAcTemp": case "stepAcTemp": case "setAcFan": case "recirculation": case "frontDefrost": case "rearDefrost":
+            case "steeringHeat": case "seat": case "remoteClimateSchedule": case "remoteClimateScheduleUpdate":
+            case "remoteClimateScheduleDelete": return "fan";
+            case "flash": case "findCar": case "drl": case "headlight_mode": case "headlightLevel": case "hazard":
+            case "welcomeLight": case "readingLight": case "turnSignalLeft": case "turnSignalRight":
+            case "setAmbient": case "ambientMusic": case "ambientBrightness": case "ambientPower": return "lamp";
+            case "powerOn": case "powerOff": return "power";
+            case "notification": case "showToast": case "showDialog": case "speak": return "bell";
+            case "api": case "mqttPublish": return "cloud";
+            case "shell": return "terminal";
+            case "radio": case "playAudio": case "stopAudio": case "mediaControl": case "mediaVolume": case "volumeStep": return "music";
+            case "safeKeep": case "surveillance": return "shield";
+            case "genAiInsight": return "sparkle";
+            case "manualClip": case "recording": case "showCameraFeed": case "showCameraView": case "native_camera_view": return "camera";
+            case "automationControl": case "actionGroup": return "flow";
+            default: return null;
+        }
     }
 
     /**
@@ -1362,9 +1632,8 @@ public class Automations {
                     if (a.conditionsMet(conditionState) || a.hasElseActions()) {
                         logger.info("Adding automation to queue: " + automation.getKey());
                         AutomationQueue.addToQueue(automation.getKey(), a.getDelay());
-                    } else {
+                    } else if (AutomationQueue.removeFromQueue(automation.getKey())) {
                         logger.info("Removing automation from queue: " + automation.getKey());
-                        AutomationQueue.removeFromQueue(automation.getKey());
                     }
                 }
             }
@@ -1770,7 +2039,7 @@ public class Automations {
             oldForEdge = previous[0] != null ? previous[0] : value;
         }
         if (fire) {
-            stateChanged(key, oldForEdge);
+            deliver(key, oldForEdge);
         }
     }
 
@@ -1863,16 +2132,20 @@ public class Automations {
      * whitelist. The channel is validated (bounded, safe charset) so a malformed/hostile
      * topic can't inject arbitrary automation state; the value is bounded in length. The
      * value flows through {@link #update} (level-triggered: fires on a value transition),
-     * so publishing distinct values (or toggling) drives repeated triggers.
+     * so publishing distinct values (or toggling) drives repeated triggers. A retained
+     * replay only seeds the value and never fires.
      *
-     * @param channel the channel segment from the topic (validated)
-     * @param value   the message payload as a string (bounded)
+     * @param channel  the channel segment from the topic (validated)
+     * @param value    the message payload as a string (bounded)
+     * @param retained true when the broker replayed a retained message on (re)subscribe
      * @return true if accepted and published, false if the channel/value was rejected
      */
-    public static boolean publishMqttTrigger(String channel, String value) {
-        if (!isValidMqttChannel(channel)) return false;
-        if (value == null) value = "";
-        if (value.length() > 256) value = value.substring(0, 256);
+    public static boolean publishMqttTrigger(String channel, String value, boolean retained) {
+        if (!isValidMqttChannel(channel)) {
+            logMqttTriggerRejected(channel, MQTT_CHANNEL_ERROR);
+            return false;
+        }
+        String payload = value == null ? "" : value.length() > 256 ? value.substring(0, 256) : value;
         // Bound distinct-channel growth: update() inserts a permanent state entry per
         // channel, and the channel is external (broker-writable). A chatty/hostile broker
         // publishing to <base>/automation/<random-N> would otherwise grow the state map
@@ -1881,17 +2154,18 @@ public class Automations {
         // fixed, small set of channels, so this never limits legitimate use). The set only
         // grows, mirroring update()'s own permanence — no pruning needed for a ≤cap set.
         if (mqttChannelsSeen.size() >= MAX_MQTT_CHANNELS && !mqttChannelsSeen.contains(channel)) {
+            logMqttTriggerRejected(channel, "limit of " + MAX_MQTT_CHANNELS + " channels reached");
             return false;
         }
         mqttChannelsSeen.add(channel);
-        // OBSERVED-EDGE semantics: a broker message physically ARRIVED — this is a witnessed
-        // event, not a sampled state. Routing it through the sampled path made the FIRST
-        // message on a channel after a daemon restart a silent seed, so an MQTT-triggered
-        // automation missed exactly one message per restart per channel. Paho delivers each
-        // message once (per QoS contract), and the delivered-value dedup keeps a broker
-        // RETAINED message replayed on reconnect from re-firing the same payload.
-        updateObservedEdge(com.overdrive.app.automation.condition.BydEvent.mqttTrigger(channel),
-                value);
+        EventData key = com.overdrive.app.automation.condition.BydEvent.mqttTrigger(channel);
+        // A live message is a witnessed edge (the first after a restart must fire); a retained
+        // replay restates broker state, so it is a silent seed that never fires.
+        if (retained) {
+            runSilentSeed(() -> update(key, payload, true));
+        } else {
+            updateObservedEdge(key, payload);
+        }
         return true;
     }
 
@@ -1901,6 +2175,47 @@ public class Automations {
     private static final int MAX_MQTT_CHANNELS = 64;
     private static final java.util.Set<String> mqttChannelsSeen =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Fixed ASCII on purpose: it is sent as the HTTP status reason of a rejected save. */
+    public static final String MQTT_CHANNEL_ERROR =
+            "MQTT channel names may only use letters, numbers, '.', '_' and '-'.";
+
+    /**
+     * Whether {@code automation} watches an MQTT channel the subscriber can never deliver.
+     * Checked on save only; load and backup import stay lenient so older configs still load.
+     */
+    public static boolean hasInvalidMqttChannel(Automation automation) {
+        if (automation == null) return false;
+        for (EventData trigger : automation.getTriggers()) {
+            if (isInvalidMqttChannelKey(trigger)) return true;
+        }
+        for (AutomationCondition condition : automation.getAllConditions()) {
+            if (condition != null && isInvalidMqttChannelKey(condition.getEventData())) return true;
+        }
+        return false;
+    }
+
+    private static boolean isInvalidMqttChannelKey(EventData key) {
+        if (key == null || !"mqttTrigger".equals(key.getType())) return false;
+        Map<String, String> variables = key.getVariables();
+        return !isValidMqttChannel(variables == null ? null : variables.get("channel"));
+    }
+
+    // At most one warning per minute: the topic subtree is broker-writable.
+    private static final long MQTT_REJECT_LOG_INTERVAL_NS = 60_000_000_000L;
+    private static final java.util.concurrent.atomic.AtomicLong lastMqttRejectLogNs =
+            new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+
+    private static void logMqttTriggerRejected(String channel, String reason) {
+        long now = System.nanoTime();
+        long last = lastMqttRejectLogNs.get();
+        if (last != Long.MIN_VALUE && now - last < MQTT_REJECT_LOG_INTERVAL_NS) return;
+        if (!lastMqttRejectLogNs.compareAndSet(last, now)) return;
+        String shown = String.valueOf(channel);
+        if (shown.length() > 64) shown = shown.substring(0, 64) + "...";
+        logger.warn("Ignoring MQTT automation message on channel '"
+                + shown.replaceAll("\\p{Cc}", "?") + "': " + reason);
+    }
 
     /** A safe channel id: non-empty, &le;64 chars, [A-Za-z0-9._-] only (a single MQTT
      *  topic segment). Rejects wildcards/slashes so it maps to exactly one channel. */
@@ -1926,6 +2241,20 @@ public class Automations {
         private java.util.List<AutomationAction> actions;
         private final java.util.IdentityHashMap<AutomationAction, Integer>
                 completedOccurrences = new java.util.IdentityHashMap<>();
+        // Per-occurrence control-flow decisions (If branch, loop progress, group list).
+        private final java.util.IdentityHashMap<AutomationAction,
+                java.util.Map<Integer, Object>> flowRecords = new java.util.IdentityHashMap<>();
+        // Visit counts when actions[nextAction] started; a resumed attempt continues from
+        // them, so an action group run more than once keeps one occurrence numbering.
+        private java.util.IdentityHashMap<AutomationAction, Integer> visitBase =
+                new java.util.IdentityHashMap<>();
+        // Control-flow frames executing in the current attempt.
+        private final java.util.ArrayDeque<AutomationAction> openFrames =
+                new java.util.ArrayDeque<>();
+        // A yield already recorded this attempt's completions (commitQueuedYield).
+        private boolean yieldCommitted;
+        // actions[nextAction] had a refused step in an attempt that then yielded.
+        private boolean currentActionRefused;
         private int nextAction;
         private boolean recorded;
         private AutomationAction deferredAction;
@@ -1947,6 +2276,47 @@ public class Automations {
             deferredAction = null;
             deferredActionCompleted = false;
             resumeAtNanos = 0L;
+            yieldCommitted = false;
+            openFrames.clear();
+        }
+
+        /** Move past actions[nextAction], keeping the visit counts its run produced. */
+        void advance(java.util.IdentityHashMap<AutomationAction, Integer> visits) {
+            nextAction++;
+            currentActionRefused = false;
+            if (visits != null) visitBase = new java.util.IdentityHashMap<>(visits);
+        }
+
+        // Child visits made by each finished control-flow occurrence. Skipping that
+        // occurrence on a resumed attempt adds them back, so later visits of the same
+        // children (next loop pass, the group run again) keep their numbering.
+        private final java.util.IdentityHashMap<AutomationAction,
+                java.util.Map<Integer, java.util.Map<AutomationAction, Integer>>> subtreeVisits =
+                new java.util.IdentityHashMap<>();
+
+        void recordSubtreeVisits(AutomationAction frame, int occurrence,
+                java.util.Map<AutomationAction, Integer> before,
+                java.util.Map<AutomationAction, Integer> after) {
+            java.util.IdentityHashMap<AutomationAction, Integer> made =
+                    new java.util.IdentityHashMap<>();
+            for (java.util.Map.Entry<AutomationAction, Integer> visit : after.entrySet()) {
+                int delta = visit.getValue() - before.getOrDefault(visit.getKey(), 0);
+                if (delta > 0) made.put(visit.getKey(), delta);
+            }
+            subtreeVisits.computeIfAbsent(frame, ignored -> new java.util.HashMap<>())
+                    .put(occurrence, made);
+        }
+
+        void replaySubtreeVisits(AutomationAction frame, int occurrence,
+                java.util.Map<AutomationAction, Integer> visits) {
+            java.util.Map<Integer, java.util.Map<AutomationAction, Integer>> byOccurrence =
+                    subtreeVisits.get(frame);
+            java.util.Map<AutomationAction, Integer> made =
+                    byOccurrence == null ? null : byOccurrence.get(occurrence);
+            if (made == null) return;
+            for (java.util.Map.Entry<AutomationAction, Integer> visit : made.entrySet()) {
+                visits.merge(visit.getKey(), visit.getValue(), Integer::sum);
+            }
         }
 
         boolean hasDeferredAction() {
@@ -2062,6 +2432,11 @@ public class Automations {
                         id, cursor.automation, cursor.automationRevision);
     }
 
+    /** A started cursor whose definition was replaced, disabled or deleted (it can only end). */
+    static boolean queuedCursorSuperseded(String id, QueueActionCursor cursor) {
+        return cursor != null && cursor.hasStarted() && !ownsQueuedDefinition(id, cursor);
+    }
+
     /**
      * Queue-only resumable execution. A cancellation advances past every action that returned,
      * then reports incomplete so the queue can re-drive only the unvisited suffix.
@@ -2103,8 +2478,9 @@ public class Automations {
             cursor.executionToken = EXECUTION_TOKEN_SEQ.incrementAndGet();
         }
         CURRENT_EXECUTION_TOKEN.set(cursor.executionToken);
+        CURRENT_EXECUTION_AUTOMATION.set(id);
         QUEUE_ACTION_CURSOR.set(cursor);
-        QUEUE_ACTION_OCCURRENCES.set(new java.util.IdentityHashMap<>());
+        QUEUE_ACTION_OCCURRENCES.set(new java.util.IdentityHashMap<>(cursor.visitBase));
         ACTIVE_QUEUED_DEFINITION.set(cursor.automation);
         ACTIVE_QUEUED_AUTOMATION_ID.set(id);
         ACTIVE_QUEUED_DEFINITION_REVISION.set(cursor.automationRevision);
@@ -2116,7 +2492,7 @@ public class Automations {
                 Action action = automationAction == null
                         ? null : getAction(automationAction.getType());
                 if (action == null) {
-                    cursor.nextAction++;
+                    cursor.advance(QUEUE_ACTION_OCCURRENCES.get());
                     continue;
                 }
                 int completedBefore =
@@ -2142,6 +2518,7 @@ public class Automations {
                 boolean actionBoundaryCompleted =
                         cursor.completedOccurrences.getOrDefault(automationAction, 0)
                                 > completedBefore;
+                if (cursor.currentActionRefused) actionSucceeded = false;
                 if (!ownsQueuedDefinition(id, cursor)) return true;
                 if (chainAborted()) {
                     cursor.nextAction = cursor.actions.size();
@@ -2151,7 +2528,7 @@ public class Automations {
                     if (actionBoundaryCompleted
                             && !action.hasChildActions()
                             && !"actionGroup".equals(automationAction.getType())) {
-                        cursor.nextAction++;
+                        cursor.advance(QUEUE_ACTION_OCCURRENCES.get());
                     }
                     return false;
                 }
@@ -2161,7 +2538,7 @@ public class Automations {
                     if (actionBoundaryCompleted
                             && !action.hasChildActions()
                             && !"actionGroup".equals(automationAction.getType())) {
-                        cursor.nextAction++;
+                        cursor.advance(QUEUE_ACTION_OCCURRENCES.get());
                     }
                     return false;
                 }
@@ -2186,10 +2563,10 @@ public class Automations {
                             + (remaining > 0
                                     ? " — continuing with the remaining " + remaining + " action(s)"
                                     : " — it was the last action"));
-                    cursor.nextAction++;
+                    cursor.advance(QUEUE_ACTION_OCCURRENCES.get());
                     continue;
                 }
-                cursor.nextAction++;
+                cursor.advance(QUEUE_ACTION_OCCURRENCES.get());
             }
         } finally {
             ACTIVE_QUEUED_DEFINITION_REVISION.remove();
@@ -2198,6 +2575,7 @@ public class Automations {
             QUEUE_ACTION_OCCURRENCES.remove();
             QUEUE_ACTION_CURSOR.remove();
             CURRENT_EXECUTION_TOKEN.remove();
+            CURRENT_EXECUTION_AUTOMATION.remove();
         }
         if (cursor.recorded
                 && (cursor.automation.getTriggerCount() % STATS_PERSIST_EVERY) == 0) {
@@ -2273,8 +2651,10 @@ public class Automations {
             // Save/restore rather than remove, so a nested trigger can't clobber
             // an outer execution's token.
             Long previousToken = CURRENT_EXECUTION_TOKEN.get();
+            String previousAutomation = CURRENT_EXECUTION_AUTOMATION.get();
             if (!explicit) {
                 CURRENT_EXECUTION_TOKEN.set(EXECUTION_TOKEN_SEQ.incrementAndGet());
+                CURRENT_EXECUTION_AUTOMATION.set(id);
             }
             try {
                 if (runElse) automation.triggerElseActions();
@@ -2286,6 +2666,11 @@ public class Automations {
                 if (!explicit) {
                     if (previousToken != null) CURRENT_EXECUTION_TOKEN.set(previousToken);
                     else CURRENT_EXECUTION_TOKEN.remove();
+                    if (previousAutomation != null) {
+                        CURRENT_EXECUTION_AUTOMATION.set(previousAutomation);
+                    } else {
+                        CURRENT_EXECUTION_AUTOMATION.remove();
+                    }
                 }
             }
             // Persist the bumped stats opportunistically: only every STATS_PERSIST_EVERY

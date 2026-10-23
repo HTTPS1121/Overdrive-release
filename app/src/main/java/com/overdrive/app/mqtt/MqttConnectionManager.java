@@ -75,6 +75,8 @@ public class MqttConnectionManager {
     private volatile long lastCollectionTimeMs = 0;
     private volatile long lastCachedCabinExpiresAtMs = 0;
     private static final long TELEMETRY_CACHE_TTL_MS = 2000; // 2 seconds
+    // Link-down cadence: only the cheap ensureAlive() check runs, no telemetry collection.
+    private static final long OFFLINE_PROBE_MS = 5000;
 
     private static final class CollectedTelemetry {
         final JSONObject payload;
@@ -94,6 +96,18 @@ public class MqttConnectionManager {
     // High-water mark of the odometer handed to MQTT. Only touched from collectTelemetry(),
     // which is synchronized(this), so it needs no separate guard.
     private double lastOdometerKm = -1;
+
+    // door_open / locked sampling state, also collectTelemetry()-only; System.nanoTime based.
+    // readAllDoorOpenStates() reloads the drive-side config, so doors are sampled at most every 5 s.
+    private static final long DOOR_READ_INTERVAL_NANOS = 5_000_000_000L;
+    private boolean doorSampled = false;
+    private long lastDoorReadNanos = 0L;
+    private Object lastDoorOpen = JSONObject.NULL;
+    // A definite OTA lock read survives transient invalid reads for this long.
+    private static final long LOCK_HOLD_NANOS = 60_000_000_000L;
+    private int lockUnlockStreak = 0;
+    private int lastOtaLock = -1;
+    private long lastOtaLockAtNanos = 0L;
 
     // One-way shutdown latch + lifecycle mutex. stopAll() is only ever called on
     // daemon shutdown (never followed by a restart of the same instance), but it
@@ -333,10 +347,17 @@ public class MqttConnectionManager {
         // go unnoticed — and QoS 0 means the eventual heartbeat publish can succeed into a
         // half-open socket without throwing, so reconnect never triggers. Polling
         // isConnected() each cycle lets us reconnect within ~keep-alive seconds of a drop.
+        boolean alive = false;
         try {
-            publisher.ensureAlive();
+            alive = publisher.ensureAlive();
         } catch (Exception e) {
             logger.warn("Health check error for " + config.name + ": " + e.getMessage());
+        }
+        // Link down: probe instead of collecting telemetry nothing can receive. ensureAlive()
+        // paces the retries and reconnects the moment the car's network changes.
+        if (!alive) {
+            scheduleNext(connectionId, scheduler, OFFLINE_PROBE_MS);
+            return;
         }
 
         try {
@@ -983,11 +1004,10 @@ public class MqttConnectionManager {
                 payload.put("odometer", publishableOdometerKm(odoKm));
             }
 
-            // soh — use the DISPLAYED (capped, anchored) value so MQTT agrees with
-            // the dashboard/health card. The internal live median can differ from
-            // the headline; getDisplaySoh is the single number every surface shows.
-            if (sohEstimator != null && sohEstimator.hasDisplaySoh()) {
-                payload.put("soh", sohEstimator.getDisplaySoh());
+            // Use the canonical SOH even before the estimator is initialized.
+            double canonicalSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(sohEstimator);
+            if (canonicalSoh > 0) {
+                payload.put("soh", canonicalSoh);
             }
 
             // Only publish generic charge-limit state once the matching
@@ -1043,6 +1063,12 @@ public class MqttConnectionManager {
                     payload.put("gear", GearMonitor.gearToString(gearMonitor.getCurrentGear()));
                 }
             }
+
+            // door_open / locked — live reads that work parked; unknown stays an explicit null.
+            payload.put("door_open", sampleDoorOpen(collector));
+            int[] cloudLocks = freshCloudLocks();
+            payload.put("locked", resolveLocked(debouncedOtaLock(collector),
+                    cloudLocks != null && isRightHandDrive(), cloudLocks));
 
             // ==================== EXTENDED TELEMETRY (BYD API overhaul) ====================
             if (vd != null) {
@@ -1250,6 +1276,9 @@ public class MqttConnectionManager {
                 // cannot report it leaves the entity unavailable instead of showing a wrong "off".
                 if (vd.ambientEnabled != BydVehicleData.UNAVAILABLE) {
                     payload.put("ambient_enabled", vd.ambientEnabled);
+                }
+                if (vd.readingLight != BydVehicleData.UNAVAILABLE) {
+                    payload.put("reading_light", vd.readingLight);
                 }
 
                 // Climate
@@ -1469,7 +1498,7 @@ public class MqttConnectionManager {
                 "tyre_signal_rl", "tyre_signal_rr",
                 "tyre_t_fl", "tyre_t_fr", "tyre_t_rl", "tyre_t_rr",
                 "tyre_system_state", "tyre_temp_state",
-                "ambient_colour", "ambient_enabled",
+                "ambient_colour", "ambient_enabled", "reading_light",
                 "ac_on", "ac_cycle", "ac_wind", "ac_fan", "temp_unit",
                 "climate_setpoint", "climate_setpoint_passenger",
                 "drift_mode", "speed_limit_warning",
@@ -1541,6 +1570,100 @@ public class MqttConnectionManager {
 
     private static boolean isValidGearMode(int gear) {
         return gear >= GearMonitor.GEAR_P && gear <= GearMonitor.GEAR_S;
+    }
+
+    private Object sampleDoorOpen(BydDataCollector collector) {
+        long now = System.nanoTime();
+        if (doorSampled && now - lastDoorReadNanos < DOOR_READ_INTERVAL_NANOS) return lastDoorOpen;
+        doorSampled = true;
+        lastDoorReadNanos = now;
+        try {
+            lastDoorOpen = anyDoorOpen(collector.readAllDoorOpenStates());
+        } catch (Throwable t) {
+            lastDoorOpen = JSONObject.NULL;
+        }
+        return lastDoorOpen;
+    }
+
+    /** [lf, rf, lr, rr, hood, trunk, …]: 1 if any is open, 0 once all four doors read closed. */
+    static Object anyDoorOpen(int[] states) {
+        if (states == null || states.length < 6) return JSONObject.NULL;
+        for (int i = 0; i < 6; i++) {
+            if (states[i] == 1) return 1;
+        }
+        for (int i = 0; i < 4; i++) {
+            if (states[i] != 0) return JSONObject.NULL;
+        }
+        return 0;
+    }
+
+    /**
+     * OTA driver-door lock read: 1 locked, 0 unlocked, -1 unknown. Two consecutive UNLOCK reads
+     * are required, as in BydDataCollector.collectLockState (the rail emits transient ones).
+     */
+    private int debouncedOtaLock(BydDataCollector collector) {
+        int state = BydDataCollector.DOOR_STATE_INVALID;
+        try {
+            state = collector.readDoorLockState();
+        } catch (Throwable ignored) {}
+        long now = System.nanoTime();
+        if (state == BydDataCollector.DOOR_STATE_LOCK) {
+            lockUnlockStreak = 0;
+            lastOtaLock = 1;
+            lastOtaLockAtNanos = now;
+        } else if (state == BydDataCollector.DOOR_STATE_UNLOCK) {
+            if (++lockUnlockStreak >= 2) lastOtaLock = 0;
+            lastOtaLockAtNanos = now;
+        } else if (now - lastOtaLockAtNanos > LOCK_HOLD_NANOS) {
+            lastOtaLock = -1;
+        }
+        return lastOtaLock;
+    }
+
+    /**
+     * Same merge as /api/vehicle/state: the OTA read owns the driver's door and a fresh cloud
+     * snapshot the rest ([lf, rf, lr, rr], 1 locked / 0 unlocked / -1). Any unlocked door → 0,
+     * all four locked → 1, otherwise the driver door alone, otherwise unknown.
+     */
+    static Object resolveLocked(int otaDriver, boolean rightHandDrive, int[] cloud) {
+        int[] doors = {-1, -1, -1, -1};
+        if (cloud != null && cloud.length >= 4) System.arraycopy(cloud, 0, doors, 0, 4);
+        if (otaDriver != -1) doors[rightHandDrive ? 1 : 0] = otaDriver;
+        boolean allLocked = true;
+        for (int d : doors) {
+            if (d == 0) return 0;
+            if (d != 1) allLocked = false;
+        }
+        if (allLocked) return 1;
+        return otaDriver != -1 ? Integer.valueOf(otaDriver) : JSONObject.NULL;
+    }
+
+    /** Per-door cloud lock state when the snapshot is fresh, else null. */
+    private static int[] freshCloudLocks() {
+        try {
+            com.overdrive.app.byd.cloud.VehicleCloudSnapshot cs =
+                    com.overdrive.app.byd.cloud.BydCloudDataProvider.getInstance().getSnapshot();
+            if (cs == null || !cs.isLockStateFresh() || !cs.hasValidLockState()) return null;
+            return new int[] {cloudLock(cs.leftFrontDoorLock), cloudLock(cs.rightFrontDoorLock),
+                    cloudLock(cs.leftRearDoorLock), cloudLock(cs.rightRearDoorLock)};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static int cloudLock(int state) {
+        if (state == com.overdrive.app.byd.cloud.VehicleCloudSnapshot.LOCK_LOCKED) return 1;
+        if (state == com.overdrive.app.byd.cloud.VehicleCloudSnapshot.LOCK_UNLOCKED) return 0;
+        return -1;
+    }
+
+    private static boolean isRightHandDrive() {
+        try {
+            return !"lhd".equalsIgnoreCase(com.overdrive.app.config.UnifiedConfigManager
+                    .getVehicle().optString("driveSide", "rhd"));
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     /**

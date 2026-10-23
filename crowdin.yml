@@ -72,3 +72,28 @@ files:
         zh-TW: zh-rTW
         pt-BR: pt-rBR
         nb: nb
+
+  # Other string-only Android files; strings_*.xml also covers files added later (e.g. WireGuard).
+  # dashboard_modern_resources.xml stays out: it mixes <dimen> values that must not be copied per locale.
+  - source: /app/src/main/res/values/strings_*.xml
+    translation: /app/src/main/res/values-%two_letters_code%/%original_file_name%
+    type: android
+    update_option: update_as_unapproved
+    translate_attributes: 0
+    languages_mapping:
+      two_letters_code:
+        zh-CN: zh-rCN
+        zh-TW: zh-rTW
+        pt-BR: pt-rBR
+        nb: nb
+  - source: /app/src/main/res/values/recording_modern_strings.xml
+    translation: /app/src/main/res/values-%two_letters_code%/recording_modern_strings.xml
+    type: android
+    update_option: update_as_unapproved
+    translate_attributes: 0
+    languages_mapping:
+      two_letters_code:
+        zh-CN: zh-rCN
+        zh-TW: zh-rTW
+        pt-BR: pt-rBR
+        nb: nb

@@ -5,7 +5,6 @@ import android.content.Context;
 import com.overdrive.app.byd.BydDeviceHelper;
 import com.overdrive.app.logging.DaemonLogger;
 
-import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -295,8 +294,7 @@ public final class AccOffReaders {
         if (cached != null) return cached;
         try {
             Class<?> cls = Class.forName(fqn);
-            Method getInstance = cls.getMethod("getInstance", Context.class);
-            Object device = getInstance.invoke(null, ctx);
+            Object device = BydDeviceHelper.invokeGetInstance(cls, ctx);
             if (device != null) deviceCache.put(fqn, device);
             return device;
         } catch (Throwable t) {

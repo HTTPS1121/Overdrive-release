@@ -52,7 +52,7 @@ public class HebrewLocaleSupportTest {
     }
 
     @Test
-    public void nativeBundleHasCompleteStringKeyParity()
+    public void nativeAndLauncherBundlesHaveCompleteStringKeyParity()
             throws Exception {
         Set<String> nativeEnglish = translatableStringKeys(
                 repositoryPath("app/src/main/res/values"));
@@ -60,6 +60,19 @@ public class HebrewLocaleSupportTest {
                 repositoryPath("app/src/main/res/values-he"));
         assertTrue(missingMessage(nativeEnglish, nativeHebrew),
                 nativeHebrew.containsAll(nativeEnglish));
+
+        Set<String> launcherEnglish = translatableStringKeys(
+                repositoryPath("launcher/src/main/res/values"));
+        Set<String> launcherHebrew = translatableStringKeys(
+                repositoryPath("launcher/src/main/res/values-he"));
+        assertEquals(launcherEnglish, launcherHebrew);
+
+        String launcherStrings = read(
+                "launcher/src/main/res/values-he/strings.xml");
+        assertTrue(launcherStrings.contains(
+                "name=\"settings_language\">שפה</string>"));
+        assertTrue(launcherStrings.contains(
+                "name=\"pip_zone_active_count\">%1$d פעילות</string>"));
     }
 
     @Test
@@ -75,6 +88,20 @@ public class HebrewLocaleSupportTest {
         assertTrue(appLocaleConfig.contains("android:name=\"cs\""));
         assertTrue(appLocaleConfig.contains("android:name=\"he\""));
         assertFalse(appLocaleConfig.contains("android:name=\"iw\""));
+
+        String launcherController = read(
+                "launcher/src/main/java/com/overdrive/launcher/i18n/LocaleController.kt");
+        String launcherLocaleConfig = read(
+                "launcher/src/main/res/xml/locales_config.xml");
+        assertTrue(launcherController.contains("\"he\""));
+        assertTrue(launcherController.contains("\"iw\" to \"he\""));
+        assertTrue(launcherLocaleConfig.contains("android:name=\"he\""));
+        assertFalse(launcherLocaleConfig.contains("android:name=\"iw\""));
+
+        String appBuild = read("app/build.gradle.kts");
+        String launcherBuild = read("launcher/build.gradle.kts");
+        assertTrue(appBuild.contains("tasks.registering(Sync::class)"));
+        assertTrue(launcherBuild.contains("tasks.registering(Sync::class)"));
     }
 
     private static void assertCatalogCoversEnglish(String englishPath, String hebrewPath)

@@ -67,6 +67,9 @@ public final class ClusterViewMirrorService extends Binder {
     /** Binder interface token. Must stay stable across app updates (a daemon spawned by an
      *  older build keeps enforcing this exact token). */
     public static final String DESCRIPTOR = "com.overdrive.app.cluster.IClusterViewMirror";
+    /** App-targeted broadcast carrying this Binder when ServiceManager refuses the shell uid. */
+    public static final String ACTION_PUBLISH = "com.overdrive.app.action.CLUSTER_VIEW_MIRROR";
+    public static final String EXTRA_BINDER = "cluster_view_mirror";
 
     public static final int TXN_ATTACH    = IBinder.FIRST_CALL_TRANSACTION;      // + view size + Surface
     public static final int TXN_REPROJECT = IBinder.FIRST_CALL_TRANSACTION + 1;  // + view size
@@ -96,6 +99,7 @@ public final class ClusterViewMirrorService extends Binder {
     private OwnerDeath ownerDeathRecipient;
     private long activeSessionId;          // 0 for clients predating the session trailer
     private IBinder sessionOwnerToken;     // retained across detach as an ordering watermark
+    private IBinder.DeathRecipient sessionOwnerDeath;
     private long newestSessionId;
     private boolean holdsProjection;      // true only while WE hold the "viewmirror" sustained token
     private long ownerCastGeneration;     // cast mirrored by ownerToken; 0 when not a cast
@@ -153,9 +157,41 @@ public final class ClusterViewMirrorService extends Binder {
             registered = true;
             logger.info("registered service " + SERVICE_NAME);
         } catch (Throwable t) {
-            logger.warn("register failed: " + t.getMessage());
+            Throwable cause = t instanceof java.lang.reflect.InvocationTargetException
+                    && t.getCause() != null ? t.getCause() : t;
+            logger.warn("register failed: " + cause.getClass().getSimpleName()
+                    + ": " + cause.getMessage() + " — publishing by broadcast instead");
+            publishToApp("register-failed");
         }
     }
+
+    /**
+     * Hands this Binder to the app with an explicit broadcast. Android 11+ servicemanager
+     * rejects addService from the shell domain, so the app asks for this when lookup fails.
+     */
+    public static boolean publishToApp(String reason) {
+        try {
+            Context ctx = resolveContext();
+            if (ctx == null) {
+                logger.warn("publish(" + reason + "): daemon context unavailable");
+                return false;
+            }
+            android.os.Bundle extras = new android.os.Bundle();
+            extras.putBinder(EXTRA_BINDER, getInstance());
+            android.content.Intent intent = new android.content.Intent(ACTION_PUBLISH)
+                    .setPackage(com.overdrive.app.BuildConfig.APPLICATION_ID)
+                    .putExtras(extras);
+            ctx.sendBroadcast(intent);
+            logger.info("published to app by broadcast (" + reason + ")");
+            return true;
+        } catch (Throwable t) {
+            logger.warn("publish(" + reason + ") failed: " + t.getClass().getSimpleName()
+                    + ": " + t.getMessage());
+            return false;
+        }
+    }
+
+    public static boolean isRegistered() { return registered; }
 
     public static ClusterViewMirrorService getInstance() {
         if (instance == null) {
@@ -364,12 +400,19 @@ public final class ClusterViewMirrorService extends Binder {
                 ClusterProjectionController projection =
                         ClusterProjectionController.getInstance();
                 boolean diLink5 =
-                        com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+                        com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5();
                 // A hard close marks the source non-open before detaching us. Refuse an attach
                 // that arrives in the detach→close window so it cannot bind a fresh mirror to a
                 // fission display that is about to be destroyed.
                 if (!projectionSourceOpen(projection, diLink5)) {
                     logger.info("attach: projection is not open");
+                    releaseSurface(surface);
+                    return STATE_NO_PROJECTION;
+                }
+                // The preview only mirrors a cast. A late attach while a stop is re-homing the app
+                // would otherwise take a hold that keeps the cluster blank after the cast is gone.
+                if (castGenerationAtAttach <= 0L) {
+                    logger.info("attach: no active cast");
                     releaseSurface(surface);
                     return STATE_NO_PROJECTION;
                 }
@@ -623,8 +666,10 @@ public final class ClusterViewMirrorService extends Binder {
         // transient blind-spot signal might want).
         if (holdsProjection) {
             holdsProjection = false;
-            try { ClusterProjectionController.getInstance().releaseSustained("viewmirror"); }
-            catch (Throwable ignored) {}
+            try {
+                ClusterProjectionController.getInstance()
+                        .releaseSustainedUnlessSignalled("viewmirror");
+            } catch (Throwable ignored) {}
         }
         // Mirror is gone — let the speed badge return to the cluster. This is the single choke
         // point for EVERY teardown (UI detach, ACC-off, owner death, projection close), so the
@@ -656,8 +701,7 @@ public final class ClusterViewMirrorService extends Binder {
             logger.info("attach: retiring dead prior owner before replacement");
             detachCurrentLocked();
             if (sameBinder(sessionOwnerToken, deadOwner)) {
-                sessionOwnerToken = null;
-                newestSessionId = 0L;
+                clearSessionOwnerLocked();
             }
         }
 
@@ -668,11 +712,10 @@ public final class ClusterViewMirrorService extends Binder {
         }
 
         // Do not let a queued transaction from another still-live app process steal the
-        // mirror. A dead prior process is safe to replace even if its detached watermark
-        // remains because no death recipient is linked after an explicit detach.
+        // mirror. The retained watermark keeps its own death link, so a dead prior process
+        // reads as dead here and is replaced.
         if (sessionOwnerToken != null && binderAlive(sessionOwnerToken)) return false;
-        sessionOwnerToken = owner;
-        newestSessionId = sessionId;
+        adoptSessionOwnerLocked(owner, sessionId);
         return true;
     }
 
@@ -691,6 +734,44 @@ public final class ClusterViewMirrorService extends Binder {
     private static boolean binderAlive(IBinder binder) {
         if (binder == null) return false;
         try { return binder.isBinderAlive(); } catch (Throwable ignored) { return false; }
+    }
+
+    /**
+     * The retained watermark holds its own death link: without one, isBinderAlive() never flips
+     * for a dead process, so a restarted app would be refused as a live foreign owner forever.
+     */
+    private void adoptSessionOwnerLocked(IBinder owner, long sessionId) {
+        clearSessionOwnerLocked();
+        IBinder.DeathRecipient death = new IBinder.DeathRecipient() {
+            @Override public void binderDied() {
+                synchronized (lock) {
+                    if (sessionOwnerDeath == this) {
+                        sessionOwnerToken = null;
+                        sessionOwnerDeath = null;
+                        newestSessionId = 0L;
+                    }
+                }
+            }
+        };
+        try {
+            owner.linkToDeath(death, 0);
+            sessionOwnerDeath = death;
+        } catch (RemoteException e) {
+            logger.debug("attach: session owner died before its watermark was linked");
+        }
+        sessionOwnerToken = owner;
+        newestSessionId = sessionId;
+    }
+
+    private void clearSessionOwnerLocked() {
+        IBinder token = sessionOwnerToken;
+        IBinder.DeathRecipient death = sessionOwnerDeath;
+        sessionOwnerToken = null;
+        sessionOwnerDeath = null;
+        newestSessionId = 0L;
+        if (token != null && death != null) {
+            try { token.unlinkToDeath(death, 0); } catch (Throwable ignored) {}
+        }
     }
 
     private static int normalizeMode(int mode) {
@@ -737,8 +818,7 @@ public final class ClusterViewMirrorService extends Binder {
             castGeneration = ownerCastGeneration;
             detachCurrentLocked();
             if (sameBinder(sessionOwnerToken, death.owner)) {
-                sessionOwnerToken = null;
-                newestSessionId = 0L;
+                clearSessionOwnerLocked();
             }
         }
         if (castGeneration <= 0L) return;

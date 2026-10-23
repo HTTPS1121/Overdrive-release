@@ -1,12 +1,19 @@
 package com.overdrive.app.ui.fragment
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.content.res.Resources
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Outline
 import android.graphics.SurfaceTexture
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.Surface
 import android.view.TextureView
@@ -16,15 +23,20 @@ import android.view.ViewOutlineProvider
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.annotation.DrawableRes
 import androidx.fragment.app.Fragment
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.overdrive.app.R
+import com.overdrive.app.ui.MainActivity
 import com.overdrive.app.ui.view.ClusterViewMirrorClient
 import com.overdrive.app.ui.view.ProjectionBoundsGeometry
 import com.overdrive.app.ui.view.ProjectionBoundsView
@@ -80,7 +92,32 @@ class ProjectionFragment : Fragment() {
     private var presetGroup: MaterialButtonToggleGroup? = null
     private var aspectLockSwitch: MaterialSwitch? = null
     private var autoStartSwitch: MaterialSwitch? = null
+    private var transportGroup: MaterialButtonToggleGroup? = null
+    private var transportStatus: TextView? = null
     private var texture: TextureView? = null
+    private var btnFullscreen: MaterialButton? = null
+    private var scroll: View? = null
+    private var content: LinearLayout? = null
+    private var stageCard: View? = null
+    private var dock: View? = null
+    private var settings: View? = null
+    private var hud: View? = null
+    private var emptyState: View? = null
+
+    // Full screen hides the rail, app bar and settings so the stage can take the window.
+    private var theater = false
+    // Which state the button's icon was last set for; the XML starts it on "enter".
+    private var fullscreenButtonTheater = false
+    private var contentPadding = IntArray(4)
+    private val theaterBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() { setTheater(false) }
+    }
+    private var busy = false
+    private var castInFlight = false
+    @DrawableRes private var statusDotRes = R.drawable.status_dot_neutral
+    private val hudFade = Runnable { hud?.animate()?.alpha(0f)?.setDuration(HUD_FADE_MS)?.start() }
+    // Touched only on [io], so it needs no lock.
+    private val appIcons = HashMap<String, Drawable>()
 
     // The live Surface from [texture] (created on SurfaceTexture available/resized). The
     // daemon composites the cluster into it. Held only while the surface is valid.
@@ -126,6 +163,13 @@ class ProjectionFragment : Fragment() {
     private var suppressPresetListener = false
     private var suppressAspectListener = false
     private var suppressAutoStartListener = false
+    private var suppressTransportListener = false
+    // The persisted projection.clusterTransport choice (auto/legacy/dilink5),
+    // refreshed from the status poll so the control tracks out-of-band edits.
+    @Volatile private var configuredTransport = "auto"
+    // True while a transport write is in flight: a status poll fetched BEFORE
+    // the write landed must not snap the control back to the stale value.
+    @Volatile private var transportWriteInFlight = false
     // Cached sibling state so the conflict dialog can decide without a blocking read: whether
     // RoadSense's map auto-project is currently on. Refreshed by fetchAutoStartState().
     @Volatile private var roadSenseAutoProject = false
@@ -149,6 +193,21 @@ class ProjectionFragment : Fragment() {
     // dropped (not queued) while set, so a slow daemon can't accumulate a backlog of stale rects
     // on the single HTTP executor and lag behind the finger. Commit frames ignore this flag.
     private val resizeInFlight = AtomicBoolean(false)
+    // Incremented per authoritative resize; only the newest commit's reply may move the box.
+    @Volatile private var commitSeq = 0L
+
+    // Mirror Binder broadcast from the daemon (DI5 refuses its ServiceManager registration).
+    // Registered with DUMP as the sender permission, which only the uid-2000 daemon holds here.
+    private val mirrorBinderReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: android.content.Intent?) {
+            ClusterViewMirrorClient.offerBinder(
+                intent?.extras?.getBinder(ClusterViewMirrorClient.EXTRA_BINDER))
+            if (alive && mirrorRequested && casting
+                && !ClusterViewMirrorClient.isSessionActive(mirrorSessionId)) armMirrorIfIdle()
+        }
+    }
+    private var mirrorBinderReceiverRegistered = false
+    @Volatile private var lastMirrorPublishRequestMs = 0L
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -198,11 +257,33 @@ class ProjectionFragment : Fragment() {
             presetGroup = view.findViewById(R.id.projectionPresetGroup)
             aspectLockSwitch = view.findViewById(R.id.projectionAspectLockSwitch)
             autoStartSwitch = view.findViewById(R.id.projectionAutoStartSwitch)
+            transportGroup = view.findViewById(R.id.projectionTransportGroup)
+            transportStatus = view.findViewById(R.id.projectionTransportStatus)
             texture = view.findViewById(R.id.projectionTexture)
+            btnFullscreen = view.findViewById(R.id.projectionFullscreenButton)
+            scroll = view.findViewById(R.id.projectionScroll)
+            content = view.findViewById(R.id.projectionContent)
+            stageCard = view.findViewById(R.id.projectionMirrorCard)
+            dock = view.findViewById(R.id.projectionDock)
+            settings = view.findViewById(R.id.projectionSettings)
+            hud = view.findViewById(R.id.projectionHud)
+            emptyState = view.findViewById(R.id.projectionEmptyState)
+            // The fragment instance outlives its view; this state must match the fresh views.
+            theater = false
+            fullscreenButtonTheater = false
+            busy = false
+            castInFlight = false
+            statusDotRes = R.drawable.status_dot_neutral
+            content?.let {
+                contentPadding = intArrayOf(it.paddingLeft, it.paddingTop, it.paddingRight, it.paddingBottom)
+            }
 
             btnCast?.setOnClickListener { onCastClicked() }
             btnStop?.setOnClickListener { onStopClicked() }
             btnAdjust?.setOnClickListener { toggleAdjust() }
+            btnFullscreen?.setOnClickListener { setTheater(!theater) }
+            theaterBackCallback.isEnabled = false
+            requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, theaterBackCallback)
             wireAppSpinner()
             wireBounds()
             wireTexture()
@@ -211,15 +292,15 @@ class ProjectionFragment : Fragment() {
             wirePresetGroup()
             wireAspectLockSwitch()
             wireAutoStartSwitch()
+            wireTransportGroup()
             restoreScaleMode()
             clipMirrorToCard()
+            updateButtons()
             // Per-app window restore happens in loadApps() once the spinner selection settles
             // (the app list loads async in onResume, so there's no selected package yet here).
-            // Seed the stage to the default panel aspect (8:3) IMMEDIATELY so the preview pane is
-            // panel-shaped from first paint — never the near-square the fixed 300dp default looks
-            // like on a wide head unit while the daemon panel size is still resolving. The status
-            // poll refines it to the real panel aspect once known.
-            stage?.post { if (alive) updateStageAspect(panelW.toFloat() / panelH.coerceAtLeast(1).toFloat()) }
+            // Seed the stage to the default panel aspect (8:3) as soon as the page is measured;
+            // the status poll refines it to the real panel aspect once known.
+            stage?.post { if (alive) updateStageAspect(panelAspect()) }
         } catch (t: Throwable) {
             android.util.Log.e("ProjectionFragment", "onViewCreated failed", t)
         }
@@ -230,6 +311,7 @@ class ProjectionFragment : Fragment() {
         if (inflateFailed) return
         mirrorRequested = true
         val requestGeneration = ++mirrorRequestGeneration
+        registerMirrorBinderReceiver()
         btnAdjust?.setText(R.string.projection_adjust_bounds)
         // Resolve cast state and panel geometry before app/config refreshes. On a cold entry
         // those slower requests must not delay sizing and attaching the already-live mirror.
@@ -254,6 +336,9 @@ class ProjectionFragment : Fragment() {
         mirrorRequestGeneration++
         cancelPendingMirrorRestart()
         stopStatusPolling()
+        unregisterMirrorBinderReceiver()
+        // Never leave the activity without its rail and app bar once this screen is not in front.
+        setTheater(false)
         // Clear the live-drag gate: any in-flight drag POST is now irrelevant, and if its
         // completion never ran (executor shut down / request abandoned) a stuck flag would
         // suppress live tracking for the rest of this fragment's life.
@@ -280,7 +365,7 @@ class ProjectionFragment : Fragment() {
         prepareForSurfaceResize()
         stage?.post {
             if (!alive) return@post
-            updateStageAspect(panelW.toFloat() / panelH.coerceAtLeast(1).toFloat())
+            updateStageAspect(panelAspect())
             scheduleMirrorRestart()
         }
     }
@@ -297,15 +382,24 @@ class ProjectionFragment : Fragment() {
         // after the detach. Safe past onDestroyView — it only touches mirrorSurface (under
         // surfaceLock), never a view ref. (The TextureView owns its SurfaceTexture's lifecycle.)
         detachAndReleaseMirrorSurface()
-        stageLayoutListener?.let { listener -> stage?.removeOnLayoutChangeListener(listener) }
+        stageLayoutListener?.let { listener ->
+            scroll?.removeOnLayoutChangeListener(listener)
+            dock?.removeOnLayoutChangeListener(listener)
+        }
         stageLayoutListener = null
+        if (theater) {
+            theater = false
+            (activity as? MainActivity)?.setContentImmersive(false)
+        }
         spinnerApps = null; btnCast = null; btnStop = null; btnAdjust = null
         appToast?.cancel()
         appToast = null
         lastStickyError = null
         statusText = null; statusDot = null; stage = null; bounds = null; progress = null
         scaleGroup = null; presetGroup = null; aspectLockSwitch = null
-        autoStartSwitch = null; texture = null
+        autoStartSwitch = null; transportGroup = null; transportStatus = null
+        texture = null; btnFullscreen = null; scroll = null; content = null; stageCard = null
+        dock = null; settings = null; hud = null; emptyState = null
         super.onDestroyView()
     }
 
@@ -364,21 +458,21 @@ class ProjectionFragment : Fragment() {
             // sub-rect. The mirror always shows the whole cluster and does not move with the box,
             // so a box change never re-casts the mirror.
             //
-            // LIVE tracking: intermediate (commit=false) frames are forwarded too, so the app
-            // visibly follows the finger on the cluster instead of jumping only on release. Those
-            // take the daemon's cheap bounds-only path (no stack rescan, no verify, no shell), and
-            // are DROPPED when one is already in flight (see [resizeInFlight]) so a slow daemon
-            // can't build a backlog of stale rects on the single HTTP executor. The commit frame
-            // is never dropped — it is the authoritative, verified apply.
+            // Intermediate (commit=false) frames are forwarded too; the daemon tracks them live only
+            // where the placement allows it (freeform) and otherwise applies on release. They are
+            // DROPPED when one is already in flight (see [resizeInFlight]) so a slow daemon can't
+            // build a backlog of stale rects on the single HTTP executor. The commit frame is never
+            // dropped — it is the authoritative, verified apply.
             if (commit) {
                 persistWindow(l, t, r, bot)
-                if (casting) submitIo { postClusterResize(l, t, r, bot, commit = true) }
+                if (casting) submitCommit(l, t, r, bot)
             } else if (casting && resizeInFlight.compareAndSet(false, true)) {
+                val pkg = geometryPackage() ?: ""
                 // Release the gate if the task never actually got queued (executor shut down or
                 // rejected): the `finally` below only runs for a block that RAN, so without this
                 // the flag would stick true and silently disable live tracking from then on.
                 if (!submitIo {
-                        try { postClusterResize(l, t, r, bot, commit = false) }
+                        try { postClusterResize(l, t, r, bot, commit = false, pkg = pkg) }
                         finally { resizeInFlight.set(false) }
                     }) {
                     resizeInFlight.set(false)
@@ -461,25 +555,20 @@ class ProjectionFragment : Fragment() {
         }
     }
 
-    /** Keep the stage proportional to the real panel whenever the retained Activity changes
-     * width (rotation, split-screen, rail/inset relayout). Height changes are posted out of
-     * the current layout pass so TextureView receives one settled resize. */
+    /** Re-fit the stage whenever the viewport or the dock under it changes size (rotation,
+     * split-screen, rail/inset relayout, full screen). Posted out of the current layout pass
+     * so TextureView receives one settled resize. */
     private fun wireStageLayout() {
-        val s = stage ?: return
         val listener = View.OnLayoutChangeListener {
-                v, left, _, right, _, oldLeft, _, oldRight, _ ->
-            val width = right - left
-            val oldWidth = oldRight - oldLeft
-            if (width > 0 && width != oldWidth) {
-                v.post {
-                    if (alive && stage === v) {
-                        updateStageAspect(panelW.toFloat() / panelH.coerceAtLeast(1).toFloat())
-                    }
-                }
+                v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            val resized = right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop
+            if (resized && right > left) {
+                v.post { if (alive) updateStageAspect(panelAspect()) }
             }
         }
         stageLayoutListener = listener
-        s.addOnLayoutChangeListener(listener)
+        scroll?.addOnLayoutChangeListener(listener)
+        dock?.addOnLayoutChangeListener(listener)
     }
 
     private fun replaceMirrorSurface(st: SurfaceTexture, w: Int, h: Int) {
@@ -533,7 +622,10 @@ class ProjectionFragment : Fragment() {
                         MODE_STOPPED
                     }
                 }
-                if (mirrorRequested && generation == surfaceGeneration) {
+                // A dispatched publish request re-arms from the broadcast; if none arrives the
+                // next (throttled) poll renders the service-down error instead.
+                val publishPending = state == MODE_SERVICE_DOWN && requestMirrorPublish()
+                if (!publishPending && mirrorRequested && generation == surfaceGeneration) {
                     mirrorMode = state
                     postMain {
                         if (mirrorRequested && generation == surfaceGeneration) {
@@ -548,6 +640,39 @@ class ProjectionFragment : Fragment() {
                 }
             }
         }
+    }
+
+    /** Ask the daemon to re-broadcast its mirror Binder (throttled) on the HTTP executor, so
+     *  [mirrorIo] never waits on the request. @return true when a request was dispatched now. */
+    private fun requestMirrorPublish(): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastMirrorPublishRequestMs < MIRROR_PUBLISH_RETRY_MS) return false
+        lastMirrorPublishRequestMs = now
+        return submitIo { httpPostSuccess("/api/vehicle/cluster-mirror-publish", JSONObject()) }
+    }
+
+    private fun registerMirrorBinderReceiver() {
+        if (mirrorBinderReceiverRegistered) return
+        try {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            requireContext().registerReceiver(
+                mirrorBinderReceiver,
+                android.content.IntentFilter(ClusterViewMirrorClient.ACTION_PUBLISH),
+                android.Manifest.permission.DUMP,
+                null
+            )
+            mirrorBinderReceiverRegistered = true
+        } catch (t: Throwable) {
+            android.util.Log.w("ProjectionFragment", "mirror binder receiver register failed", t)
+        }
+    }
+
+    private fun unregisterMirrorBinderReceiver() {
+        if (!mirrorBinderReceiverRegistered) return
+        mirrorBinderReceiverRegistered = false
+        try {
+            requireContext().unregisterReceiver(mirrorBinderReceiver)
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -734,6 +859,95 @@ class ProjectionFragment : Fragment() {
         }
     }
 
+    // ── Cluster transport (projection.clusterTransport: auto/legacy/dilink5) ──
+
+    private fun wireTransportGroup() {
+        val g = transportGroup ?: return
+        g.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked || suppressTransportListener) return@addOnButtonCheckedListener
+            val value = when (checkedId) {
+                R.id.projectionTransportLegacy -> "legacy"
+                R.id.projectionTransportDilink5 -> "dilink5"
+                else -> "auto"
+            }
+            if (value == configuredTransport) return@addOnButtonCheckedListener
+            onTransportSelected(value)
+        }
+    }
+
+    private fun setTransportChecked(value: String) {
+        val g = transportGroup ?: return
+        val id = when (value) {
+            "legacy" -> R.id.projectionTransportLegacy
+            "dilink5" -> R.id.projectionTransportDilink5
+            else -> R.id.projectionTransportAuto
+        }
+        if (g.checkedButtonId == id) return
+        suppressTransportListener = true
+        try { g.check(id) } finally { suppressTransportListener = false }
+    }
+
+    private fun setTransportStatusLine(resolved: String, source: String) {
+        if (resolved.isEmpty()) return
+        transportStatus?.text =
+            getString(R.string.projection_transport_active, resolved, source)
+    }
+
+    /**
+     * Persist the transport choice. The daemon applies it live only while the
+     * cluster is idle; otherwise the saved value takes effect on the next
+     * camera-service restart (surfaced via a toast, mirroring the camera-mode
+     * selector's contract). On any failure the control reverts to the last
+     * known-persisted value so the UI never lies about what is saved.
+     */
+    private fun onTransportSelected(value: String) {
+        val previous = configuredTransport
+        configuredTransport = value
+        transportWriteInFlight = true
+        submitIo {
+            var restartRequired = false
+            var resolved = ""
+            var source = ""
+            val ok = try {
+                val body = httpPostForBody(
+                    "/api/vehicle/cluster-transport",
+                    JSONObject().put("transport", value)
+                )
+                val j = if (body != null) JSONObject(body) else null
+                if (j != null && j.optBoolean("success", false)) {
+                    restartRequired = j.optBoolean("restartRequired", false)
+                    resolved = j.optString("clusterTransport", "")
+                    source = j.optString("clusterTransportSource", "")
+                    true
+                } else {
+                    false
+                }
+            } catch (_: Throwable) {
+                false
+            }
+            postMain {
+                transportWriteInFlight = false
+                if (!alive) return@postMain
+                if (!ok) {
+                    configuredTransport = previous
+                    setTransportChecked(previous)
+                    notifyToast(
+                        getString(R.string.projection_transport_save_failed),
+                        AppToast.Kind.ERROR
+                    )
+                    return@postMain
+                }
+                setTransportStatusLine(resolved, source)
+                if (restartRequired) {
+                    notifyToast(
+                        getString(R.string.projection_transport_restart_required),
+                        AppToast.Kind.WARNING
+                    )
+                }
+            }
+        }
+    }
+
     private fun setAutoStartChecked(on: Boolean) {
         val sw = autoStartSwitch ?: return
         suppressAutoStartListener = true
@@ -850,14 +1064,19 @@ class ProjectionFragment : Fragment() {
 
     private fun loadApps() {
         setBusy(true)
+        val pm = context?.packageManager
+        val res = resources
+        val iconPx = (APP_ICON_DP * res.displayMetrics.density).roundToInt()
         submitIo {
-            val (labels, pkgs) = fetchApps()
+            val apps = fetchApps(pm, res, iconPx)
             postMain {
-                appPackages.clear(); appPackages.addAll(pkgs)
+                appPackages.clear(); appPackages.addAll(apps.map { it.pkg })
                 val ctx = context ?: return@postMain
-                val adapter = ArrayAdapter(ctx, R.layout.item_projection_spinner, labels)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                spinnerApps?.adapter = adapter
+                // An empty list still names the field, without adding a selectable package.
+                val rows = apps.ifEmpty {
+                    listOf(AppEntry(getString(R.string.projection_pick_app), "", null))
+                }
+                spinnerApps?.adapter = AppAdapter(ctx, rows)
                 // Setting a fresh adapter resets the spinner to position 0 — restore the
                 // user's last pick (by PACKAGE, not index: the list can reorder/shrink when
                 // apps are (un)installed between loads). Without this, every tab switch /
@@ -907,6 +1126,9 @@ class ProjectionFragment : Fragment() {
         if (idx < 0 || idx >= appPackages.size) return
         val pkg = appPackages[idx]
         setBusy(true)
+        // A cast can take a minute to verify on DI5; one request at a time.
+        castInFlight = true
+        updateButtons()
         submitIo {
             val result = postCast(pkg)
             casting = result.success
@@ -916,7 +1138,11 @@ class ProjectionFragment : Fragment() {
             // A failed cast leaves it empty so nothing is attributed to a cast that never started.
             castPackage = if (result.success) pkg else ""
             postMain {
+                castInFlight = false
                 setBusy(false); updateButtons()
+                // applyStatus rebinds only when castPackage changes, and it was just set above,
+                // so a box still bound to a previously browsed app must be rebound here.
+                if (result.success && boxPackage != pkg) restoreWindowFor(pkg)
                 if (!result.success) {
                     // Distinguish "app no longer installed" from a generic failure so the
                     // user knows to pick another (and refresh the picker to drop it).
@@ -935,6 +1161,14 @@ class ProjectionFragment : Fragment() {
                                 getString(R.string.projection_dilink5_mode_required),
                                 AppToast.Kind.ERROR
                             )
+                        }
+                        "oem_cluster_takeover" -> {
+                            // The daemon already tried every shared cluster surface;
+                            // only a car-side setting can stop the OEM app re-fronting.
+                            val message = getString(R.string.projection_oem_cluster_takeover)
+                            setStatus(message)
+                            setStatusDot(R.drawable.status_dot_offline)
+                            notifyToast(message, AppToast.Kind.ERROR)
                         }
                         else -> {
                             notifyToast(
@@ -972,8 +1206,9 @@ class ProjectionFragment : Fragment() {
             postStop()
             mirrorMode = MODE_STOPPED
             postMain {
-                setBusy(false); updateButtons(); applyBoundsMode()
-                setStatus(getString(R.string.projection_status_idle))
+                setBusy(false); updateButtons()
+                // Idle text, neutral dot and bounds mode together, so the pill can't keep the live dot.
+                renderMirrorState(MODE_STOPPED)
             }
         }
     }
@@ -1016,6 +1251,16 @@ class ProjectionFragment : Fragment() {
         casting = st.casting
         diLink5ModeRequired = st.diLink5ModeRequired
         castPackage = st.castPackage
+        // Track the persisted transport choice + the daemon's live resolution.
+        // Poll-driven (not just set-on-click) so out-of-band edits (config file,
+        // another client) and post-restart resolutions stay reflected here.
+        if (!transportWriteInFlight) {
+            if (st.clusterTransportConfigured.isNotEmpty()) {
+                configuredTransport = st.clusterTransportConfigured
+                setTransportChecked(st.clusterTransportConfigured)
+            }
+            setTransportStatusLine(st.clusterTransport, st.clusterTransportSource)
+        }
         // The cast target changed under us (a new cast started, or one ended) — rebind the box to
         // whatever is on the cluster now so it never shows/persists another app's geometry.
         if (st.casting && st.castPackage.isNotEmpty() && st.castPackage != previousCastPackage) {
@@ -1051,7 +1296,8 @@ class ProjectionFragment : Fragment() {
             return
         }
 
-        if (mirrorMode == MODE_ACTIVE) {
+        // A daemon restart leaves mirrorMode ACTIVE with no live session behind it; re-arm then.
+        if (mirrorMode == MODE_ACTIVE && ClusterViewMirrorClient.isSessionActive(mirrorSessionId)) {
             // A panel geometry change alters both the stage and the daemon mapping — re-cast the
             // mirror (full stop + re-arm) so the new panel size takes effect (a live reproject is
             // ignored on this firmware). updateStageAspect above already schedules a restart when it
@@ -1061,8 +1307,19 @@ class ProjectionFragment : Fragment() {
         } else {
             // Covers external starts and cold projection readiness. NO_PROJECTION and
             // SERVICE_DOWN are retried on every successful status poll.
-            armMirror()
+            armMirrorIfIdle()
         }
+    }
+
+    /** Retry triggers (status poll, Binder broadcast) must not queue a replay that would tear
+     *  down the mirror an in-flight attach is about to bring up; the next poll retries anyway. */
+    private fun armMirrorIfIdle() {
+        if (mirrorAttachRunning.get()) return
+        // An attach publishes its result before clearing the running flag, so re-check here.
+        if (mirrorMode == MODE_ACTIVE && ClusterViewMirrorClient.isSessionActive(mirrorSessionId)) {
+            return
+        }
+        armMirror()
     }
 
     private fun stopStatusPolling() {
@@ -1070,30 +1327,104 @@ class ProjectionFragment : Fragment() {
         statusPoll = null
     }
 
+    private fun panelAspect(): Float = panelW.toFloat() / panelH.coerceAtLeast(1).toFloat()
+
+    /**
+     * Size the stage to exactly the panel aspect, so the mirror fills it edge to edge and the
+     * window frame lines up with the picture: as wide as the page allows, but no taller than
+     * keeps the dock on screen below it. A short window falls back to a minimum height and
+     * lets the dock scroll.
+     */
     private fun updateStageAspect(aspect: Float) {
         val s = stage ?: return
+        val card = stageCard ?: return
+        val column = content ?: return
+        val viewport = scroll ?: return
         if (!aspect.isFinite() || aspect <= 0f) return
-        if (s.width <= 0) {
-            s.post { if (alive) updateStageAspect(aspect) }
-            return
-        }
+        val columnWidth = column.width - column.paddingLeft - column.paddingRight
+        // Not measured yet: the viewport's first layout re-runs this (wireStageLayout).
+        if (columnWidth <= 0 || viewport.height <= 0) return
         val density = s.resources.displayMetrics.density
-        // ProjectionBoundsView keeps its 20dp handles inside the stage; retain a little extra
-        // clearance so a panel-shaped pane can use the full available width.
-        val inset = 24f * density
-        val contentWidth = (s.width - 2f * inset).coerceAtLeast(1f)
-        val desired = (contentWidth / aspect + 2f * inset).roundToInt()
-        val minimum = (240f * density).roundToInt()
-        val target = desired.coerceAtLeast(minimum)
-        val params = s.layoutParams ?: return
-        if (params.height != target) {
-            prepareForSurfaceResize()
-            params.height = target
-            s.layoutParams = params
-            s.invalidateOutline()
-            texture?.invalidateOutline()
-            scheduleMirrorRestart()
+        val dockSpace = dock?.let { d ->
+            d.height + ((d.layoutParams as? ViewGroup.MarginLayoutParams)?.topMargin ?: 0)
+        } ?: 0
+        val heightCap = (viewport.height - column.paddingTop - dockSpace - STAGE_PEEK_DP * density)
+            .coerceAtLeast(MIN_STAGE_HEIGHT_DP * density)
+        val width = minOf(columnWidth.toFloat(), heightCap * aspect).roundToInt()
+        val height = (width / aspect).roundToInt()
+        val cardParams = card.layoutParams ?: return
+        val stageParams = s.layoutParams ?: return
+        if (cardParams.width == width && stageParams.height == height) return
+        prepareForSurfaceResize()
+        cardParams.width = width
+        card.layoutParams = cardParams
+        stageParams.height = height
+        s.layoutParams = stageParams
+        s.invalidateOutline()
+        texture?.invalidateOutline()
+        scheduleMirrorRestart()
+    }
+
+    /** Full screen: the rail, app bar and settings step aside and the stage takes the window. */
+    private fun setTheater(on: Boolean) {
+        if (theater == on) return
+        if (on && (!alive || !isResumed)) return
+        theater = on
+        theaterBackCallback.isEnabled = on
+        // The presets and portrait's Resize button live in the settings that are hidden.
+        if (on && adjusting) toggleAdjust()
+        (activity as? MainActivity)?.setContentImmersive(on)
+        settings?.visibility = if (on) View.GONE else View.VISIBLE
+        content?.let { c ->
+            if (on) {
+                val pad = (THEATER_PADDING_DP * c.resources.displayMetrics.density).roundToInt()
+                c.setPadding(pad, pad, pad, pad)
+                c.gravity = Gravity.CENTER_VERTICAL
+            } else {
+                c.setPadding(contentPadding[0], contentPadding[1], contentPadding[2], contentPadding[3])
+                c.gravity = Gravity.TOP
+            }
         }
+        scroll?.scrollTo(0, 0)
+        refreshFullscreenButton()
+        stage?.post { if (alive) updateStageAspect(panelAspect()) }
+    }
+
+    private fun refreshFullscreenButton() {
+        val b = btnFullscreen ?: return
+        // Runs on every status poll; a fresh icon Drawable would relayout the page each time.
+        if (fullscreenButtonTheater != theater) {
+            fullscreenButtonTheater = theater
+            b.setIconResource(if (theater) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
+            val label = getString(
+                if (theater) R.string.projection_fullscreen_exit else R.string.projection_fullscreen_enter)
+            b.contentDescription = label
+            b.tooltipText = label
+        }
+        // Exit stays reachable even if the cast ends while full screen.
+        b.isEnabled = casting || theater
+    }
+
+    /** Idle hint, status pill and progress bar over the stage, from the current state. */
+    private fun refreshStageOverlay() {
+        emptyState?.visibility = if (casting) View.GONE else View.VISIBLE
+        // While idle the hint already says what a neutral pill would.
+        hud?.visibility =
+            if (!casting && statusDotRes == R.drawable.status_dot_neutral) View.GONE else View.VISIBLE
+        val connecting = casting && mirrorMode != MODE_ACTIVE
+                && mirrorMode != MODE_UNSUPPORTED && mirrorMode != MODE_SERVICE_DOWN
+        // castInFlight too: an app-list load finishing mid-cast clears [busy].
+        progress?.visibility =
+            if (busy || castInFlight || connecting) View.VISIBLE else View.GONE
+    }
+
+    /** Bring the pill back after a status change; over a live mirror it fades after a moment. */
+    private fun revealHud() {
+        val h = hud ?: return
+        main.removeCallbacks(hudFade)
+        h.animate().cancel()
+        h.alpha = 1f
+        if (casting && mirrorMode == MODE_ACTIVE && !adjusting) main.postDelayed(hudFade, HUD_HOLD_MS)
     }
 
     private fun clipMirrorToCard() {
@@ -1124,21 +1455,23 @@ class ProjectionFragment : Fragment() {
                     setStatusDot(R.drawable.status_dot_online)
                 }
                 MODE_NO_PROJECTION -> {
-                    setStatus(getString(R.string.projection_status_none))
+                    setStatus(
+                        if (casting) getString(R.string.projection_status_connecting)
+                        else getString(R.string.projection_status_none))
                     setStatusDot(
                         if (casting) R.drawable.status_dot_starting
                         else R.drawable.status_dot_neutral)
                 }
                 MODE_UNSUPPORTED -> {
                     setStatus(
-                        if (casting) getString(R.string.projection_status_none)
+                        if (casting) getString(R.string.projection_status_mirror_unavailable)
                         else getString(R.string.projection_status_idle))
                     setStatusDot(R.drawable.status_dot_offline)
                     notifyStickyError(getString(R.string.projection_status_unsupported))
                 }
                 MODE_SERVICE_DOWN -> {
                     setStatus(
-                        if (casting) getString(R.string.projection_status_none)
+                        if (casting) getString(R.string.projection_status_mirror_unavailable)
                         else getString(R.string.projection_status_idle))
                     setStatusDot(R.drawable.status_dot_offline)
                     notifyStickyError(getString(R.string.projection_status_service_down))
@@ -1146,7 +1479,7 @@ class ProjectionFragment : Fragment() {
                 else -> {
                     lastStickyError = null
                     setStatus(
-                        if (casting) getString(R.string.projection_status_none)
+                        if (casting) getString(R.string.projection_status_connecting)
                         else getString(R.string.projection_status_idle))
                     setStatusDot(
                         if (casting) R.drawable.status_dot_starting
@@ -1155,6 +1488,7 @@ class ProjectionFragment : Fragment() {
             }
         }
         applyBoundsMode()
+        refreshStageOverlay()
         // Repositioning acts on the CLUSTER window (via the daemon), so it's available whenever an
         // app is cast — even before the head-unit mirror preview comes up. The presets + aspect
         // lock follow the same rule.
@@ -1167,14 +1501,30 @@ class ProjectionFragment : Fragment() {
 
     private fun updateButtons() {
         btnCast?.isEnabled =
-            !casting && !diLink5ModeRequired && appPackages.isNotEmpty()
+            !casting && !diLink5ModeRequired && appPackages.isNotEmpty() && !castInFlight
         btnStop?.isEnabled = casting
+        // One slot: Cast while idle, Stop while casting.
+        btnCast?.visibility = if (casting) View.GONE else View.VISIBLE
+        btnStop?.visibility = if (casting) View.VISIBLE else View.GONE
         if (!casting) btnAdjust?.isEnabled = false
+        refreshFullscreenButton()
+        refreshStageOverlay()
     }
 
-    private fun setStatus(text: String) { statusText?.text = text }
+    private fun setStatus(text: String) {
+        val tv = statusText ?: return
+        if (tv.text?.toString() == text) return
+        tv.text = text
+        revealHud()
+    }
 
-    private fun setStatusDot(@DrawableRes dot: Int) { statusDot?.setBackgroundResource(dot) }
+    private fun setStatusDot(@DrawableRes dot: Int) {
+        statusDot?.setBackgroundResource(dot)
+        if (statusDotRes == dot) return
+        statusDotRes = dot
+        refreshStageOverlay()
+        revealHud()
+    }
 
     private fun notifyToast(message: String, kind: AppToast.Kind) {
         appToast?.show(message, kind)
@@ -1186,7 +1536,10 @@ class ProjectionFragment : Fragment() {
         appToast?.show(message, AppToast.Kind.ERROR)
     }
 
-    private fun setBusy(busy: Boolean) { progress?.visibility = if (busy) View.VISIBLE else View.GONE }
+    private fun setBusy(busy: Boolean) {
+        this.busy = busy
+        refreshStageOverlay()
+    }
 
     private fun postMain(block: () -> Unit) {
         if (!alive) return
@@ -1241,7 +1594,7 @@ class ProjectionFragment : Fragment() {
                 val w = b.currentWindow()
                 // A restore is authoritative (not a drag frame) — commit so the full ladder runs
                 // and we learn whether AMS actually honoured this app's remembered rect.
-                if (casting) submitIo { postClusterResize(w.left, w.top, w.right, w.bottom, commit = true) }
+                if (casting) submitCommit(w.left, w.top, w.right, w.bottom)
             } else {
                 // No LOCAL record for this app. Before falling back to FULL — which emits a commit
                 // and would therefore DELETE the daemon-side box — check whether the daemon still
@@ -1252,14 +1605,14 @@ class ProjectionFragment : Fragment() {
                     val remote = if (pkg != null) fetchClusterWindow(pkg) else null
                     postMain {
                         if (!alive || bounds !== b || boxPackage != (pkg ?: "")) return@postMain
+                        // Unknown is not "nothing saved": FULL would delete the daemon's box.
+                        if (remote === WINDOW_LOOKUP_FAILED) return@postMain
                         if (remote != null) {
                             b.setNormalizedWindow(remote[0], remote[1], remote[2], remote[3])
                             val w = b.currentWindow()
                             // Adopt it locally so the box survives without another round-trip.
                             persistWindowPrefsOnly(pkg!!, w.left, w.top, w.right, w.bottom)
-                            if (casting) {
-                                submitIo { postClusterResize(w.left, w.top, w.right, w.bottom, commit = true) }
-                            }
+                            if (casting) submitCommit(w.left, w.top, w.right, w.bottom)
                         } else {
                             // Genuinely nothing saved anywhere → the FULL-panel default.
                             b.applyPreset(ProjectionBoundsGeometry.PRESET_FULL)
@@ -1270,10 +1623,11 @@ class ProjectionFragment : Fragment() {
         }
     }
 
-    /** Read a package's saved box (panel fractions) from the daemon store, or null if none. */
+    /** Read a package's saved box (panel fractions) from the daemon store, null if none, or
+     *  [WINDOW_LOOKUP_FAILED] when the store could not be read. */
     private fun fetchClusterWindow(pkg: String): FloatArray? {
         return try {
-            val body = httpGet("/api/settings/unified") ?: return null
+            val body = httpGet("/api/settings/unified") ?: return WINDOW_LOOKUP_FAILED
             val windows = JSONObject(body).optJSONObject("config")
                 ?.optJSONObject("projection")?.optJSONObject("windows") ?: return null
             val rect = windows.optJSONObject(pkg) ?: return null
@@ -1282,7 +1636,7 @@ class ProjectionFragment : Fragment() {
             if (l.isNaN() || t.isNaN() || r.isNaN() || b.isNaN()) return null
             if (r <= l || b <= t) return null
             floatArrayOf(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat())
-        } catch (_: Throwable) { null }
+        } catch (_: Throwable) { WINDOW_LOOKUP_FAILED }
     }
 
     /** Persist the CURRENT window rect (cluster px) for the selected package, normalized. */
@@ -1359,19 +1713,67 @@ class ProjectionFragment : Fragment() {
 
     // ── Daemon HTTP (all off-main-thread) ───────────────────────────────────────────
 
-    private fun fetchApps(): Pair<List<String>, List<String>> {
-        val labels = ArrayList<String>(); val pkgs = ArrayList<String>()
+    private fun fetchApps(pm: PackageManager?, res: Resources, iconPx: Int): List<AppEntry> {
+        val apps = ArrayList<AppEntry>()
         try {
-            val body = httpGet("/api/vehicle/cluster-apps") ?: return Pair(labels, pkgs)
-            val arr = JSONObject(body).optJSONArray("apps") ?: return Pair(labels, pkgs)
+            val body = httpGet("/api/vehicle/cluster-apps") ?: return apps
+            val arr = JSONObject(body).optJSONArray("apps") ?: return apps
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val pkg = o.optString("package", "")
                 if (pkg.isEmpty()) continue
-                pkgs.add(pkg); labels.add(o.optString("label", pkg))
+                apps.add(AppEntry(o.optString("label", pkg), pkg, appIcon(pm, res, iconPx, pkg)))
             }
         } catch (_: Throwable) {}
-        return Pair(labels, pkgs)
+        return apps
+    }
+
+    /** The app's launcher icon at picker size, cached across reloads. Runs on [io] only. */
+    private fun appIcon(pm: PackageManager?, res: Resources, sizePx: Int, pkg: String): Drawable? {
+        appIcons[pkg]?.let { return it }
+        val source = try { pm?.getApplicationIcon(pkg) } catch (_: Throwable) { null } ?: return null
+        // Launcher icons decode at full density; keep only what the row draws.
+        val icon = try {
+            val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            source.setBounds(0, 0, sizePx, sizePx)
+            source.draw(Canvas(bitmap))
+            BitmapDrawable(res, bitmap)
+        } catch (_: Throwable) { source }
+        appIcons[pkg] = icon
+        return icon
+    }
+
+    private class AppEntry(val label: String, val pkg: String, val icon: Drawable?) {
+        override fun toString() = label
+    }
+
+    /** Picker rows with the app's icon; the collapsed field and the dropdown share one bind. */
+    private class AppAdapter(context: Context, private val entries: List<AppEntry>) :
+        ArrayAdapter<AppEntry>(context, R.layout.item_projection_spinner, entries) {
+
+        private val inflater = LayoutInflater.from(context)
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+            bind(convertView ?: inflater.inflate(R.layout.item_projection_spinner, parent, false),
+                position)
+
+        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
+            bind(convertView ?: inflater.inflate(R.layout.item_projection_app, parent, false),
+                position)
+
+        private fun bind(row: View, position: Int): View {
+            val entry = entries.getOrNull(position) ?: return row
+            row.findViewById<TextView>(R.id.projectionAppLabel)?.text = entry.label
+            row.findViewById<ImageView>(R.id.projectionAppIcon)?.let { iv ->
+                iv.visibility = if (entry.pkg.isEmpty()) View.GONE else View.VISIBLE
+                // A Drawable keeps one set of bounds, so each row draws its own copy.
+                val icon = entry.icon?.constantState?.newDrawable(iv.resources)?.mutate()
+                    ?: entry.icon
+                if (icon != null) iv.setImageDrawable(icon)
+                else iv.setImageResource(android.R.drawable.sym_def_app_icon)
+            }
+            return row
+        }
     }
 
     private class Status(
@@ -1379,7 +1781,10 @@ class ProjectionFragment : Fragment() {
         val panelW: Int,
         val panelH: Int,
         val castPackage: String,
-        val diLink5ModeRequired: Boolean
+        val diLink5ModeRequired: Boolean,
+        val clusterTransport: String,
+        val clusterTransportSource: String,
+        val clusterTransportConfigured: String
     )
 
     private fun fetchStatus(): Status? {
@@ -1387,16 +1792,25 @@ class ProjectionFragment : Fragment() {
             val body = httpGet("/api/vehicle/cluster-mirror-status") ?: return null
             val j = JSONObject(body)
             if (!j.optBoolean("success", false)) return null
+            // Mirror the daemon's admission rule: a unit whose CLUSTER
+            // TRANSPORT is already DI5 (firmware-detected or config override)
+            // can cast without the dilink5 camera mode, so the mode nag only
+            // applies when the transport stayed legacy.
             val modeRequired =
                 j.optBoolean("dilink5Hardware", false) &&
                         !j.optString("vehicleMode", "default")
+                            .equals("dilink5", ignoreCase = true) &&
+                        !j.optString("clusterTransport", "legacy")
                             .equals("dilink5", ignoreCase = true)
             Status(
                 j.optBoolean("casting", false),
                 j.optInt("panelW", 0),
                 j.optInt("panelH", 0),
                 j.optString("castPackage", ""),
-                modeRequired
+                modeRequired,
+                j.optString("clusterTransport", ""),
+                j.optString("clusterTransportSource", ""),
+                j.optString("clusterTransportConfigured", "auto")
             )
         } catch (_: Throwable) { null }
     }
@@ -1439,9 +1853,67 @@ class ProjectionFragment : Fragment() {
      *
      *  @param commit true = authoritative apply (full ladder + AMS verification) on gesture
      *    release / preset / restore; false = a live drag frame taking the cheap bounds-only path. */
-    private fun postClusterResize(l: Int, t: Int, r: Int, bot: Int, commit: Boolean) {
-        httpPostSuccess("/api/vehicle/cluster-resize",
-            JSONObject().put("l", l).put("t", t).put("r", r).put("b", bot).put("commit", commit))
+    private fun postClusterResize(l: Int, t: Int, r: Int, bot: Int, commit: Boolean,
+                                  seq: Long = 0L, pkg: String = "", attempt: Int = 0) {
+        val body = httpPostForBody("/api/vehicle/cluster-resize",
+            JSONObject().put("l", l).put("t", t).put("r", r).put("b", bot).put("commit", commit)
+                .put("package", pkg))
+        if (commit) applyResizeResponse(seq, body, attempt)
+    }
+
+    /** Queue an authoritative resize (release / preset / restore) for the app the box is bound
+     *  to. Main thread only: the sequence number lets a slow reply for an older commit be ignored. */
+    private fun submitCommit(l: Int, t: Int, r: Int, bot: Int) {
+        val seq = ++commitSeq
+        val pkg = geometryPackage() ?: ""
+        submitIo { postClusterResize(l, t, r, bot, commit = true, seq = seq, pkg = pkg) }
+    }
+
+    /** Show the rect the cluster actually holds, and say so when it refused the box. */
+    private fun applyResizeResponse(seq: Long, body: String?, attempt: Int) {
+        val j = try { if (body != null) JSONObject(body) else null } catch (_: Throwable) { null }
+        if (j == null || !j.optBoolean("success", false)) return
+        val applied = j.optBoolean("applied", false)
+        val retryable = j.optBoolean("retryable", false)
+        val quiet = j.optBoolean("deferred", false) || retryable
+        val reason = j.optString("reason", "")
+        val actual = j.optJSONObject("bounds")
+        postMain {
+            if (seq != commitSeq) return@postMain
+            val b = bounds ?: return@postMain
+            // The cast is still starting (no task or display yet): re-send the same box shortly.
+            if (retryable && casting && attempt < COMMIT_RETRY_LIMIT) {
+                val w = b.currentWindow()
+                main.postDelayed({
+                    if (alive && seq == commitSeq && casting && !b.isAdjusting()) {
+                        val pkg = geometryPackage() ?: ""
+                        submitIo {
+                            postClusterResize(w.left, w.top, w.right, w.bottom, commit = true,
+                                seq = seq, pkg = pkg, attempt = attempt + 1)
+                        }
+                    }
+                }, COMMIT_RETRY_MS)
+                return@postMain
+            }
+            // A refusal keeps the user's box (it is still what the next cast will ask for).
+            if (applied && actual != null && !b.isAdjusting()) {
+                val w = b.currentWindow()
+                val l = actual.optInt("l", w.left)
+                val t = actual.optInt("t", w.top)
+                val r = actual.optInt("r", w.right)
+                val bot = actual.optInt("b", w.bottom)
+                if (l != w.left || t != w.top || r != w.right || bot != w.bottom) {
+                    b.setWindowRect(l, t, r, bot)
+                    val now = b.currentWindow()
+                    geometryPackage()?.let {
+                        persistWindowPrefsOnly(it, now.left, now.top, now.right, now.bottom)
+                    }
+                }
+            }
+            if (!applied && !quiet && reason.isNotEmpty()) {
+                notifyToast(getString(R.string.projection_resize_not_applied), AppToast.Kind.WARNING)
+            }
+        }
     }
 
     // Touch: the bounds view emits a tap/swipe normalized (0..1) of the WHOLE VIEW (= whole
@@ -1491,6 +1963,21 @@ class ProjectionFragment : Fragment() {
         } catch (_: Throwable) { false } finally { conn?.disconnect() }
     }
 
+    /** POST returning the raw response body (null on transport/HTTP failure), for
+     *  endpoints whose reply carries more than a success flag. */
+    private fun httpPostForBody(path: String, body: JSONObject): String? {
+        var conn: java.net.HttpURLConnection? = null
+        return try {
+            conn = DaemonHttpClient.open(path, "POST", 2000, 4000)
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            val os: OutputStream = conn.outputStream
+            os.write(body.toString().toByteArray()); os.flush(); os.close()
+            if (conn.responseCode != 200) return null
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } catch (_: Throwable) { null } finally { conn?.disconnect() }
+    }
+
     companion object {
         // Mirror states — MUST match ClusterViewMirrorService.STATE_* / the Binder client.
         private const val MODE_STOPPED = 0
@@ -1507,6 +1994,19 @@ class ProjectionFragment : Fragment() {
         private const val STATUS_POLL_MS = 1500L
         private const val MIRROR_DETACH_TIMEOUT_MS = 1000L
         private const val MIRROR_RESTART_DELAY_MS = 250L
+        private const val MIRROR_PUBLISH_RETRY_MS = 3000L
+        private const val COMMIT_RETRY_MS = 1000L
+        private const val COMMIT_RETRY_LIMIT = 8
+        private val WINDOW_LOOKUP_FAILED = FloatArray(0)
+
+        private const val MIN_STAGE_HEIGHT_DP = 160f
+        // Room under the dock so the next section still shows that the page scrolls.
+        private const val STAGE_PEEK_DP = 12f
+        private const val THEATER_PADDING_DP = 12f
+        private const val HUD_HOLD_MS = 4000L
+        private const val HUD_FADE_MS = 300L
+        // The dropdown row's icon size (item_projection_app).
+        private const val APP_ICON_DP = 32f
 
         private const val PREFS = "projection_prefs"
         private const val K_MODE = "scale_mode"

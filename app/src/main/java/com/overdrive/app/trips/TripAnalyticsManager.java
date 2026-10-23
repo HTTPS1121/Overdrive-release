@@ -309,6 +309,68 @@ public class TripAnalyticsManager {
     }
 
     /**
+     * Display copy of the active trip with its progress so far (distance, duration, energy/km),
+     * or null when no trip is active. The active record itself only gains these at finalize.
+     */
+    public TripRecord getLiveTripSnapshot() {
+        TripDetector d = detector;
+        TripRecord active = d != null ? d.getActiveTrip() : null;
+        if (!isTripActive() || active == null || active.startTime <= 0) return null;
+        TripRecord live = new TripRecord();
+        live.id = active.id;
+        live.startTime = active.startTime;
+        long parkedAt = d.getParkStartTime();
+        long endMs = parkedAt > 0 ? parkedAt : System.currentTimeMillis();
+        live.durationSeconds = (int) Math.max(0L, (endMs - active.startTime) / 1000L);
+        TripTelemetryRecorder rec = recorder;
+        // until the recorder starts on this trip it still holds the last trip's totals
+        boolean ours = rec != null && rec.getStatsTripKey() == active.startTime;
+        double km = ours ? rec.getTotalDistanceKm() : 0;
+        live.distanceKm = Double.isFinite(km) && km > 0 ? km : 0;
+        live.maxSpeedKmh = ours ? Math.max(0, rec.getMaxSpeedKmh()) : 0;
+        live.avgSpeedKmh = ours ? Math.max(0.0, rec.getAvgSpeedKmh()) : 0;
+        live.iceSecondsAtomic.set(active.iceSeconds());
+        // whether a hybrid's engine use was captured: a trip started before the powertrain was known has none
+        live.fuelPctStart = active.fuelPctStart;
+        live.fuelConStart = active.fuelConStart;
+        try {
+            com.overdrive.app.monitor.VehicleDataMonitor vdm = com.overdrive.app.monitor.VehicleDataMonitor.getInstance();
+            live.isPhev = active.isPhev || vdm.isPhev();
+            com.overdrive.app.monitor.DrivingRangeData dr = live.isPhev ? vdm.getDrivingRange() : null;
+            if (dr != null && dr.hasFuelPercent()) live.fuelPctEnd = dr.fuelPercent;
+        } catch (Exception ignored) {}
+        // the charge the trip has taken so far: its start against the pack now
+        live.socStart = active.socStart;
+        try {
+            com.overdrive.app.monitor.BatterySocData soc = com.overdrive.app.monitor.VehicleDataMonitor.getInstance().getBatterySoc();
+            if (soc != null && soc.socPercent > 0) live.socEnd = soc.socPercent;
+        } catch (Exception ignored) {}
+        // Below 1 km a single counter/SoC step dominates the ratio.
+        if (live.distanceKm >= 1.0) {
+            try {
+                com.overdrive.app.monitor.VehicleDataMonitor vdm =
+                        com.overdrive.app.monitor.VehicleDataMonitor.getInstance();
+                double used = -1;
+                double elecConNow = vdm.getTotalElecCon();
+                // The metered counter first: the net remaining-energy delta moves in whole SoC steps.
+                if (active.elecConStart > 0 && Double.isFinite(elecConNow)
+                        && elecConNow >= active.elecConStart
+                        && elecConNow - active.elecConStart <= 1.0 + live.distanceKm) {
+                    used = elecConNow - active.elecConStart;
+                } else {
+                    live.kwhStart = active.kwhStart;
+                    live.kwhEnd = vdm.getBatteryRemainPowerKwh();
+                    used = live.getEnergyUsedKwh();
+                }
+                if (used > 0) live.energyPerKm = used / live.distanceKm;
+            } catch (Exception e) {
+                logger.debug("Live trip energy unavailable: " + e.getMessage());
+            }
+        }
+        return live;
+    }
+
+    /**
      * Update the TelemetryDataCollector reference after late initialization.
      * Called by CameraDaemon once TelemetryDataCollector is ready (after GPU init delay).
      */
@@ -452,6 +514,7 @@ public class TripAnalyticsManager {
             final boolean haveAnyDir = anyDir;
             final TripDatabase db = database;
             Thread recoveryThread = new Thread(() -> {
+                boolean recoveryRan = false;
                 try {
                     if (haveAnyDir) {
                         TripDatabase.RecoveryResult r = db.recoverTripsFromDisk(tripsDirs);
@@ -466,6 +529,7 @@ public class TripAnalyticsManager {
                             }
                         }
                     }
+                    recoveryRan = db.isAvailable();
                 } catch (Throwable t) {
                     logger.warn("Auto-recovery failed: " + t.getMessage());
                 }
@@ -484,6 +548,11 @@ public class TripAnalyticsManager {
                 // unreadable) would otherwise sit on /data forever. Anything
                 // older than a week there is dead; the active trip's file is
                 // protected by the in-flight marker regardless of age.
+                // Journals recovery never got to process are unsaved trips, not dead ones.
+                if (!recoveryRan) {
+                    logger.warn("Trip journal cleanup skipped: trip recovery did not run");
+                    return;
+                }
                 try {
                     reapStaleJournals(journalDir, System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000L);
                 } catch (Throwable t) {
@@ -564,8 +633,9 @@ public class TripAnalyticsManager {
             return false;
         }
 
-        // Where did the car stop, if it did? Same heuristic recovery trims on.
-        int lastMoving = TripDatabase.lastMovingSampleIndex(history);
+        // Where did the car stop, if it did? Same heuristic recovery trims on, except that a stale DI5 gear
+        // can't show the car parked: only a driving gear would end the resumed debounce.
+        int lastMoving = TripDatabase.lastMovingSampleIndex(history, true);
         boolean parked = lastMoving < history.size() - 1;
         long parkStartMs = parked
                 ? history.get(Math.min(lastMoving + 1, history.size() - 1)).timestampMs
@@ -709,6 +779,18 @@ public class TripAnalyticsManager {
         }
     }
 
+    /** DI5: elevation gain/loss [m] over the trip's journal up to its end, or null if unreadable. */
+    private double[] readJournalElevation(File journal, long tripEndMs) {
+        try {
+            List<TelemetrySample> rows = TelemetryStore.readFromFile(journal);
+            if (rows == null || rows.isEmpty()) return null;
+            return TripScoreEngine.journalElevation(rows, tripEndMs > 0 ? tripEndMs + 1_000 : Long.MAX_VALUE);
+        } catch (Throwable t) {
+            logger.warn("Journal elevation failed: " + t.getMessage());
+            return null;
+        }
+    }
+
     /**
      * Handle trip ended event from TripDetector.
      *
@@ -720,7 +802,43 @@ public class TripAnalyticsManager {
      * 6. Update range estimator
      * 7. Update telemetry file path in the record
      */
+    // a frozen copy of the trip that ended last; the widgets show it until its row is finished
+    private volatile TripRecord lastEnded;
+
+    /** The trip that ended last as it stood when it ended (no cost or scores yet), or null. */
+    public TripRecord getLastEndedSnapshot() {
+        return lastEnded;
+    }
+
+    // taken on the trip thread before anything finishes the trip, so readers never see it half-updated
+    private TripRecord endedCopy(TripRecord t) {
+        TripTelemetryRecorder rec = recorder;
+        boolean ours = rec != null && rec.getStatsTripKey() == t.startTime;
+        TripRecord s = new TripRecord();
+        s.id = t.id;
+        s.startTime = t.startTime;
+        s.endTime = t.endTime;
+        s.distanceKm = t.distanceKm;
+        s.durationSeconds = t.durationSeconds;
+        s.maxSpeedKmh = t.maxSpeedKmh > 0 ? t.maxSpeedKmh : ours ? Math.max(0, rec.getMaxSpeedKmh()) : 0;
+        s.avgSpeedKmh = t.avgSpeedKmh > 0 ? t.avgSpeedKmh : ours ? Math.max(0.0, rec.getAvgSpeedKmh()) : 0;
+        s.socStart = t.socStart;
+        s.socEnd = t.socEnd;
+        s.kwhStart = t.kwhStart;
+        s.kwhEnd = t.kwhEnd;
+        s.elecConStart = t.elecConStart;
+        s.elecConEnd = t.elecConEnd;
+        s.energyPerKm = t.energyPerKm;
+        s.isPhev = t.isPhev;
+        s.fuelPctStart = t.fuelPctStart;
+        s.fuelPctEnd = t.fuelPctEnd;
+        s.fuelConStart = t.fuelConStart;
+        s.iceSecondsAtomic.set(t.iceSeconds());
+        return s;
+    }
+
     private void handleTripEnded(TripRecord trip) {
+        lastEnded = endedCopy(trip);
         logger.info("Trip ended — duration=" + trip.durationSeconds + "s, distance="
                 + trip.distanceKm + "km");
 
@@ -791,14 +909,49 @@ public class TripAnalyticsManager {
         // 3. Compute scores — all five DNA axes in a single pass. Consistency is
         //    now an intra-trip behavioral-uniformity metric computed inside
         //    computeSummary (no DB lookup, no unit confusion).
-        if (scoreEngine != null && samples != null && !samples.isEmpty()) {
-            scoreEngine.computeSummary(trip, samples);
+        // DI5: elevation from every journaled row, as recovery takes it, since the scoring stream lacks
+        // the ticks without a vehicle speed; too little scoreable data stays unscored (the UI's "no data").
+        final boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        double[] journalElevation = diLink5 && telemetryPath != null
+                ? readJournalElevation(new File(telemetryPath), trip.endTime) : null;
+        boolean diLink5Scoreable = !diLink5 || (samples != null && TripScoreEngine.hasDiLink5ScoringCoverage(
+                TripScoreEngine.scoreableSeconds(samples), trip.durationSeconds));
+        if (scoreEngine != null && samples != null && !samples.isEmpty() && diLink5Scoreable) {
+            if (journalElevation != null) {
+                scoreEngine.computeSummary(trip, samples, journalElevation[0], journalElevation[1]);
+            } else {
+                scoreEngine.computeSummary(trip, samples);
+            }
+        } else if (journalElevation != null) {
+            TripScoreEngine.applyElevation(trip, journalElevation[0], journalElevation[1]);
         }
 
         // 4. Populate recorder stats (recorder is authoritative for avg/max speed)
         if (recorder != null) {
             trip.maxSpeedKmh = recorder.getMaxSpeedKmh();
             trip.avgSpeedKmh = recorder.getAvgSpeedKmh();
+            // DI5: measured distance over time, as recovery does; ticks without a vehicle speed are
+            // not in the mean. The trusted odometer when set, else the recorder, never the straight line.
+            // A restart gap no live fix measured has no distance, so its time in the trip is left out too.
+            boolean odometerDistance = trip.odometerStartKm > 0 && trip.odometerEndKm > 0;
+            double measuredKm = odometerDistance ? trip.distanceKm : recorder.getTotalDistanceKm();
+            double measuredSeconds = trip.durationSeconds - (odometerDistance ? 0
+                    : recorder.getUnmeasuredGapMs(trip.startTime, trip.endTime) / 1000.0);
+            if (measuredSeconds <= 0) measuredSeconds = trip.durationSeconds;
+            // Nothing measured at all (no live fix, no speed): the trip's own estimate, not a 0 average.
+            if (diLink5 && measuredKm <= 0 && trip.distanceKm > 0) {
+                measuredKm = trip.distanceKm;
+                measuredSeconds = trip.durationSeconds;
+            }
+            if (diLink5 && measuredKm > 0 && measuredSeconds > 0) {
+                trip.avgSpeedKmh = measuredKm / (measuredSeconds / 3600.0);
+                // A peak no speed reading caught (distance by position only) is at least the average.
+                if (trip.maxSpeedKmh < trip.avgSpeedKmh) trip.maxSpeedKmh = (int) Math.ceil(trip.avgSpeedKmh);
+            }
+        } else if (diLink5 && trip.avgSpeedKmh <= 0 && trip.distanceKm > 0 && trip.durationSeconds > 0) {
+            // DI5 with no recorder: the trip's own distance over its time, not a 0 average.
+            trip.avgSpeedKmh = trip.distanceKm / (trip.durationSeconds / 3600.0);
+            if (trip.maxSpeedKmh < trip.avgSpeedKmh) trip.maxSpeedKmh = (int) Math.ceil(trip.avgSpeedKmh);
         }
 
         // Snapshot electricity rate and compute trip cost.
@@ -1031,6 +1184,10 @@ public class TripAnalyticsManager {
             }
 
             if (dbId > 0) {
+                // a legacy insert gives the row its id only now; the widgets' copy needs it to notice a delete
+                TripRecord ended = lastEnded;
+                if (ended != null && ended.id <= 0 && ended.startTime == trip.startTime) lastEnded = endedCopy(trip);
+
                 // After DB insert, rename telemetry file to use the DB ID
                 // and update the record's telemetry file path
                 String newPath = recorder != null
@@ -1052,8 +1209,19 @@ public class TripAnalyticsManager {
                         // fallback) with the same marker atomicity.
                         boolean renamed = false;
                         try {
-                            renamed = com.overdrive.app.storage.StorageManager.getInstance()
-                                    .moveActiveTripFile(oldFile, newFile);
+                            StorageManager sm = StorageManager.getInstance();
+                            renamed = sm.moveActiveTripFile(oldFile, newFile);
+                            // The trips card refuses writes: its dir now resolves to internal.
+                            if (!renamed && sm.reportWriteFault(newFile.getParentFile())) {
+                                String internalPath = recorder.getTelemetryFilePath(dbId);
+                                if (!internalPath.equals(newPath)) {
+                                    logger.warn("Trip file could not be saved to " + newFile.getParent()
+                                            + " (card refuses writes) — saving it to internal storage");
+                                    newPath = internalPath;
+                                    newFile = new File(newPath);
+                                    renamed = sm.moveActiveTripFile(oldFile, newFile);
+                                }
+                            }
                         } catch (Exception e) {
                             logger.warn("moveActiveTripFile threw: " + e.getMessage());
                         }
@@ -1061,7 +1229,7 @@ public class TripAnalyticsManager {
                             trip.telemetryFilePath = newPath;
                             database.updateTrip(trip);
                             logger.info("Telemetry file renamed: " + oldFile.getName()
-                                    + " → " + newFile.getName());
+                                    + " → " + newFile.getAbsolutePath());
                         } else {
                             logger.warn("Failed to rename telemetry file to " + newFile.getName());
                         }
@@ -1081,6 +1249,11 @@ public class TripAnalyticsManager {
                         database.updateTrip(trip);
                         logger.info("Trip assigned to route " + routeId);
                     }
+                }
+
+                try {
+                    com.overdrive.app.safekeep.SafeKeep.onTripSaved(dbId);
+                } catch (Throwable ignored) {
                 }
 
                 logger.info("Trip saved — id=" + dbId

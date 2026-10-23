@@ -29,8 +29,10 @@
             realtime: []
         },
         gemini: {
-            text: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'],
-            realtime: ['gemini-3.1-flash-live-preview']
+            text: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'],
+            // gemini-3.1-flash-live-preview is deprecated (shutdown 2026-11-17); it stays listed so a
+            // saved config keeps its preset until the owner switches to the GA model.
+            realtime: ['gemini-3.8-live', 'gemini-3.1-flash-live-preview']
         },
         openai_compatible: { text: [], realtime: [] }
     };
@@ -1710,12 +1712,14 @@
                     },
                     usage: response.usage || null
                 });
-                self.selectedMode = 'vehicle_history';
+                // Stays in history only while the planner is asking a question; pinned, it
+                // sent every later message of the chat to the history search.
+                self.selectedMode = response.needsInput ? 'vehicle_history' : 'general';
                 if (self.messages.length > 20) {
                     self.messages = self.messages.slice(-20);
                 }
             }).catch(function (error) {
-                self.selectedMode = 'vehicle_history';
+                self.selectedMode = 'general';
                 self.messages.push({
                     role: 'assistant',
                     content: 'I could not search vehicle history: '
@@ -2125,7 +2129,9 @@
 
         appendInlineText: function (container, value) {
             var text = String(value || '');
-            var pattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`)/g;
+            // Links are web-search citations, which must stay visible and clickable;
+            // only http(s) targets match, so no other scheme can become a link.
+            var pattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g;
             var start = 0;
             var match;
             while ((match = pattern.exec(text)) !== null) {
@@ -2134,11 +2140,21 @@
                         text.slice(start, match.index)));
                 }
                 var token = match[0];
-                var node = document.createElement(
-                    token.slice(0, 2) === '**' ? 'strong' : 'code');
-                node.textContent = token.slice(
-                    token.slice(0, 2) === '**' ? 2 : 1,
-                    token.slice(0, 2) === '**' ? -2 : -1);
+                var node;
+                if (token.charAt(0) === '[') {
+                    var split = token.indexOf('](');
+                    node = document.createElement('a');
+                    node.href = token.slice(split + 2, -1);
+                    node.target = '_blank';
+                    node.rel = 'noopener noreferrer';
+                    node.textContent = token.slice(1, split);
+                } else {
+                    node = document.createElement(
+                        token.slice(0, 2) === '**' ? 'strong' : 'code');
+                    node.textContent = token.slice(
+                        token.slice(0, 2) === '**' ? 2 : 1,
+                        token.slice(0, 2) === '**' ? -2 : -1);
+                }
                 container.appendChild(node);
                 start = match.index + token.length;
             }

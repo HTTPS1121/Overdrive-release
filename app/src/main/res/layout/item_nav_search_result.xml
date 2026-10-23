@@ -4,7 +4,7 @@
   NavSearchResultAdapter inside the floating dropdown card under the search
   bar. Google-Maps-style list item: a soft tonal leading-icon disc holding a
   location pin, a TitleSmall primary line, and a muted BodySmall secondary
-  line (shown only when the label splits on a comma). Ripple on tap via
+  line (the result's secondary text, else the label's comma split). Ripple on tap via
   ?attr/selectableItemBackground. All colours are theme attrs so the row is
   correct in both day and night.
 -->

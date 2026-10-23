@@ -1,7 +1,18 @@
 package com.overdrive.app.genai;
 
 import com.overdrive.app.automation.Automation;
+import com.overdrive.app.automation.AutomationCondition;
 import com.overdrive.app.automation.Automations;
+import com.overdrive.app.automation.action.Action;
+import com.overdrive.app.automation.action.BaseAction;
+import com.overdrive.app.automation.action.IfAction;
+import com.overdrive.app.automation.condition.BydEvent;
+import com.overdrive.app.automation.condition.EventCondition;
+import com.overdrive.app.automation.condition.EventData;
+import com.overdrive.app.automation.type.DynamicIntType;
+import com.overdrive.app.automation.type.DynamicStringType;
+import com.overdrive.app.automation.type.SignalAddressType;
+import com.overdrive.app.automation.type.Type;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -71,6 +82,8 @@ public final class GenAiAutomation {
             context.put("catalog", catalog);
             context.put("safety",
                     "The events catalog is shared by triggers and conditions; use an event id as the output type and omit comparator/value for triggers. Use an action id as the output type. Only listed ids/options are valid. Shell and action-group actions are forbidden. The app re-validates and saves only as manual-only.");
+            context.put("signalAddress",
+                    "A signalAddress field, and any ${signal:...} value, names one event instance: the event id, then ':' and EVERY variable that event declares as key=value pairs joined by ',' (speed:units=kmph, turnSignal:side=left). A user variable is variable:name=<the exact name its setVariable uses>. An id without its variables matches nothing.");
         } catch (Exception ignored) {
         }
         return context;
@@ -134,10 +147,14 @@ public final class GenAiAutomation {
             throw new ValidationException(
                     "AI-created automations cannot contain shell or action-group actions.");
         }
+        checkSignalAddresses(proposed);
         Automation parsed = Automation.fromJson(proposed);
         if (parsed == null) {
             throw new ValidationException(
                     "The provider draft does not match OverDrive's automation schema.");
+        }
+        if (Automations.hasInvalidMqttChannel(parsed)) {
+            throw new ValidationException(Automations.MQTT_CHANNEL_ERROR);
         }
         parsed.setName(clamp(parsed.getName(), MAX_NAME_CHARS));
         parsed.setMode(Automation.MODE_MANUAL);
@@ -155,10 +172,14 @@ public final class GenAiAutomation {
             throw new ValidationException(
                     "Automation is missing or contains a forbidden action.");
         }
+        checkSignalAddresses(proposed);
         Automation parsed = Automation.fromJson(proposed);
         if (parsed == null) {
             throw new ValidationException(
                     "Automation does not match OverDrive's schema.");
+        }
+        if (Automations.hasInvalidMqttChannel(parsed)) {
+            throw new ValidationException(Automations.MQTT_CHANNEL_ERROR);
         }
         parsed.setName(clamp(parsed.getName(), MAX_NAME_CHARS));
         parsed.setMode(Automation.MODE_MANUAL);
@@ -230,6 +251,78 @@ public final class GenAiAutomation {
             }
         }
         return false;
+    }
+
+    /**
+     * Rejects a flow-step signal (If / Wait Until / Loop LHS, or a ${signal:…} value) that
+     * addresses no complete catalog signal. Folds If's legacy {@code name} into the address first.
+     */
+    static void checkSignalAddresses(JSONObject rules) throws ValidationException {
+        if (rules == null) return;
+        checkSignalAddresses(rules.optJSONArray("actions"));
+        checkSignalAddresses(rules.optJSONArray("elseActions"));
+    }
+
+    private static void checkSignalAddresses(JSONArray actions) throws ValidationException {
+        if (actions == null) return;
+        for (int i = 0; i < actions.length(); i++) {
+            JSONObject action = actions.optJSONObject(i);
+            if (action == null) continue;
+            String type = action.optString("type", "");
+            Action schema = Automations.getAction(type);
+            JSONObject variables = action.optJSONObject("variables");
+            if (schema instanceof BaseAction && variables != null) {
+                for (Type variable : ((BaseAction) schema).getVariables()) {
+                    String key = variable.getLabel().getId();
+                    Object value = variables.opt(key);
+                    if (!(value instanceof String)) continue;
+                    String address = ((String) value).trim();
+                    if (variable instanceof SignalAddressType) {
+                        String name = variables.optString("name", "").trim();
+                        if (schema instanceof IfAction && !name.isEmpty()
+                                && BydEvent.VARIABLE_TYPE.equals(address)) {
+                            address = BydEvent.VARIABLE_TYPE + ":name=" + name;
+                            try {
+                                variables.put(key, address);
+                            } catch (Exception ignored) {
+                                // JSONObject.put only throws on a null key
+                            }
+                            variables.remove("name");
+                        }
+                        requireCompleteSignal(type, address);
+                    } else if ((variable instanceof DynamicIntType
+                            || variable instanceof DynamicStringType)
+                            && address.startsWith("${signal:")) {
+                        requireCompleteSignal(type, address);
+                    }
+                }
+            }
+            checkSignalAddresses(action.optJSONArray("childActions"));
+            checkSignalAddresses(action.optJSONArray("elseActions"));
+        }
+    }
+
+    private static void requireCompleteSignal(String actionType, String address)
+            throws ValidationException {
+        if (isCompleteSignalAddress(address)) return;
+        throw new ValidationException("The draft's \"" + actionType
+                + "\" step uses the incomplete signal \"" + address
+                + "\". Every variable of the event is required, e.g. variable:name=MyFlag or speed:units=kmph.");
+    }
+
+    /** True when the address resolves to the same key a trigger on that catalog event uses. */
+    static boolean isCompleteSignalAddress(String address) {
+        EventData key = AutomationCondition.resolveSignalAddress(address);
+        if (key == null) return false;
+        EventCondition condition = Automations.getCondition(key.getType());
+        if (condition == null) return false;
+        try {
+            JSONObject probe = new JSONObject()
+                    .put("variables", new JSONObject(key.getVariables()));
+            return key.equals(condition.eventData(probe));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static boolean isForbiddenType(String raw) {

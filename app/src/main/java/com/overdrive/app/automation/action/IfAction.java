@@ -153,11 +153,17 @@ public class IfAction extends BaseAction {
         // ${signal:TYPE} RHS all compare identically to a real condition (incl. numeric
         // coercion, and string eq/neq when the LHS is a variable). Fail-safe: unknown/
         // unresolved → false → the else branch runs.
-        boolean held = AutomationCondition.evaluate(event, comparator, target);
+        // A queued run resuming after a yielded wait keeps the branch it already took.
+        Object recorded = Automations.queuedFlowRecord(automationAction);
+        boolean held = recorded instanceof Boolean
+                ? (Boolean) recorded
+                : AutomationCondition.evaluate(event, comparator, target);
+        Automations.recordQueuedFlow(automationAction, held);
         // then = childActions, else = elseChildActions. Either may be empty.
         Automations.runActionList(held
                 ? automationAction.getChildActions()
                 : automationAction.getElseChildActions());
+        if (Automations.queuedDeferralPending()) return;
         logger.info("IfAction: " + event.getType() + " " + comparator + " " + target + " → " + (held ? "then" : "else"));
     }
 

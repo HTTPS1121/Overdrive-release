@@ -396,6 +396,131 @@ class DiLink5ClusterCastTest {
     }
 
     @Test
+    fun reclaimedSharedDisplaysAreSkippedAndTheLearnedPreferenceWins() {
+        val shared = listOf(
+            "fission_bg_XDJAScreenProjection",
+            "shared_fission_bg_XDJAScreenProjection_0",
+            "shared_fission_bg_XDJAScreenProjection_1"
+        )
+        // Default ranking is unchanged: _0 first.
+        assertEquals(
+            "shared_fission_bg_XDJAScreenProjection_0",
+            selectDiLink5ProjectionDisplayName(shared, true, true)
+        )
+        // An OEM cluster app reclaimed _0 → the sibling shared surface is the
+        // alternative; never the non-physical debug display.
+        assertEquals(
+            "shared_fission_bg_XDJAScreenProjection_1",
+            selectDiLink5ProjectionDisplayName(
+                shared, true, true,
+                excludedNames = setOf("shared_fission_bg_xdjascreenprojection_0")
+            )
+        )
+        // Both shared surfaces reclaimed → no alternative (strict), so the
+        // caller can report the takeover instead of retrying the same surface.
+        assertNull(
+            selectDiLink5ProjectionDisplayName(
+                shared, true, true,
+                excludedNames = setOf(
+                    "shared_fission_bg_xdjascreenprojection_0",
+                    "shared_fission_bg_xdjascreenprojection_1"
+                )
+            )
+        )
+        // A learned preference is honoured when present and not excluded.
+        assertEquals(
+            "shared_fission_bg_XDJAScreenProjection_1",
+            selectDiLink5ProjectionDisplayName(
+                shared, true, true,
+                preferredName = "shared_fission_bg_XDJAScreenProjection_1"
+            )
+        )
+        assertEquals(
+            "shared_fission_bg_XDJAScreenProjection_0",
+            selectDiLink5ProjectionDisplayName(
+                shared, true, true,
+                preferredName = "shared_fission_bg_XDJAScreenProjection_1",
+                excludedNames = setOf("shared_fission_bg_xdjascreenprojection_1")
+            )
+        )
+        // A preference naming an absent display falls back to the ranking.
+        assertEquals(
+            "shared_fission_bg_XDJAScreenProjection_0",
+            selectDiLink5ProjectionDisplayName(
+                shared, true, true,
+                preferredName = "shared_fission_bg_XDJAScreenProjection_9"
+            )
+        )
+        assertTrue(
+            isSharedDiLink5ProjectionDisplayName(
+                "shared_fission_bg_XDJAScreenProjection_1"
+            )
+        )
+        assertFalse(
+            isSharedDiLink5ProjectionDisplayName("fission_bg_XDJAScreenProjection")
+        )
+    }
+
+    @Test
+    fun terminalLegacyVerdictsEndTheRecoveryLadder() {
+        // Fully recovered → terminal, fence released.
+        val recovered = DiLink5ClusterCast
+            .combineLegacyBootRecoveryOutcome(
+                taskRecovered = true,
+                gaugeRecovery =
+                    ClusterProjectionController.LegacyBootRecoveryResult
+                        .RECOVERED
+            )
+        assertTrue(recovered.terminal)
+        assertFalse(recovered.unsupported)
+
+        // Unsupported firmware verdict → terminal even when the stranded-task
+        // sweep did not confirm (it is idempotent and re-runs at next boot);
+        // retrying could never change what the firmware exposes.
+        val unsupported = DiLink5ClusterCast
+            .combineLegacyBootRecoveryOutcome(
+                taskRecovered = false,
+                gaugeRecovery =
+                    ClusterProjectionController.LegacyBootRecoveryResult
+                        .UNSUPPORTED
+            )
+        assertFalse(unsupported.recovered)
+        assertTrue(unsupported.terminal)
+        assertTrue(unsupported.unsupported)
+        assertFalse(unsupported.sameBootIndeterminate)
+
+        // A plain task failure with recovered gauges stays retryable.
+        val taskFailure = DiLink5ClusterCast
+            .combineLegacyBootRecoveryOutcome(
+                taskRecovered = false,
+                gaugeRecovery =
+                    ClusterProjectionController.LegacyBootRecoveryResult
+                        .RECOVERED
+            )
+        assertFalse(taskFailure.terminal)
+
+        // Retryable and same-boot indeterminate gauge outcomes never settle
+        // the ladder (the latter is the safety lockout).
+        val retryable = DiLink5ClusterCast
+            .combineLegacyBootRecoveryOutcome(
+                taskRecovered = true,
+                gaugeRecovery =
+                    ClusterProjectionController.LegacyBootRecoveryResult
+                        .RETRYABLE_FAILURE
+            )
+        assertFalse(retryable.terminal)
+        val sameBoot = DiLink5ClusterCast
+            .combineLegacyBootRecoveryOutcome(
+                taskRecovered = true,
+                gaugeRecovery =
+                    ClusterProjectionController.LegacyBootRecoveryResult
+                        .SAME_BOOT_INDETERMINATE
+            )
+        assertFalse(sameBoot.terminal)
+        assertTrue(sameBoot.sameBootIndeterminate)
+    }
+
+    @Test
     fun teardownCommandIsMarkedBeforeDispatchAndClearedAfterDefinitiveReply() {
         val events = mutableListOf<String>()
         val result = executeDiLink5MarkedTeardownCommand(

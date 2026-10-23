@@ -1,7 +1,7 @@
 /**
- * Parking Intelligence page — list + drill-in detail, in the trips.html idiom:
- * a "parked now" hero (summary-card), quick range filters (filter-tabs), a
- * grid of square session cards grouped by day-header, and a detail view with
+ * Parking Intelligence page — list + drill-in detail, in the charging.html
+ * idiom: a "Parked now" tile (.r-hero), quick range filters (filter-tabs),
+ * full-width session rows grouped by day-header, and a detail view with
  * detail-header / detail-summary / summary-cards.
  *
  * Data: /api/parking/* (ParkingApiHandler). Images are fetched through
@@ -104,9 +104,8 @@
     }
     function triggerLabel(tr) { return tr ? t('parking.trigger_' + tr) : ''; }
 
-    // SVG glyphs (lucide, 24-box) used by the capsules — same shapes the trips page uses.
+    // SVG glyphs (lucide, 24-box) for the rows, chips and detail cards — same shapes the trips page uses.
     var ICON = {
-        clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
         pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg>',
         car: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="8" rx="2"/><path d="M5 11l2-5h10l2 5"/><circle cx="7.5" cy="19" r="1.5"/><circle cx="16.5" cy="19" r="1.5"/></svg>',
         shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
@@ -117,18 +116,34 @@
         battery: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2" ry="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg>',
         back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>',
         trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
-        map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>'
+        map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
+        calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>',
+        chevron: '<svg class="park-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>',
+        person: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+        bike: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>',
+        paw: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/></svg>'
     };
-    function capsule(icon, text, cls) {
-        return '<span class="park-capsule' + (cls ? ' ' + cls : '') + '">' + ICON[icon] + esc(text) + '</span>';
+    // Every glyph sits next to its text label, so assistive tech skips it.
+    Object.keys(ICON).forEach(function (k) { ICON[k] = ICON[k].replace('<svg ', '<svg aria-hidden="true" '); });
+
+    // Session-row reading cell (charging.js session-metric idiom): glyph, value, label.
+    function metric(icon, value, label, cls) {
+        return '<div class="park-metric' + (cls ? ' ' + cls : '') + '">' + ICON[icon] +
+            '<div class="park-metric-copy"><div class="park-metric-value">' + esc(value) + '</div>' +
+            '<div class="park-metric-label">' + esc(label) + '</div></div></div>';
     }
-    function gpsCapsule(s) {
+    function gpsText(s) {
         var q = gpsQuality(s);
-        return capsule('satellite', t('parking.gps_' + q.toLowerCase()), q === 'STALE' ? 'warn' : (q === 'UNKNOWN' ? 'muted' : ''));
+        var label = t('parking.gps_' + q.toLowerCase());
+        // Same hint as the notification: a coarse (cell / Wi-Fi) fix gets its radius.
+        var acc = s.gps && s.gps.accuracy;
+        if (q !== 'UNKNOWN' && acc >= 100) label += ' (±' + Math.round(acc) + ' m)';
+        return label;
     }
-    function sentryCapsule(s) {
+    function sentryChip(s) {
         var st = s.sentryState || 'unknown';
-        return capsule('shield', t('parking.sentry_' + st), st === 'armed' ? '' : (st === 'lock_wait' ? 'muted' : 'warn'));
+        var cls = st === 'armed' ? ' armed' : (st === 'lock_wait' ? '' : ' warn');
+        return '<span class="park-chip park-chip--sentry' + cls + '">' + ICON.shield + '<span>' + esc(t('parking.sentry_' + st)) + '</span></span>';
     }
     // Energy (session.energy from ParkingSession.toJson / the live enrichment):
     //   kwh        signed net change, BMS pair first, else the SoC estimate
@@ -156,9 +171,6 @@
     function energyLabel(s) {
         return t(s.energy && s.energy.charged ? 'parking.soc_charged' : 'parking.energy_used');
     }
-    function energyCapsule(s) {
-        return hasEnergy(s) ? capsule('battery', fmtEnergy(s), s.energy.charged ? 'good' : '') : '';
-    }
     function tag(text, cls) { return '<span class="pk-tag' + (cls ? ' ' + cls : '') + '">' + esc(text) + '</span>'; }
 
     // ---------------------------------------------------------------- images
@@ -166,6 +178,9 @@
     function revokeAll() {
         state.blobs.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) { /* ignore */ } });
         state.blobs = [];
+        // The hero still's blob is gone too: reload it on the next render.
+        var th = $('pkHeroThumb');
+        if (th) th.removeAttribute('data-src');
     }
     function loadImg(container, url) {
         if (!container || !url) return;
@@ -229,42 +244,56 @@
         $('pkHeroEvents').textContent = String(cur.eventCount || 0);
         $('pkHeroNeighbours').textContent = String(cur.neighbourCount || 0);
         var thumb = $('pkHeroThumb');
-        thumb.style.display = 'none';
-        thumb.innerHTML = '';
-        if (cur.snapshots && cur.snapshots.arrivedOk) loadImg(thumb, '/parking/asset/' + encodeURIComponent(cur.sessionId) + '/arrived_mosaic.jpg');
-        hero.onclick = function () { location.hash = '#/session/' + cur.sessionId; };
+        var still = (cur.snapshots && cur.snapshots.arrivedOk) ? '/parking/asset/' + encodeURIComponent(cur.sessionId) + '/arrived_mosaic.jpg' : '';
+        // The 45 s refresh keeps a still that is already showing: no flash, no layout jump.
+        if (!still || thumb.getAttribute('data-src') !== still || !thumb.querySelector('img')) {
+            thumb.style.display = 'none';
+            thumb.innerHTML = '';
+            thumb.setAttribute('data-src', still);
+            if (still) loadImg(thumb, still);
+        }
+        // blur(): Chrome 58 has no :focus-visible, so a tap would leave the ring on the tile after Back.
+        hero.onclick = function () { if (hero.blur) hero.blur(); location.hash = '#/session/' + cur.sessionId; };
+        hero.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); hero.onclick(); } };
         hero.style.cursor = 'pointer';
     }
 
     // ---------------------------------------------------------------- list
 
+    // One full-width row per session (charging.js session-card idiom): P badge
+    // (+ garage level) and sentry chip, the duration, the place, then labelled
+    // reading cells and a chevron. Click or Enter opens the session.
     function sessionCard(s, isCurrent) {
         var card = document.createElement('div');
         card.className = 'park-card' + (isCurrent ? ' current' : '');
+        card.setAttribute('role', 'link');
+        card.setAttribute('tabindex', '0');
         card.onclick = function () { location.hash = '#/session/' + s.sessionId; };
+        card.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); card.onclick(); } };
         var now = Date.now();
         var place = placeOf(s) || t('parking.unknown_place'), level = levelOf(s);
         var dur = fmtDur((s.endedMs || now) - s.startedMs);
-        var events = s.eventCount || 0;
-        var badgeCls = events === 0 ? 'none' : (events >= 5 ? 'high' : (events >= 2 ? 'mid' : ''));
-        var badge = '<div class="park-badge ' + badgeCls + '" title="' + esc(t('parking.events_n', { n: events })) + '">'
-            + (events === 0 ? ICON.shield : events) + '</div>';
-        var capsules = capsule('clock', dur)
-            + energyCapsule(s)
-            + (level ? capsule('level', level) : '')
-            + capsule('car', t('parking.neighbours_n', { n: s.neighbourCount || 0 }), (s.neighbourCount || 0) === 0 ? 'muted' : '')
-            + gpsCapsule(s)
-            + sentryCapsule(s);
+        var events = s.eventCount || 0, neighbours = s.neighbourCount || 0, q = gpsQuality(s);
+        var cells = metric('calendar', fmtTime(s.startedMs), t('parking.started'))
+            + metric('video', String(events), t('parking.events'), events >= 5 ? 'bad' : (events >= 2 ? 'warn' : (events === 0 ? 'muted' : '')))
+            + metric('car', String(neighbours), t('parking.neighbours'), neighbours === 0 ? 'muted' : '')
+            + (hasEnergy(s) ? metric('battery', fmtEnergy(s), energyLabel(s), s.energy.charged ? 'good' : '') : '')
+            + metric('satellite', gpsText(s), t('parking.gps_label'), q === 'STALE' ? 'warn' : (q === 'UNKNOWN' ? 'muted' : ''));
         card.innerHTML =
-            '<div class="park-card-top">' +
-                '<div style="display:flex;align-items:center;flex-wrap:wrap;padding-right:48px;">' +
-                    '<span class="park-time">' + esc(fmtTime(s.startedMs)) + '</span>' +
+            '<div class="park-primary">' +
+                '<div class="park-kind-row">' +
+                    '<span class="park-chip park-chip--level"' + (level ? ' title="' + esc(level) + '"' : '') + '>' +
+                        ICON.level + (level ? '<span>' + esc(level) + '</span>' : '') + '</span>' +
+                    sentryChip(s) +
+                '</div>' +
+                '<div class="park-main-row">' +
+                    '<span class="park-duration">' + esc(dur) + '</span>' +
                     (isCurrent ? '<span class="park-live-tag">LIVE</span>' : '') +
                 '</div>' +
+                '<div class="park-place" title="' + esc(place) + '">' + ICON.pin + '<span>' + esc(place) + '</span></div>' +
             '</div>' +
-            '<div class="park-place" title="' + esc(place) + '">' + esc(place) + '</div>' +
-            badge +
-            '<div class="park-capsules">' + capsules + '</div>';
+            '<div class="park-metrics">' + cells + '</div>' +
+            '<div class="park-actions">' + ICON.chevron + '</div>';
         return card;
     }
 
@@ -276,7 +305,7 @@
         sessions.forEach(function (s) {
             var day = fmtDay(s.startedMs);
             if (day !== lastDay) {
-                var h = document.createElement('div');
+                var h = document.createElement('h2');
                 h.className = 'day-header';
                 h.textContent = day;
                 box.appendChild(h);
@@ -523,6 +552,9 @@
         return cardShell(t('parking.neighbours'), 'car', body, list.length ? tag(String(list.length), 'good') : '');
     }
 
+    function countGlyph(icon, label, n) {
+        return '<span class="pk-ev-count">' + ICON[icon].replace('aria-hidden="true"', 'role="img" aria-label="' + esc(label) + '"') + esc(String(n)) + '</span>';
+    }
     function eventsCard(events) {
         var body;
         if (!events.length) {
@@ -531,16 +563,17 @@
             body = events.map(function (r) {
                 var thumb = r.heroThumbnailUrl || r.thumbnailUrl || '';
                 var sev = r.peakSeverity ? tag(r.peakSeverity, r.peakSeverity === 'CRITICAL' ? 'bad' : 'warn') : '';
+                // Detection counts: SVG glyph named for screen readers (no emoji icons) + number.
                 var counts = [];
-                if (r.personCount) counts.push('👤 ' + r.personCount);
-                if (r.vehicleCount) counts.push('🚗 ' + r.vehicleCount);
-                if (r.bikeCount) counts.push('🚲 ' + r.bikeCount);
-                if (r.animalCount) counts.push('🐾 ' + r.animalCount);
+                if (r.personCount) counts.push(countGlyph('person', t('parking.person'), r.personCount));
+                if (r.vehicleCount) counts.push(countGlyph('car', t('parking.vehicle'), r.vehicleCount));
+                if (r.bikeCount) counts.push(countGlyph('bike', t('parking.bike'), r.bikeCount));
+                if (r.animalCount) counts.push(countGlyph('paw', t('parking.animal'), r.animalCount));
                 var cams = r.cameras ? String(r.cameras).split(',').map(function (c) { return t('parking.side_' + c); }).join(' · ') : '';
                 return '<a class="pk-event" href="events.html?file=' + encodeURIComponent(r.filename || '') + '">' +
                     '<div class="pk-ev-thumb"' + (thumb ? ' data-img="' + esc(thumb) + '"' : '') + '></div>' +
                     '<div class="pk-ev-main"><div class="pk-ev-title">' + esc(fmtTime(r.timestamp)) + sev + '</div>' +
-                    '<div class="pk-ev-sub">' + esc(counts.join('  ')) + (cams ? (counts.length ? ' · ' : '') + esc(cams) : '') + '</div></div></a>';
+                    '<div class="pk-ev-sub">' + counts.join('') + (cams ? (counts.length ? '· ' : '') + esc(cams) : '') + '</div></div></a>';
             }).join('');
         }
         return cardShell(t('parking.events'), 'video', body, events.length ? tag(String(events.length), 'good') : '');
@@ -595,6 +628,7 @@
                             .catch(function () { /* ignore */ });
                     }, 600);
                 };
+                ParkingSettings.loadGeocoding();
             }
             route();
             // Keep the hero fresh on a page left open (duration ticking, live

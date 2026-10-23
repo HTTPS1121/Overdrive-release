@@ -47,6 +47,16 @@ public final class TelegramSink implements NotificationBus.Sink {
     public void onNotification(NotificationEvent event) {
         if (event == null) return;
         try {
+            // Proximity access owns explicit channel consent. It must not ride
+            // an unrelated alert toggle or fall through into a second send.
+            if (com.overdrive.app.remoteaccess.RemoteAccessNotifications.isRemoteAccess(event)) {
+                if (com.overdrive.app.remoteaccess.RemoteAccessNotifications
+                        .canDeliver(event, "telegram")) {
+                    TelegramNotifier.sendRemoteAccess("🔑 *" + md(event.title) + "*\n"
+                            + md(event.body), event.data);
+                }
+                return;
+            }
             // Already delivered to Telegram via the direct path — don't dup.
             if (event.category != null && event.category.startsWith("surveillance.")) {
                 return;
@@ -119,14 +129,17 @@ public final class TelegramSink implements NotificationBus.Sink {
         if (!com.overdrive.app.telegram.config.UnifiedTelegramConfig.isParkingMessages()) return;
         String photo = null;
         String buttons = null;
+        String body = event.body;
         if (event.data != null) {
+            String telegramBody = event.data.optString("telegramBody", "");
+            if (!telegramBody.isEmpty()) body = telegramBody;
             photo = event.data.optString("telegramPhotoPath", null);
             org.json.JSONArray b = event.data.optJSONArray("telegramButtons");
             if (b != null && b.length() > 0) buttons = b.toString();
         }
         String icon = "parking.session.ended".equals(event.category) ? "🚗" : "🅿️";
         TelegramNotifier.notifyParking(icon + " " + (event.title == null ? "" : event.title),
-                event.body, photo, buttons);
+                body, photo, buttons);
     }
 
     /**

@@ -103,6 +103,39 @@ public final class GenAiAction {
     }
 
     public static String realtimeInstructions() {
+        return realtimeInstructions(false);
+    }
+
+    /**
+     * Hands-free (far-field) sessions have no confirmation card, so they are told about the
+     * typed-intent tool and its status enum instead; the Assistant page text is unchanged.
+     */
+    public static String realtimeInstructions(boolean farField) {
+        if (farField) {
+            return "You are speaking to the driver hands-free. For commands (climate, seats, "
+                    + "steering wheel heat, sunshade, sunroof, windows, lights, music and volume, "
+                    + "navigation, phone calls, locks, trunk, displays, charging, drive settings, "
+                    + "turning driver assistance on, saving a dashcam clip) call "
+                    + GenAiVoiceCommand.TOOL_NAME + " once and say only "
+                    + "what its status means: completed = done; accepted = started, not "
+                    + "finished; duplicate = already done; blocked = not allowed while driving "
+                    + "(some commands need the car parked); refused = not available by voice; "
+                    + "needs_confirmation = ask the driver its detail as a short yes or no "
+                    + "question, then only after a clear yes call it again with the same fields "
+                    + "and its confirm_token, otherwise do nothing; needs_detail = the call left "
+                    + "out the field its detail names: fill it from what the driver said and call "
+                    + "again (ask only if they did not say it), never tell the driver it is "
+                    + "impossible; failed or unknown = it did "
+                    + "not work. For a saved automation call " + TOOL_NAME + "; its status "
+                    + "accepted means it was started. Driver assistance can only be turned on by "
+                    + "voice, never off. Music plays only through "
+                    + GenAiVoiceCommand.TOOL_NAME + ": you have no player of your own, so never "
+                    + "report a playback problem of yours. For live information such as weather, news, traffic or "
+                    + "opening hours, use your web search tool when one is available. Ask a short "
+                    + "question when a detail is missing; when no command fits, say briefly that "
+                    + "you cannot do it. All of that governs vehicle commands only — a question "
+                    + "with no command behind it you simply answer, whatever its subject.";
+        }
         return "For an explicit request to set cabin temperature, open or close "
                 + "the sunshade, or run one saved automation, call "
                 + TOOL_NAME + " once. The tool only creates a confirmation card; "

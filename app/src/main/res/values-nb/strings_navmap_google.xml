@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="navmap_google_layers_cd">Kartlag</string>
+    <string name="navmap_google_type_default">Google-kart</string>
+    <string name="navmap_google_type_satellite">Satellitt</string>
+    <string name="navmap_google_type_hybrid">Hybrid</string>
+    <string name="navmap_google_type_terrain">Terreng</string>
+    <string name="navmap_google_type_overdrive">OverDrive-kart</string>
+    <string name="navmap_google_traffic">Sanntidstrafikk</string>
+    <string name="navmap_google_traffic_on">Sanntidstrafikk på</string>
+    <string name="navmap_google_traffic_off">Sanntidstrafikk av</string>
+    <string name="navmap_google_traffic_paused">Sanntidstrafikk satt på pause til %1$s (gratis daglig grense)</string>
+    <string name="navmap_google_map_paused">Google-kart satt på pause til %1$s (gratis daglig grense)</string>
+    <string name="navmap_google_map_unavailable">Google-kart er utilgjengelig, viser OverDrive-kartet</string>
+    <string name="navmap_google_key_problem">Problem med Google Maps-nøkkelen. Sjekk RoadSense-innstillingene.</string>
+    <string name="navmap_google_route_key_problem">Google-rutingen avviste nøkkelen. Sjekk RoadSense-innstillingene.</string>
+    <string name="navmap_google_route_limit">Grensen for Google-ruting er nådd for i dag</string>
+    <string name="navmap_google_arrived">Du er fremme ved målet</string>
+    <string name="navmap_google_traffic_delay">+%1$s pga. trafikk</string>
+    <string name="navmap_google_no_delays">Ingen trafikkforsinkelser</string>
+    <string name="navmap_google_faster_route">Raskere rute funnet, sparer %1$s</string>
+    <string name="navmap_google_faster_route_switch">Bytt</string>
+    <string name="navmap_google_routes_by_google">Ruter fra Google</string>
+    <string name="navmap_google_routing_provided_by">Ruting levert av %1$s</string>
+    <string name="navmap_google_place_failed">Kunne ikke åpne dette stedet</string>
+    <string name="navmap_google_finding_place">Finner sted…</string>
+</resources>

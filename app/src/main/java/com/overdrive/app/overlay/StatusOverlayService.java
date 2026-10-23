@@ -1002,6 +1002,7 @@ public class StatusOverlayService extends Service {
         executor.shutdownNow();
         com.overdrive.app.audio.AppAudioCaptureController
                 .setRecordingDemand(false);
+        com.overdrive.app.voice.VoiceAssistantRuntime.shutdown();
         // Tear down the camera-view close button + its receiver.
         if (camCloseReceiverRegistered) {
             try { unregisterReceiver(camCloseReceiver); } catch (Throwable ignored) {}
@@ -1628,6 +1629,7 @@ public class StatusOverlayService extends Service {
                 }
                 refreshAudioConfig();
                 reconcileAudioCapture();
+                reconcileVoiceAssistant();
                 handler.post(this::updateUI);
             } catch (Exception e) {
                 consecutivePollFailures++;
@@ -1637,6 +1639,7 @@ public class StatusOverlayService extends Service {
                 // Even on poll failure, run reconcile so a stale capture
                 // gets torn down when the daemon goes away.
                 reconcileAudioCapture();
+                reconcileVoiceAssistant();
                 handler.post(this::updateUI);
             }
 
@@ -1737,11 +1740,19 @@ public class StatusOverlayService extends Service {
             // tick to defeat the daemon-cross-UID stale cache. From here
             // we use loadConfig() which is mtime-gated and free when the
             // tick's earlier forceReload already refreshed.
-            org.json.JSONObject recCfg =
-                com.overdrive.app.config.UnifiedConfigManager.loadConfig()
-                    .optJSONObject("recording");
+            org.json.JSONObject root =
+                com.overdrive.app.config.UnifiedConfigManager.loadConfig();
+            org.json.JSONObject recCfg = root.optJSONObject("recording");
             audioEnabledConfig = recCfg != null
                 && recCfg.optBoolean("audioEnabled", false);
+            // The voice assistant's microphone input applies to the shared cabin capture.
+            // Pushed here, BEFORE reconcileAudioCapture() opens anything this tick, so the
+            // first capture of a session already uses it instead of waiting for a reopen.
+            // A disabled assistant keeps the plain MIC source for recordings.
+            String micSource = com.overdrive.app.voice.VoiceAssistantConfig.isEnabled(root)
+                ? com.overdrive.app.voice.VoiceAssistantConfig.fromRoot(root).micSource
+                : com.overdrive.app.voice.VoiceAssistantConfig.MIC_SOURCE_MIC;
+            com.overdrive.app.audio.AppAudioCaptureController.setCaptureSource(micSource);
         } catch (Exception e) {
             audioEnabledConfig = false;
         }
@@ -1795,6 +1806,15 @@ public class StatusOverlayService extends Service {
             Log.w(TAG, "Audio capture start failed — will retry on next poll");
         } else if (!shouldCapture && wasCapturing) {
             Log.i(TAG, "Audio capture disabled");
+        }
+    }
+
+    private void reconcileVoiceAssistant() {
+        try {
+            com.overdrive.app.voice.VoiceAssistantRuntime.reconcile(
+                    getApplicationContext(), daemonReachable && running.get(), accOn);
+        } catch (Throwable t) {
+            Log.w(TAG, "Voice assistant reconcile failed: " + t.getMessage());
         }
     }
 
@@ -2083,7 +2103,8 @@ public class StatusOverlayService extends Service {
             // fast poll — drop to the idle cadence (the poll can't stop
             // entirely because it still drives audio reconcile + ACC-edge
             // detection, but with audio off there's nothing to reconcile).
-            overlayFullyIdle = !audioEnabledConfig;
+            overlayFullyIdle = !audioEnabledConfig
+                    && !com.overdrive.app.voice.VoiceAssistantRuntime.isEnabled();
             return;
         }
         // Something is shown (or audio is active) — keep the normal poll cadence.

@@ -65,9 +65,10 @@ public class VehicleCommandMotionSafetyTest {
     // TrunkStop is an abort — must never be blocked, even though it's trunk-related.
     @Test public void trunkStopIsUnrestricted() { assertEquals(MotionSafety.UNRESTRICTED, new TrunkStopCommand().motionSafety()); }
 
-    // Horn/lights locate commands — no longer gated.
-    @Test public void findCarIsUnrestricted() { assertEquals(MotionSafety.UNRESTRICTED, new FindCarCommand().motionSafety()); }
-    @Test public void flashLightsIsUnrestricted() { assertEquals(MotionSafety.UNRESTRICTED, new FlashLightsCommand().motionSafety()); }
+    // Horn/lights locate commands. Gated since they gained a local rail: the cloud leg used to be
+    // the only path and the vehicle refused it in motion, so nothing enforced this before.
+    @Test public void findCarIsBlockedWhileMoving() { assertEquals(MotionSafety.BLOCK_WHILE_MOVING, new FindCarCommand().motionSafety()); }
+    @Test public void flashLightsAreBlockedWhileMoving() { assertEquals(MotionSafety.BLOCK_WHILE_MOVING, new FlashLightsCommand().motionSafety()); }
 
     // Mirror FOLD is gated (it removes rear-quarter vision mid-manoeuvre, with no readback), but
     // UNFOLD stays open — it is the recovery action, so blocking it would strand a moving driver.

@@ -47,6 +47,7 @@ public final class TelenavActions {
      * the daemon (UID 2000, {@code am start}) instead — see {@code TelenavDebugApiHandler}.
      */
     public static void foregroundTelenav(Context ctx) {
+        TelenavClient.noteUseToDaemon();
         try {
             Intent i = new Intent(Intent.ACTION_MAIN);
             i.addCategory(Intent.CATEGORY_LAUNCHER);

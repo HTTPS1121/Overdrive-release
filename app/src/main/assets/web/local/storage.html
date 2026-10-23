@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title data-i18n="recording.tab_storage">Storage - OverDrive</title>
+    <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="../shared/app-icon-dark.webp">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#00876C">
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
+    <!--
+      Storage: every storage option on one page (moved here from the Surveillance,
+      Recording and Trips pages). Location + limit picks are staged and committed
+      with Apply (a lower limit deletes old files); the dashcam clean-up controls
+      and Recover save immediately, as they did on their source pages.
+    -->
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
+    <style>
+        /* Storage page layer (tokens only; Chrome 58 safe). */
+
+        /* Summary tile: one well per volume (free, total, fill). */
+        .st-vol-name { display: flex; align-items: center; min-width: 0; }
+        .st-vol-name > .sd-status-dot { margin-right: 8px; }
+        [dir="rtl"] .st-vol-name > .sd-status-dot { margin-right: 0; margin-left: 8px; }
+        .st-vol-name > span + span { min-width: 0; overflow-wrap: break-word; }
+        .st-vol-total { display: block; margin-top: 2px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .st-vol-total:empty { display: none; }
+        .st-vol-bar { display: block; height: 6px; margin-top: 10px; overflow: hidden; border-radius: var(--radius-full); background-color: var(--well-2); }
+        .st-vol-fill { display: block; width: 0; height: 100%; border-radius: var(--radius-full); background-color: var(--primary); }
+        @media (max-width: 480px) {
+            .st-hero > .r-hero-stats { grid-row: 2; grid-template-columns: minmax(0, 1fr); }
+        }
+
+        /* Section rows. */
+        .st-usage-row { padding-bottom: 8px; border-bottom: 0; }
+        .st-limit-row { margin-top: 16px; border-bottom: 0; }
+        .st-limit-row + .slider-range-labels { margin-bottom: 4px; }
+        .st-banner { margin-top: 12px; }
+        .st-dot-warn { background-color: var(--warning); }
+        .st-recover-result { margin: 0 0 12px; }
+
+        /* Range ends sit under the 120px track (70px value + 12px gutter before it); full track on phones. */
+        .st-range-under { width: 120px; margin-left: auto; margin-right: 0; padding: 0; }
+        [dir="rtl"] .st-range-under { margin-left: 0; margin-right: auto; }
+        @media (max-width: 768px) {
+            .st-range-under { width: auto; margin-left: 82px; }
+            [dir="rtl"] .st-range-under { margin-left: 0; margin-right: 82px; }
+            .st-action-row > .setting-control > .btn { width: 100%; }
+        }
+
+        /* Dashcam clean-up recommend banner: storage.js shows it as display:block, so float the icon. */
+        #cdrRecommendBanner > .info-icon { float: left; margin-right: 10px; }
+        [dir="rtl"] #cdrRecommendBanner > .info-icon { float: right; margin-right: 0; margin-left: 10px; }
+        #cdrRecommendBanner > .info-row { display: block; overflow: hidden; }
+        #cdrRecommendBanner .info-row > .label { display: block; color: inherit; font-weight: 600; }
+        #cdrRecommendBanner .info-row > .value { display: block; margin-top: 2px; font-weight: 400; }
+
+        /* Apply bar: room under the last tile, bar surface, toasts above it. */
+        .st-page .page-body { padding-bottom: 128px; }
+        .st-page .footer-bar { border-top-color: var(--hairline); background-color: var(--bar); box-shadow: none; }
+        [dir="rtl"] .st-page .footer-bar { left: 0; right: var(--sidebar-width); }
+        .st-page .toast-container { bottom: 104px; }
+        :root[data-android-embed="1"] .st-page .footer-bar .btn { min-height: 56px; }
+        @media (max-width: 768px) {
+            [dir="rtl"] .st-page .footer-bar { right: 0; }
+            html.has-bottom-nav body.st-page .toast-container { bottom: 164px; }
+        }
+    </style>
+</head>
+<body class="r-settings st-page">
+    <div class="app-layout">
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
+        <div id="app-shell-mount"></div>
+        <main class="main-content" aria-busy="true" inert style="pointer-events:none">
+            <div class="mobile-header">
+                <button class="menu-toggle" onclick="toggleSidebar()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>
+                    </svg>
+                </button>
+                <span style="font-weight:600;" data-i18n="recording.tab_storage">Storage</span>
+                <div style="width:40px;"></div>
+            </div>
+
+            <header class="page-header">
+                <h1 class="page-title" data-i18n="recording.tab_storage">Storage</h1>
+                <div class="header-actions">
+                    <div class="header-badge">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        <span id="currentTime">--:--</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Summary tile: free space per volume (storage.js renderVolumes). -->
+            <div class="r-hero st-hero" id="stHero">
+                <span class="r-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></svg></span>
+                <div class="r-hero-text">
+                    <h2 class="r-hero-title" data-i18n="trip.settings.storage_usage">Storage Usage</h2>
+                </div>
+                <div class="r-hero-stats">
+                    <div class="r-hero-stat">
+                        <span class="r-hero-stat-label st-vol-name"><span class="sd-status-dot offline" id="stVolIntDot" aria-hidden="true"></span><span data-i18n="events.storage_internal">Internal</span></span>
+                        <span class="r-hero-stat-value num" id="stVolIntFree">--</span>
+                        <span class="st-vol-total num" id="stVolIntTotal"></span>
+                        <span class="st-vol-bar" id="stVolIntBar" style="display:none;" aria-hidden="true"><span class="st-vol-fill" id="stVolIntFill"></span></span>
+                    </div>
+                    <div class="r-hero-stat">
+                        <span class="r-hero-stat-label st-vol-name"><span class="sd-status-dot offline" id="stVolSdDot" aria-hidden="true"></span><span id="stVolSdText" data-i18n="recording.sd_checking">SD Card: Checking...</span></span>
+                        <span class="r-hero-stat-value num" id="stVolSdFree">--</span>
+                        <span class="st-vol-total num" id="stVolSdTotal"></span>
+                        <span class="st-vol-bar" id="stVolSdBar" style="display:none;" aria-hidden="true"><span class="st-vol-fill" id="stVolSdFill"></span></span>
+                    </div>
+                    <div class="r-hero-stat">
+                        <span class="r-hero-stat-label st-vol-name"><span class="sd-status-dot offline" id="stVolUsbDot" aria-hidden="true"></span><span id="stVolUsbText" data-i18n="recording.usb_checking">USB: Checking...</span></span>
+                        <span class="r-hero-stat-value num" id="stVolUsbFree">--</span>
+                        <span class="st-vol-total num" id="stVolUsbTotal"></span>
+                        <span class="st-vol-bar" id="stVolUsbBar" style="display:none;" aria-hidden="true"><span class="st-vol-fill" id="stVolUsbFill"></span></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page-body">
+                <!-- Surveillance events (from surveillance.html). SD/USB are blocked
+                     while "Keep USB powered" is off: they ride the USB power rail. -->
+                <div class="card" id="survStorageCard">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                            <span data-i18n="surveillance.storage_title">Surveillance Storage</span>
+                            <span class="unsaved-indicator" id="storageUnsaved" data-i18n="surveillance.unsaved">● unsaved</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.settings.storage_location">Storage Location</div>
+                                <div class="setting-desc" data-i18n="surveillance.storage_location_desc">Choose where to save surveillance events</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group" id="survStorageTypeBtns">
+                                    <button class="btn-toggle active" data-value="INTERNAL" onclick="StoragePage.setSurvStorageType('INTERNAL')" data-i18n="trip.settings.storage_internal">Internal</button>
+                                    <button class="btn-toggle" data-value="SD_CARD" onclick="StoragePage.setSurvStorageType('SD_CARD')" id="btnSurvSdCard" data-i18n="trip.settings.storage_sd">SD card</button>
+                                    <button class="btn-toggle" data-value="USB" onclick="StoragePage.setSurvStorageType('USB')" id="btnSurvUsb" data-i18n="trip.settings.storage_usb">USB</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row st-usage-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.storage_usage">Storage Usage</div>
+                                <div class="setting-desc" id="survStoragePath" data-i18n="surveillance.events_saved_to_default">Events saved to Overdrive/surveillance</div>
+                                <!-- The saved SD/USB isn't mounted (often USB power off) or is full, so clips land on internal. -->
+                                <div class="setting-desc storage-fallback-warning" id="survStorageFallbackWarning" style="display:none"></div>
+                            </div>
+                        </div>
+                        <div class="storage-bar">
+                            <div class="storage-fill" id="survStorageFill" style="width: 0%"></div>
+                        </div>
+                        <div class="storage-info">
+                            <span id="survStorageUsed" data-i18n="surveillance.size_used_dash">-- used</span>
+                            <span id="survStorageLimit" data-i18n="surveillance.size_limit_dash">-- limit</span>
+                        </div>
+                        <div class="setting-row st-limit-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="recording.storage_limit">Storage Limit</div>
+                                <div class="setting-desc" data-i18n="recording.storage_limit_desc">Auto-delete oldest when limit reached</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="survLimitValue">500 MB</span>
+                                    <input type="range" class="slider" id="survLimitSlider" min="100" max="100000" step="100" value="500" oninput="StoragePage.updateSurvLimit(this.value)" data-i18n-attr="aria-label:recording.storage_limit" aria-label="Storage Limit">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="slider-range-labels st-range-under">
+                            <span id="survLimitMin" data-i18n="surveillance.limit_min_default">100 MB</span>
+                            <span id="survLimitMax" data-i18n="surveillance.limit_max_default">100 GB</span>
+                        </div>
+                        <!-- Combined-limit advisory (shared/storage-budget.js). -->
+                        <div class="storage-fallback-banner st-banner" id="survBudgetBanner" style="display:none;" role="status" aria-live="polite">
+                            <span class="sd-status-dot st-dot-warn"></span>
+                            <span data-budget-text></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Drive recordings (from recording.html). -->
+                <div class="card" id="recStorageCard">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+                            <span data-i18n="recording.storage_title">Recording Storage</span>
+                            <span class="unsaved-indicator" id="recStorageUnsaved" data-i18n="surveillance.unsaved">● unsaved</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.settings.storage_location">Storage Location</div>
+                                <div class="setting-desc" data-i18n="recording.storage_location_desc">Choose where to save recordings</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group" id="recStorageTypeBtns">
+                                    <button class="btn-toggle active" data-value="INTERNAL" onclick="StoragePage.setRecStorageType('INTERNAL')" data-i18n="trip.settings.storage_internal">Internal</button>
+                                    <button class="btn-toggle" data-value="SD_CARD" onclick="StoragePage.setRecStorageType('SD_CARD')" id="btnRecSdCard" data-i18n="trip.settings.storage_sd">SD card</button>
+                                    <button class="btn-toggle" data-value="USB" onclick="StoragePage.setRecStorageType('USB')" id="btnRecUsb" data-i18n="trip.settings.storage_usb">USB</button>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- The saved SD/USB is unavailable or full, so recordings land on internal. -->
+                        <div class="storage-fallback-banner st-banner" id="recStorageFallbackBanner" style="display:none;" role="status" aria-live="polite">
+                            <span class="sd-status-dot st-dot-warn"></span>
+                            <span id="recStorageFallbackText" data-i18n="recording.storage_fallback_internal">SD/USB unavailable — saving to internal storage</span>
+                        </div>
+                        <div class="setting-row st-usage-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.settings.storage_usage">Storage Usage</div>
+                                <div class="setting-desc" id="recStoragePath" data-i18n="recording.storage_path_default">Recordings saved to Overdrive/recordings</div>
+                            </div>
+                        </div>
+                        <div class="storage-bar">
+                            <div class="storage-fill" id="storageFill" style="width: 0%"></div>
+                        </div>
+                        <div class="storage-info">
+                            <span id="storageUsed">--</span>
+                            <span id="storageLimit">--</span>
+                        </div>
+                        <div class="setting-row st-limit-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="recording.storage_limit">Storage Limit</div>
+                                <div class="setting-desc" data-i18n="recording.storage_limit_desc">Auto-delete oldest when limit reached</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="recLimitValue">500 MB</span>
+                                    <input type="range" class="slider" id="recLimitSlider" min="100" max="100000" step="100" value="500" oninput="StoragePage.updateRecLimit(this.value)" data-i18n-attr="aria-label:recording.storage_limit" aria-label="Storage Limit">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="slider-range-labels st-range-under">
+                            <span id="recLimitMin">100 MB</span>
+                            <span id="recLimitMax">100 GB</span>
+                        </div>
+                        <div class="storage-fallback-banner st-banner" id="recBudgetBanner" style="display:none;" role="status" aria-live="polite">
+                            <span class="sd-status-dot st-dot-warn"></span>
+                            <span data-budget-text></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trip telemetry (from trips.html). -->
+                <div class="card" id="tripStorageCard">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+                            <span data-i18n="trip.settings.trip_storage_title">Trip Storage</span>
+                            <span class="unsaved-indicator" id="tripStorageUnsaved" data-i18n="surveillance.unsaved">● unsaved</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.settings.storage_location">Storage Location</div>
+                                <div class="setting-desc" data-i18n="trip.settings.storage_location_desc">Choose where to save trip telemetry</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group" id="tripStorageTypeBtns">
+                                    <button class="btn-toggle active" data-value="INTERNAL" id="storageInternal" onclick="StoragePage.setTripStorageType('INTERNAL')" data-i18n="trip.settings.storage_internal">Internal</button>
+                                    <button class="btn-toggle" data-value="SD_CARD" id="storageSdCard" onclick="StoragePage.setTripStorageType('SD_CARD')" data-i18n="trip.settings.storage_sd">SD card</button>
+                                    <button class="btn-toggle" data-value="USB" id="storageUsb" onclick="StoragePage.setTripStorageType('USB')" data-i18n="trip.settings.storage_usb">USB</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row st-usage-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.settings.storage_usage">Storage Usage</div>
+                                <div class="setting-desc" id="tripStoragePath" data-i18n="trip.settings.storage_path_default">Telemetry saved to Overdrive/trips</div>
+                            </div>
+                        </div>
+                        <div class="storage-bar">
+                            <div class="storage-fill" id="storageUsageFill" style="width: 0%"></div>
+                        </div>
+                        <div class="storage-info">
+                            <span id="storageUsedText">--</span>
+                            <span id="storageTripsCount">--</span>
+                        </div>
+                        <div class="setting-row st-limit-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.settings.storage_limit">Storage Limit</div>
+                                <div class="setting-desc" data-i18n="trip.settings.storage_limit_desc">Auto-delete oldest when limit reached</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="storageLimitValue">500 MB</span>
+                                    <input type="range" class="slider" id="storageLimitSlider" min="100" max="100000" step="100" value="500" oninput="StoragePage.updateTripLimit(this.value)" data-i18n-attr="aria-label:trip.settings.storage_limit" aria-label="Storage Limit">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="slider-range-labels st-range-under">
+                            <span id="tripLimitMin">100 MB</span>
+                            <span id="tripLimitMax">100 GB</span>
+                        </div>
+                        <div class="storage-fallback-banner st-banner" id="tripBudgetBanner" style="display:none;" role="status" aria-live="polite">
+                            <span class="sd-status-dot st-dot-warn"></span>
+                            <span data-budget-text></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BYD factory dashcam clean-up: SD only, shown while a category uses the SD card.
+                     Saves immediately (toggle, debounced sliders, clean-up). -->
+                <div class="card" id="cdrCleanupCard" style="display:none;">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                            </svg>
+                            <span data-i18n="recording.cdr_title">BYD Dashcam Auto-Cleanup</span>
+                            <span class="status-badge" id="cdrCleanupBadge" data-i18n="status.off">OFF</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="recording.cdr_auto_delete">Auto-Delete Old Dashcam Files</div>
+                                <div class="setting-desc" data-i18n="recording.cdr_auto_delete_desc">Free up SD card space by removing oldest BYD dashcam recordings</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="cdrCleanupEnabled" disabled onchange="StoragePage.toggleCdrCleanup()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Recommend banner (shown only when the API says recommendAutoCleanup). -->
+                        <div class="info-box-warning" id="cdrRecommendBanner" style="display:none;">
+                            <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <div class="info-row" style="color:var(--warning);">
+                                <span class="label" data-i18n="recording.cdr_recommend_label_v2">Recommended</span>
+                                <span class="value" data-i18n="recording.cdr_recommend_text">Overdrive uses SD — enable cleanup to keep space free</span>
+                            </div>
+                        </div>
+                        <div class="info-box" id="cdrInfoBox">
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_path">Dashcam Path</span><span class="value" id="cdrPath">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_usage">Dashcam Usage</span><span class="value" id="cdrUsage">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_files">Files</span><span class="value" id="cdrFileCount">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_protected">Protected</span><span class="value" id="cdrProtected">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_deletable">Deletable</span><span class="value" id="cdrDeletable">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_bg_monitor">Background monitor</span><span class="value" id="cdrMonitoring">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_last_cleanup">Last cleanup</span><span class="value" id="cdrLastCleanup">--</span></div>
+                        </div>
+                        <div class="setting-row" style="margin-top:12px;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="recording.cdr_reserved">Reserved Space for Overdrive</div>
+                                <div class="setting-desc" data-i18n="recording.cdr_reserved_desc">Keep this much free on SD card</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="cdrReservedValue">2 GB</span>
+                                    <input type="range" class="slider" id="cdrReservedSlider" disabled min="100" max="20000" step="100" value="2000" oninput="StoragePage.updateCdrReserved(this.value)" data-i18n-attr="aria-label:recording.cdr_reserved" aria-label="Reserved Space for Overdrive">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="recording.cdr_protect_recent">Protect Recent Files</div>
+                                <div class="setting-desc" data-i18n="recording.cdr_protect_recent_desc">Don't delete dashcam files newer than this</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="cdrProtectedValue">24h</span>
+                                    <input type="range" class="slider" id="cdrProtectedSlider" disabled min="0" max="168" step="12" value="24" oninput="StoragePage.updateCdrProtected(this.value)" data-i18n-attr="aria-label:recording.cdr_protect_recent" aria-label="Protect Recent Files">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="recording.cdr_min_keep">Keep Minimum Files</div>
+                                <div class="setting-desc" data-i18n="recording.cdr_min_keep_desc">Always keep at least this many newest files</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="cdrMinKeepValue">10</span>
+                                    <input type="range" class="slider" id="cdrMinKeepSlider" disabled min="0" max="100" step="5" value="10" oninput="StoragePage.updateCdrMinKeep(this.value)" data-i18n-attr="aria-label:recording.cdr_min_keep" aria-label="Keep Minimum Files">
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn btn-danger" id="cdrCleanupNow" disabled style="width:100%;margin-top:12px;" onclick="StoragePage.triggerCdrCleanup()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            <span data-i18n="recording.cdr_cleanup_now_v2">Clean up now</span>
+                        </button>
+                        <div class="info-box" style="margin-top:12px;">
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_total_freed">Total Freed</span><span class="value" id="cdrTotalFreed">--</span></div>
+                            <div class="info-row"><span class="label" data-i18n="recording.cdr_files_deleted">Files Deleted</span><span class="value" id="cdrTotalDeleted">--</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recover missing trips from telemetry on disk (user-triggered only). -->
+                <div class="card" id="tripRecoverCard">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/><path d="M3 3v5h5"/></svg>
+                            <span data-i18n="trip.recover.title">Recover Missing Trips</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row st-action-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="trip.recover.action">Rebuild from storage</div>
+                                <div class="setting-desc" data-i18n="trip.recover.desc">If trips vanished from your history after an SD card was briefly undetected, this rebuilds them from the telemetry files still on disk. Distance, speed, route and elevation are restored; energy, cost and driving scores aren’t available for recovered trips. Safe to run anytime.</div>
+                            </div>
+                            <div class="setting-control">
+                                <button class="btn btn-secondary" id="tripRecoverBtn" onclick="StoragePage.recoverTrips()" data-i18n="trip.recover.button">Scan &amp; Recover Trips</button>
+                            </div>
+                        </div>
+                        <div id="tripRecoverResult" class="setting-desc st-recover-result" style="display:none;" role="status" aria-live="polite"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Apply: commits staged locations + limits (storage.js applySettings). -->
+        <div class="footer-bar" id="footerBar">
+            <button class="btn btn-primary" id="btnApply" disabled onclick="StoragePage.applySettings()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="common.apply_changes">Apply Changes</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="../shared/auth.js"></script>
+    <script src="../shared/pwa-init.js?v=index1"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/storage-budget.js?v=8"></script>
+    <script src="../shared/settings-hydration.js?v=1"></script>
+    <script src="../shared/storage.js?v=2"></script>
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('sidebarOverlay').classList.toggle('show');
+        }
+        var unlockSettings = function () {
+            if (BYD.utils && BYD.utils.unlockSettingsHydration) {
+                BYD.utils.unlockSettingsHydration();
+            }
+        };
+        var failSettings = function (error) {
+            console.error('Failed to initialize storage settings:', error);
+            unlockSettings();
+            if (BYD.utils && BYD.utils.toast) {
+                BYD.utils.toast(BYD.i18n.t('errors.load_failed'), 'error');
+            }
+        };
+        BYD.i18n.init().then(function () {
+            BYD.core.init();
+            return StoragePage.init();
+        }).then(unlockSettings, failSettings);
+    </script>
+</body>
+</html>

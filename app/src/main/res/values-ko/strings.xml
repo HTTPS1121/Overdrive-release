@@ -432,7 +432,8 @@
     <string name="toast_soh_reset_failed_with_message">재설정 실패: %1$s</string>
     <string name="toast_select_at_least_one_category">적어도 하나의 범주를 선택하세요</string>
     <string name="toast_reset_failed_with_error">재설정 실패: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s 트래픽 모니터...</string>
+    <string name="toast_traffic_monitor_enabling">트래픽 모니터를 활성화하는 중…</string>
+    <string name="toast_traffic_monitor_disabling">트래픽 모니터를 비활성화하는 중…</string>
     <string name="dialog_close">닫기</string>
     <string name="dialog_reset">재설정</string>
     <string name="dialog_delete">삭제</string>
@@ -450,14 +451,15 @@
     <string name="dialog_reset_complete_title">다시 설정 완료</string>
     <string name="dialog_traffic_cannot_check_title">상태 확인 불가능</string>
     <string name="dialog_traffic_cannot_check_message">ADB 연결은 아직 준비되지 않았습니다. 앱은 시스템 패키지를 관리하기 위해 ADB 액세스가 필요합니다. 개발자 옵션에서 USB 디버깅이 활성화되어 있는지 확인하십시오.</string>
-    <string name="dialog_traffic_disable_title">BYD 트래픽 모니터를 비활성화하세요?</string>
-    <string name="dialog_traffic_disable_message">BYD 트래픽 모니터 (com.byd.trafficmonitor) 는 백그라운드에서 도로 교통 상태를 지속적으로 모니터링하는 내장 시스템 응용 프로그램입니다. \n\n️ 왜 비활성화해야합니까?\n\n• 모바일 데이터를 소비합니다 (파크 할 때에도) \n• 배경에서 CPU와 배터리를 사용합니다\n• 별도의 내비게이션 응용 프로그램을 사용하면 필요하지 않습니다\n• 대시캠 네트워크 사용에 방해를 줄 수 있습니다\n\n이 안전하게 비활성화 할 수 있습니다.</string>
-    <string name="dialog_traffic_enable_title">BYD 트래픽 모니터를 다시 활성화하세요?</string>
-    <string name="dialog_traffic_enable_message">BYD 트래픽 모니터는 현재 비활성화되어 있습니다. \n\n 다시 활성화하면 내장된 트래픽 상층을 내비게이션 지도에 복원합니다. 배경에서 실행되고 모바일 데이터를 소비한다는 점에 유의하십시오.\n\n 활성화 후 하드 리부팅이 필요합니다 (중앙 콘솔 버튼을 5 초 동안 유지하십시오).</string>
-    <string name="dialog_traffic_status_title">트래픽 모니터 %1$s</string>
+    <string name="dialog_traffic_disable_title">BYD 트래픽 모니터를 비활성화하시겠습니까?</string>
+    <string name="dialog_traffic_disable_message">BYD 트래픽 모니터(com.byd.trafficmonitor)는 어떤 앱이 모바일 데이터를 사용할 수 있는지 제어하는 내장 시스템 앱입니다. 이 앱은 OverDrive를 포함한 타사 앱이 차량 내장 SIM을 사용하지 못하도록 차단합니다.\n\n왜 비활성화해야 하나요?\n\n• OverDrive 및 설치한 다른 앱이 BYD SIM을 통해 인터넷을 사용할 수 있게 됩니다\n• BYD SIM을 통해 차량에 원격으로 접속하는 데 필요합니다\n\n내비게이션, 블루투스 및 기타 모든 차량 기능은 영향을 받지 않습니다.\n\n비활성화한 후에는 하드 재부팅이 필요합니다(센터 콘솔 버튼을 5초간 길게 누르세요).</string>
+    <string name="dialog_traffic_enable_title">BYD 트래픽 모니터를 다시 활성화하시겠습니까?</string>
+    <string name="dialog_traffic_enable_message">BYD 트래픽 모니터는 현재 비활성화되어 있습니다.\n\n다시 활성화하면 OverDrive 및 기타 타사 앱이 차량 내장 SIM을 사용하지 못하도록 다시 차단되므로 BYD SIM을 통한 원격 접근이 더 이상 작동하지 않습니다.\n\n활성화한 후에는 하드 재부팅이 필요합니다(센터 콘솔 버튼을 5초간 길게 누르세요).</string>
+    <string name="dialog_traffic_status_enabled">트래픽 모니터 활성화됨</string>
+    <string name="dialog_traffic_status_disabled">트래픽 모니터 비활성화됨</string>
     <string name="dialog_traffic_reboot_message">변경 사항이 적용되었습니다. 이제 하드 재부팅을 수행하십시오. 중앙 콘솔 버튼을 5 초 동안 누르십시오.</string>
-    <string name="traffic_monitor_loading">교통 모니터: 확인...</string>
-    <string name="traffic_monitor_tap_to_check">트래픽 모니터 (검색하기 위해 클릭)</string>
+    <string name="traffic_monitor_loading">트래픽 모니터: 확인 중…</string>
+    <string name="traffic_monitor_tap_to_check">트래픽 모니터(탭하여 확인)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">주행 기록</string>
     <string name="reset_label_soc_history">SoC + 12V의 역사</string>
@@ -513,6 +515,10 @@
     <string name="dialog_tailscale_proxy_enable_message">이 라이트는 MQTT를 Tailscale를 통해 연결하여 포트 전송 없이 귀하의 태일넷에서 개인 브로커에 도달할 수 있습니다.\n\n이 활성화되어있는 동안:\n• MQTT는 태일넷 브로커에 작동합니다 (예를 들어, 태일넷의 장치에서 모스키토) \n• MQTT는 공공 브로커에 (HiveMQ, AWS IoT, 등) 실패합니다.</string>
     <string name="dialog_zrok_reset_title">Zrok 환경을 다시 설정</string>
     <string name="dialog_zrok_reset_message">이것은:\n• 실행되는 경우 zrok 터널을 중지합니다\n• 이 장치에서 zrok 환경을 제거합니다\n• 저장된 토큰을 삭제합니다\n\n당신은 다시 토큰을 입력하고 다시 활성화해야합니다. 이것은 zrok.io에서 5 개의 장치 슬롯 중 하나를 사용합니다.\n\n당신은 확실합니까?</string>
+    <string name="dialog_tunnel_conflict_title">다른 터널이 실행 중입니다</string>
+    <string name="dialog_tunnel_conflict_message">%1$s이 이미 실행 중입니다. %2$s로 전환할까요(%1$s은 중지됩니다), 아니면 두 터널을 함께 실행할까요?\n\n두 터널을 모두 실행하면:\n• 두 개의 공개 링크로 대시보드에 접속할 수 있습니다\n• 대기 중 모바일 데이터 사용량이 약간 늘어납니다\n• 재부팅 후 두 터널 모두 자동으로 시작됩니다</string>
+    <string name="dialog_tunnel_conflict_switch">전환</string>
+    <string name="dialog_tunnel_conflict_run_both">모두 실행</string>
     <string name="toast_resetting_zrok">Zrok 환경을 재설정...</string>
     <string name="toast_zrok_reset_success">Zrok 환경 리셋. 다시 설정하기 위해 새로운 토큰을 입력하십시오.</string>
     <string name="toast_zrok_reset_partial">환경 리셋 (토큰 파일은 수동으로 청소가 필요할 수 있습니다)</string>
@@ -573,9 +579,9 @@
     <string name="setup_overlay_already_granted">이미 승인 되었습니다</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">팁 &amp; 문제 해결</string>
-    <string name="setup_traffic_title">BYD 트래픽 모니터를 비활성화</string>
-    <string name="setup_traffic_body">BYD 트래픽 모니터는 인터넷에 접속하는 제3자 앱을 차단합니다. 이를 비활성화하면 OverDrive 및 설치하는 다른 앱이 실제로 네트워크를 사용할 수 있습니다. 이후 하드 리부팅이 필요합니다.</string>
-    <string name="setup_traffic_button">개방형 교통 모니터</string>
+    <string name="setup_traffic_title">BYD 트래픽 모니터 비활성화</string>
+    <string name="setup_traffic_body">BYD 트래픽 모니터는 타사 앱이 인터넷에 접속하지 못하도록 차단합니다. 이를 비활성화하면 OverDrive 및 설치한 다른 모든 앱이 실제로 네트워크를 사용할 수 있습니다. 이후 하드 재부팅이 필요합니다.</string>
+    <string name="setup_traffic_button">트래픽 모니터 열기</string>
     <string name="setup_camera_fix_title">카메라가 검정색이나 틀렸나요?</string>
     <string name="setup_camera_fix_body">카메라 탐사선, 카메라 ID를 0으로 설정하고 저장 버튼을 누르면 카메라 데이몬을 다시 시작하십시오. 피드가 여전히 잘못되면 카메라 ID 1으로 반복하십시오. 지도 섹션을 손상시키지 마십시오.</string>
     <!-- Recording storage path -->
@@ -627,7 +633,7 @@
     <string name="settings_section_appearance">겉모습</string>
     <string name="settings_section_recording">녹음</string>
     <string name="settings_section_surveillance">감시</string>
-    <string name="settings_section_daemons">대몬</string>
+    <string name="settings_section_daemons">데몬</string>
     <string name="settings_section_privacy">개인 정보 보호 &amp; 데이터</string>
     <string name="settings_section_overlay">상태 덮개</string>
     <string name="settings_section_security">보안</string>
@@ -659,6 +665,8 @@
     <string name="settings_about_support_share_value">공유된 모든 링크는 다른 BYD 소유자가 Overdrive를 발견하는 데 도움이 됩니다.</string>
     <string name="settings_about_support_share_message">Overdrive를 확인하세요 — BYD를 위한 오픈소스 감시 및 대시캠: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Overdrive 공유</string>
+    <string name="settings_about_youtube_title">YouTube 구독하기</string>
+    <string name="settings_about_youtube_value">좋아요, 구독, 공유 부탁드려요 — 조회수 하나하나가 Overdrive 에 큰 힘이 됩니다.</string>
     <string name="settings_about_open_link_failed">링크를 열지 못했어요</string>
     <string name="settings_about_open_link_copied">브라우저가 없습니다. URL 복사: %1$s</string>
     <string name="settings_about_support_kofi_title">다음 발매에 연료</string>
@@ -697,7 +705,7 @@
     <string name="recordings_preview_placeholder_body">왼쪽에 있는 모든 항목을 누르면 재생할 수 있습니다.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">ADB 콘솔</string>
-    <string name="diagnostics_section_traffic">교통 모니터</string>
+    <string name="diagnostics_section_traffic">트래픽 모니터</string>
     <string name="diagnostics_section_camera_probe">카메라 탐사선</string>
     <string name="diagnostics_section_battery">배터리 건강</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -813,6 +821,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">전/후 버퍼, 코덱, 저장 제한</string>
     <string name="settings_section_surveillance_subtitle">탐지 구역, 일정, 움직임 감수성</string>
+    <string name="settings_section_storage_subtitle">녹화 저장 위치, 공간 한도, BYD 블랙박스 정리.</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT 러너.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">OverDrive에 대해</string>
@@ -1184,7 +1193,7 @@
     <string name="onboarding_later">나중에 하기</string>
     <string name="onboarding_camera_pano_body">화살표를 사용해 4분할로 합쳐진 이미지를 찾으세요. 아래쪽부터 읽으세요: 왼쪽 아래가 후방, 오른쪽 아래가 왼쪽 측면입니다.</string>
     <string name="onboarding_expert_roadsense_body">RoadSense는 차량의 모션 센서와 GPS를 사용해 요철, 포트홀, 과속방지턱 같은 도로 위험을 감지하고 알려진 위험에 대해 미리 경고합니다. 탭에는 감지, 위험 지도, 경고음, 사각지대가 있습니다. 이 중 무엇이든 사용하려면 마스터 스위치를 켜세요.</string>
-    <string name="onboarding_expert_traffic_title">트래픽 모니터 — 원격 접속에 필요</string>
+    <string name="onboarding_expert_traffic_title">트래픽 모니터 — 원격 접근에 필요</string>
     <string name="onboarding_expert_daemons_body">이 스위치들은 백그라운드 서비스를 시작하고 중지합니다. 카메라, 감시 또는 ACC Sentry를 끄면 녹화가 중지되고, 다시 켤 때까지 — 재시작 후에도 — 꺼진 상태로 유지됩니다.</string>
     <string name="onboarding_camera_verify_repick">다시 선택</string>
     <string name="onboarding_dash_chips_body">상단의 칩은 녹화, 서비스, 원격 연결 상태를 표시합니다. 자동으로 업데이트되며 버튼이 아닙니다.</string>
@@ -1328,6 +1337,10 @@
     <string name="projection_autostart_conflict_confirm">이 앱 사용</string>
     <string name="projection_app_uninstalled">해당 앱이 더 이상 설치되어 있지 않습니다.</string>
     <string name="projection_status_service_down">미러 서비스가 준비되지 않았습니다 — 앱(또는 카메라 데몬)을 다시 시작한 후 다시 시도하세요.</string>
+    <string name="projection_status_connecting">계기판에 연결하는 중…</string>
+    <string name="projection_status_mirror_unavailable">미러를 사용할 수 없음</string>
+    <string name="projection_fullscreen_enter">전체 화면</string>
+    <string name="projection_fullscreen_exit">전체 화면 종료</string>
     <string name="dashboard_modern_vehicle_status">차량 상태</string>
     <string name="vehicle_dialog_detection">감지: %1$s</string>
     <string name="vehicle_dialog_detection_auto">자동</string>
@@ -1339,4 +1352,17 @@
     <string name="rail_section_automation">자동화</string>
     <string name="rail_section_system">시스템</string>
     <string name="rail_collapse_label">접기</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">듣는 중…</string>
+    <string name="voice_overlay_thinking">생각 중…</string>
+    <string name="voice_overlay_speaking">말하는 중…</string>
+    <string name="voice_overlay_done">완료</string>
+    <string name="voice_overlay_cancelled">취소됨</string>
+    <string name="voice_overlay_not_understood">죄송해요, 잘 못 알아들었어요</string>
+    <string name="voice_overlay_offline">AI 비서를 사용할 수 없습니다</string>
+    <string name="voice_overlay_busy">비서가 이미 사용 중입니다</string>
+    <string name="voice_overlay_blocked_moving">주행 중에는 사용할 수 없습니다</string>
+    <string name="voice_overlay_refused">음성으로는 할 수 없는 작업입니다</string>
+    <string name="voice_overlay_failed">완료하지 못했습니다</string>
 </resources>

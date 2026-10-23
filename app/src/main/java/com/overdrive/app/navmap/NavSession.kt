@@ -1,5 +1,6 @@
 package com.overdrive.app.navmap
 
+import com.overdrive.app.navmap.nav.CongestionSpan
 import com.overdrive.app.navmap.nav.NavRoute
 
 /**
@@ -67,9 +68,45 @@ object NavSession {
     }
 
     private fun update(next: State) {
+        if (next.route == null || traffic?.route !== next.route) traffic = null
         state = next
         for (l in listeners) {
             try { l.onNavStateChanged(next) } catch (_: Throwable) {}
+        }
+    }
+
+    /** Latest live-traffic refresh for the active route; separate from [State] so a refresh never re-arms guidance. */
+    data class Traffic(
+        val route: NavRoute,
+        val spans: List<CongestionSpan>,
+        val remainingEtaSeconds: Double,
+        /** SystemClock.elapsedRealtime() of the refresh, so a late subscriber can age the ETA. */
+        val atMs: Long
+    )
+
+    fun interface TrafficListener {
+        fun onTrafficChanged(traffic: Traffic)
+    }
+
+    @Volatile
+    var traffic: Traffic? = null
+        private set
+
+    private val trafficListeners = java.util.concurrent.CopyOnWriteArrayList<TrafficListener>()
+
+    fun addTrafficListener(l: TrafficListener): TrafficListener {
+        trafficListeners.add(l)
+        traffic?.let { t -> try { l.onTrafficChanged(t) } catch (_: Throwable) {} }
+        return l
+    }
+
+    fun removeTrafficListener(l: TrafficListener?) { if (l != null) trafficListeners.remove(l) }
+
+    fun publishTraffic(route: NavRoute, spans: List<CongestionSpan>, remainingEtaSeconds: Double) {
+        val next = Traffic(route, spans, remainingEtaSeconds, android.os.SystemClock.elapsedRealtime())
+        traffic = next
+        for (l in trafficListeners) {
+            try { l.onTrafficChanged(next) } catch (_: Throwable) {}
         }
     }
 }

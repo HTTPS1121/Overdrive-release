@@ -33,15 +33,15 @@ enum class DaemonType(
      */
     val sentinelPath: String
 ) {
-    CAMERA_DAEMON("Camera Daemon", "byd_cam_daemon", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/camera_daemon.disabled")),
-    SENTRY_DAEMON("Sentry Daemon", "sentry_daemon", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/sentry_daemon.disabled")),
-    ACC_SENTRY_DAEMON("ACC Sentry", "acc_sentry_daemon", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.disabled")),
-    SINGBOX_PROXY("Sing-box Proxy", "sing-box", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/singbox.disabled")),
-    CLOUDFLARED_TUNNEL("Cloudflared Tunnel", "cloudflared", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cloudflared.disabled")),
-    ZROK_TUNNEL("Zrok Tunnel", "zrok", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok.disabled")),
-    TAILSCALE_TUNNEL("Tailscale Tunnel", "tailscaled", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/tailscale.disabled")),
-    WIREGUARD_TUNNEL("WireGuard Tunnel", "wgproxy", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/wireguard.disabled")),
-    TELEGRAM_DAEMON("Telegram Bot", "telegram_bot_daemon", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegram_bot_daemon.disabled"))
+    CAMERA_DAEMON("Camera Daemon", "byd_cam_daemon", com.overdrive.app.util.ScratchRoot.path("camera_daemon.disabled")),
+    SENTRY_DAEMON("Sentry Daemon", "sentry_daemon", com.overdrive.app.util.ScratchRoot.path("sentry_daemon.disabled")),
+    ACC_SENTRY_DAEMON("ACC Sentry", "acc_sentry_daemon", com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.disabled")),
+    SINGBOX_PROXY("Sing-box Proxy", "sing-box", com.overdrive.app.util.ScratchRoot.path("singbox.disabled")),
+    CLOUDFLARED_TUNNEL("Cloudflared Tunnel", "cloudflared", com.overdrive.app.util.ScratchRoot.path("cloudflared.disabled")),
+    ZROK_TUNNEL("Zrok Tunnel", "zrok", com.overdrive.app.util.ScratchRoot.path("zrok.disabled")),
+    TAILSCALE_TUNNEL("Tailscale Tunnel", "tailscaled", com.overdrive.app.util.ScratchRoot.path("tailscale.disabled")),
+    WIREGUARD_TUNNEL("WireGuard Tunnel", "wgproxy", com.overdrive.app.util.ScratchRoot.path("wireguard.disabled")),
+    TELEGRAM_DAEMON("Telegram Bot", "telegram_bot_daemon", com.overdrive.app.util.ScratchRoot.path("telegram_bot_daemon.disabled"))
 }
 
 /**
@@ -69,7 +69,12 @@ enum class DaemonType(
  * can both read it; contents = epoch millis of park (diagnostic only).
  */
 object ParkedShutdown {
-    @JvmField val MARKER_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_parked_shutdown")
+    // @JvmField (not a getter) so the fifteen Java call sites keep reading
+    // ParkedShutdown.MARKER_PATH. Resolved once at object init, which in the
+    // app happens after ScratchRoot.bootstrap and in daemons after the
+    // environment is set; a toggle flip restarts the app process anyway.
+    @JvmField
+    val MARKER_PATH: String = com.overdrive.app.util.ScratchRoot.path("overdrive_parked_shutdown")
 
     /**
      * Park-END breadcrumb, written (epoch millis, `chmod 666`) by acc_sentry_daemon at
@@ -81,7 +86,24 @@ object ParkedShutdown {
      * due. Consumed by epoch value, so a stale breadcrumb can never trigger twice; the
      * park reaper removes it when it plants the next marker.
      */
-    @JvmField val ENDED_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_parked_shutdown.ended")
+    @JvmField
+    val ENDED_PATH: String = com.overdrive.app.util.ScratchRoot.path("overdrive_parked_shutdown.ended")
+
+    /**
+     * Low-battery cutoff latch (epoch millis), written by SocCutoffMonitor. While set, the rest
+     * of that park runs as "Vehicle ON only"; acc_sentry_daemon erases it on a definitive ACC-on.
+     */
+    @JvmField
+    val SOC_CUTOFF_PATH: String = com.overdrive.app.util.ScratchRoot.path("overdrive_soc_cutoff")
+
+    /** Ignored while the ACC judge is user-disabled, since nothing could end the park. */
+    @JvmStatic
+    fun isSocCutoffLatched(): Boolean = try {
+        java.io.File(SOC_CUTOFF_PATH).isFile &&
+            !java.io.File(DaemonType.ACC_SENTRY_DAEMON.sentinelPath).isFile
+    } catch (t: Throwable) {
+        false
+    }
 }
 
 fun DaemonType.localizedName(context: Context): String = context.getString(when (this) {

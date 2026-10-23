@@ -54,8 +54,18 @@ public class PinManager {
     private static final String KEY_FAILED_ATTEMPTS = "failedAttempts";
     private static final String KEY_LOCKOUT_UNTIL = "lockoutUntilMs";
 
-    private static final String RESET_FLAG_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.overdrive_pin_reset");
+    private static final String RESET_FLAG_FILE = com.overdrive.app.util.ScratchRoot.path(".overdrive_pin_reset");
     private static final String KEY_LAST_RECOVERY_APPLIED = "lastRecoveryAppliedMs";
+
+    /**
+     * The exact recovery command shown to a locked-out owner. Built from the
+     * live flag path so a head unit on the alternate scratch root shows the
+     * folder its shell can actually write; identical to the
+     * {@code settings_security_recovery_command} resource everywhere else.
+     */
+    public static String recoveryCommand() {
+        return "adb shell touch " + RESET_FLAG_FILE;
+    }
 
     private static final int DEFAULT_ITERATIONS = 120_000;
     private static final int SALT_BYTES = 32;

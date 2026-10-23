@@ -177,7 +177,7 @@ public final class ThumbnailBuffer {
      * filter applies: the bbox lives in the crop space the actor was detected in
      * (mosaic 320×240 identity, or foveated 640×640 whose affine folds in scale,
      * crop-window origin, per-role flip and APA inset), and the mask lives on the
-     * 320×240 / 10×7 block grid. A mirrored role yields a negative scale, so
+     * 320×240 motion grid. A mirrored role yields a negative scale, so
      * corners are normalised with min/max after mapping.
      *
      * <p>Returns TRUE (live) on any degenerate input — a zero-area bbox, a short
@@ -203,20 +203,15 @@ public final class ThumbnailBuffer {
             int bxPx = (bi % MotionPipelineV2.GRID_COLS) * blockPx;
             int byPx = (bi / MotionPipelineV2.GRID_COLS) * blockPx;
             if (left < bxPx + blockPx && right > bxPx
-                    && top < byPx + blockPx && bottom > byPx) {
+                    && top < MotionGridGeometry.rowBottom(bi / MotionPipelineV2.GRID_COLS)
+                    && bottom > byPx) {
                 return true;
             }
         }
 
-        // UNMAPPED BOTTOM BAND. The grid is GRID_ROWS(7) × BLOCK_SIZE(32) = 224 px
-        // tall but a quadrant is 240 px, so the bottom 16 px — the strip CLOSEST to
-        // the car — has no blocks at all and can never report motion. A bbox
-        // reaching into that band therefore cannot be proven still, so return
-        // "live" rather than letting an unmeasurable region masquerade as zero
-        // coverage. Rare (the object would have to sit almost entirely in 16 px)
-        // but it is exactly the closest-range case, where a false-static verdict is
-        // least acceptable.
-        if (bottom > MotionPipelineV2.GRID_ROWS * blockPx) return true;
+        // Preserve the conservative closest-band hero policy, including on
+        // legacy native libraries that do not measure these pixels.
+        if (bottom > MotionGridGeometry.LEGACY_COVERED_HEIGHT) return true;
 
         return false;
     }
@@ -311,7 +306,7 @@ public final class ThumbnailBuffer {
      * pipeline's per-block confidence mask for THIS frame, enabling
      * motion-grounded staticness for hero ranking.
      *
-     * @param blockConf per-block confidence over the 320×240 / 10×7 grid, or
+     * @param blockConf per-block confidence over the 320×240 grid, or
      *                  {@code null} when unavailable — null FAILS OPEN (all
      *                  actors treated as live, never demoted).
      * @param mapAx     affine mapping crop-space X → block-grid X (scale)

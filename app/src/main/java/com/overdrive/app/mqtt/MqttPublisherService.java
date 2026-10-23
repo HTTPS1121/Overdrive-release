@@ -25,7 +25,8 @@ import java.util.Set;
  * JSON payloads to the configured topic.
  *
  * Proxy-aware: uses ProxyHelper to route through sing-box when available.
- * Reconnection: automatic with exponential backoff (5s → 10s → 20s → ... → 300s).
+ * Reconnection: exponential backoff from 5s, capped at 60s for network failures and 300s for
+ * broker refusals; a change in the car's network retries at once.
  *
  * Thread safety: all public methods are synchronized on the instance.
  */
@@ -42,6 +43,8 @@ public class MqttPublisherService implements MqttCallback {
     // Backoff constants
     private static final int BACKOFF_BASE_SECONDS = 5;
     private static final int BACKOFF_CAP_SECONDS = 300;
+    // No route / DNS / timeout retries cost no data; only broker refusals earn the long cap.
+    private static final int BACKOFF_NETWORK_CAP_SECONDS = 60;
 
     // How long to wait for an enabled-but-not-yet-up Tailscale proxy before falling back to a
     // direct dial. Covers the boot window (tailscaled still binding) without permanently refusing
@@ -80,6 +83,11 @@ public class MqttPublisherService implements MqttCallback {
     // logged this warm-up so the health loop doesn't spam an identical warning every cycle.
     private volatile long proxyWaitStartMs = 0L;
     private volatile boolean loggedProxyWait = false;
+    // Reconnect pacing (see reconnectIfDue), on System.nanoTime so a wall-clock jump can't stall it.
+    // lastAttemptNetwork is guarded by the instance lock.
+    private volatile long nextRetryAtNanos = System.nanoTime();
+    private volatile boolean lastFailureRefused = false;
+    private String lastAttemptNetwork = null;
 
     // Change detection (report-by-exception) + Home Assistant discovery state.
     // TelemetryDiffer is documented single-thread-owned: ALL access to it must
@@ -153,7 +161,7 @@ public class MqttPublisherService implements MqttCallback {
         // instant the proxy binds. Bounded by PROXY_WARMUP_GRACE_MS so a genuinely dead proxy can't
         // permanently refuse a directly-reachable broker: after the grace window we fall through and
         // try a direct dial as a last resort.
-        if (ProxyHelper.isProxyExpected() && !ProxyHelper.isProxyAvailable()) {
+        if (ProxyHelper.isMqttProxyExpected() && !ProxyHelper.isProxyAvailable()) {
             long now = System.currentTimeMillis();
             if (proxyWaitStartMs == 0L) proxyWaitStartMs = now;
             long waitedMs = now - proxyWaitStartMs;
@@ -284,9 +292,9 @@ public class MqttPublisherService implements MqttCallback {
 
             // Props-sensitive connects hold SOCKS_PROPS_LOCK from the property mutation
             // through socket creation (inside connect()) so concurrent connects on other
-            // scheduler threads can't set/clear the props mid-window. The props are left
-            // in their asserted state after connect returns — same as before — because an
-            // established socket no longer reads them; only the creation window matters.
+            // scheduler threads can't set/clear the props mid-window. Only socket creation
+            // reads them, so they are cleared as soon as connect returns: left set, they
+            // would tunnel every other default-factory socket in the daemon.
             // Factory-proxied connects (neither flag) skip the lock entirely, so this
             // serializes connect attempts only when the global props are actually in play.
             if (setSocksProps || clearSocksProps) {
@@ -298,7 +306,12 @@ public class MqttPublisherService implements MqttCallback {
                         System.clearProperty("socksProxyHost");
                         System.clearProperty("socksProxyPort");
                     }
-                    newClient.connect(options);
+                    try {
+                        newClient.connect(options);
+                    } finally {
+                        System.clearProperty("socksProxyHost");
+                        System.clearProperty("socksProxyPort");
+                    }
                 }
             } else {
                 newClient.connect(options);
@@ -307,7 +320,11 @@ public class MqttPublisherService implements MqttCallback {
             connected = true;
             running = true;
             consecutiveFailures = 0;
+            nextRetryAtNanos = System.nanoTime();
+            lastFailureRefused = false;
             lastError = null;
+            // QoS 0 publishes made just before a drop "succeed" into the dead socket: resync all.
+            forceFullResend = true;
 
             // Publish "online" availability immediately after successful connect.
             // This pairs with the LWT "offline" — consumers can subscribe to
@@ -358,6 +375,8 @@ public class MqttPublisherService implements MqttCallback {
         } catch (MqttException e) {
             connected = false;
             consecutiveFailures++;
+            lastFailureRefused = isBrokerRefusal(e);
+            nextRetryAtNanos = System.nanoTime() + getBackoffSeconds() * 1_000_000_000L;
 
             // Paho's error 32103 (SERVER_CONNECT_ERROR) is a black hole — it hides the
             // real cause (SSL cert rejection, socket timeout, etc.) behind a generic message.
@@ -378,6 +397,8 @@ public class MqttPublisherService implements MqttCallback {
             // Catch ExceptionInInitializerError (Paho logging class not found) and any other errors
             connected = false;
             consecutiveFailures++;
+            lastFailureRefused = true;
+            nextRetryAtNanos = System.nanoTime() + getBackoffSeconds() * 1_000_000_000L;
             lastError = "Connect error: " + t.getClass().getSimpleName() + ": " + t.getMessage();
             if (t.getCause() != null) {
                 lastError += " (caused by: " + t.getCause().getMessage() + ")";
@@ -431,13 +452,8 @@ public class MqttPublisherService implements MqttCallback {
             }
         }
 
-        // NOTE: the JVM-level socksProxyHost/Port properties are process-global and
-        // shared by every connection (all route through the same sing-box). We must
-        // NOT clear them here — a sibling WS+proxy connection may still be relying on
-        // them, and one connection's disconnect would silently break the others'
-        // sockets. connect() re-asserts or clears them authoritatively from the
-        // current (global) proxy state on each (re)connect, and the manager clears
-        // them once on full shutdown (stopAll). See MqttConnectionManager.stopAll().
+        // The JVM-level socksProxyHost/Port properties live only inside connect()'s
+        // SOCKS_PROPS_LOCK window, so there is nothing to clear here.
 
         logger.info("Disconnected from " + config.name + " (" + config.getBrokerUri() + ")");
     }
@@ -573,6 +589,10 @@ public class MqttPublisherService implements MqttCallback {
                     && (sendAll || changed.contains("lat") || changed.contains("lon"))) {
                 publishLocation(snapshot);
             }
+            // Re-assert the link so a stale "offline" (late will, sibling connection) can't linger.
+            if (ok && (first || heartbeat)) {
+                publishString(config.topic + "/availability", "online", true, config.qos);
+            }
             if (ok) {
                 differ.markKeysSent(snapshot, keys, now);
                 if (sendAll) differ.markFullSync(now);
@@ -655,7 +675,74 @@ public class MqttPublisherService implements MqttCallback {
     private boolean ensureConnected() {
         if (!running) return false;
         if (connected && client != null && client.isConnected()) return true;
+        return reconnectIfDue();
+    }
+
+    /**
+     * Reconnect unless still backing off on the same network. After a network-path failure, a
+     * changed network (WiFi↔cellular, a new mobile address) retries at once on a fresh ramp; a
+     * broker refusal keeps its ramp, since a new network can't fix credentials.
+     */
+    private boolean reconnectIfDue() {
+        String network = networkFingerprint();
+        boolean networkChanged = !lastFailureRefused && network != null
+                && lastAttemptNetwork != null && !network.equals(lastAttemptNetwork);
+        if (!networkChanged && System.nanoTime() - nextRetryAtNanos < 0) return false;
+        if (networkChanged) {
+            logger.info("Network changed — reconnecting now");
+            consecutiveFailures = 0;
+        }
+        if (network != null) lastAttemptNetwork = network;
         return connect();
+    }
+
+    /**
+     * Addresses of every up, non-loopback interface plus the source address the kernel picks for
+     * outbound traffic (a default-route flip between two live interfaces changes only that).
+     * null when unreadable, which never counts as a change.
+     */
+    static String networkFingerprint() {
+        try {
+            java.util.TreeSet<String> addrs = new java.util.TreeSet<>();
+            java.util.Enumeration<java.net.NetworkInterface> ifaces =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            if (ifaces != null) {
+                for (java.net.NetworkInterface nif : java.util.Collections.list(ifaces)) {
+                    if (!nif.isUp() || nif.isLoopback()) continue;
+                    for (java.net.InetAddress a : java.util.Collections.list(nif.getInetAddresses())) {
+                        if (!a.isLinkLocalAddress()) addrs.add(nif.getName() + "/" + a.getHostAddress());
+                    }
+                }
+            }
+            String egress = "-";
+            // UDP connect only selects a route; nothing is sent.
+            try (java.net.DatagramSocket probe = new java.net.DatagramSocket()) {
+                probe.connect(java.net.InetAddress.getByAddress(new byte[] {8, 8, 8, 8}), 53);
+                java.net.InetAddress local = probe.getLocalAddress();
+                if (local != null) egress = local.getHostAddress();
+            } catch (Throwable ignored) {}
+            return addrs + " via " + egress;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** The broker answered and refused us (CONNACK refusal, TLS trust), not a network-path failure. */
+    private static boolean isBrokerRefusal(MqttException e) {
+        int code = e.getReasonCode();
+        if (code >= MqttException.REASON_CODE_INVALID_PROTOCOL_VERSION
+                && code <= MqttException.REASON_CODE_NOT_AUTHORIZED) {
+            return true;
+        }
+        Throwable t = e.getCause();
+        for (int depth = 0; t != null && depth < 8; depth++, t = t.getCause()) {
+            if (t instanceof java.security.cert.CertificateException
+                    || t instanceof java.security.cert.CertPathValidatorException
+                    || t instanceof javax.net.ssl.SSLPeerUnverifiedException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -674,9 +761,8 @@ public class MqttPublisherService implements MqttCallback {
      * Paho's keep-alive (30s) flips {@code client.isConnected()} to false / fires
      * {@code connectionLost} within ~keep-alive seconds of a real drop. Polling
      * that here lets the scheduler reconnect promptly instead of waiting for the
-     * next heartbeat. A failed reconnect leaves {@code consecutiveFailures}
-     * incremented (by {@link #connect}), so the scheduler's backoff spaces out
-     * retries rather than hammering a dead broker every cycle.
+     * next heartbeat. Retries are paced by {@link #reconnectIfDue}, so a cheap
+     * per-cycle call never hammers a dead broker.
      *
      * @return true if connected (already, or after a successful reconnect)
      */
@@ -687,7 +773,7 @@ public class MqttPublisherService implements MqttCallback {
             return true;
         }
         connected = false;
-        return connect();
+        return reconnectIfDue();
     }
 
     private Set<String> discoverableKeys(JSONObject snap) {
@@ -877,7 +963,8 @@ public class MqttPublisherService implements MqttCallback {
             String channel = topic.substring(autoPrefix.length());
             String payload = new String(message.getPayload());
             try {
-                com.overdrive.app.automation.Automations.publishMqttTrigger(channel, payload);
+                com.overdrive.app.automation.Automations.publishMqttTrigger(channel, payload,
+                        message.isRetained());
             } catch (Throwable t) {
                 logger.warn("Inbound MQTT automation trigger failed: " + t.getMessage());
             }
@@ -893,8 +980,8 @@ public class MqttPublisherService implements MqttCallback {
             // reconnect — and this connection reconnects at each network handoff /
             // proxy flap. A retained "OPEN" on <base>/tailgate/set would physically
             // open the tailgate after every reconnect. The automation branch above
-            // survives retained replay via delivered-value dedup; vehicle control has
-            // no such idempotence, so drop retained messages outright. Live commands
+            // stores a retained replay without firing; vehicle control has no such
+            // store-only mode, so drop retained messages outright. Live commands
             // (retained=false) are unaffected.
             if (message.isRetained()) {
                 logger.warn("Ignoring RETAINED control command on " + topic
@@ -988,7 +1075,7 @@ public class MqttPublisherService implements MqttCallback {
     public long getBackoffSeconds() {
         if (consecutiveFailures <= 0) return 0;
         long backoff = BACKOFF_BASE_SECONDS * (1L << Math.min(consecutiveFailures - 1, 10));
-        return Math.min(backoff, BACKOFF_CAP_SECONDS);
+        return Math.min(backoff, lastFailureRefused ? BACKOFF_CAP_SECONDS : BACKOFF_NETWORK_CAP_SECONDS);
     }
 
     // ==================== DIAGNOSTICS ====================

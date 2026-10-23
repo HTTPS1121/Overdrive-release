@@ -32,8 +32,10 @@ import org.json.JSONObject;
  */
 public final class Di5KeepAliveOwnershipMarker {
 
-    public static final String DEFAULT_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_di5_keepalive.owner");
+    public static final String DEFAULT_PATH = com.overdrive.app.util.ScratchRoot.path("overdrive_di5_keepalive.owner");
 
+    /** Local parked hold, released only for a deliberate parked-session exit. */
+    public static final String LEVER_PARKED_LINK = "parkedlink";
     public static final String LEVER_MCU = "mcu";
     /** BYDAutoPowerDevice MCU power hold (-1442840502←1); released with 0 only when recorded. */
     public static final String LEVER_MCU_POWER = "mcupower";
@@ -55,7 +57,7 @@ public final class Di5KeepAliveOwnershipMarker {
         }
 
         public boolean has(String lever) {
-            return levers.contains(lever);
+            return levers.contains(canonicalLever(lever));
         }
 
         public JSONObject toJson() {
@@ -96,7 +98,12 @@ public final class Di5KeepAliveOwnershipMarker {
      * HAL writes, because a later hygiene pass would have no record of them.
      */
     public boolean record(long generation, List<String> levers, long nowMs, int pid) {
-        Record r = new Record(generation, levers, nowMs, pid);
+        List<String> canonical = new ArrayList<>();
+        for (String lever : levers) {
+            String normalized = canonicalLever(lever);
+            if (!canonical.contains(normalized)) canonical.add(normalized);
+        }
+        Record r = new Record(generation, canonical, nowMs, pid);
         byte[] bytes = r.toJson().toString().getBytes(StandardCharsets.UTF_8);
         File dir = file.getAbsoluteFile().getParentFile();
         if (dir != null && !dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory()) {
@@ -122,7 +129,8 @@ public final class Di5KeepAliveOwnershipMarker {
             // did not land must be reported as a failure, not assumed.
             Record back = read();
             return back != null && back.generation == generation
-                    && back.levers.containsAll(levers) && levers.containsAll(back.levers);
+                    && back.levers.containsAll(canonical)
+                    && canonical.containsAll(back.levers);
         } catch (Throwable t) {
             try { tmp.delete(); } catch (Throwable ignored) {}
             return false;
@@ -142,7 +150,9 @@ public final class Di5KeepAliveOwnershipMarker {
             if (arr != null) {
                 for (int i = 0; i < arr.length(); i++) {
                     String lever = arr.optString(i, "").trim().toLowerCase(Locale.ROOT);
-                    if (lever.equals(LEVER_MCU) || lever.equals(LEVER_MCU_POWER)
+                    lever = canonicalLever(lever);
+                    if (lever.equals(LEVER_PARKED_LINK)
+                            || lever.equals(LEVER_MCU) || lever.equals(LEVER_MCU_POWER)
                             || lever.equals(LEVER_CAMERA) || lever.equals(LEVER_AP)) {
                         if (!levers.contains(lever)) levers.add(lever);
                     }
@@ -152,6 +162,11 @@ public final class Di5KeepAliveOwnershipMarker {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    private static String canonicalLever(String lever) {
+        return ParkedLinkContract.LEGACY_MARKER_LEVER.equals(lever)
+                ? LEVER_PARKED_LINK : lever;
     }
 
     /** Remove the marker. True when it is gone afterwards (absent counts). */

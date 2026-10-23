@@ -35,6 +35,9 @@ BYD.AUTOMATION_CATEGORY_ORDER = [
 const MAX_ACTION_DEPTH_FALLBACK = 8;
 
 const triggerIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>';
+const runSpinIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="run-spin" d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>';
+const runDoneIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="run-check" d="M20 6 9 17l-5-5"/></svg>';
+const runFailIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 const copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 const editIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
 const deleteIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
@@ -42,6 +45,68 @@ const infoIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 // Reorder arrows for multi-row sections (move a step up / down in the chain).
 const moveUpIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>';
 const moveDownIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+
+// Block-builder look (presentational only): one stroke icon per step kind, and the hue key
+// a block / step paints with (data-section / data-step-cat → var(--auto-<key>) in CSS).
+const AUTO_ICON_PATHS = {
+    'when': '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+    'if': '<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+    'wait': '<path d="M5 22h14M5 2h14M17 22v-4.17a2 2 0 0 0-.59-1.41L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.41L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/>',
+    'then': '<path d="M7 4v16l13-8z"/>',
+    'else': '<path d="M15 10l5 5-5 5M4 4v7a4 4 0 0 0 4 4h12"/>',
+    'loop': '<path d="m17 2 4 4-4 4M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v1a4 4 0 0 1-4 4H3"/>',
+    'pause': '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>',
+    'var': '<path d="M8 21s-4-3-4-9 4-9 4-9M16 3s4 3 4 9-4 9-4 9M15 9l-6 6M9 9l6 6"/>',
+    'group': '<path d="m12 2 10 5-10 5L2 7zM2 17l10 5 10-5M2 12l10 5 10-5"/>',
+    'vehicle': '<path d="M5 17H3v-5l2.2-5.1A2 2 0 0 1 7 5.7h10a2 2 0 0 1 1.8 1.2L21 12v5h-2M3 12h18M9.5 17h5"/><circle cx="7.5" cy="17" r="2"/><circle cx="16.5" cy="17" r="2"/>',
+    'climate': '<path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/>',
+    'body': '<path d="M3 21h18M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16M14 12h.01"/>',
+    'light': '<path d="M9 18h6M10 22h4M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/>',
+    'safety': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM12 8v4M12 16h.01"/>',
+    'drive': '<path d="m12 14 4-4M3.34 19a10 10 0 1 1 17.32 0"/>',
+    'media': '<path d="M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>',
+    'display': '<path d="M2 3h20v14H2zM8 21h8M12 17v4"/>',
+    'system': '<path d="M2 4h20v16H2zM2 8h20M6 6h.01M9 6h.01"/>',
+    'surv': '<path d="M23 7l-7 5 7 5V7zM1 5h15v14H1z"/>',
+    'adv': '<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>',
+    'sensor': '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+    'other': '<circle cx="12" cy="12" r="10"/><path d="M12 12h.01"/>',
+    'bell': '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>'
+};
+const AUTO_CATEGORY_HUES = {
+    'vehicle': 'vehicle', 'climate': 'climate', 'windows_body': 'body', 'lighting': 'light',
+    'adas_safety': 'safety', 'drive': 'drive', 'media': 'media', 'displays': 'display',
+    'system': 'system', 'surveillance': 'surv', 'advanced': 'adv', 'sensors': 'sensor', 'other': 'other'
+};
+const AUTO_FLOW_HUES = {
+    'if': 'if', 'loop': 'loop', 'pause': 'wait', 'waitUntil': 'wait', 'waitUntilState': 'wait',
+    'setVariable': 'var', 'incrementVariable': 'var', 'computeVariable': 'var', 'captureVariable': 'var',
+    'variable': 'var', 'actionGroup': 'group', 'automationControl': 'group'
+};
+const AUTO_SECTION_HUES = { 'triggers': 'when', 'conditions': 'if', 'delay': 'wait', 'actions': 'then', 'elseActions': 'else' };
+const AUTO_BRANCH_HUES = { 'automation.then_actions': 'then', 'automation.else_actions': 'else', 'automation.loop_body': 'loop' };
+const AUTO_BELL_IDS = { 'notification': 'bell', 'showToast': 'bell', 'showDialog': 'bell' };
+
+function autoPick(map, key) {
+    return (key != null && Object.prototype.hasOwnProperty.call(map, key)) ? map[key] : null;
+}
+// Hue key for a schema option: flow actions by id, everything else by category.
+function autoStepHue(option) {
+    if (!option) return 'other';
+    if (option.category === 'flow') return autoPick(AUTO_FLOW_HUES, option.id) || 'other';
+    return autoPick(AUTO_CATEGORY_HUES, option.category) || 'other';
+}
+function autoStepIconKey(option, hue) {
+    if (option && option.id === 'pause') return 'pause';
+    return (option && autoPick(AUTO_BELL_IDS, option.id)) || hue;
+}
+function autoSectionHue(sectionId) {
+    return autoPick(AUTO_SECTION_HUES, sectionId) || 'other';
+}
+function autoIconSvg(key) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+        + (autoPick(AUTO_ICON_PATHS, key) || AUTO_ICON_PATHS.other) + '</svg>';
+}
 
 // Automation ids and the schema section ids are user / server supplied. They
 // are safe to interpolate into text, but NOT into class names (a leading
@@ -581,8 +646,8 @@ BYD.automations = {
         automationDiv.append(automationHeader);
 
         const automationInfo = document.createElement('div');
-        automationInfo.classList.add(token + '-info', 'info');
-        automationInfo.innerHTML = this.buildAutomationText(automation);
+        automationInfo.classList.add(token + '-info', 'info', 'recipe-info');
+        automationInfo.innerHTML = this.buildAutomationText(automation, { recipe: true });
         automationHeader.append(automationInfo);
 
         const automationActions = document.createElement('div');
@@ -590,10 +655,11 @@ BYD.automations = {
         automationHeader.append(automationActions);
 
         const triggerBtn = document.createElement('button');
-        triggerBtn.classList.add(token + '-action', 'action', 'icon-btn');
+        triggerBtn.classList.add(token + '-action', 'action', 'icon-btn', 'run-btn');
         triggerBtn.title = BYD.i18n.t('automation.trigger');
+        triggerBtn.setAttribute('aria-label', BYD.i18n.t('automation.trigger'));
         triggerBtn.innerHTML = triggerIcon;
-        triggerBtn.addEventListener('click', () => this.triggerAutomation(key));
+        triggerBtn.addEventListener('click', () => this.triggerAutomation(key, triggerBtn));
         automationActions.append(triggerBtn);
 
         const copyBtn = document.createElement('button');
@@ -618,6 +684,9 @@ BYD.automations = {
         deleteBtn.innerHTML = deleteIcon;
         deleteBtn.addEventListener('click', () => this.deleteAutomation(key));
         automationActions.append(deleteBtn);
+
+        // Icon-only buttons: the tooltip text doubles as the accessible name.
+        for (const b of [triggerBtn, copyBtn, editBtn, deleteBtn]) b.setAttribute('aria-label', b.title);
 
         const automationBody = document.createElement('div');
         automationBody.classList.add(token + '-body', 'body');
@@ -654,9 +723,30 @@ BYD.automations = {
         return automationDiv;
     },
 
-    buildAutomationText(automation) {
+    // `opts.recipe` (local list cards only): wrap the SAME text pieces in recipe markup —
+    // block marker, joiners, one chip per step with its icon/hue — so the card's text is
+    // unchanged. Without it (community cards) the output is the plain prose, as before.
+    buildAutomationText(automation, opts) {
         const sections = this.schemaSections();
         if (!sections.length) return BYD.i18n.t('automation.failed_to_load_schema');
+
+        const recipe = !!(opts && opts.recipe);
+        const chip = (text, hue, iconKey, extraClass) => '<span class="recipe-chip' + (extraClass ? ' ' + extraClass : '')
+            + '" data-step-cat="' + hue + '">' + autoIconSvg(iconKey || hue) + '<span class="recipe-text">' + text + '</span></span>';
+        const mark = (text, sectionId) => {
+            if (!recipe) return text;
+            const hue = autoSectionHue(sectionId);
+            return '<span class="recipe-sec" data-step-cat="' + hue + '">' + autoIconSvg(hue)
+                + '<span class="recipe-text">' + text + '</span></span>';
+        };
+        const joiner = (text) => (recipe ? '<span class="recipe-join">' + text + '</span>' : text);
+        const step = (text, options, entry) => {
+            if (!recipe || !text) return text;
+            const option = (options || []).find(o => o && o.id === entry.type) || null;
+            const hue = autoStepHue(option);
+            return chip(text, hue, autoStepIconKey(option, hue));
+        };
+        const lineOpen = (sectionId) => (recipe ? '<span class="recipe-line" data-section="' + sanitizeToken(sectionId) + '">' : '');
 
         let result = '';
         try {
@@ -682,24 +772,17 @@ BYD.automations = {
                     // Skip an empty else section entirely so automations without an
                     // else branch read exactly as before.
                     if (section.id === 'elseActions' && sectionData.length === 0) continue;
+                    result += lineOpen(section.id);
                     for (let i = 0; i < sectionData.length; i++) {
                         const entry = sectionData[i] || {};
-                        // Between rows, show the joiner. For a section with a logic
-                        // descriptor (conditions) use the chosen AND/OR word; otherwise
-                        // fall back to the generic extra_row label ("And"). Use ONE or
-                        // the other — never both — so a logic section doesn't render
-                        // "AND And".
-                        const hasLogic = !!(section.logic && section.logic.field);
                         if (i === 0) {
-                            result += section.label;
-                        } else if (hasLogic) {
-                            const lg = (automation[section.logic.field] || section.logic.default || 'AND');
-                            result += BYD.i18n.t('automation.logic_' + lg.toLowerCase());
+                            result += mark(section.label, section.id);
                         } else {
-                            result += BYD.i18n.t('automation.extra_row');
+                            result += joiner(this.rowJoinerLabel(section,
+                                section.logic && section.logic.field && automation[section.logic.field]));
                         }
                         result += ' ';
-                        result += this.describeActionEntry(entry, section.options);
+                        result += step(this.describeActionEntry(entry, section.options), section.options, entry);
                     }
                     // Nested condition GROUPS (conditions section) — render each group's
                     // AND/OR-joined leaves so a group-only automation isn't blank on the
@@ -714,20 +797,25 @@ BYD.automations = {
                             // term (no flat rows preceded it), else the section AND/OR word.
                             const noFlatRows = !(sectionData && sectionData.length);
                             result += (gi === 0 && noFlatRows)
-                                ? section.label
-                                : BYD.i18n.t('automation.logic_' + secLogic.toLowerCase());
-                            result += ' (';
+                                ? mark(section.label, section.id)
+                                : joiner(BYD.i18n.t('automation.logic_' + secLogic.toLowerCase()));
+                            result += recipe
+                                ? ' <span class="recipe-chip recipe-group" data-step-cat="if">' + autoIconSvg('if') + '<span class="recipe-text">('
+                                : ' (';
                             const gLogic = (grp.logic || 'AND');
                             for (let ci = 0; ci < gConds.length; ci++) {
                                 if (ci > 0) result += ' ' + BYD.i18n.t('automation.logic_' + gLogic.toLowerCase()) + ' ';
                                 result += this.describeActionEntry(gConds[ci] || {}, section.options);
                             }
-                            result += ')';
+                            result += recipe ? ')</span></span>' : ')';
                         }
                     }
                 } else {
-                    result += section.label + '=' + automation[section.id];
+                    result += lineOpen(section.id);
+                    const plain = section.label + '=' + automation[section.id];
+                    result += recipe ? chip(plain, autoSectionHue(section.id)) : plain;
                 }
+                if (recipe) result += '</span>';
                 result += '<br>';
             }
         } catch (e) {
@@ -758,7 +846,10 @@ BYD.automations = {
         }
         if (dataVars.length) out += '(';
         for (const variable of dataVars) {
-            out += variable.label + '=' + this.automationValueToText(variable, entryVars[variable.id]) + ',';
+            const raw = variable.signalAddress
+                ? this._lhsAddress(entryVars[variable.id], entryVars.name, data)
+                : entryVars[variable.id];
+            out += variable.label + '=' + this.automationValueToText(variable, raw) + ',';
         }
         if (dataVars.length) out = out.slice(0, out.length - 1) + ') ';
         // comparator/value live directly on the entry (not under .variables).
@@ -836,6 +927,10 @@ BYD.automations = {
         // no-op at fire time. Fetched lazily + cached; the banner re-evaluates on each
         // render (adding/removing a cloud action updates it).
         this._maybeRenderCloudWarning(grid);
+        // Re-assert the Save gate: an add/delete changes which fields are .invalid but
+        // fires no 'change', so deleting the only invalid row left Save stuck
+        // .is-disabled — and that class is pointer-events:none, a dead button.
+        this._syncSaveDisabled();
     },
 
     // Action ids with no local SDK fallback (cloud-only on this generation).
@@ -972,15 +1067,13 @@ BYD.automations = {
         const token = sanitizeToken(section.id);
         const sectionDiv = document.createElement('div');
         sectionDiv.classList.add(token + '-section', 'section');
+        sectionDiv.setAttribute('data-section', section.id);
 
         if (section.options && section.options.length) {
             const required = (section.required != null) ? section.required : 0;
             if (!this.formData[section.id]) this.formData[section.id] = [];
             while (this.formData[section.id].length < required) this.formData[section.id].push({});
-            sectionDiv.append(this.createRowLabel(section));
-            if (section.description) {
-                sectionDiv.append(this.createRowDescription(section));
-            }
+            sectionDiv.append(this.createSectionHead(section));
             // Optional AND/OR combining toggle for a section that advertises `logic`
             // (currently the conditions section). Stored on formData under the
             // descriptor's field name (e.g. "conditionLogic"); absent → server default.
@@ -989,7 +1082,10 @@ BYD.automations = {
             }
             for (let i = 0; i < this.formData[section.id].length; i++) {
                 if (i > 0) {
-                    sectionDiv.append(this.createRowLabel({ id: section.id, label: BYD.i18n.t('automation.extra_row') }));
+                    const join = this.createRowLabel({ id: section.id, label: this.rowJoinerLabel(section,
+                        section.logic && section.logic.field && this.formData[section.logic.field]) });
+                    join.classList.add('step-join');
+                    sectionDiv.append(join);
                 }
                 const row = this.createRow(section, i);
                 const rowCount = this.formData[section.id].length;
@@ -1074,10 +1170,7 @@ BYD.automations = {
                 sectionDiv.append(this.createConditionGroups(section));
             }
         } else {
-            sectionDiv.append(this.createRowLabel(section));
-            if (section.description) {
-                sectionDiv.append(this.createRowDescription(section));
-            }
+            sectionDiv.append(this.createSectionHead(section));
             const row = this.createRowElement(section);
             const initial = (this.formData[section.id] != null) ? this.formData[section.id] : section.min;
             row.append(this.createInput(section, initial, (element, value) => {
@@ -1158,10 +1251,18 @@ BYD.automations = {
         }
         logicSel.addEventListener('change', () => { group.logic = logicSel.value; });
         card.append(logicSel);
+        card.append(this.createLogicSegments(logicSel));
 
         // Condition rows within the group. Reuses the leaf inputs (type/comparator/
         // value) via createInput, backed by group.conditions[ci].
         if (!Array.isArray(group.conditions)) group.conditions = [];
+        // A term-less group is SILENTLY DROPPED on save (Automation.fromJson) — deleting a
+        // group's last row saved "successfully" and the group was gone on reopen. Re-seed an
+        // empty row (the flat sections' `required` rule) so that state is unreachable.
+        if (!group.conditions.length
+                && !(Array.isArray(group.groups) && group.groups.length)) {
+            group.conditions.push({});
+        }
         for (let ci = 0; ci < group.conditions.length; ci++) {
             card.append(this.createGroupConditionRow(section, group, ci));
         }
@@ -1185,6 +1286,9 @@ BYD.automations = {
         row.classList.add('condition-group-row', 'row');
         const inputs = document.createElement('div');
         inputs.classList.add('inputs');
+        const stepIcon = this.createStepIcon();
+        const stepTag = this.createStepTag();
+        this.paintStep(row, stepIcon, stepTag, null, 'if');
 
         // (Re)build the comparator/value + enum sub-variable inputs for the CURRENT
         // entry object at group.conditions[ci] and the selected option descriptor.
@@ -1226,6 +1330,7 @@ BYD.automations = {
             (element, value, selected) => {
                 // Reset the slot on a real type change (mirrors flat createRow's reset).
                 if (group.conditions[ci].type !== value) group.conditions[ci] = { type: value };
+                this.paintStep(row, stepIcon, stepTag, selected, 'if');
                 rebuild(selected);
             });
         inputs.append(typeSel);
@@ -1234,17 +1339,24 @@ BYD.automations = {
             const sel = options.find(o => o.id === group.conditions[ci].type);
             if (sel) rebuild(sel);
         }
+        inputs.prepend(stepTag);
         row.append(inputs);
+        row.prepend(stepIcon);
 
-        const del = document.createElement('button');
-        del.classList.add('delete', 'icon-btn', 'danger');
-        del.title = BYD.i18n.t('automation.delete_row');
-        del.innerHTML = deleteIcon;
-        del.addEventListener('click', () => {
-            group.conditions.splice(ci, 1);
-            this.renderForm();
-        });
-        row.append(del);
+        // Row delete only while the group has a spare row (flat sections' showDelete =
+        // rowCount > required). Removing the last term is what the group's own delete
+        // button in the header is for.
+        if (group.conditions.length > 1) {
+            const del = document.createElement('button');
+            del.classList.add('delete', 'icon-btn', 'danger');
+            del.title = BYD.i18n.t('automation.delete_row');
+            del.innerHTML = deleteIcon;
+            del.addEventListener('click', () => {
+                group.conditions.splice(ci, 1);
+                this.renderForm();
+            });
+            row.append(del);
+        }
         return row;
     },
 
@@ -1264,9 +1376,16 @@ BYD.automations = {
         const d = depth || 1;
         const box = document.createElement('div');
         box.classList.add('nested-actions', 'variable-input'); // variable-input so the row cleanup removes it on type change
+        const branch = autoPick(AUTO_BRANCH_HUES, labelKey) || 'group';
+        box.setAttribute('data-branch', branch);
         const heading = document.createElement('div');
         heading.classList.add('nested-actions-label', 'label');
         heading.textContent = BYD.i18n.t(labelKey);
+        const branchIcon = document.createElement('span');
+        branchIcon.classList.add('branch-icon');
+        branchIcon.setAttribute('aria-hidden', 'true');
+        branchIcon.innerHTML = autoIconSvg(branch);
+        heading.insertBefore(branchIcon, heading.firstChild);
         box.append(heading);
         for (let i = 0; i < arr.length; i++) {
             box.append(this.createNestedActionRow(options, arr, i, rr, d));
@@ -1293,6 +1412,9 @@ BYD.automations = {
         row.classList.add('nested-action-row', 'row');
         const inputs = document.createElement('div');
         inputs.classList.add('inputs');
+        const stepIcon = this.createStepIcon();
+        const stepTag = this.createStepTag();
+        this.paintStep(row, stepIcon, stepTag, null, 'other');
 
         const rebuild = (selected) => {
             inputs.querySelectorAll('.nested-var').forEach(el => el.remove());
@@ -1324,6 +1446,7 @@ BYD.automations = {
                     // selectors as the top-level path, so nesting doesn't lose the capability.
                     const nExtra = selected && selected.nameField
                         ? [{ id: 'variable', label: BYD.i18n.t('automation.cond_mode_var') }] : [];
+                    this._foldLhsVariableName(e.variables, variable.id, selected);
                     inp = this.createSignalAddressInput(
                         variable, e.variables[variable.id],
                         (value, quiet) => {
@@ -1397,6 +1520,7 @@ BYD.automations = {
         const typeSel = this.createEnumInput(this.getTypeEnum('na', options, d >= this.maxActionDepth()), arr[i].type,
             (element, value, selected) => {
                 if (arr[i].type !== value) arr[i] = { type: value };
+                this.paintStep(row, stepIcon, stepTag, selected, 'other');
                 rebuild(selected);
             });
         inputs.append(typeSel);
@@ -1404,7 +1528,9 @@ BYD.automations = {
             const sel = options.find(o => o.id === arr[i].type);
             if (sel) rebuild(sel);
         }
+        inputs.prepend(stepTag);
         row.append(inputs);
+        row.prepend(stepIcon);
 
         // Reorder + delete controls, mirroring the top-level actions section (createSection).
         // Actions run top-to-bottom, so a group / if-branch / loop-body needs up/down to
@@ -1473,9 +1599,27 @@ BYD.automations = {
         }
         selector.addEventListener('change', () => {
             this.formData[field] = selector.value;
+            const label = this.rowJoinerLabel({ logic }, selector.value);
+            if (row.parentElement) {
+                Array.prototype.forEach.call(row.parentElement.children, el => {
+                    if (el.classList.contains('step-join')) el.textContent = label;
+                });
+            }
         });
         row.append(selector);
+        row.append(this.createLogicSegments(selector));
         return row;
+    },
+
+    // Word between two rows: a change in ANY trigger re-checks the automation, conditions follow
+    // their AND/OR toggle, and every action runs.
+    rowJoinerLabel(section, logicValue) {
+        if (section.id === 'triggers') return BYD.i18n.t('automation.logic_or');
+        if (section.logic && section.logic.field) {
+            const lg = String(logicValue || section.logic.default || 'AND');
+            return BYD.i18n.t('automation.logic_' + lg.toLowerCase());
+        }
+        return BYD.i18n.t('automation.extra_row');
     },
 
     // Condition VALUE editor with an optional dynamic-reference mode (expression engine).
@@ -2114,6 +2258,25 @@ BYD.automations = {
         };
     },
 
+    // If's legacy `name` field (AI/imported JSON) names the variable a bare "variable" LHS
+    // reads; the engine resolves both forms to the same state key.
+    _lhsAddress(address, name, action) {
+        if (action && action.nameField && typeof address === 'string' && address.trim() === 'variable'
+                && typeof name === 'string' && name.trim()) {
+            return 'variable:name=' + name.trim();
+        }
+        return address;
+    },
+
+    // Move the legacy `name` into the address so the picker shows and edits it.
+    _foldLhsVariableName(vars, key, action) {
+        const folded = this._lhsAddress(vars[key], vars.name, action);
+        if (folded !== vars[key]) {
+            vars[key] = folded;
+            delete vars.name;
+        }
+    },
+
     createSignalAddressInput(schema, currentValue, onChange, signalOptions, extraOptions) {
         const wrap = document.createElement('div');
         wrap.classList.add('cond-value-wrap');
@@ -2216,8 +2379,12 @@ BYD.automations = {
             if (!sig) { onChange('', quiet); return; }
             onChange(currentAddress(), quiet);
         };
+        // A variable is addressed only by its name; a blank one resolves to no state.
+        let nameInp = null;
+        let nameMax = Infinity;
         const renderAttrs = () => {
             attrBox.innerHTML = '';
+            nameInp = null;
             const opt = pickable.find(o => o.id === sel.value);
             const vars = (opt && Array.isArray(opt.variables)) ? opt.variables : [];
             for (const v of vars) {
@@ -2229,8 +2396,15 @@ BYD.automations = {
                     emit();
                     // The attribute selects the INSTANCE, so the live value changes with it.
                     this.paintSignalHint(hint);
+                    syncValid();
                 });
                 inp.classList.add('cond-signal-attr');
+                if (sel.value === 'variable' && v.id === 'name') {
+                    nameInp = inp;
+                    nameMax = (v.maxLength != null) ? v.maxLength : Infinity;
+                    // Live, so Save enables while typing instead of only after blur.
+                    inp.addEventListener('input', () => syncValid());
+                }
                 attrBox.append(inp);
             }
         };
@@ -2241,7 +2415,12 @@ BYD.automations = {
         // explicitly.
         const syncValid = () => {
             sel.classList.toggle('invalid', !sel.value);
+            if (nameInp) {
+                const typed = String(nameInp.value || '');
+                nameInp.classList.toggle('invalid', !typed.trim() || typed.length > nameMax);
+            }
             if (this._syncSaveDisabled) this._syncSaveDisabled();
+            if (this._syncGroupSaveDisabled) this._syncGroupSaveDisabled();
         };
         sel.addEventListener('change', () => {
             // A different signal has different attributes — drop the old ones so a stale
@@ -2301,6 +2480,7 @@ BYD.automations = {
             return null;
         };
         const initRef = parseRef(currentValue);
+        const initialValue = currentValue;
         let mode = initRef ? initRef.mode : 'value';
 
         // Only free-text-keyed signals genuinely can't be addressed by a signal token
@@ -2326,8 +2506,12 @@ BYD.automations = {
             body.innerHTML = '';
             if (mode === 'value') {
                 // The normal typed editor. Seed it only when the current value is a real
-                // constant (not a leftover ${…} token from another mode).
-                const seed = parseRef(currentValue) ? undefined : currentValue;
+                // constant (not a leftover ${…} token from another mode); after a mode switch,
+                // fall back to the saved constant.
+                const shown = currentValue !== undefined ? currentValue : initialValue;
+                const seed = parseRef(shown) ? undefined : shown;
+                // Store the restored constant first; editors that emit on build then override it.
+                if (currentValue === undefined && seed !== undefined) onChange(seed);
                 const input = this.createInput(valueSchema, seed, (el, value) => onChange(value));
                 body.append(input);
             } else if (mode === 'var') {
@@ -2335,11 +2519,15 @@ BYD.automations = {
                 input.type = 'text';
                 input.classList.add('input', 'text', 'cond-ref-input');
                 input.placeholder = BYD.i18n.t('automation.cond_var_placeholder');
-                input.maxLength = 60;
+                input.maxLength = 40;   // SetVariableAction.MAX_NAME: longer names never resolve
                 input.value = (initRef && initRef.mode === 'var') ? initRef.name : '';
                 const emit = () => {
                     const n = input.value.trim();
                     onChange(n ? '${var:' + n + '}' : '');
+                    // Only a string field can hold ''; elsewhere a reference needs a name.
+                    input.classList.toggle('invalid', !n && valueSchema.type !== 'string');
+                    this._syncSaveDisabled();
+                    this._syncGroupSaveDisabled();
                 };
                 input.addEventListener('input', emit);
                 emit();
@@ -2365,7 +2553,12 @@ BYD.automations = {
                         sel.append(miss);
                     }
                     sel.value = initRef.sig;
+                    // Re-entering Signal mode shows the saved token, so store it again too.
+                    onChange(initialValue);
                 }
+                // Nothing picked yet: block Save rather than keep the previous mode's value.
+                const syncPicked = () => sel.classList.toggle('invalid', !sel.value);
+                syncPicked();
                 body.append(sel);
 
                 // Per-signal ATTRIBUTE selectors. A signal whose schema declares `variables`
@@ -2448,6 +2641,9 @@ BYD.automations = {
                     renderAttrs();
                     emitSignal();
                     this.paintSignalHint(hint);
+                    syncPicked();
+                    this._syncSaveDisabled();
+                    this._syncGroupSaveDisabled();
                 });
                 renderAttrs();
                 this.paintSignalHint(hint);
@@ -2461,6 +2657,7 @@ BYD.automations = {
                 // stored token is preserved untouched.
             }
             this._syncSaveDisabled();
+            this._syncGroupSaveDisabled();
         };
 
         for (const [m, key] of modes) {
@@ -2494,6 +2691,10 @@ BYD.automations = {
 
         const typeSelectorContainer = document.createElement('div');
         typeSelectorContainer.classList.add(token + '-type-selector', 'type-selector');
+        const stepIcon = this.createStepIcon();
+        const stepTag = this.createStepTag();
+        const stepFallback = autoSectionHue(id);
+        this.paintStep(row, stepIcon, stepTag, null, stepFallback);
 
         const eventListener = (element, value, selected) => {
             inputs.querySelectorAll('.variable-input').forEach(input => input.remove());
@@ -2502,6 +2703,7 @@ BYD.automations = {
             typeSelectorContainer.querySelectorAll('.description-icon').forEach(description => description.remove());
             inputs.classList.remove('has-cond-value');   // re-added below only if a cond-value editor renders
             if (this.formData[id][index].type !== value) this.formData[id][index] = { type: value };
+            this.paintStep(row, stepIcon, stepTag, selected, stepFallback);
             if (!this.formData[id][index].variables) this.formData[id][index].variables = {};
             if (selected.description && value !== 'operatingMode') {
                 const icon = document.createElement('div');
@@ -2576,6 +2778,7 @@ BYD.automations = {
                     // variable LHS keeps working alongside the catalog.
                     const extra = selected && selected.nameField
                         ? [{ id: 'variable', label: BYD.i18n.t('automation.cond_mode_var') }] : [];
+                    this._foldLhsVariableName(this.formData[id][index].variables, variable.id, selected);
                     variableSelector = this.createSignalAddressInput(
                         variable, this.formData[id][index].variables[variable.id],
                         (value, quiet) => {
@@ -2702,8 +2905,10 @@ BYD.automations = {
         typeSelectorContainer.prepend(typeSelector);
 
         inputs.prepend(typeSelectorContainer);
+        inputs.prepend(stepTag);
 
         row.append(inputs);
+        row.prepend(stepIcon);
 
         return row;
     },
@@ -2712,6 +2917,89 @@ BYD.automations = {
         const row = document.createElement('div');
         row.classList.add(sanitizeToken(id) + '-row', 'row');
         return row;
+    },
+
+    // Block-builder look (presentational only). A section block's header: tinted icon chip
+    // + the section's own label / description (same elements and text as before).
+    createSectionHead(section) {
+        const head = document.createElement('div');
+        head.classList.add('section-head');
+        const chip = document.createElement('span');
+        chip.classList.add('section-icon');
+        chip.setAttribute('aria-hidden', 'true');
+        chip.innerHTML = autoIconSvg(autoSectionHue(section.id));
+        const text = document.createElement('div');
+        text.classList.add('section-head-text');
+        text.append(this.createRowLabel(section));
+        if (section.description) {
+            text.append(this.createRowDescription(section));
+        }
+        head.append(chip, text);
+        return head;
+    },
+
+    createStepIcon() {
+        const chip = document.createElement('span');
+        chip.classList.add('step-icon');
+        chip.setAttribute('aria-hidden', 'true');
+        return chip;
+    },
+
+    createStepTag() {
+        const tag = document.createElement('span');
+        tag.classList.add('step-tag');
+        return tag;
+    },
+
+    // Hue + icon + category tag of a step row from its selected option (null = nothing
+    // picked yet → the caller's fallback hue). Re-run from the type select's handler.
+    paintStep(row, chip, tag, option, fallback) {
+        const hue = option ? autoStepHue(option) : (fallback || 'other');
+        row.setAttribute('data-step-cat', hue);
+        chip.innerHTML = autoIconSvg(option ? autoStepIconKey(option, hue) : hue);
+        tag.textContent = (option && option.category) ? this.categoryLabel(option.category) : '';
+    },
+
+    // Segmented AND/OR front-end for an existing logic <select>. The select stays in the
+    // DOM as the source of truth (value + its own change handler); a segment click sets
+    // its value and fires the same 'change' a user pick would.
+    createLogicSegments(selector) {
+        const seg = document.createElement('div');
+        seg.classList.add('btn-group', 'logic-seg');
+        seg.setAttribute('role', 'group');
+        const buttons = [];
+        const sync = () => {
+            for (const b of buttons) {
+                const on = b.getAttribute('data-value') === selector.value;
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            }
+        };
+        for (const opt of Array.prototype.slice.call(selector.options)) {
+            if (opt.disabled || opt.hidden) continue;
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.classList.add('btn-toggle', 'logic-seg-btn');
+            b.setAttribute('data-value', opt.value);
+            b.textContent = opt.textContent;
+            b.addEventListener('click', () => {
+                if (selector.value === opt.value) return;
+                selector.value = opt.value;
+                selector.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            buttons.push(b);
+            seg.append(b);
+        }
+        if (buttons.length < 2) {
+            seg.style.display = 'none';   // nothing to segment — the native select stays the control
+            return seg;
+        }
+        selector.addEventListener('change', sync);
+        sync();
+        selector.classList.add('logic-select-native');
+        selector.setAttribute('tabindex', '-1');
+        selector.setAttribute('aria-hidden', 'true');
+        return seg;
     },
 
     createRowLabel({ id, label }) {
@@ -3028,7 +3316,8 @@ BYD.automations = {
         input.classList.add('input', 'string');
         input.placeholder = data.label;
         input.maxLength = maxLength;
-        if (defaultValue) input.value = defaultValue;
+        // A saved number 0 (e.g. an If "variable eq 0" RHS) is a real value, not "empty".
+        if (defaultValue != null && defaultValue !== false) input.value = defaultValue;
         // Add invalid class if the selected value is longer than maxLength
         const changeEvent = () => {
             if (input.value.length <= maxLength) {
@@ -3136,7 +3425,8 @@ BYD.automations = {
         input.classList.add('input', 'time');
         input.type = 'time';
         input.placeholder = data.label;
-        if (defaultValue != null && !isNaN(defaultValue)) {
+        // '' is not midnight: isNaN('') is false, so exclude it explicitly.
+        if (defaultValue != null && defaultValue !== '' && !isNaN(defaultValue)) {
             input.value = this.timeToString(defaultValue);
         }
         // Add invalid class if the selected value is not a valid time
@@ -3636,15 +3926,50 @@ BYD.automations = {
         }
     },
 
-    async triggerAutomation(key) {
+    async triggerAutomation(key, btn) {
+        const card = btn && btn.closest ? btn.closest('.card') : null;
+        if (btn) {
+            if (btn.classList.contains('is-running')) return;
+            this._setRunState(btn, card, 'running');
+        }
+        let ok = false;
         try {
             const resp = await fetch('/api/automations/test/' + encodeURIComponent(key), { method: 'POST' });
             const result = await resp.json();
-            if (result.success) {
-                return this.toast(BYD.i18n.t('automation.toast_triggered'), 'success');
-            }
+            ok = !!result.success;
         } catch (e) {}
+        if (btn) this._setRunState(btn, card, ok ? 'done' : 'failed');
+        if (ok) return this.toast(BYD.i18n.t('automation.toast_triggered'), 'success');
         this.toast(BYD.i18n.t('errors.generic'), 'error');
+    },
+
+    // Run-now feedback on the button and its card: spinner + sweep while the
+    // request is out, then a drawn check (or a shake) before the play icon returns.
+    _setRunState(btn, card, state) {
+        clearTimeout(btn._runTimer);
+        btn.classList.remove('is-running', 'is-done', 'is-failed');
+        if (card) card.classList.remove('is-running', 'is-done', 'is-failed');
+        if (state === 'idle') {
+            btn.innerHTML = triggerIcon;
+            btn.disabled = false;
+            btn.removeAttribute('aria-busy');
+            return;
+        }
+        btn.innerHTML = state === 'running' ? runSpinIcon : (state === 'done' ? runDoneIcon : runFailIcon);
+        btn.disabled = state === 'running';
+        if (state === 'running') btn.setAttribute('aria-busy', 'true');
+        else btn.removeAttribute('aria-busy');
+        void btn.offsetWidth; // restart the keyframes when states repeat quickly
+        btn.classList.add('is-' + state);
+        if (card && state === 'done') {
+            // Light the recipe up trigger → conditions → actions, in reading order.
+            const steps = card.querySelectorAll('.recipe-sec, .recipe-chip');
+            for (let i = 0; i < steps.length; i++) steps[i].style.setProperty('--run-i', Math.min(i, 12));
+        }
+        if (card) card.classList.add('is-' + state);
+        if (state !== 'running') {
+            btn._runTimer = setTimeout(() => this._setRunState(btn, card, 'idle'), 1800);
+        }
     },
 
     async deleteAutomation(key) {

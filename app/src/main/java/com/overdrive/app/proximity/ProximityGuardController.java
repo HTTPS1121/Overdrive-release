@@ -29,7 +29,8 @@ import java.util.concurrent.TimeUnit;
  * - Configurable pre/post buffers
  * - Automatic cleanup and resource management
  */
-public class ProximityGuardController implements ProximityRadarMonitor.TriggerCallback {
+public class ProximityGuardController implements ProximityRadarMonitor.TriggerCallback,
+        ProximityBlindSpotMonitor.Callback {
     private static final DaemonLogger logger = DaemonLogger.getInstance("ProximityGuardController");
     
     /**
@@ -46,6 +47,7 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
     private final GpuSurveillancePipeline pipeline;
     private final ProximityRadarMonitor radarMonitor;
     private final ProximityRecordingHandler recordingHandler;
+    private final ProximityBlindSpotMonitor blindSpotMonitor;
     private ProximityGuardConfig config;
     
     private volatile State currentState = State.IDLE;
@@ -60,6 +62,10 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
     // wall-clock cadence (~preRecordSeconds/2) so a keyframe is always within
     // the pre-record window. Cancelled the moment we leave MONITORING.
     private ScheduledFuture<?> keyframePulseTimer;
+    // Second blind-spot poll refresh after arming; guarded by this.
+    private ScheduledFuture<?> blindSpotPollRetry;
+    // Set by shutdown(); a late start() must not re-arm listeners on a dying scheduler.
+    private boolean closed = false;
     private final ScheduledExecutorService scheduler;
     // Tracks whether a RED tier was hit during the CURRENT recording session.
     // Sticky for the duration of the recording so the post-record window
@@ -86,6 +92,7 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
             t.setDaemon(true);
             return t;
         });
+        this.blindSpotMonitor = new ProximityBlindSpotMonitor(scheduler, this);
         
         logger.info("ProximityGuardController initialized: " + config.toString());
     }
@@ -98,6 +105,10 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
      * When mode is PROXIMITY_GUARD, this controller should start regardless of config.enabled.
      */
     public synchronized void start() {
+        if (closed) {
+            logger.warn("Cannot start - controller is shut down");
+            return;
+        }
         if (currentState != State.IDLE) {
             logger.warn("Cannot start - already in state: " + currentState);
             return;
@@ -130,7 +141,9 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
 
         logger.info("Starting Proximity Guard mode...");
         transitionTo(State.MONITORING);
+        radarMonitor.setTriggerLevel(config.getTriggerLevel());
         radarMonitor.startListening();
+        applyBlindSpotTrigger();
     }
     
     /**
@@ -142,6 +155,10 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
         
         // Stop radar listener
         radarMonitor.stopListening();
+        if (blindSpotMonitor.isArmed()) {
+            blindSpotMonitor.disarm();
+            refreshBlindSpotPoll(false);
+        }
         
         // Stop recording if active
         if (currentState == State.RECORDING || currentState == State.POST_RECORD) {
@@ -242,6 +259,11 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
     
     @Override
     public synchronized void onProximityTrigger(int area, int state, String level) {
+        // A callback that waited on this lock across stop()/start() belongs to the old session.
+        if (!radarMonitor.isTriggered()) {
+            logger.debug("Ignoring stale proximity trigger: area=" + area);
+            return;
+        }
         logger.info("onProximityTrigger: state=" + currentState + " area=" + area + " level=" + level);
 
         // Sticky escalation flag — once RED is seen during a recording, it
@@ -283,7 +305,15 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
     
     @Override
     public synchronized void onProximitySafe() {
+        if (radarMonitor.isTriggered()) {
+            logger.debug("Ignoring stale proximity safe");
+            return;
+        }
         logger.info("onProximitySafe: state=" + currentState);
+        if (blindSpotMonitor.isTriggered()) {
+            logger.info("Radar clear but the blind spot is still occupied - recording continues");
+            return;
+        }
         
         if (currentState == State.RECORDING) {
             // Start post-record countdown
@@ -292,6 +322,99 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
         }
     }
     
+    // ==================== BLIND-SPOT TRIGGER ====================
+    // Optional second source. The session ends only when the radar and the blind spot are both clear.
+
+    @Override
+    public synchronized void onBlindSpotTrigger(int sides) {
+        if (!blindSpotMonitor.isTriggered()) {
+            logger.debug("Ignoring stale blind-spot trigger");
+            return;
+        }
+        logger.info("onBlindSpotTrigger: state=" + currentState
+                + " side=" + ProximityBlindSpotMonitor.describe(sides));
+
+        switch (currentState) {
+            case MONITORING:
+                transitionTo(State.RECORDING);
+                recordingHandler.startBlindSpotRecording();
+                com.overdrive.app.recording.OemDashcamMirror.onPanoRecordingStarted();
+                break;
+
+            case POST_RECORD:
+                logger.info("Extending recording: blind-spot alert during post-record countdown");
+                cancelPostRecordTimer();
+                transitionTo(State.RECORDING);
+                break;
+
+            case RECORDING:
+                break;
+
+            case IDLE:
+                logger.warn("Received blind-spot trigger while IDLE - should not happen");
+                break;
+        }
+    }
+
+    @Override
+    public synchronized void onBlindSpotSafe() {
+        if (blindSpotMonitor.isTriggered()) {
+            logger.debug("Ignoring stale blind-spot safe");
+            return;
+        }
+        logger.info("onBlindSpotSafe: state=" + currentState);
+        onBlindSpotCleared();
+    }
+
+    private void onBlindSpotCleared() {
+        if (radarMonitor.isTriggered()) {
+            logger.info("Blind spot clear but the radar is still triggered - recording continues");
+            return;
+        }
+        if (currentState == State.RECORDING) {
+            transitionTo(State.POST_RECORD);
+            startPostRecordTimer();
+        }
+    }
+
+    /** Arms or disarms the blind-spot source to match the config; a live trigger is released. */
+    private void applyBlindSpotTrigger() {
+        if (config.isBlindSpotTrigger()) {
+            boolean pollUseful = !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+            if (blindSpotMonitor.arm(pollUseful)) {
+                logger.info("Blind-spot trigger armed (" + (pollUseful ? "poll + events" : "relayed events") + ")");
+                refreshBlindSpotPoll(true);
+            }
+        } else if (blindSpotMonitor.isArmed()) {
+            boolean wasTriggered = blindSpotMonitor.disarm();
+            logger.info("Blind-spot trigger disarmed");
+            refreshBlindSpotPoll(false);
+            if (wasTriggered) onBlindSpotCleared();
+        }
+    }
+
+    // Off the caller's thread: the poll's reference check reads the config file. Repeated once after
+    // arming, because a concurrent refresh that read the old state can cancel the poll just after this.
+    private void refreshBlindSpotPoll(boolean armed) {
+        if (blindSpotPollRetry != null) {
+            blindSpotPollRetry.cancel(false);
+            blindSpotPollRetry = null;
+        }
+        Runnable refresh = () -> {
+            try {
+                com.overdrive.app.automation.condition.BlindSpotEvent.refresh();
+            } catch (Throwable t) {
+                logger.warn("Blind-spot poll refresh failed: " + t.getMessage());
+            }
+        };
+        try {
+            scheduler.execute(refresh);
+            if (armed) blindSpotPollRetry = scheduler.schedule(refresh, 5, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            logger.debug("Blind-spot poll refresh skipped: scheduler shut down");
+        }
+    }
+
     // ==================== STATE MACHINE ====================
     
     private void transitionTo(State newState) {
@@ -602,6 +725,8 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
             } catch (Exception e) {
                 logger.warn("Failed to re-apply pre-record duration on reload: " + e.getMessage());
             }
+            radarMonitor.setTriggerLevel(config.getTriggerLevel());
+            applyBlindSpotTrigger();
         }
         logger.info("Config reloaded: " + config.toString());
     }
@@ -610,7 +735,10 @@ public class ProximityGuardController implements ProximityRadarMonitor.TriggerCa
      * Shutdown and cleanup resources.
      */
     public void shutdown() {
-        stop();
+        synchronized (this) {
+            stop();
+            closed = true;
+        }
         scheduler.shutdown();
         try {
             if (!scheduler.awaitTermination(2, TimeUnit.SECONDS)) {

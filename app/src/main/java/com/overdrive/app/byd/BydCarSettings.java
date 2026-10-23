@@ -105,7 +105,7 @@ public final class BydCarSettings {
      * drives all three tiers, hence write-only here.
      */
     private static final java.util.Set<String> INTERNAL_WRITABLE =
-            java.util.Set.of("atmosphere_lamp");
+            java.util.Set.of("atmosphere_lamp", "inside_lamp");
 
     /**
      * Provider key for the interior-ambient main switch (1 = on, 0 = off).
@@ -113,6 +113,9 @@ public final class BydCarSettings {
      * <p>Lives in the {@code Config} table, NOT {@code UserTableData} — see {@link #CLS_CONFIG}.
      */
     public static final String KEY_ATMOSPHERE_LAMP = "atmosphere_lamp";
+
+    /** Provider key for the cabin (reading) light (1 = on, 0 = off), also in the Config table. */
+    public static final String KEY_INSIDE_LAMP = "inside_lamp";
 
     /** Which provider table a key belongs to. Getting this wrong reads/writes a different key. */
     private static String tableFor(String key) {

@@ -50,14 +50,11 @@ import java.util.List;
  * only takes effect after a restart. This is why an honest {@code applied=false} matters: on such a
  * build the feature genuinely cannot work yet, and the log says so instead of pretending.
  *
- * <p><b>What does NOT work (verified, do not re-add).</b>
- * {@code setTaskWindowingModeSplitScreenPrimary(taskId, createMode, toTop, animate, bounds,
- * showRecents)} looks like an atomic "mode + bounds" setter and the reference calls it, but on this
- * AMS its 2nd parameter is a {@code SPLIT_SCREEN_CREATE_MODE_*} (0 = TOP_OR_LEFT, 1 =
- * BOTTOM_OR_RIGHT) — <b>not</b> a windowing mode — and the target mode is hard-coded to
- * {@code SPLIT_SCREEN_PRIMARY} ({@code ActivityTaskManagerService:2673-2707}). It can never produce
- * FREEFORM; at best it docks the cast app into split-screen on the cluster. Likewise
- * {@code setStackWindowingMode}/{@code setActivityStackWindowingMode} do not exist on API 29 at all
+ * <p>{@code setTaskWindowingModeSplitScreenPrimary(taskId, createMode, toTop, animate, bounds,
+ * showRecents)} never produces FREEFORM (its 2nd parameter is a {@code SPLIT_SCREEN_CREATE_MODE_*});
+ * it docks the task at {@code bounds}, which is the legacy cluster's placement path — see
+ * {@link #applyDocked}. {@code setStackWindowingMode}/{@code setActivityStackWindowingMode} do not
+ * exist on API 29 at all
  * (the only stack-level entry points are {@code moveTaskToStack}/{@code moveStackToDisplay}), so
  * that rung is a no-op there and is kept only for builds that do expose it.
  *
@@ -477,6 +474,457 @@ final class ClusterFreeformWindow {
         invalidateTaskCache();
     }
 
+    // ── Docked placement (legacy Android 10 cluster) ─────────────────────────────────
+
+    private static final int WINDOWING_MODE_PINNED = 2;
+    private static final int WINDOWING_MODE_SPLIT_SCREEN_PRIMARY = 3;
+    private static final int SPLIT_SCREEN_CREATE_MODE_TOP_OR_LEFT = 0;
+    private static final int DOCK_TOLERANCE_PX = 2;
+    /** framework default_minimal_size_resizable_task when the resource cannot be read. */
+    private static final float DEFAULT_MIN_TASK_DP = 220f;
+
+    private static volatile Method cachedDock;
+    private static volatile boolean dockResolved;
+
+    /** Outcome of {@link #applyDocked}. {@code actual} is the task rect AMS resolved, or null. */
+    static final class Placement {
+        static final int APPLIED = 0;
+        /** The task is not on the cluster yet; a later attempt may land. */
+        static final int RETRY = 1;
+        /** This AMS or task cannot be docked; the caller may fall back to freeform. */
+        static final int UNSUPPORTED = 2;
+        static final int FAILED = 3;
+        /** Another task is on the display; docking would resize it into the free space. */
+        static final int BLOCKED = 4;
+
+        final int status;
+        final int mode;
+        final Rect actual;
+        final String reason;
+
+        Placement(int status, Integer mode, Rect actual, String reason) {
+            this.status = status;
+            this.mode = mode != null ? mode : -1;
+            this.actual = actual;
+            this.reason = reason == null ? "" : reason;
+        }
+
+        boolean docked() { return mode == WINDOWING_MODE_SPLIT_SCREEN_PRIMARY; }
+    }
+
+    /** True when this AMS exposes the bounds-taking split-screen-primary verb (Android 10). */
+    static boolean dockingSupported() {
+        Object svc = service();
+        return svc != null && dockMethod(svc) != null;
+    }
+
+    private static Method dockMethod(Object svc) {
+        if (dockResolved) return cachedDock;
+        Class<?>[] sig = { int.class, int.class, boolean.class, boolean.class, Rect.class,
+                boolean.class };
+        Method found = null;
+        // The vendor spelling exists on this ROM family (as it does for setCustomTaskWindowingMode).
+        for (String name : new String[] { "setTaskWindowingModeSplitScreenPrimary",
+                                          "setCustomTaskWindowingModeSplitScreenPrimary" }) {
+            found = findMethod(svc, name, sig, sig);
+            if (found != null) break;
+        }
+        cachedDock = found;
+        dockResolved = true;
+        return found;
+    }
+
+    /**
+     * Give {@code pkg}'s cluster task exactly {@code bounds} by docking it as the display's
+     * split-screen-primary stack with those bounds — no freeform support or caption needed. The
+     * stack must enter split mode from FULLSCREEN with no bounds of its own, otherwise AMS snaps
+     * it to a divider target instead of the requested rect. A full-panel request returns the task
+     * to fullscreen. Refuses while any other task is on the display, since entering split mode
+     * would push it into split-screen-secondary beside the cast app.
+     */
+    static Placement applyDocked(String pkg, Rect bounds, int displayId, int panelW, int panelH) {
+        if (pkg == null || bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
+            return new Placement(Placement.FAILED, null, null, "invalid bounds");
+        }
+        Object svc = service();
+        Method dock = svc != null ? dockMethod(svc) : null;
+        if (dock == null) {
+            return new Placement(Placement.UNSUPPORTED, null, null, "docking unavailable");
+        }
+        int taskId = resolveTaskId(pkg, displayId);
+        if (taskId < 0) {
+            return new Placement(Placement.RETRY, null, null, "no task on the cluster yet");
+        }
+        if (exclusiveStackIdForTask(svc, taskId) < 0) {
+            return new Placement(Placement.FAILED, null, null, "task shares its stack");
+        }
+        Integer mode = taskWindowingMode(svc, taskId);
+        if (mode == null) {
+            return new Placement(Placement.UNSUPPORTED, null, null, "windowing mode unreadable");
+        }
+        boolean fullPanel = panelW > 1 && panelH > 1 && bounds.left <= 0 && bounds.top <= 0
+                && bounds.right >= panelW && bounds.bottom >= panelH;
+        if (fullPanel) {
+            if (mode != WINDOWING_MODE_FULLSCREEN) {
+                markTouched(pkg, taskId);
+                leaveMultiWindow(svc, taskId, mode);
+            }
+            Integer now = taskWindowingMode(svc, taskId);
+            boolean full = now != null && now == WINDOWING_MODE_FULLSCREEN;
+            logger.info("applyDocked " + pkg + " task=" + taskId + " → fullscreen (was mode="
+                    + mode + ") ok=" + full);
+            return new Placement(full ? Placement.APPLIED : Placement.FAILED, now,
+                    getTaskBounds(svc, taskId), full ? "" : "task did not return to fullscreen");
+        }
+        // AMS grows a side shorter than the task's minimal size from the top/left edge without
+        // keeping it on the display, so ask for a rect that already satisfies it.
+        int[] min = minTaskSizePx(svc, taskId);
+        Rect target = fitMinimumSize(bounds, min[0], min[1], panelW, panelH);
+        if (mode == WINDOWING_MODE_SPLIT_SCREEN_PRIMARY) {
+            Rect current = getTaskBounds(svc, taskId);
+            DockRecord last = lastDock;
+            if (sameRect(current, target) || (last != null && last.taskId == taskId
+                    && sameRect(last.target, target) && sameRect(last.actual, current))) {
+                return new Placement(Placement.APPLIED, mode, current, "");
+            }
+        }
+        String blocker = otherTaskOnDisplay(svc, displayId, taskId);
+        if (blocker != null) {
+            logger.info("applyDocked " + pkg + " deferred — cluster display " + displayId
+                    + " also holds " + blocker);
+            return new Placement(Placement.BLOCKED, mode, null, "cluster shared with " + blocker);
+        }
+        markTouched(pkg, taskId);
+        if (mode != WINDOWING_MODE_FULLSCREEN) {
+            // Re-docking at a new rect has to go through fullscreen: an already-docked stack
+            // ignores new bounds, and a freeform stack would be snapped.
+            leaveMultiWindow(svc, taskId, mode);
+            if (exclusiveStackIdForTask(svc, taskId) < 0) {
+                return new Placement(Placement.FAILED, null, null, "task shares its stack");
+            }
+            Integer now = taskWindowingMode(svc, taskId);
+            if (now == null || now != WINDOWING_MODE_FULLSCREEN) {
+                return new Placement(Placement.FAILED, now, null,
+                        "task did not return to fullscreen");
+            }
+        }
+        // An activity starting in the task resets its resize mode to the app's own, which makes
+        // a non-resizeable app refuse split mode, so the dock gets one immediate second try.
+        Integer after = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            invokeSetTaskResizeable(svc, taskId, RESIZE_MODE_FORCE_RESIZEABLE);
+            try {
+                // toTop=false: the task is already the resumed one on the cluster, and raising its
+                // stack would also raise that display and take key focus off the head unit.
+                dock.invoke(svc, taskId, SPLIT_SCREEN_CREATE_MODE_TOP_OR_LEFT, false, false,
+                        new Rect(target), false);
+            } catch (Throwable t) {
+                return new Placement(Placement.UNSUPPORTED, WINDOWING_MODE_FULLSCREEN, null,
+                        "dock refused: " + unwrap(t));
+            }
+            after = taskWindowingMode(svc, taskId);
+            if (after != null && after == WINDOWING_MODE_SPLIT_SCREEN_PRIMARY) break;
+        }
+        if (after == null || after != WINDOWING_MODE_SPLIT_SCREEN_PRIMARY) {
+            logger.warn("applyDocked " + pkg + " task=" + taskId + " → " + target.toShortString()
+                    + " did not dock (mode=" + after + ")");
+            return new Placement(Placement.UNSUPPORTED, after, getTaskBounds(svc, taskId),
+                    "dock did not take");
+        }
+        // WMS keeps the rect as the global docked-create bounds; clear it through the window
+        // manager so a later head-unit split does not start at a cluster rect. Not through the
+        // task verb: that re-validates split support and would undock a non-resizeable app.
+        clearDockedCreateBounds();
+        after = taskWindowingMode(svc, taskId);
+        Rect actual = getTaskBounds(svc, taskId);
+        boolean docked = after != null && after == WINDOWING_MODE_SPLIT_SCREEN_PRIMARY;
+        // From a no-bounds fullscreen stack the only change AMS makes is growing a side to a
+        // minimum it knows better (an app's declared size), anchored at the top/left edge. A rect
+        // that grew to the whole panel is indistinguishable from "not honoured", so it is refused.
+        boolean landed = docked && (sameRect(actual, target)
+                || (grownFrom(actual, target) && !coversPanel(actual, target, panelW, panelH)));
+        if (landed) lastDock = new DockRecord(taskId, target, actual);
+        logger.info("applyDocked " + pkg + " task=" + taskId + " → " + target.toShortString()
+                + " got " + (actual == null ? "unreadable" : actual.toShortString())
+                + " (was mode=" + mode + ", now=" + after + ") landed=" + landed);
+        return new Placement(landed ? Placement.APPLIED : Placement.FAILED, after, actual,
+                landed ? "" : "cluster kept "
+                        + (actual == null ? "unreadable bounds" : actual.toShortString()));
+    }
+
+    /** The last docked placement, so a rect AMS grew is not re-docked on every identical request. */
+    private static final class DockRecord {
+        final int taskId;
+        final Rect target;
+        final Rect actual;
+
+        DockRecord(int taskId, Rect target, Rect actual) {
+            this.taskId = taskId;
+            this.target = new Rect(target);
+            this.actual = actual != null ? new Rect(actual) : null;
+        }
+    }
+
+    private static volatile DockRecord lastDock;
+
+    /** {@code IWindowManager.setDockedStackCreateState(TOP_OR_LEFT, null)}. Best-effort. */
+    private static void clearDockedCreateBounds() {
+        try {
+            Class<?> sm = Class.forName("android.os.ServiceManager");
+            Object binder = sm.getMethod("getService", String.class).invoke(null, "window");
+            if (!(binder instanceof android.os.IBinder)) return;
+            Class<?> stub = Class.forName("android.view.IWindowManager$Stub");
+            Object wm = stub.getMethod("asInterface", android.os.IBinder.class)
+                    .invoke(null, binder);
+            if (wm == null) return;
+            wm.getClass().getMethod("setDockedStackCreateState", int.class, Rect.class)
+                    .invoke(wm, SPLIT_SCREEN_CREATE_MODE_TOP_OR_LEFT, null);
+        } catch (Throwable t) {
+            logger.debug("clearDockedCreateBounds failed: " + unwrap(t));
+        }
+    }
+
+    /**
+     * Undock every split-screen-primary task on {@code displayId} — residue of a docked cast whose
+     * teardown was skipped (ACC-off) — so a fullscreen launch there is not resolved into
+     * split-screen-secondary. A no-op when nothing is docked on that display.
+     */
+    static int clearDisplayDock(int displayId) {
+        if (displayId <= 0) return 0;
+        Object svc = service();
+        if (svc == null) return 0;
+        int undocked = 0;
+        try {
+            for (Object info : atmTaskList(svc)) {
+                if (info == null) continue;
+                Object did = readFieldNoThrow(info, "displayId");
+                if (!(did instanceof Integer) || (Integer) did != displayId) continue;
+                Integer mode = windowingModeOf(info);
+                if (mode == null || mode != WINDOWING_MODE_SPLIT_SCREEN_PRIMARY) continue;
+                int[] children = childTaskIds(info);
+                if (children == null || children.length == 0) continue;
+                int task = children[children.length - 1];
+                if (setTaskWindowingModeInPlace(svc, task, WINDOWING_MODE_FULLSCREEN)) {
+                    undocked++;
+                    logger.info("clearDisplayDock: undocked task " + task + " on display "
+                            + displayId);
+                }
+            }
+        } catch (Throwable t) {
+            logger.debug("clearDisplayDock failed: " + unwrap(t));
+        }
+        if (undocked > 0) invalidateTaskCache();
+        return undocked;
+    }
+
+    /**
+     * Undock {@code pkg}'s split-screen-primary task on any secondary display. Used at daemon boot,
+     * when the cluster display id of a stranded cast is no longer known.
+     */
+    static int undockPackageOffDefaultDisplay(String pkg) {
+        if (pkg == null || pkg.isEmpty()) return 0;
+        Object svc = service();
+        if (svc == null) return 0;
+        int undocked = 0;
+        try {
+            for (Object info : atmTaskList(svc)) {
+                if (info == null) continue;
+                Object did = readFieldNoThrow(info, "displayId");
+                if (!(did instanceof Integer) || (Integer) did <= 0) continue;
+                Integer mode = windowingModeOf(info);
+                if (mode == null || mode != WINDOWING_MODE_SPLIT_SCREEN_PRIMARY) continue;
+                Object top = readFieldNoThrow(info, "topActivity");
+                if (!(top instanceof android.content.ComponentName)
+                        || !pkg.equals(((android.content.ComponentName) top).getPackageName())) {
+                    continue;
+                }
+                int[] children = childTaskIds(info);
+                if (children == null || children.length == 0) continue;
+                if (setTaskWindowingModeInPlace(svc, children[children.length - 1],
+                        WINDOWING_MODE_FULLSCREEN)) {
+                    undocked++;
+                }
+            }
+        } catch (Throwable t) {
+            logger.debug("undockPackageOffDefaultDisplay failed: " + unwrap(t));
+        }
+        if (undocked > 0) {
+            invalidateTaskCache();
+            logger.info("undocked " + undocked + " stranded task(s) of " + pkg);
+        }
+        return undocked;
+    }
+
+    /**
+     * Move {@code pkg}'s task on {@code displayId} (and only that one) to the head unit in the
+     * background. True when it moved or the package has no task there.
+     */
+    static boolean moveDisplayTaskToDefaultDisplay(String pkg, int displayId) {
+        if (pkg == null || displayId <= 0) return false;
+        int taskId = findTaskIdViaAtm(pkg, displayId);
+        if (taskId < 0) return true;
+        return moveTaskToDefaultDisplayBackground(taskId);
+    }
+
+    /** Freeform + null bounds is the only call that both clears a freeform task's bounds and
+     *  returns it to fullscreen, so it must run while the task is still freeform. */
+    private static void leaveMultiWindow(Object svc, int taskId, int mode) {
+        if (mode == WINDOWING_MODE_FREEFORM) invokeResizeTaskNull(svc, taskId);
+        invokeSetTaskWindowingMode(svc, taskId, WINDOWING_MODE_FULLSCREEN);
+    }
+
+    /** {@code setTaskWindowingMode} with {@code toTop=false}: changes the mode without moving
+     *  the task's stack (or its display) to the front. */
+    private static boolean setTaskWindowingModeInPlace(Object svc, int taskId, int mode) {
+        for (String name : new String[] { "setTaskWindowingMode", "setCustomTaskWindowingMode" }) {
+            try {
+                Method m = svc.getClass().getMethod(name, int.class, int.class, boolean.class);
+                m.invoke(svc, taskId, mode, false);
+                return true;
+            } catch (NoSuchMethodException ignored) {
+                /* try the alternate spelling */
+            } catch (Throwable t) {
+                logger.debug(name + "(" + taskId + "," + mode + ") failed: " + unwrap(t));
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** A task on {@code displayId} outside our own stack that entering split mode would resize,
+     *  or null when the display holds only ours. Freeform/pinned stacks are not resized. */
+    private static String otherTaskOnDisplay(Object svc, int displayId, int ourTaskId) {
+        try {
+            for (Object info : atmTaskList(svc)) {
+                if (info == null) continue;
+                Object did = readFieldNoThrow(info, "displayId");
+                if (!(did instanceof Integer) || (Integer) did != displayId) continue;
+                int[] children = childTaskIds(info);
+                if (children == null || children.length == 0) continue;
+                boolean ours = false;
+                for (int t : children) if (t == ourTaskId) { ours = true; break; }
+                if (ours) continue;
+                Integer mode = windowingModeOf(info);
+                if (mode != null
+                        && (mode == WINDOWING_MODE_FREEFORM || mode == WINDOWING_MODE_PINNED)) {
+                    continue;
+                }
+                Object top = readFieldNoThrow(info, "topActivity");
+                return top instanceof android.content.ComponentName
+                        ? ((android.content.ComponentName) top).flattenToShortString()
+                        : "task " + children[children.length - 1];
+            }
+        } catch (Throwable t) {
+            return "an unreadable stack list";
+        }
+        return null;
+    }
+
+    /** {@code r} grown to the minimum on each short side and slid back onto the panel. */
+    private static Rect fitMinimumSize(Rect r, int minW, int minH, int panelW, int panelH) {
+        int w = Math.max(r.width(), minW);
+        int h = Math.max(r.height(), minH);
+        int left = r.left;
+        int top = r.top;
+        if (panelW > 1) {
+            w = Math.min(w, panelW);
+            left = Math.max(0, Math.min(left, panelW - w));
+        }
+        if (panelH > 1) {
+            h = Math.min(h, panelH);
+            top = Math.max(0, Math.min(top, panelH - h));
+        }
+        return new Rect(left, top, left + w, top + h);
+    }
+
+    private static boolean sameRect(Rect a, Rect b) {
+        return a != null && b != null
+                && Math.abs(a.left - b.left) <= DOCK_TOLERANCE_PX
+                && Math.abs(a.top - b.top) <= DOCK_TOLERANCE_PX
+                && Math.abs(a.right - b.right) <= DOCK_TOLERANCE_PX
+                && Math.abs(a.bottom - b.bottom) <= DOCK_TOLERANCE_PX;
+    }
+
+    /** True when {@code actual} spans a whole panel axis that {@code want} deliberately did not. */
+    private static boolean coversPanel(Rect actual, Rect want, int panelW, int panelH) {
+        boolean wideNow = panelW > 1 && actual.width() >= panelW - DOCK_TOLERANCE_PX;
+        boolean tallNow = panelH > 1 && actual.height() >= panelH - DOCK_TOLERANCE_PX;
+        boolean wideAsked = panelW <= 1 || want.width() >= panelW - DOCK_TOLERANCE_PX;
+        boolean tallAsked = panelH <= 1 || want.height() >= panelH - DOCK_TOLERANCE_PX;
+        return (wideNow && !wideAsked) || (tallNow && !tallAsked);
+    }
+
+    /** Same top/left edge, no side shorter than requested. */
+    private static boolean grownFrom(Rect actual, Rect want) {
+        return actual != null && !actual.isEmpty()
+                && Math.abs(actual.left - want.left) <= DOCK_TOLERANCE_PX
+                && Math.abs(actual.top - want.top) <= DOCK_TOLERANCE_PX
+                && actual.right >= want.right - DOCK_TOLERANCE_PX
+                && actual.bottom >= want.bottom - DOCK_TOLERANCE_PX;
+    }
+
+    /**
+     * The task's minimal width and height in px as AMS applies them: the root activity's declared
+     * {@code <layout minWidth/minHeight>} when set, else the framework default (220dp) at the
+     * task's display density. 0 = unknown.
+     */
+    private static int[] minTaskSizePx(Object svc, int taskId) {
+        int dpi = 0;
+        android.content.ComponentName root = null;
+        try {
+            for (Object info : atmTaskList(svc)) {
+                if (info == null) continue;
+                int[] children = childTaskIds(info);
+                if (children == null) continue;
+                boolean holds = false;
+                for (int t : children) if (t == taskId) { holds = true; break; }
+                if (!holds) continue;
+                Object cfg = readFieldNoThrow(info, "configuration");
+                Object d = cfg != null ? readFieldNoThrow(cfg, "densityDpi") : null;
+                if (d instanceof Integer) dpi = (Integer) d;
+                break;
+            }
+            Object raw = svc.getClass().getMethod("getTasks", int.class).invoke(svc, 64);
+            if (raw instanceof List) {
+                for (Object task : (List<?>) raw) {
+                    Object id = task != null ? readFieldNoThrow(task, "taskId") : null;
+                    if (!(id instanceof Integer) || (Integer) id != taskId) continue;
+                    Object base = readFieldNoThrow(task, "baseActivity");
+                    if (base instanceof android.content.ComponentName) {
+                        root = (android.content.ComponentName) base;
+                    }
+                    break;
+                }
+            }
+        } catch (Throwable ignored) { /* fall back to the defaults below */ }
+        int defaultMin = 0;
+        if (dpi > 0) {
+            float minDp = DEFAULT_MIN_TASK_DP;
+            try {
+                android.content.res.Resources res = android.content.res.Resources.getSystem();
+                int id = res.getIdentifier("default_minimal_size_resizable_task", "dimen",
+                        "android");
+                float density = res.getDisplayMetrics().density;
+                if (id != 0 && density > 0f) minDp = (int) (res.getDimension(id) / density);
+            } catch (Throwable ignored) { /* keep the framework default */ }
+            defaultMin = (int) (minDp * dpi / 160f);
+        }
+        int minW = defaultMin;
+        int minH = defaultMin;
+        try {
+            android.content.Context ctx = com.overdrive.app.daemon.CameraDaemon.getAppContext();
+            if (root != null && ctx != null) {
+                android.content.pm.ActivityInfo ai =
+                        ctx.getPackageManager().getActivityInfo(root, 0);
+                if (ai != null && ai.windowLayout != null) {
+                    if (ai.windowLayout.minWidth >= 0) minW = ai.windowLayout.minWidth;
+                    if (ai.windowLayout.minHeight >= 0) minH = ai.windowLayout.minHeight;
+                }
+            }
+        } catch (Throwable ignored) { /* the default applies */ }
+        return new int[] { minW, minH };
+    }
+
     // ── Verification ─────────────────────────────────────────────────────────────────
 
     private enum Verdict {
@@ -857,6 +1305,175 @@ final class ClusterFreeformWindow {
     }
 
     /**
+     * Live-task lookup through {@code IActivityTaskManager.getTasks}: the id of a RUNNING task
+     * whose top/base activity belongs to {@code pkg}; {@code -1} when the running-task list was
+     * obtained and holds none; {@link AppLauncher#TASK_LOOKUP_FAILED} when the service is
+     * unavailable or returned nothing usable (never a proof of absence).
+     *
+     * <p>Why this exists: the {@code dumpsys activity} parser attributes any {@code <pkg>/}
+     * component line inside a task block to that task. On Android 12 the shared cluster
+     * display's ROOT task keeps a {@code mLastPausedActivity: ActivityRecord{... <pkg>/...}}
+     * line after the app's child task has been destroyed, so a force-stopped app was never
+     * "confirmed absent" (field log 2026-09-24 03:02: {@code task=11} reported for com.waze
+     * forever), the DI5 cleanup stayed incomplete and every following cast was refused.
+     * Running tasks reported by ATM carry no such stale references.
+     */
+    static int liveTaskIdForPackage(String pkg) {
+        if (pkg == null || !AppLauncher.isValidPackageName(pkg)) return -1;
+        try {
+            Object svc = service();
+            if (svc == null) return AppLauncher.TASK_LOOKUP_FAILED;
+            Method getTasks = null;
+            for (Method method : svc.getClass().getMethods()) {
+                if ("getTasks".equals(method.getName())) {
+                    getTasks = method;
+                    break;
+                }
+            }
+            if (getTasks == null) return AppLauncher.TASK_LOOKUP_FAILED;
+            Class<?>[] parameterTypes = getTasks.getParameterTypes();
+            Object[] args = new Object[parameterTypes.length];
+            for (int i = 0; i < parameterTypes.length; i++) {
+                if (parameterTypes[i] == int.class) args[i] = (i == 0 ? 64 : 0);
+                else if (parameterTypes[i] == boolean.class) args[i] = Boolean.FALSE;
+                else args[i] = null;
+            }
+            Object raw = getTasks.invoke(svc, args);
+            if (!(raw instanceof List)) return AppLauncher.TASK_LOOKUP_FAILED;
+            List<?> tasks = (List<?>) raw;
+            // A live system always runs at least one task (home / SystemUI); an empty
+            // answer is a failed query, not proof that the package is gone.
+            if (tasks.isEmpty()) return AppLauncher.TASK_LOOKUP_FAILED;
+            for (Object task : tasks) {
+                if (task == null || !taskMatchesPackage(task, pkg)) continue;
+                Object id = readFieldNoThrow(task, "taskId");
+                if (!(id instanceof Integer)) id = readFieldNoThrow(task, "id");
+                if (id instanceof Integer && (Integer) id > 0) return (Integer) id;
+            }
+            return -1;
+        } catch (Throwable t) {
+            logger.debug("liveTaskIdForPackage failed: " + unwrap(t));
+            return AppLauncher.TASK_LOOKUP_FAILED;
+        }
+    }
+
+    /**
+     * Reparent {@code taskId} into an existing standard fullscreen root task on the DEFAULT
+     * display (head unit) WITHOUT bringing it to the front — the Android 12+ equivalent of
+     * {@code am stack move-task <task> <display-0 stack> false}.
+     *
+     * <p>Why this exists: {@link AppLauncher#reparentToDisplay0} finds its display-0 target by
+     * parsing {@code Stack #} / {@code ActivityStack} headers out of {@code dumpsys activity},
+     * which Android 12 no longer prints (stacks became root {@code Task}s). On DiLink 5.0
+     * firmware that lookup therefore always failed ("no display-0 fullscreen stack found"), the
+     * projected task kept its cluster-display affinity, the DI5 cleanup stayed "incomplete" and
+     * every following cast was refused until the camera service was restarted (field log
+     * 2026-09-23 20:18–20:32). This path asks {@code IActivityTaskManager} for the root tasks
+     * directly and uses {@code moveTaskToRootTask} (S+) / {@code moveTaskToStack} (Q).
+     *
+     * <p>Safety: only the ONE task named by the caller is moved (never a whole root task, so no
+     * sibling is dragged along), {@code toTop=false} keeps it in the background so nothing pops
+     * onto the head unit while driving, and the destination is restricted to standard fullscreen
+     * roots (never home/recents/split). A background (non-visible) host root is preferred so the
+     * foreground app's back-navigation is left untouched. The result is verified through the
+     * task's actual display id; any doubt returns false so the caller keeps its recovery marker.
+     */
+    static boolean moveTaskToDefaultDisplayBackground(int taskId) {
+        if (taskId <= 0) return false;
+        try {
+            Object svc = service();
+            if (svc == null) return false;
+            int currentDisplay = taskDisplayIdById(svc, taskId);
+            if (currentDisplay == 0) {
+                invalidateTaskCache();
+                return true;
+            }
+            int hostRoot = -1;
+            boolean hostVisible = true;
+            for (Object info : atmTaskList(svc)) {
+                if (info == null) continue;
+                Object display = readFieldNoThrow(info, "displayId");
+                if (!(display instanceof Integer) || (Integer) display != 0) continue;
+                int root = stackOrRootTaskId(info);
+                if (root <= 0) continue;
+                int[] children = childTaskIds(info);
+                boolean containsTask = false;
+                if (children != null) {
+                    for (int child : children) {
+                        if (child == taskId) containsTask = true;
+                    }
+                }
+                if (containsTask || !isStandardFullscreenRoot(info)) continue;
+                boolean visible = Boolean.TRUE.equals(readFieldNoThrow(info, "visible"));
+                if (hostRoot < 0 || (hostVisible && !visible)) {
+                    hostRoot = root;
+                    hostVisible = visible;
+                }
+            }
+            if (hostRoot < 0) {
+                logger.warn("moveTaskToDefaultDisplayBackground: no standard fullscreen "
+                        + "root task on display 0 to host task=" + taskId);
+                return false;
+            }
+            boolean dispatched = false;
+            for (String name : new String[] { "moveTaskToRootTask", "moveTaskToStack" }) {
+                try {
+                    Method method = svc.getClass().getMethod(
+                            name, int.class, int.class, boolean.class);
+                    method.invoke(svc, taskId, hostRoot, false);
+                    dispatched = true;
+                    logger.info(name + "(" + taskId + "," + hostRoot
+                            + ",toTop=false) dispatched (from display "
+                            + currentDisplay + ")");
+                    break;
+                } catch (NoSuchMethodException ignored) {
+                    // Try the spelling used by the other Android generation.
+                } catch (Throwable t) {
+                    logger.debug(name + " failed: " + unwrap(t));
+                }
+            }
+            if (!dispatched) return false;
+            for (int attempt = 0; attempt < 5; attempt++) {
+                if (taskDisplayIdById(svc, taskId) == 0) {
+                    invalidateTaskCache();
+                    return true;
+                }
+                try {
+                    Thread.sleep(120L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            logger.warn("moveTaskToDefaultDisplayBackground verification failed task="
+                    + taskId);
+        } catch (Throwable t) {
+            logger.warn("moveTaskToDefaultDisplayBackground failed: " + unwrap(t));
+        }
+        return false;
+    }
+
+    /** True when a root-task/stack info describes a standard (type 1) fullscreen (mode 1)
+     *  container — the only kind a background head-unit reparent may target. */
+    private static boolean isStandardFullscreenRoot(Object info) {
+        Object configuration = readFieldNoThrow(info, "configuration");
+        if (configuration == null) return false;
+        Object windowConfiguration = readFieldNoThrow(configuration, "windowConfiguration");
+        if (windowConfiguration == null) return false;
+        return invokeIntNoThrow(windowConfiguration, "getWindowingMode") == 1
+                && invokeIntNoThrow(windowConfiguration, "getActivityType") == 1;
+    }
+
+    private static int invokeIntNoThrow(Object target, String methodName) {
+        try {
+            Object value = target.getClass().getMethod(methodName).invoke(target);
+            return value instanceof Integer ? (Integer) value : -1;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
      * Bring one exact task to the front without moving its display.
      *
      * <p>This is the DI5 same-display recovery path. The OEM projection service can put its own
@@ -960,8 +1577,19 @@ final class ClusterFreeformWindow {
     /** Display id for a RunningTaskInfo — the {@code displayId} field when present, else located
      *  via the stack list. -1 when it cannot be determined. */
     private static int taskDisplayId(Object svc, Object task, int taskId) {
+        // Root-task list FIRST: on Android 12 shared cluster displays RunningTaskInfo.displayId
+        // reported 0 for a task that was resumed on display 4 (field log 2026-09-24 03:02:04,
+        // "task=42 from=0 to=4" with foreground=com.waze), which made the guardian relaunch a
+        // task the user was already looking at. Root tasks are direct display children, so
+        // their displayId is authoritative; the field is only a fallback.
+        int viaRoots = displayIdViaRootTasks(svc, taskId);
+        if (viaRoots >= 0) return viaRoots;
         Object raw = readFieldNoThrow(task, "displayId");
         if (raw instanceof Integer) return (Integer) raw;
+        return -1;
+    }
+
+    private static int displayIdViaRootTasks(Object svc, int taskId) {
         try {
             for (Object info : atmTaskList(svc)) {
                 if (info == null) continue;
@@ -1178,7 +1806,7 @@ final class ClusterFreeformWindow {
     private static String runSettingsCmd(String cmd) {
         Process p = null;
         try {
-            p = new ProcessBuilder("sh", "-c", cmd + " 2>&1").redirectErrorStream(true).start();
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd + " 2>&1")).redirectErrorStream(true).start();
             final Process fp = p;
             final StringBuilder sb = new StringBuilder();
             Thread reader = new Thread(() -> {
@@ -1366,7 +1994,7 @@ final class ClusterFreeformWindow {
         for (String cmd : new String[] { "cmd activity task resize " + coords,
                                          "am task resize " + coords }) {
             try {
-                Process p = new ProcessBuilder("sh", "-c", cmd + " 2>&1")
+                Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd + " 2>&1"))
                         .redirectErrorStream(true).start();
                 StringBuilder sb = new StringBuilder();
                 Thread reader = new Thread(() -> {

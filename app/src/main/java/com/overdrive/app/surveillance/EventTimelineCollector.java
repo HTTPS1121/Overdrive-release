@@ -447,7 +447,12 @@ public class EventTimelineCollector {
             // One bump per batch. Best-effort. (Async place merges bump via
             // SidecarGeoUpdater.writeSidecar.)
             try {
-                com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+                com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(mp4File);
+            } catch (Throwable ignored) {}
+
+            // SafeKeep: the event's sidecars now exist, so the clip group can be queued as a unit.
+            try {
+                com.overdrive.app.safekeep.SafeKeep.onEventSidecarsWritten(mp4File);
             } catch (Throwable ignored) {}
         });
     }

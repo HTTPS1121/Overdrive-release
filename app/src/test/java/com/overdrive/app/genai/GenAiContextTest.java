@@ -68,6 +68,41 @@ public class GenAiContextTest {
     }
 
     @Test
+    public void theLocationModeExistsOnlyForHandsFreeSessions() throws Exception {
+        String page = GenAiContext.openAiRealtimeTool().toString();
+        assertFalse(page.contains("\"location\""));
+        assertEquals(page, GenAiContext.openAiRealtimeTool(false).toString());
+        assertFalse(GenAiContext.geminiRealtimeTool().toString().contains("\"location\""));
+        JSONArray farModes = GenAiContext.geminiRealtimeTool(true).getJSONObject("parameters")
+                .getJSONObject("properties").getJSONObject("mode").getJSONArray("enum");
+        assertEquals("location", farModes.getString(farModes.length() - 1));
+        assertTrue(GenAiContext.openAiRealtimeTool(true).toString().contains("\"location\""));
+        JSONObject ask = new JSONObject().put("mode", "location").put("query", "where am I");
+        assertEquals(null, GenAiContext.realtimeToolRequest(ask));
+        assertEquals(null, GenAiContext.realtimeToolRequest(ask, false));
+        assertEquals("location", GenAiContext.realtimeToolRequest(ask, true).getString("mode"));
+        // The chat/page mode table does not know it either.
+        assertEquals(GenAiContext.GENERAL, GenAiContext.resolveMode("location", ""));
+    }
+
+    @Test
+    public void handsFreeLocationResultsFollowTheToggleAndCarryTheLocalTime() throws Exception {
+        JSONObject ask = new JSONObject().put("mode", "location").put("query", "");
+        JSONObject off = GenAiContext.realtimeToolResult(ask, true, false);
+        assertEquals("location", off.getString("mode"));
+        assertFalse(off.getJSONObject("data").getBoolean("available"));
+        assertTrue(off.getJSONObject("data").getString("reason").contains("turned off"));
+        JSONObject time = off.getJSONObject("localTime");
+        for (String key : new String[] {"date", "weekday", "time", "timeZone", "utcOffset"}) {
+            assertTrue(key, time.has(key));
+        }
+        // The page path is unchanged: no location mode, no local time.
+        JSONObject page = GenAiContext.realtimeToolResult(ask, false, true);
+        assertFalse(page.optBoolean("available", true));
+        assertFalse(page.has("localTime"));
+    }
+
+    @Test
     public void responseLanguageIsNormalizedWithoutTranslatingMachineValues() {
         String french = GenAiContext.withResponseLanguage(
                 "Return structured data.", "fr-CA");

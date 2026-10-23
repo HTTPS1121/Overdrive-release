@@ -2,6 +2,8 @@ package com.overdrive.app.automation.action;
 
 import com.overdrive.app.automation.AutomationAction;
 import com.overdrive.app.automation.TextInterpolator;
+import com.overdrive.app.automation.type.DynamicColourType;
+import com.overdrive.app.automation.type.DynamicIntType;
 import com.overdrive.app.automation.type.Type;
 import com.overdrive.app.automation.value.Label;
 import com.overdrive.app.daemon.CameraDaemon;
@@ -17,6 +19,7 @@ public class ApiAction extends BaseAction {
     private static final String TYPE = "api";
     // Regex to match ${variable}
     private static final Pattern p = Pattern.compile("\\$\\{([^}]+)\\}");
+    private static final Pattern WHOLE_NUMBER = Pattern.compile("-?\\d{1,9}(?:\\.0+)?");
 
     private final Label label;
     private final String description;
@@ -238,6 +241,16 @@ public class ApiAction extends BaseAction {
                     // action's own template placeholders are already consumed by this pass,
                     // so a substituted value can never re-enter it.
                     value = TextInterpolator.interpolate(variables.get(key).toString());
+                    // Spliced unquoted, and variables are MQTT-writable: only a plain whole number may pass.
+                    if (isDynamicNumber(key)) {
+                        String number = wholeNumber(value);
+                        if (number == null) {
+                            logger.warn("API action " + getLabel().getId() + ": " + key
+                                    + " is not a whole number ('" + value + "'); not sent");
+                            return null;
+                        }
+                        value = number;
+                    }
                 } else {
                     // Not one of this action's parameters: resolve it as a state reference —
                     // ${var:NAME}, ${signal:TYPE[:k=v]}, or the bare ${NAME} variable
@@ -256,6 +269,25 @@ public class ApiAction extends BaseAction {
             logger.error("Failed to replace variables for automation", e);
             return null;
         }
+    }
+
+    /** True when {@code key} is a numeric parameter that may hold a {@code ${…}} reference. */
+    private boolean isDynamicNumber(String key) {
+        for (Type type : getVariables()) {
+            if (key.equals(type.getLabel().getId())) {
+                return type instanceof DynamicIntType || type instanceof DynamicColourType;
+            }
+        }
+        return false;
+    }
+
+    /** Canonical integer text for a plain whole number ("7", " 7 ", "7.0"), else null. */
+    static String wholeNumber(String text) {
+        if (text == null) return null;
+        String s = text.trim();
+        if (!WHOLE_NUMBER.matcher(s).matches()) return null;
+        int dot = s.indexOf('.');
+        return Integer.toString(Integer.parseInt(dot < 0 ? s : s.substring(0, dot)));
     }
 
     /**

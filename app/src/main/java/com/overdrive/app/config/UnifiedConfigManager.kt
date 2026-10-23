@@ -1,5 +1,6 @@
 package com.overdrive.app.config
 
+import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
@@ -12,16 +13,20 @@ import java.io.FileDescriptor
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.InterruptedIOException
 import java.io.PrintWriter
 import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.Socket
+import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * SOTA Unified Configuration Manager
@@ -43,10 +48,10 @@ import java.util.concurrent.atomic.AtomicLong
  * - telegram: Telegram bot settings
  */
 object UnifiedConfigManager {
-    private val TAG = "UnifiedConfig"
+    private const val TAG = "UnifiedConfig"
     
     // Single source of truth - world-readable location
-    private val CONFIG_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json")
+    private val CONFIG_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("overdrive_config.json")
     private const val LIFECYCLE_SNAPSHOT_MAX_BYTES = 2L * 1024L * 1024L
 
     // ==================== DOUBLE-BUFFERED, SEQ-STAMPED DURABILITY ====================
@@ -77,9 +82,9 @@ object UnifiedConfigManager {
     // Hardcoded app-private path (UCM is a Context-free singleton object). Must
     // match the application's package — Context.filesDir resolves here.
     private const val APP_PACKAGE = "com.overdrive.app"
-    private val APP_PRIVATE_DIR = "/data/data/$APP_PACKAGE/files"
-    private val APP_PRIVATE_BAK_PATH = "$APP_PRIVATE_DIR/overdrive_config.json.bak"
-    private val APP_PRIVATE_BAK_LOCK_PATH = "$APP_PRIVATE_BAK_PATH.lock"
+    private const val APP_PRIVATE_DIR = "/data/data/$APP_PACKAGE/files"
+    private const val APP_PRIVATE_BAK_PATH = "$APP_PRIVATE_DIR/overdrive_config.json.bak"
+    private const val APP_PRIVATE_BAK_LOCK_PATH = "$APP_PRIVATE_BAK_PATH.lock"
     private const val DIRECTORY_SYNC_ATTEMPTS = 3
     // Monotonic write sequence. Absent (legacy configs) reads as 0; saveConfig
     // bumps it. Stripped from backup bundles (see ConfigBackupService) so an
@@ -119,11 +124,15 @@ object UnifiedConfigManager {
     private const val IPC_READ_TIMEOUT_MS = 5000
     private const val IPC_RECONCILE_ATTEMPTS = 4
     private const val IPC_RECONCILE_DELAY_MS = 75L
-    private val CACHE_REVALIDATE_MS = 1000L
+    private const val CACHE_REVALIDATE_MS = 1000L
+    // Upper bound on any wait for the config locks; the app main thread never waits.
+    private const val LOCK_WAIT_MS = 10_000L
+    private const val LOCK_POLL_MAX_MS = 50L
+    private const val LOCK_STALL_RELOG_MS = 5L * 60_000L
     
     // Legacy paths for migration
-    private val LEGACY_SENTRY_CONFIG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/sentry_config.json")
-    private val LEGACY_CAMERA_SETTINGS = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/camera_settings.json")
+    private val LEGACY_SENTRY_CONFIG: String get() = com.overdrive.app.util.ScratchRoot.path("sentry_config.json")
+    private val LEGACY_CAMERA_SETTINGS: String get() = com.overdrive.app.util.ScratchRoot.path("camera_settings.json")
     private const val LEGACY_SYSTEM_CONFIG = "/data/data/com.android.providers.settings/sentry_config.json"
     private const val ROOT_PROMOTION_SECTION = "__overdriveRootPromotion"
     private const val ROOT_PROMOTION_MARKER = "__overdrivePromoteRoot"
@@ -627,31 +636,41 @@ object UnifiedConfigManager {
         // whose data module sleeps a while after ACC OFF; elsewhere holding the bearer
         // up just costs battery and data. Read by AccSentryDaemon's keep-alive loop.
         if (!surveillance.has("mobileDataKeepAlive")) surveillance.put("mobileDataKeepAlive", false)
-        // DiLink 5 parked cloud heartbeat. DEFAULT FALSE (experimental opt-in):
-        // CameraDaemon asks BYD Cloud for realtime vehicle status every 15 seconds
-        // while ACC is OFF. The server-side T-Box wake can keep DI5 from
-        // entering the deep-sleep state that drops ADB/camera access, but it uses
-        // internet data and additional parked energy. Read by BydCloudDataProvider.
-        if (!surveillance.has("di5CloudKeepAlive")) surveillance.put("di5CloudKeepAlive", false)
-        // DiLink 5 QNX common-network keep-alive (Experimental, opt-in). The hold
-        // is capped per park because the platform exposes no 12 V reading.
-        if (!surveillance.has("di5QnxNetworkKeepAlive")) surveillance.put("di5QnxNetworkKeepAlive", false)
-        if (!surveillance.has("di5QnxNetworkKeepAliveMaxMinutes")) surveillance.put("di5QnxNetworkKeepAliveMaxMinutes", 60)
-        // DiLink 5 parked keep-alive (Experimental). DEFAULT FALSE (opt-in). The
+        // One parked Bluetooth preference shared by Surveillance, proximity, and
+        // radio automations. Migrate only an already-enabled proximity installation;
+        // an unused feature's old keepBluetoothOn default must not enable the radio.
+        BluetoothKeepAlivePolicy.ensureCanonical(config)
+        // DiLink 5 parked cloud heartbeat. The new poller gate also serves as a
+        // one-time upgrade marker: older builds had only di5CloudKeepAlive, so
+        // its absence proves this config has not yet received the hard-off
+        // migration. Clear any old opt-in and seed both switches FALSE. Once
+        // the marker exists, future builds may expose/re-enable the independent
+        // runtime gate without applyDefaults erasing a newly chosen preference.
+        if (!surveillance.has("di5CloudKeepAlivePollerEnabled")) {
+            surveillance.put("di5CloudKeepAlive", false)
+            surveillance.put("di5CloudKeepAlivePollerEnabled", false)
+        } else if (!surveillance.has("di5CloudKeepAlive")) {
+            surveillance.put("di5CloudKeepAlive", false)
+        }
+        // DiLink 5 parked keep-alive. DEFAULT FALSE (opt-in). The
         // single user-visible master switch; while it is OFF every lever below is
         // inert and the parked path is byte-identical to the prior build. The
         // lever keys are config-only diagnostics (never normal settings) and
         // their defaults apply ONLY while the master is ON. Read by
         // AccSentryDaemon's Di5ParkedPowerHold lease (acc_sentry_daemon process):
+        //   ParkedLink       — optional local transport, confirmed and reasserted
         //   McuHold          — sentry flags 782237711/782237728 + bounded MCU wake
         //   CameraHeartbeat  — PANORAMA_WORK_MODE_SET=1 every 2 s (off until T4)
         //   ApHold           — vendor.peripheral shutdown-critical token; also
         //                      requires ApHoldPreflightPassed (written only by the
         //                      diagnostics flow after a recorded on-car pre-flight)
         //   ReassertSeconds  — MCU-hold re-assert cadence ("DiPlus mode-3 parity")
-        //   CutoffVoltage / CutoffSamples / VoltageMaxAgeSeconds — separate 12 V
-        //                      guard (NOT BatteryVoltageMonitorV2's MCU thresholds)
+        //   CutoffVoltage / CutoffSamples / VoltageMaxAgeSeconds — best-effort
+        //                      12 V cutoff guard (NOT BatteryVoltageMonitorV2's
+        //                      MCU thresholds); missing/stale samples do not
+        //                      block this explicitly opted-in experiment
         if (!surveillance.has("di5ParkedKeepAlive")) surveillance.put("di5ParkedKeepAlive", false)
+        com.overdrive.app.power.Di5ParkedKeepAliveSettings.ensureLinkConfig(surveillance)
         if (!surveillance.has("di5ParkedKeepAliveMcuHold")) surveillance.put("di5ParkedKeepAliveMcuHold", true)
         // OEM-app parity: while the MCU hold is asserted, also write the
         // BYDAutoPowerDevice MCU power hold (-1442840502 <- 1). Escape hatch
@@ -1114,6 +1133,17 @@ object UnifiedConfigManager {
         }
         if (!projection.has("autoStartOnAcc")) projection.put("autoStartOnAcc", false)
         if (!projection.has("autoStartPackage")) projection.put("autoStartPackage", "")
+        // Cluster transport selector: "auto" (DI5 container protocol on DiLink 5
+        // firmware / dilink5 camera mode, legacy AutoContainer opcodes elsewhere),
+        // or an explicit "legacy" / "dilink5" override. Read once per daemon boot
+        // by ClusterTransport.refresh(); changing it needs a camera-service restart.
+        if (!projection.has("clusterTransport")) projection.put("clusterTransport", "auto")
+        // DI5 shared cluster surface that last survived an OEM takeover fallback
+        // (e.g. com.byd.sr reclaiming shared_..._0): learned by DiLink5ClusterCast,
+        // empty = default ranking. Clear it to force the default surface again.
+        if (!projection.has("di5SharedDisplayPreference")) {
+            projection.put("di5SharedDisplayPreference", "")
+        }
 
         // Vehicle appearance defaults — selected 3D model and body paint color.
         // Stored unified so AVN and remote (phone-over-tunnel) clients show the
@@ -1147,6 +1177,15 @@ object UnifiedConfigManager {
                 }
             )
         }
+        // Opt-in DiLink 5 assist-off profile: one flag per driver-assistance control
+        // (CPD, LDA/LKA mode, ELKA, DMS), all default OFF. Each turns its feature off
+        // at every ignition. Runtime eligibility additionally requires DiLink 5 mode
+        // AND an explicitly confirmed sealion7 selection (modelSource != unset) —
+        // evaluated by the applier in the app process, never here.
+        if (!vehicle.has("assistOffCpd")) vehicle.put("assistOffCpd", false)
+        if (!vehicle.has("assistOffLda")) vehicle.put("assistOffLda", false)
+        if (!vehicle.has("assistOffElka")) vehicle.put("assistOffElka", false)
+        if (!vehicle.has("assistOffDms")) vehicle.put("assistOffDms", false)
         if (!vehicle.has("color")) vehicle.put("color", "#E8E8EC")  // Aurora White
 
         // Geocoding (place-name tagging) defaults — opt-in, fully offline by
@@ -1256,8 +1295,8 @@ object UnifiedConfigManager {
         // Every write path also re-reads through loadConfigFresh() under the
         // stable file lock, so a mutation never merges against stale bytes.
         // Snapshot the volatile field ONCE into a local: this fast-path runs
-        // OUTSIDE synchronized(this), and a concurrent writer (forceReload /
-        // loadConfigFresh) nulls cachedConfig under the monitor. A check-then-`!!`
+        // OUTSIDE [configLock], and a concurrent writer (forceReload /
+        // loadConfigFresh) can null cachedConfig at any time. A check-then-`!!`
         // on the field directly is a TOCTOU — the null-write can land between the
         // null-check and the `!!` deref, throwing NPE. The local read is atomic
         // (field is @Volatile) so `cached` cannot become null after the check.
@@ -1273,7 +1312,9 @@ object UnifiedConfigManager {
                 loadConfigUnderFileLock(configFile)
             }
         } catch (e: ConfigLockUnavailableException) {
-            Log.w(TAG, "Config load proceeding without cache publication: ${e.message}")
+            if (!e.contended) {
+                Log.w(TAG, "Config load proceeding without cache publication: ${e.message}")
+            }
             loadConfigWithoutStableLock(configFile)
         }
         // INVARIANT: promotion routes a blocking IPC write to the daemon, and the
@@ -1320,6 +1361,15 @@ object UnifiedConfigManager {
                         // that are otherwise up to date, and trips stay dead.
                         val trips = config.optJSONObject("tripAnalytics")
                         if (trips == null || !trips.has("enabledDefaultMigrated")) return@run true
+                        // Existing installs may have the old cloud heartbeat
+                        // preference enabled. Force applyDefaults once so the
+                        // hard-off poller marker clears that legacy opt-in and
+                        // is persisted before normal cached reads resume.
+                        val surveillance =
+                            config.optJSONObject("surveillance") ?: return@run true
+                        if (!surveillance.has("di5CloudKeepAlivePollerEnabled")) {
+                            return@run true
+                        }
                         // Pre-provenance configs have modelId but no modelSource;
                         // applyDefaults must run once to classify them as legacy.
                         val vehicle = config.optJSONObject("vehicle") ?: return@run true
@@ -1534,21 +1584,21 @@ object UnifiedConfigManager {
      * A read can precede daemon lock-file provisioning. Return a best-effort
      * snapshot in that narrow window, but never cache or stamp it: without the
      * stable lock, a peer rename could race either the byte read or metadata.
+     * Also serves reads that must not wait for a contended lock, so it takes no
+     * lock of its own.
      */
     private fun loadConfigWithoutStableLock(configFile: File): JSONObject {
-        return synchronized(this) {
-            stampFreshness(0)
-            try {
-                if (configFile.exists() && configFile.length() > 0L) {
-                    JSONObject(configFile.readText()).also { applyDefaults(it) }
-                } else {
-                    cachedConfig ?: createDefaultConfig()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Unlocked config read unavailable (${e.message}); " +
-                    "returning the last in-memory snapshot")
+        stampFreshness(0)
+        return try {
+            if (configFile.exists() && configFile.length() > 0L) {
+                JSONObject(configFile.readText()).also { applyDefaults(it) }
+            } else {
                 cachedConfig ?: createDefaultConfig()
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Unlocked config read unavailable (${e.message}); " +
+                "returning the last in-memory snapshot")
+            cachedConfig ?: createDefaultConfig()
         }
     }
 
@@ -1556,7 +1606,7 @@ object UnifiedConfigManager {
      * Best-effort recovery of a corrupt live config from the last-known-good
      * backups written by saveConfig(). Returns the recovered config (and
      * promotes it back to the live path + clears corruptionDetected) on
-     * success, or null if there's no usable backup. Caller holds the monitor.
+     * success, or null if there's no usable backup. Caller holds [configLock].
      *
      * SEQ-AWARE, DOUBLE-SOURCE recovery: considers BOTH the sticky .bak
      * (daemon-maintained, may be STALE across a daemon-down session) AND the
@@ -2004,7 +2054,10 @@ object UnifiedConfigManager {
 
                 lockRaf = RandomAccessFile(File(APP_PRIVATE_BAK_LOCK_PATH), "rw")
                 lockChannel = lockRaf.channel
-                backupLock = lockChannel.lock()
+                backupLock = tryLockUntil(
+                    lockChannel,
+                    SystemClock.elapsedRealtime() + lockWaitMs()
+                ) ?: throw IOException("App-private backup lock is busy")
 
                 val bak = File(APP_PRIVATE_BAK_PATH)
                 val published = try {
@@ -2524,17 +2577,48 @@ object UnifiedConfigManager {
         try { (loadConfig().optJSONObject("surveillance")?.optBoolean("mobileDataKeepAlive", false)) ?: false }
         catch (t: Throwable) { false }
 
-    /** Whether the experimental DiLink 5 BYD-cloud parked heartbeat is enabled.
+    /** Single persisted preference for every OverDrive parked Bluetooth owner.
+     *  False stops keep-alive reassertion, including proximity; no separate
+     *  automation suppression flag can disagree with the settings pages. */
+    @JvmStatic
+    fun isBluetoothKeepAliveEnabled(): Boolean =
+        try { BluetoothKeepAlivePolicy.enabled(loadConfig()) }
+        catch (t: Throwable) { false }
+
+    /** Off-main-looper atomic write; app callers use the existing daemon route. */
+    @JvmStatic
+    fun setBluetoothKeepAliveEnabled(enabled: Boolean): Boolean =
+        updateValues("surveillance", mapOf("bluetoothKeepAlive" to enabled))
+
+    /** Config-only rollout gate for the in-car DiLink 5 BYD-cloud poller.
+     *  The shipped build gate is a hard stop; the persisted flag is consulted
+     *  only by a future build that deliberately enables this implementation. */
+    @JvmStatic
+    fun isDi5CloudKeepAlivePollerEnabled(): Boolean {
+        if (!com.overdrive.app.BuildConfig.DI5_CLOUD_KEEPALIVE_POLLER_ENABLED) {
+            return false
+        }
+        return try {
+            (loadConfig().optJSONObject("surveillance")
+                ?.optBoolean("di5CloudKeepAlivePollerEnabled", false)) ?: false
+        } catch (t: Throwable) { false }
+    }
+
+    /** Whether the experimental DiLink 5 BYD-cloud parked heartbeat is effective.
+     *  Both the default-off rollout gate and the user's saved opt-in must be true.
      *  Fail-CLOSED: a config read problem must never start network traffic or
      *  intentionally prevent vehicle deep sleep. Runtime eligibility additionally
      *  requires confirmed ACC OFF, DiLink 5, On & Off mode, and verified cloud
      *  credentials. */
     @JvmStatic
     fun isDi5CloudKeepAliveEnabled(): Boolean =
-        try { (loadConfig().optJSONObject("surveillance")?.optBoolean("di5CloudKeepAlive", false)) ?: false }
-        catch (t: Throwable) { false }
+        try {
+            isDi5CloudKeepAlivePollerEnabled() &&
+                (loadConfig().optJSONObject("surveillance")
+                    ?.optBoolean("di5CloudKeepAlive", false) ?: false)
+        } catch (t: Throwable) { false }
 
-    /** Whether the experimental DiLink 5 parked keep-alive master switch is ON.
+    /** Whether the DiLink 5 parked keep-alive master switch is ON.
      *  Fail-CLOSED: a config read problem must never start HAL writes or hold the
      *  MCU/AP awake. Deliberately independent of the camera-mode selection
      *  (DiLink 5 head units exist with and without the QCarCam camera stack) and
@@ -3652,10 +3736,10 @@ object UnifiedConfigManager {
      *                   it is allowed to run only after acquiring the stable
      *                   .lock inode; otherwise it returns false for retry.
      *
-     * The socket I/O runs OUTSIDE the updateSection/updateValues monitor (the
-     * caller invokes this before entering synchronized(this)) so a slow or
-     * stalled localhost round-trip never blocks app-process readers, all of
-     * which funnel through loadConfig()'s synchronized(this).
+     * The socket I/O runs OUTSIDE [configLock] (updateSection/updateValues
+     * invoke this before taking it) so a slow or stalled localhost round-trip
+     * never blocks app-process readers, all of which funnel through
+     * loadConfig().
      *
      * `command` is "UPDATE_SECTION" or "UPDATE_VALUES"; `payloadKey` is "data"
      * or "values" respectively. UPDATE_SECTION may carry the private
@@ -3830,6 +3914,29 @@ object UnifiedConfigManager {
         config.put(MUTATION_CLOCKS_KEY, clocks)
     }
 
+    private fun isBluetoothPreferenceKey(section: String, key: String): Boolean =
+        (section == BluetoothKeepAlivePolicy.SECTION && key == BluetoothKeepAlivePolicy.KEY) ||
+            (section == BluetoothKeepAlivePolicy.LEGACY_SECTION &&
+                key == BluetoothKeepAlivePolicy.LEGACY_KEY)
+
+    /** Both page aliases share one ordering clock for delayed app-to-daemon writes. */
+    private fun sharedBluetoothMutationSequence(
+        config: JSONObject, section: String, key: String, stamp: MutationStamp
+    ): Long = if (isBluetoothPreferenceKey(section, key)) {
+        appliedMutationSequence(
+            config, BluetoothKeepAlivePolicy.SECTION, BluetoothKeepAlivePolicy.KEY, stamp)
+    } else 0L
+
+    private fun recordSharedBluetoothMutation(
+        config: JSONObject, section: String, keys: List<String>, stamp: MutationStamp
+    ) {
+        if (keys.any { isBluetoothPreferenceKey(section, it) }) {
+            recordMutationApplied(
+                config, BluetoothKeepAlivePolicy.SECTION,
+                listOf(BluetoothKeepAlivePolicy.KEY), stamp)
+        }
+    }
+
     /**
      * Resolve every post-send transport failure against durable state before a
      * caller is allowed to attempt the idempotent local fallback. This covers
@@ -3980,6 +4087,7 @@ object UnifiedConfigManager {
         // publication. The local path may retain this object in cachedConfig
         // after a successful save.
         val routedPayload = JSONObject(data.toString())
+        if (!BluetoothKeepAlivePolicy.validPatch(section, routedPayload)) return false
         if (section == ROOT_PROMOTION_SECTION) {
             routeWriteIfApp("UPDATE_SECTION", section, "data", routedPayload)
                 ?.let { return it }
@@ -4018,6 +4126,15 @@ object UnifiedConfigManager {
             val keys = payload.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
+                if (mutationStamp != null
+                        && sharedBluetoothMutationSequence(
+                            config, section, key, mutationStamp
+                        ) >= mutationStamp.sequence) {
+                    if (replace && isBluetoothPreferenceKey(section, key)) {
+                        existing.put(key, BluetoothKeepAlivePolicy.enabled(config))
+                    }
+                    continue
+                }
                 if (!replace && mutationStamp != null
                         && appliedMutationSequence(
                             config, section, key, mutationStamp
@@ -4031,6 +4148,7 @@ object UnifiedConfigManager {
                 return@withConfigMutationLock true
             }
             config.put(section, existing)
+            BluetoothKeepAlivePolicy.synchronizeSectionWrite(config, section, appliedKeys)
             if (mutationStamp != null) {
                 recordMutationApplied(
                     config,
@@ -4038,6 +4156,7 @@ object UnifiedConfigManager {
                     if (replace) listOf("*") else appliedKeys,
                     mutationStamp
                 )
+                recordSharedBluetoothMutation(config, section, appliedKeys, mutationStamp)
             }
             val success = saveConfig(config)
             if (success) {
@@ -4085,6 +4204,7 @@ object UnifiedConfigManager {
         // into a JSONObject for the wire; the daemon applies it via updateValues.
         val valuesJson = JSONObject()
         values.forEach { (key, value) -> valuesJson.put(key, value) }
+        if (!BluetoothKeepAlivePolicy.validPatch(section, valuesJson)) return false
         val payload = ensureMutationStamp(JSONObject(valuesJson.toString()))
         routeWriteIfApp("UPDATE_VALUES", section, "values", payload)?.let { return it }
         val mutationStamp = stripMutationStamp(payload)
@@ -4097,8 +4217,9 @@ object UnifiedConfigManager {
             while (keys.hasNext()) {
                 val key = keys.next()
                 if (mutationStamp != null
-                        && appliedMutationSequence(
-                            config, section, key, mutationStamp
+                        && maxOf(
+                            appliedMutationSequence(config, section, key, mutationStamp),
+                            sharedBluetoothMutationSequence(config, section, key, mutationStamp)
                         ) >= mutationStamp.sequence) {
                     continue
                 }
@@ -4110,9 +4231,11 @@ object UnifiedConfigManager {
             }
 
             config.put(section, sectionObj)
+            BluetoothKeepAlivePolicy.synchronizeSectionWrite(config, section, appliedKeys)
             if (mutationStamp != null) {
                 recordMutationApplied(
                     config, section, appliedKeys, mutationStamp)
+                recordSharedBluetoothMutation(config, section, appliedKeys, mutationStamp)
             }
             val success = saveConfig(config)
             if (success) {
@@ -4190,11 +4313,15 @@ object UnifiedConfigManager {
      * FAIL-OPEN to false (full "onAndOff" behaviour) on any error, absence, or a
      * non-string value — a transient read glitch must NEVER silently disable
      * keep-awake or surveillance for an on-and-off user.
+     *
+     * Also true for the rest of a park ended by the low-battery cutoff
+     * ([com.overdrive.app.ui.model.ParkedShutdown.isSocCutoffLatched]).
      */
     @JvmStatic
     fun isVehicleOnOnlyMode(): Boolean =
-        try { getSurveillance().optString("operatingMode", "onAndOff") == "onOnly" }
-        catch (t: Throwable) { false }
+        (try { getSurveillance().optString("operatingMode", "onAndOff") == "onOnly" }
+        catch (t: Throwable) { false }) ||
+            com.overdrive.app.ui.model.ParkedShutdown.isSocCutoffLatched()
 
     /**
      * Lock-free, fail-open snapshot for lifecycle entry points that run on the
@@ -4208,7 +4335,7 @@ object UnifiedConfigManager {
      */
     @JvmStatic
     fun isVehicleOnOnlyModeSnapshot(): Boolean {
-        return try {
+        val configured = try {
             val file = File(CONFIG_PATH)
             val length = file.length()
             if (!file.isFile ||
@@ -4224,6 +4351,7 @@ object UnifiedConfigManager {
         } catch (t: Throwable) {
             false
         }
+        return configured || com.overdrive.app.ui.model.ParkedShutdown.isSocCutoffLatched()
     }
 
     // ==================== LISTENERS ====================
@@ -4275,22 +4403,20 @@ object UnifiedConfigManager {
      */
     @JvmStatic
     fun forceReload(): JSONObject {
-        synchronized(this) {
-            cachedConfig = null
-            stampFreshness(0)
-            return loadConfig()
-        }
+        cachedConfig = null
+        stampFreshness(0)
+        return loadConfig()
     }
 
     // Sibling advisory-lock file for CROSS-PROCESS serialization of the config
-    // read-modify-write. synchronized(this) only excludes threads within ONE
+    // read-modify-write. [configLock] only excludes threads within ONE
     // JVM; multiple UID-2000 daemon JVMs (CameraDaemon, AccSentryDaemon, the
     // cluster projector, etc.) each run their own UnifiedConfigManager and
     // would otherwise interleave loadConfig→merge→atomic-rename, dropping a
     // peer's just-committed section (stale-snapshot lost update). An OS flock
     // held across the whole critical section makes those writers mutually
     // exclude. World-RW so any daemon UID can acquire it.
-    private val LOCK_PATH = "$CONFIG_PATH.lock"
+    private val LOCK_PATH: String get() = "$CONFIG_PATH.lock"
 
     /**
      * Every writer must lock this one stable inode. The live config inode is
@@ -4300,21 +4426,153 @@ object UnifiedConfigManager {
      */
     private fun lockTargetFor(): File = File(LOCK_PATH)
 
+    /** [contended] marks a bounded wait that ran out, as opposed to a lock that cannot exist yet. */
     private class ConfigLockUnavailableException(
         message: String,
-        cause: Throwable? = null
+        cause: Throwable? = null,
+        val contended: Boolean = false
     ) : IllegalStateException(message, cause)
 
+    private class OwnedReentrantLock : ReentrantLock() {
+        fun ownerThread(): Thread? = owner
+    }
+
+    private val configLock = OwnedReentrantLock()
+
+    // Set when a waiter exhausts LOCK_WAIT_MS; the next successful acquisition clears it.
+    @Volatile
+    private var stableLockStalled = false
+    @Volatile
+    private var lockStallStartedAtMs = 0L
+    @Volatile
+    private var lockStallLoggedAtMs = 0L
+
+    /** App main threads never wait, and nobody waits while a stall is in progress. */
+    private fun lockWaitMs(): Long = when {
+        stableLockStalled -> 0L
+        android.os.Process.myUid() != SHELL_DAEMON_UID &&
+            android.os.Looper.getMainLooper()?.isCurrentThread == true -> 0L
+        else -> LOCK_WAIT_MS
+    }
+
+    private fun acquireConfigLock(deadline: Long): Boolean {
+        // Untimed first: re-entry must succeed even on an interrupted thread.
+        if (configLock.tryLock()) return true
+        val remaining = deadline - SystemClock.elapsedRealtime()
+        if (remaining <= 0L) return false
+        return try {
+            configLock.tryLock(remaining, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+    }
+
+    /** Polls until [deadline]; null means another process still holds the lock. */
+    private fun tryLockUntil(channel: FileChannel, deadline: Long): FileLock? {
+        var pauseMs = 1L
+        while (true) {
+            channel.tryLock()?.let { return it }
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0L) return null
+            try {
+                Thread.sleep(minOf(pauseMs, remaining))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException("Interrupted waiting for a file lock")
+            }
+            pauseMs = minOf(pauseMs * 2, LOCK_POLL_MAX_MS)
+        }
+    }
+
     /**
-     * Run [body] while holding BOTH the in-JVM monitor AND an exclusive OS
+     * A waiter that exhausts [LOCK_WAIT_MS] starts the stall; while it lasts the
+     * line repeats at most every [LOCK_STALL_RELOG_MS] so logcat keeps the holder.
+     */
+    private fun reportStableLockUnavailable(waitMs: Long, holder: () -> String) {
+        val now = SystemClock.elapsedRealtime()
+        if (waitMs == LOCK_WAIT_MS) {
+            if (stableLockStalled) return
+            stableLockStalled = true
+            lockStallStartedAtMs = now
+        } else if (!stableLockStalled || now - lockStallLoggedAtMs < LOCK_STALL_RELOG_MS) {
+            return
+        }
+        lockStallLoggedAtMs = now
+        val described = try {
+            holder()
+        } catch (e: Exception) {
+            "unknown (${e.javaClass.simpleName})"
+        }
+        Log.e(TAG, "Config lock unavailable for ${now - lockStallStartedAtMs + LOCK_WAIT_MS}ms; " +
+            "failing fast until it is released. Holder: $described")
+    }
+
+    private val processLabel: String by lazy {
+        try {
+            File("/proc/self/cmdline").readText().replace('\u0000', ' ').trim().take(160)
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    // Diagnostics only: SELinux denies /proc/locks to the shell and app domains,
+    // so the holder leaves its identity in the (otherwise empty) lock file.
+    private fun recordStableLockOwner(channel: FileChannel) {
+        try {
+            val record = ("pid=${android.os.Process.myPid()} uid=${android.os.Process.myUid()} " +
+                "thread=${Thread.currentThread().name} since=${System.currentTimeMillis()} " +
+                "proc=$processLabel").toByteArray(StandardCharsets.UTF_8)
+            channel.write(ByteBuffer.wrap(record), 0L)
+            channel.truncate(record.size.toLong())
+        } catch (_: Exception) {}
+    }
+
+    private fun describeStableLockHolders(): String {
+        val record = try {
+            File(LOCK_PATH).readText(StandardCharsets.UTF_8).trim().take(320)
+        } catch (_: Exception) {
+            ""
+        }.ifEmpty { "no owner record" }
+        val pids = try {
+            val inode = Os.stat(LOCK_PATH).st_ino.toString()
+            File("/proc/locks").readLines()
+                .map { it.trim().split(Regex("\\s+")) }
+                .filter { it.size > 5 && it[1] != "->" && it[5].substringAfterLast(':') == inode }
+                .joinToString("; ") { "pid ${it[4]} ${describeProcess(it[4])}" }
+        } catch (_: Exception) {
+            ""
+        }
+        return if (pids.isEmpty()) record else "$record; /proc/locks: $pids"
+    }
+
+    private fun describeProcess(pid: String): String {
+        return try {
+            val cmdline = File("/proc/$pid/cmdline").readText().replace('\u0000', ' ').trim()
+            val state = File("/proc/$pid/stat").readText().substringAfterLast(") ").take(1)
+            "[$cmdline] state=$state"
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun describeLocalHolder(): String {
+        val owner = configLock.ownerThread() ?: return "in-process thread unknown"
+        return "in-process thread ${owner.name}\n" +
+            owner.stackTrace.take(25).joinToString("\n") { "    at $it" }
+    }
+
+    /**
+     * Run [body] while holding BOTH [configLock] AND an exclusive OS
      * advisory lock on [LOCK_PATH], so the enclosed read-modify-write is
      * atomic across processes. The body never runs unless the OS lock was
      * acquired. A daemon may create a missing lock file; an app process must
      * defer until the daemon provisions it because the app cannot safely choose
-     * any substitute inode.
+     * any substitute inode. Both waits are bounded by [lockWaitMs]; running out
+     * throws a contended [ConfigLockUnavailableException].
      */
     // RE-ENTRANCY guard: java.nio FileLock is per-JVM for the whole file, so a
-    // second channel.lock() from the same JVM while one is held throws
+    // second lock attempt from the same JVM while one is held throws
     // OverlappingFileLockException. loadConfig()'s internal self-heal persists
     // can run while updateSection already holds the lock (updateSection →
     // loadConfigFresh → loadConfig → migrate → saveConfigInternal), so nesting
@@ -4323,7 +4581,19 @@ object UnifiedConfigManager {
     private val holdingFileLock = ThreadLocal.withInitial { false }
 
     private fun <T> withConfigFileLock(body: () -> T): T {
-        synchronized(this) {
+        val waitMs = lockWaitMs()
+        val deadline = SystemClock.elapsedRealtime() + waitMs
+        if (!acquireConfigLock(deadline)) {
+            // The owner may itself be waiting on a peer process, so name both.
+            reportStableLockUnavailable(waitMs) {
+                "${describeLocalHolder()}\nfile lock: ${describeStableLockHolders()}"
+            }
+            throw ConfigLockUnavailableException(
+                "Config lock is held by another thread of this process",
+                contended = true
+            )
+        }
+        try {
             if (holdingFileLock.get() == true) {
                 // Already held by this thread higher in the stack — the OS lock
                 // is in force; just run.
@@ -4345,20 +4615,37 @@ object UnifiedConfigManager {
                 try {
                     raf = RandomAccessFile(lockFile, "rw")
                     channel = raf.channel
-                    // Blocking exclusive lock — contention is rare (a few daemons,
-                    // sub-ms writes) and a brief block is preferable to a dropped
-                    // write. lock() releases on channel/raf close in finally.
-                    lock = channel.lock()
-                    try {
-                        lockFile.setReadable(true, false)
-                        lockFile.setWritable(true, false)
-                    } catch (_: Exception) {}
+                    // Bounded so a peer that never releases cannot wedge this
+                    // process. The lock releases on channel/raf close in finally.
+                    lock = tryLockUntil(
+                        channel,
+                        minOf(deadline, SystemClock.elapsedRealtime() + lockWaitMs())
+                    )
+                    if (lock != null) {
+                        try {
+                            lockFile.setReadable(true, false)
+                            lockFile.setWritable(true, false)
+                        } catch (_: Exception) {}
+                        recordStableLockOwner(channel)
+                    }
                 } catch (e: Exception) {
                     throw ConfigLockUnavailableException(
                         "Stable config lock $LOCK_PATH could not be acquired: " +
                             (e.message ?: e.javaClass.simpleName),
                         e
                     )
+                }
+                if (lock == null) {
+                    reportStableLockUnavailable(waitMs) { describeStableLockHolders() }
+                    throw ConfigLockUnavailableException(
+                        "Stable config lock $LOCK_PATH is held by another process",
+                        contended = true
+                    )
+                }
+                if (stableLockStalled) {
+                    stableLockStalled = false
+                    val stalledMs = SystemClock.elapsedRealtime() - lockStallStartedAtMs + LOCK_WAIT_MS
+                    Log.w(TAG, "Config lock released after ${stalledMs}ms; normal waits resume")
                 }
 
                 holdingFileLock.set(true)
@@ -4372,13 +4659,15 @@ object UnifiedConfigManager {
                 try { channel?.close() } catch (_: Exception) {}
                 try { raf?.close() } catch (_: Exception) {}
             }
+        } finally {
+            configLock.unlock()
         }
     }
 
     /**
      * Boolean mutation entry points report a deferred write as false. This
      * preserves their retry contract without ever executing a mutation under
-     * only the in-process monitor.
+     * only the in-process lock.
      */
     private fun withConfigMutationLock(
         operation: String,
@@ -4387,7 +4676,10 @@ object UnifiedConfigManager {
         return try {
             withConfigFileLock(body)
         } catch (e: ConfigLockUnavailableException) {
-            Log.w(TAG, "$operation deferred: ${e.message}")
+            // An announced stall is logged by reportStableLockUnavailable instead.
+            if (!e.contended || !stableLockStalled) {
+                Log.w(TAG, "$operation deferred: ${e.message}")
+            }
             false
         }
     }
@@ -4404,7 +4696,9 @@ object UnifiedConfigManager {
         return try {
             withConfigFileLock(body)
         } catch (e: ConfigLockUnavailableException) {
-            Log.w(TAG, "$operation deferred: ${e.message}")
+            if (!e.contended || !stableLockStalled) {
+                Log.w(TAG, "$operation deferred: ${e.message}")
+            }
             null
         }
     }
@@ -4469,7 +4763,7 @@ object UnifiedConfigManager {
      * 1-second-mtime freshness gate in loadConfig. Used by updateSection/
      * updateValues BEFORE merging so a peer process's same-second write isn't
      * missed (the mtime gate is second-granular on ext4, so two writes in one
-     * second look unchanged). Caller holds the monitor (+ ideally the file lock).
+     * second look unchanged). Caller holds [configLock] (+ ideally the file lock).
      */
     private fun loadConfigFresh(): JSONObject {
         cachedConfig = null

@@ -186,10 +186,12 @@ class OnboardingHost(
     private fun reconcilePersistedSetupState() {
         try {
             val vehicle = com.overdrive.app.config.UnifiedConfigManager.getVehicle()
+            // A half-applied vehicle setup already wrote the model; its step stays open so the
+            // guide offers to finish it.
             if (OnboardingConfigPolicy.hasConfiguredVehicle(
                     vehicle.optString("modelId", ""),
                     vehicle.optString("modelSource", ""),
-                )) {
+                ) && !com.overdrive.app.setup.VehicleSetupJournal.isPending(activity)) {
                 state.vehicleStepDone = true
             }
         } catch (t: Throwable) {
@@ -361,7 +363,8 @@ class OnboardingHost(
 
     private fun launchVehicleChapter() {
         val ov = overlay ?: return
-        VehicleWizardCoach(activity, ov, state) {
+        val afterVehicle = {
+            overlay?.visibility = View.VISIBLE
             reconcilePersistedSetupState()
             currentStep = if (state.cameraStep == OnboardingState.CameraStep.SAVED_OK) {
                 SetupStep.DASHBOARD
@@ -369,7 +372,17 @@ class OnboardingHost(
                 SetupStep.CAMERA
             }
             renderCurrent()
-        }.begin()
+        }
+        // The setup assistant covers model, camera system and storage; the profile coach is
+        // the fallback when it cannot open.
+        if (!state.vehicleStepDone) {
+            ov.visibility = View.GONE
+            val opened = (activity as? com.overdrive.app.ui.MainActivity)
+                ?.startVehicleSetup(fromOnboarding = true) { _ -> if (started) afterVehicle() } == true
+            if (opened) return
+            ov.visibility = View.VISIBLE
+        }
+        VehicleWizardCoach(activity, ov, state) { afterVehicle() }.begin()
     }
 
     private fun launchDashboardChapter() {

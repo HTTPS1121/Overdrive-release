@@ -8,7 +8,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Publishes blind-spot, rear-cross-traffic, and door-open warning families as
- * distinct per-side automation states.
+ * distinct per-side automation states, and blind spot on either side, which is all a car
+ * that doesn't report the side (DiLink 3.0's BSD state) can say.
  *
  * <p><b>What this is not.</b> This is the OEM's radar warning — "is there a
  * vehicle beside me right now" — not the side-camera blind-spot overlay. The two
@@ -60,6 +61,8 @@ public final class BlindSpotEvent {
     // Per-side clock of the last observed alert. 0 = never alerted.
     private static final AtomicLong lastLeftAlertMs = new AtomicLong(0);
     private static final AtomicLong lastRightAlertMs = new AtomicLong(0);
+    // either side: a side alarm, or the BSD state on a car that doesn't say which side
+    private static final AtomicLong lastAnyAlertMs = new AtomicLong(0);
     private static final AtomicLong lastRctaLeftAlertMs = new AtomicLong(0);
     private static final AtomicLong lastRctaRightAlertMs = new AtomicLong(0);
     private static final AtomicLong lastDowLeftAlertMs = new AtomicLong(0);
@@ -68,6 +71,7 @@ public final class BlindSpotEvent {
     // publishes the "off" edge once instead of every tick.
     private static final AtomicBoolean leftOn = new AtomicBoolean(false);
     private static final AtomicBoolean rightOn = new AtomicBoolean(false);
+    private static final AtomicBoolean anyOn = new AtomicBoolean(false);
     private static final AtomicBoolean rctaLeftOn = new AtomicBoolean(false);
     private static final AtomicBoolean rctaRightOn = new AtomicBoolean(false);
     private static final AtomicBoolean dowLeftOn = new AtomicBoolean(false);
@@ -77,12 +81,76 @@ public final class BlindSpotEvent {
     // layer ignores the first transition out of an unseeded state, so seeding an
     // explicit "off" is what makes the FIRST real alert fire.
     private static final AtomicBoolean seeded = new AtomicBoolean(false);
+    // whether the last tick kept the automation states current; the first that does so again is a
+    // baseline, not an edge (the widget can keep the poll running while automations are off)
+    private static volatile boolean statesLive = false;
+
+    // Last radar blind-spot alert per side for the glass widgets (elapsedRealtime, so a wall-clock
+    // correction can't hold a zone lit), stamped whether or not any automation references the signal.
+    private static final AtomicLong widgetLeftMs = new AtomicLong(0);
+    private static final AtomicLong widgetRightMs = new AtomicLong(0);
+    // the BSD state's warning, side unknown: a level, so it needs only to outlast a summary poll
+    private static final AtomicLong widgetAnyMs = new AtomicLong(0);
+    private static final long ANY_HOLD_MS = 2000L;
 
     private BlindSpotEvent() {}
 
+    /** 1 while a blind-spot alert on that side is inside the hold window, else 0. */
+    public static int widgetLevel(boolean left) {
+        long at = (left ? widgetLeftMs : widgetRightMs).get();
+        return at > 0 && android.os.SystemClock.elapsedRealtime() - at < ALERT_HOLD_MS ? 1 : 0;
+    }
+
+    /** 1 while the car reports a vehicle in a blind spot without saying which side, else 0. */
+    public static int widgetLevelAny() {
+        long at = widgetAnyMs.get();
+        return at > 0 && android.os.SystemClock.elapsedRealtime() - at < ANY_HOLD_MS ? 1 : 0;
+    }
+
+    /**
+     * The glass widgets' power graphic shows blind-spot zones: widgets on, the zones on, and the
+     * power widget listed. While it does, the radar is polled even with no automation, so a vehicle
+     * that stays beside us keeps its zone lit (the event path only delivers edges).
+     */
+    private static boolean widgetWanted() {
+        try {
+            org.json.JSONObject g = com.overdrive.app.config.UnifiedConfigManager.loadConfig().optJSONObject("glassWidgets");
+            if (g == null || !g.optBoolean("enabled", false) || !g.optBoolean("showBlindSpot", true)) return false;
+            org.json.JSONArray w = g.optJSONArray("widgets");
+            if (w == null) return true; // the default list includes power
+            for (int i = 0; i < w.length(); i++) if ("power".equals(w.optString(i))) return true;
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static void stampWidget(int packed, String via) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        // the field log notes a zone lighting, not every tick that keeps it lit
+        if ((packed & com.overdrive.app.byd.BydDataCollector.BS_LEFT_BIT) != 0) {
+            if (widgetLevel(true) == 0) com.overdrive.app.byd.AdasDiag.zone(true, via);
+            widgetLeftMs.set(now);
+        }
+        if ((packed & com.overdrive.app.byd.BydDataCollector.BS_RIGHT_BIT) != 0) {
+            if (widgetLevel(false) == 0) com.overdrive.app.byd.AdasDiag.zone(false, via);
+            widgetRightMs.set(now);
+        }
+        if ((packed & com.overdrive.app.byd.BydDataCollector.BS_ANY_BIT) != 0) {
+            if (widgetLevelAny() == 0) com.overdrive.app.byd.AdasDiag.zoneAny(via);
+            widgetAnyMs.set(now);
+        }
+    }
+
     private static boolean referenced() {
+        return widgetWanted() || automationReferenced()
+                || com.overdrive.app.proximity.ProximityBlindSpotMonitor.wantsPoll();
+    }
+
+    private static boolean automationReferenced() {
         return Automations.isEventReferenced(BydEvent.BLIND_SPOT_LEFT)
                 || Automations.isEventReferenced(BydEvent.BLIND_SPOT_RIGHT)
+                || Automations.isEventReferenced(BydEvent.BLIND_SPOT_ANY)
                 || Automations.isEventReferenced(BydEvent.REAR_CROSS_TRAFFIC_LEFT)
                 || Automations.isEventReferenced(BydEvent.REAR_CROSS_TRAFFIC_RIGHT)
                 || Automations.isEventReferenced(BydEvent.DOOR_OPEN_WARNING_LEFT)
@@ -91,6 +159,13 @@ public final class BlindSpotEvent {
 
     public static void refresh() {
         poller.refresh();
+        try {
+            boolean widget = widgetWanted();
+            com.overdrive.app.byd.AdasDiag.state("Blind-spot poll", referenced()
+                    ? "on (" + (widget ? "power widget"
+                            : automationReferenced() ? "automations only" : "proximity recording") + ")"
+                    : "off (no power widget with blind-spot zones, no blind-spot automation)");
+        } catch (Throwable ignored) { }
     }
 
     /**
@@ -143,8 +218,17 @@ public final class BlindSpotEvent {
                 default:
                     return;
             }
-            if (!Automations.isEventReferenced(key)) return;
+            stampWidget(warningBit, "event");
+            com.overdrive.app.proximity.ProximityBlindSpotMonitor.onAlertEvent(warningBit);
             long now = System.currentTimeMillis();
+            // a side's alarm is also an either-side alert
+            boolean side = warningBit == com.overdrive.app.byd.BydDataCollector.BS_LEFT_BIT
+                    || warningBit == com.overdrive.app.byd.BydDataCollector.BS_RIGHT_BIT;
+            if (side && Automations.isEventReferenced(BydEvent.BLIND_SPOT_ANY)) {
+                lastAnyAlertMs.set(now);
+                publish(BydEvent.BLIND_SPOT_ANY, anyOn, true);
+            }
+            if (!Automations.isEventReferenced(key)) return;
             // publish() seeds the baseline itself, which matters when an alert beats
             // the poll to it: the automation layer ignores a transition out of an
             // unseeded state, so publishing "on" with nothing stored would silently
@@ -178,6 +262,7 @@ public final class BlindSpotEvent {
             // in-memory map, so the brief hold is not a stall risk.
             Automations.update(BydEvent.BLIND_SPOT_LEFT, "off");
             Automations.update(BydEvent.BLIND_SPOT_RIGHT, "off");
+            Automations.update(BydEvent.BLIND_SPOT_ANY, "off");
             Automations.update(BydEvent.REAR_CROSS_TRAFFIC_LEFT, "off");
             Automations.update(BydEvent.REAR_CROSS_TRAFFIC_RIGHT, "off");
             Automations.update(BydEvent.DOOR_OPEN_WARNING_LEFT, "off");
@@ -191,7 +276,7 @@ public final class BlindSpotEvent {
      * on a timer for the clear edge.
      */
     private static void expireHolds() {
-        if (!leftOn.get() && !rightOn.get()
+        if (!leftOn.get() && !rightOn.get() && !anyOn.get()
                 && !rctaLeftOn.get() && !rctaRightOn.get()
                 && !dowLeftOn.get() && !dowRightOn.get()) {
             return;
@@ -199,6 +284,7 @@ public final class BlindSpotEvent {
         long now = System.currentTimeMillis();
         reconcile(BydEvent.BLIND_SPOT_LEFT, false, lastLeftAlertMs, leftOn, now);
         reconcile(BydEvent.BLIND_SPOT_RIGHT, false, lastRightAlertMs, rightOn, now);
+        reconcile(BydEvent.BLIND_SPOT_ANY, false, lastAnyAlertMs, anyOn, now);
         reconcile(BydEvent.REAR_CROSS_TRAFFIC_LEFT, false,
                 lastRctaLeftAlertMs, rctaLeftOn, now);
         reconcile(BydEvent.REAR_CROSS_TRAFFIC_RIGHT, false,
@@ -228,7 +314,16 @@ public final class BlindSpotEvent {
         // Seed-aware like the other samplers: with nothing enabled this returned before publishing,
         // so blindSpot read "not reported yet on this car" in the editor. Storing is not firing —
         // Automations.update forces fire=false while disabled.
-        if (Automations.isDisabled() && !Automations.editorSeedActive()) return;
+        boolean widget = widgetWanted();
+        boolean record = com.overdrive.app.proximity.ProximityBlindSpotMonitor.wantsPoll();
+        if (!widget && !record && Automations.isDisabled() && !Automations.editorSeedActive()) { statesLive = false; return; }
+        // the widget's zones show only while driving: with the car off it alone reads nothing
+        if (!Automations.editorSeedActive() && !automationReferenced()
+                && !com.overdrive.app.byd.BydDataCollector.getInstance().isAccOn()) {
+            statesLive = false;
+            expireHolds();
+            return;
+        }
         int packed;
         try {
             packed = com.overdrive.app.byd.BydDataCollector.getInstance().readAdasWarningsNow();
@@ -246,7 +341,18 @@ public final class BlindSpotEvent {
             expireHolds();
             return;
         }
+        if (widget) stampWidget(packed, "poll");
+        if (record) com.overdrive.app.proximity.ProximityBlindSpotMonitor.onPollSample(packed);
+        // the widget alone keeps the poll running; the automation states below still need automations on
+        if (Automations.isDisabled() && !Automations.editorSeedActive()) { statesLive = false; return; }
+        boolean baseline = !statesLive;
+        statesLive = true;
+        final int bits = packed;
+        if (baseline) Automations.runSilentSeed(() -> applyStates(bits));
+        else applyStates(bits);
+    }
 
+    private static void applyStates(int packed) {
         long now = System.currentTimeMillis();
         seedIfNeeded();
         reconcile(BydEvent.BLIND_SPOT_LEFT,
@@ -255,6 +361,11 @@ public final class BlindSpotEvent {
         reconcile(BydEvent.BLIND_SPOT_RIGHT,
                 (packed & com.overdrive.app.byd.BydDataCollector.BS_RIGHT_BIT) != 0,
                 lastRightAlertMs, rightOn, now);
+        reconcile(BydEvent.BLIND_SPOT_ANY,
+                (packed & (com.overdrive.app.byd.BydDataCollector.BS_LEFT_BIT
+                        | com.overdrive.app.byd.BydDataCollector.BS_RIGHT_BIT
+                        | com.overdrive.app.byd.BydDataCollector.BS_ANY_BIT)) != 0,
+                lastAnyAlertMs, anyOn, now);
         reconcile(BydEvent.REAR_CROSS_TRAFFIC_LEFT,
                 (packed & com.overdrive.app.byd.BydDataCollector.RCTA_LEFT_BIT) != 0,
                 lastRctaLeftAlertMs, rctaLeftOn, now);
@@ -329,12 +440,14 @@ public final class BlindSpotEvent {
         seeded.set(false);
         leftOn.set(false);
         rightOn.set(false);
+        anyOn.set(false);
         rctaLeftOn.set(false);
         rctaRightOn.set(false);
         dowLeftOn.set(false);
         dowRightOn.set(false);
         lastLeftAlertMs.set(0);
         lastRightAlertMs.set(0);
+        lastAnyAlertMs.set(0);
         lastRctaLeftAlertMs.set(0);
         lastRctaRightAlertMs.set(0);
         lastDowLeftAlertMs.set(0);

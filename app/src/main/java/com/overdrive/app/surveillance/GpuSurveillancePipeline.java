@@ -187,18 +187,24 @@ public class GpuSurveillancePipeline {
     // Single current-owner model, no restore of older automation views:
     //   * every accepted show bumps camViewSessionId (identifies THIS request, so
     //     a stale auto-hide dispatch can never hide a newer view) and records the
-    //     requesting automation execution's token as camViewOwnerToken — or null
-    //     for an ownerless show (manual API call, key mapping, overlay, web UI);
-    //   * a TOKENED hide closes the view only when its token matches the owner
-    //     (an automation can hide only the view it showed; A show → B show →
-    //     A hide leaves B's view up);
+    //     requesting automation's id as camViewOwnerToken — or null for an
+    //     ownerless show (manual API call, key mapping, overlay, web UI);
+    //   * a hide from an automation that has shown a view is refused only while a
+    //     DIFFERENT, still-enabled automation owns the current view (A show →
+    //     B show → A hide leaves B's view up); an automation that never showed, or
+    //     an ownerless view, keeps the global close;
     //   * an OWNERLESS hide (user ✕, key mapping, web UI) keeps the legacy
     //     global-close behaviour and clears any owner;
     //   * internal teardowns (pipeline stop, BS takeover) always close.
     private final java.util.concurrent.atomic.AtomicLong camViewSessionSeq =
         new java.util.concurrent.atomic.AtomicLong(0);
     private volatile long camViewSessionId = 0L;
-    private volatile Long camViewOwnerToken = null;
+    private volatile String camViewOwnerToken = null;
+    // Recent automation ids that issued a show. Guarded by bsLifecycleLock.
+    private static final int CAMVIEW_SHOWER_TOKENS_MAX = 64;
+    private final java.util.LinkedHashSet<String> camViewShowerTokens = new java.util.LinkedHashSet<>();
+    // Whether an owning automation can still hide its own view (disabled/deleted cannot).
+    private volatile java.util.function.Predicate<String> camViewOwnerLive = owner -> true;
     // The session the CURRENT auto-hide deadline belongs to, bound to
     // camViewHideAtMs when enableCamView arms it (under bsLifecycleLock). The
     // timeout claim returns THIS, not the live camViewSessionId — a claim
@@ -346,6 +352,9 @@ public class GpuSurveillancePipeline {
     // publishing running=true prematurely; this is what keeps
     // isRunning() honest if the camera GL-thread runnable throws.
     private volatile boolean starting = false;
+    // Claimed start() calls not yet past their finally (guarded by this; outlives `starting`
+    // on the failure path, whose cleanup runs after the catch clears it).
+    private int startCallsInFlight = 0;
     // Set only by the explicit/terminal stop path. It blocks every start caller,
     // including callers that bypass CameraDaemon, until the current lifecycle is
     // fully stopped and its teardown verdict is known.
@@ -633,7 +642,7 @@ public class GpuSurveillancePipeline {
      * own event bitrate.
      */
     public int getConfiguredRecordingBitrate() {
-        return config.getEffectiveBitrate();
+        return config.getEffectiveBitrate(loadTargetFps());
     }
 
     /**
@@ -660,7 +669,8 @@ public class GpuSurveillancePipeline {
      * entering SENTRY.
      */
     public int getEffectiveSurveillanceBitrate() {
-        return config.getEffectiveBitrateForQuality(loadSurveillanceQuality());
+        return config.getEffectiveBitrateForQuality(loadSurveillanceQuality(),
+            loadSurveillanceTargetFps());
     }
 
     /**
@@ -802,7 +812,7 @@ public class GpuSurveillancePipeline {
             // Non-SENTRY (NORMAL etc.): re-assert the user's ACC-ON recording
             // bitrate (NOT the RecordingMode enum's legacy per-mode default),
             // honoring an active customBitrate throttle via getEffectiveBitrate.
-            int userBitrate = config.getEffectiveBitrate();
+            int userBitrate = getConfiguredRecordingBitrate();
             if (bitrateController != null) {
                 bitrateController.setImmediateBitrate(userBitrate);
             }
@@ -869,9 +879,14 @@ public class GpuSurveillancePipeline {
             return;
         }
 
+        // bitrate is a 15 fps value; the encoder runs it scaled for the active mode's fps.
+        final int applied = isSurveillanceMode()
+            ? getEffectiveSurveillanceBitrate()
+            : getConfiguredRecordingBitrate();
+
         // Check if bitrate actually changed
-        if (encoder.getBitrate() == bitrate) {
-            logger.info("Bitrate already set to: " + (bitrate / 1_000_000) + " Mbps");
+        if (encoder.getBitrate() == applied) {
+            logger.info("Bitrate already set to: " + (applied / 1_000_000) + " Mbps");
             return;
         }
 
@@ -880,13 +895,13 @@ public class GpuSurveillancePipeline {
         // byte-ring pre-record buffer is bitrate-agnostic; the encoder's
         // PARAMETER_KEY_VIDEO_BITRATE is the only state that needs updating.
         // (Full reinit is reserved for codec changes — see applyCodecChange.)
-        logger.info("Bitrate change: " + (bitrate / 1_000_000) + " Mbps (inline)");
+        logger.info("Bitrate change: " + (applied / 1_000_000) + " Mbps (inline)");
         try {
-            encoder.setBitrate(bitrate);
+            encoder.setBitrate(applied);
             if (bitrateController != null) {
-                bitrateController.setImmediateBitrate(bitrate);
+                bitrateController.setImmediateBitrate(applied);
             }
-            logger.info("Bitrate change applied: " + (bitrate / 1_000_000) + " Mbps");
+            logger.info("Bitrate change applied: " + (applied / 1_000_000) + " Mbps");
             // FIX (audit R5): inline-success paths previously didn't kick off
             // any deferred recording. If a recording start arrived during a
             // cold encoder window and got deferred to pendingRecordingPrefix,
@@ -920,7 +935,7 @@ public class GpuSurveillancePipeline {
             reinitializeEncoder();
 
             if (bitrateController != null) {
-                bitrateController.setImmediateBitrate(bitrate);
+                bitrateController.setImmediateBitrate(applied);
             }
 
             if (wasRecording) {
@@ -976,7 +991,7 @@ public class GpuSurveillancePipeline {
                 }
             }
 
-            logger.info("Bitrate change applied via fallback reinit: " + (bitrate / 1_000_000) + " Mbps");
+            logger.info("Bitrate change applied via fallback reinit: " + (applied / 1_000_000) + " Mbps");
 
         } catch (Exception e) {
             logger.error("Failed to apply bitrate change: " + e.getMessage(), e);
@@ -1309,16 +1324,20 @@ public class GpuSurveillancePipeline {
 
             if (quality != null) {
                 config.setRecordingQuality(quality);
-                int eff = config.getEffectiveBitrate();
-                if (encoder != null && encoder.getBitrate() != eff) {
-                    newBitrate = eff;
-                }
             }
             if (codec != null) {
                 config.setVideoCodec(codec);
                 String want = config.getCodecMimeType();
                 if (encoder == null || !encoder.getCodecMimeType().equals(want)) {
                     codecChanged = true;
+                }
+            }
+            if (quality != null) {
+                // After the codec switch, at the fps this apply leaves in effect.
+                int targetFps = fps != null ? Math.max(10, Math.min(30, fps)) : loadTargetFps();
+                int eff = config.getEffectiveBitrate(targetFps);
+                if (encoder != null && encoder.getBitrate() != eff) {
+                    newBitrate = eff;
                 }
             }
             int clampedFps = -1;
@@ -1620,6 +1639,18 @@ public class GpuSurveillancePipeline {
         }
     }
 
+    /** Points per-camera views at the native DiLink 5 mosaic tiles the recorder and AI use. */
+    private static void applyDiLink5ProducerLayout(
+            com.overdrive.app.streaming.GpuStreamScaler scaler) {
+        float[] noFlip = com.overdrive.app.camera.dilink5.DiLink5MosaicLayout.NO_FLIP;
+        scaler.setProducerLayout(
+            com.overdrive.app.camera.dilink5.DiLink5MosaicLayout.CORNER_FRONT,
+            com.overdrive.app.camera.dilink5.DiLink5MosaicLayout.CORNER_RIGHT,
+            com.overdrive.app.camera.dilink5.DiLink5MosaicLayout.CORNER_REAR,
+            com.overdrive.app.camera.dilink5.DiLink5MosaicLayout.CORNER_LEFT,
+            noFlip, noFlip, noFlip, noFlip);
+    }
+
     /**
      * Reinitializes the encoder with current config settings.
      * This is a synchronous operation that waits for completion.
@@ -1703,8 +1734,8 @@ public class GpuSurveillancePipeline {
         
         // Create new encoder with current config
         String codecMimeType = config.getCodecMimeType();
-        int bitrate = config.getEffectiveBitrate();
         int fps = loadTargetFps();
+        int bitrate = config.getEffectiveBitrate(fps);
 
         logger.info("Creating new encoder: " +
             (codecMimeType.contains("hevc") ? "H.265" : "H.264") +
@@ -2006,15 +2037,21 @@ public class GpuSurveillancePipeline {
     private void initLocked(
             android.content.res.AssetManager assetManager,
             android.content.Context context) throws Exception {
-        if (initialized) {
-            logger.warn("Already initialized");
-            return;
-        }
-        
-        // Save for re-initialization after stop/start cycle
+        // Save for re-initialization after stop/start cycle — BEFORE the
+        // initialized check: a boot cold start can win init() with none, and the
+        // daemon's own init(assetManager, context) then only reaches this branch.
         if (assetManager != null) this.savedAssetManager = assetManager;
         if (context != null) this.savedContext = context;
-        
+
+        if (initialized) {
+            logger.warn("Already initialized");
+            SurveillanceEngineGpu engine = sentry;
+            if (engine != null && (assetManager != null || context != null)) {
+                engine.supplyAiSources(savedAssetManager, savedContext);
+            }
+            return;
+        }
+
         logger.info("Initializing GPU surveillance pipeline...");
         
         // Ensure output directory exists
@@ -2053,8 +2090,8 @@ public class GpuSurveillancePipeline {
         // diverges from actual frame delivery and recorded video plays back at the
         // wrong speed (faster or slower than realtime).
         String codecMimeType = config.getCodecMimeType();
-        int bitrate = config.getEffectiveBitrate();
         int fps = loadTargetFps();
+        int bitrate = config.getEffectiveBitrate(fps);
         logger.info("Creating encoder with config: " +
             (codecMimeType.contains("hevc") ? "H.265" : "H.264") +
             " @ " + fps + "fps, " + (bitrate / 1_000_000) + " Mbps");
@@ -2639,6 +2676,7 @@ public class GpuSurveillancePipeline {
             // by a previous lifecycle that's still hanging around exits.
             long newGen = pipelineGen.incrementAndGet();
             logger.info("Pipeline generation bumped on start: " + newGen);
+            startCallsInFlight++;   // last: the try/finally below always balances it
         }
         
         try {
@@ -3112,6 +3150,7 @@ public class GpuSurveillancePipeline {
             // is idempotent.)
             synchronized (this) {
                 starting = false;
+                startCallsInFlight--;
                 notifyAll();
             }
         }
@@ -3539,6 +3578,7 @@ public class GpuSurveillancePipeline {
             }
             recordingAdmissionInFlight = true;
         }
+        resumeIdleCameraSource("recording");
         try {
             startRecordingAdmitted(outputDir, prefix);
         } finally {
@@ -3669,7 +3709,7 @@ public class GpuSurveillancePipeline {
                 java.io.File probeDir = resolveProbeDirWithEnospcFallback(
                         (outputDir != null) ? outputDir
                                 : StorageManager.getInstance().getRecordingsDir());
-                if (!isStorageWriteReady(probeDir)) {
+                if (!isRecordingProbeWriteReady(probeDir)) {
                     logger.warn("Recordings volume not write-ready (probe failed/timed out) — "
                         + "deferring and scheduling retry");
                     pendingRecordingDir = outputDir;
@@ -3810,7 +3850,7 @@ public class GpuSurveillancePipeline {
         // PendingRecKickoff thread.
         java.io.File probeDir = resolveProbeDirWithEnospcFallback(
                 (dir != null) ? dir : StorageManager.getInstance().getRecordingsDir());
-        if (!isStorageWriteReady(probeDir)) {
+        if (!isRecordingProbeWriteReady(probeDir)) {
             logger.warn("Deferred start: storage volume not write-ready (probe failed/timed out) — "
                 + "rescheduling retry instead of issuing inner recorder.startRecording");
             // Keep pending state intact (do not null) so retry has the args.
@@ -3966,7 +4006,7 @@ public class GpuSurveillancePipeline {
                     }
                     if (snapRec.getEncoder() != null
                             && snapRec.getEncoder().isFormatAvailable()
-                            && isStorageWriteReady(probeDir)) {
+                            && isRecordingProbeWriteReady(probeDir)) {
                         snapRec.startRecording(outputDir, prefix);
                         if (snapRec.isRecording()) {
                             currentMode = Mode.NORMAL_RECORDING;
@@ -4105,7 +4145,7 @@ public class GpuSurveillancePipeline {
                     }
                     if (snapRec.getEncoder() != null
                             && snapRec.getEncoder().isFormatAvailable()
-                            && isStorageWriteReady(probeDir)) {
+                            && isRecordingProbeWriteReady(probeDir)) {
                         snapRec.startRecording(outputDir, prefix);
                         if (snapRec.isRecording()) {
                             currentMode = Mode.NORMAL_RECORDING;
@@ -4219,7 +4259,7 @@ public class GpuSurveillancePipeline {
             java.io.File enospcSafe = StorageManager.getInstance()
                 .resolveTargetWithEnospcFallback(probeDir, 100 * 1024 * 1024, false);
             if (enospcSafe != null && enospcSafe != probeDir) {
-                logger.warn("Recordings volume full — pre-flight redirecting write probe to internal fallback: "
+                logger.warn("Recordings volume full or refusing writes — pre-flight redirecting write probe to internal fallback: "
                     + enospcSafe.getAbsolutePath());
                 return enospcSafe;
             }
@@ -4227,6 +4267,17 @@ public class GpuSurveillancePipeline {
             logger.warn("ENOSPC pre-flight resolve threw, probing configured dir: " + t.getMessage());
         }
         return probeDir;
+    }
+
+    /**
+     * Recording-start probe: a miss is reported to StorageManager, and once the card is
+     * latched as refusing writes (StorageManager.reportWriteFault) the probe moves to internal.
+     */
+    private boolean isRecordingProbeWriteReady(java.io.File probeDir) {
+        if (isStorageWriteReady(probeDir)) return true;
+        if (!StorageManager.getInstance().reportWriteFault(probeDir)) return false;
+        java.io.File internal = resolveProbeDirWithEnospcFallback(probeDir);
+        return internal != null && internal != probeDir && isStorageWriteReady(internal);
     }
 
     /**
@@ -4455,6 +4506,12 @@ public class GpuSurveillancePipeline {
             if (sen != null && sen.isActive()) {
                 currentMode = Mode.SURVEILLANCE;
                 logger.info("Normal recording stopped (sentry still armed — mode stays SURVEILLANCE)");
+                // That stop also ended a continuous sentry session's recording. A camera yield is
+                // resumed by onPostReacquire instead.
+                PanoramicCameraGpu cam = camera;
+                if (cam == null || !cam.isCameraYielded()) {
+                    sen.onContinuousRecorderStopped("recording stopped by a storage or mode change");
+                }
             } else {
                 currentMode = Mode.IDLE;
                 logger.info("Normal recording stopped");
@@ -4477,6 +4534,7 @@ public class GpuSurveillancePipeline {
             }
             surveillanceAdmissionInFlight = true;
         }
+        resumeIdleCameraSource("surveillance");
         try {
             enableSurveillanceAdmitted();
         } finally {
@@ -4576,6 +4634,18 @@ public class GpuSurveillancePipeline {
             // stopping gate) — that path re-asserts on its own completion.
             synchronized (reconfigLock) {
                 if (running && !stopping) {
+                    // Armed surveillance always owns the recorder lane (RMM rung 1);
+                    // assert it now so the pre-record ring fills without waiting for
+                    // RMM's next tick after an idle-rung disarm.
+                    PanoramicCameraGpu cam = camera;
+                    if (cam != null) {
+                        try {
+                            cam.setRecorderLaneEnabled(true);
+                        } catch (Throwable t) {
+                            logger.warn("enableSurveillance: recorder-lane re-enable failed: "
+                                + t.getMessage());
+                        }
+                    }
                     applySurveillanceProfileLocked("arm");
                 }
             }
@@ -4725,11 +4795,11 @@ public class GpuSurveillancePipeline {
                 logger.info("ACC ON transition complete - all recordings finalized, camera reopened");
             } else if (persistentCamera) {
                 logger.info("ACC ON transition complete - DiLink camera stays alive (no reopen)");
-                // A parked DI4 HAL may have intentionally paused its producer
-                // while preserving the AVMCamera handle. Re-arm that handle
-                // in place now, before blind-spot/camera-view becomes visible.
+                // A parked DI4 HAL may have paused its producer or died. Re-arm
+                // the handle, or reopen a released/failed one, before
+                // blind-spot/camera-view becomes visible. No-op off DI4.
                 if (camera != null) {
-                    camera.requestDiLink4ProducerRecovery("acc-on persistent handle");
+                    camera.onDiLink4AccOn();
                 }
             } else {
                 logger.info("ACC ON transition complete - all recordings finalized");
@@ -4759,6 +4829,7 @@ public class GpuSurveillancePipeline {
      */
     public void enableStreaming(int streamWidth, int streamHeight, int streamFps,
                                int streamBitrate) throws Exception {
+        resumeIdleCameraSource("live view");
         streamLifecycleLock.lock();
         try {
             if (streamingEnabled) {
@@ -5015,6 +5086,7 @@ public class GpuSurveillancePipeline {
                 com.overdrive.app.camera.Dilink4Constants.FLIP_LEFT);
         }
         if (com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()) {
+            applyDiLink5ProducerLayout(streamScaler);
             streamScaler.setRedMaskEnabled(false);
             streamScaler.setApaCenterInset(0.0f);
         } else if (streamLayout != 0) {
@@ -6426,7 +6498,7 @@ public class GpuSurveillancePipeline {
                     org.json.JSONObject g = bs.optJSONObject(geomKey);
                     alignX = bsCornerAlignX(resolveBsCorner(g));
                 }
-                applyBsAngleToScaler(s, rot, alignX, fisheye, viewMode);
+                applyBsAngleToScaler(s, bs, rot, alignX, fisheye, viewMode);
             }
         } catch (Throwable t) {
             logger.warn("blindspot calib apply failed: " + t.getMessage());
@@ -6445,6 +6517,7 @@ public class GpuSurveillancePipeline {
      * if needed. Idempotent.
      */
     public void enableBlindSpot(int mode) throws Exception {
+        resumeIdleCameraSource("blind-spot");
         bsLifecycleLock.lock();
         try {
             if (mode == 7 || mode == 8) bsViewMode = mode;
@@ -6741,6 +6814,7 @@ public class GpuSurveillancePipeline {
                 com.overdrive.app.camera.Dilink4Constants.FLIP_LEFT);
         }
         if (dilink5) {
+            applyDiLink5ProducerLayout(bsScaler);
             bsScaler.setRedMaskEnabled(false);
             bsScaler.setApaCenterInset(0.0f);
         } else if (bsLayout != 0) {
@@ -6947,7 +7021,7 @@ public class GpuSurveillancePipeline {
             com.overdrive.app.streaming.GpuStreamScaler bss = bsScaler;
             if (bss != null) {
                 int fisheye = (bs != null) ? bs.optInt("rectifyStrength", 0) : 0;
-                applyBsAngleToScaler(bss, bsRotationDeg, bsRotationAlignX(), fisheye,
+                applyBsAngleToScaler(bss, bs, bsRotationDeg, bsRotationAlignX(), fisheye,
                         bsViewMode);
             }
         } catch (Throwable t) {
@@ -7008,6 +7082,8 @@ public class GpuSurveillancePipeline {
         }
         // Fixed angle: read the per-side key when present, else the legacy global.
         int fixed = bs.has(sideKey) ? bs.optInt(sideKey, 0) : bs.optInt("rotation", 0);
+        // 40/310 frame a SIDE camera; the rear camera shows upright instead.
+        if ("rear".equals(merge) && BsAnglePreset.isPresetAngle(fixed)) return 0;
         return snapOrPreset(fixed);
     }
 
@@ -7047,9 +7123,10 @@ public class GpuSurveillancePipeline {
      *         path — the preset framings were measured without any dewarp, so leaving
      *         one on would bend the picture away from the framing being reproduced. */
     private int applyBsAngleToScaler(com.overdrive.app.streaming.GpuStreamScaler s,
+                                     org.json.JSONObject bs,
                                      int rot, int alignX, int fisheyeStrength,
                                      int viewMode) {
-        BsAnglePreset preset = BsAnglePreset.forAngle(rot);
+        BsAnglePreset preset = bsFramingFor(bs, rot, viewMode);
         if (preset != null) {
             s.setBlindSpotRectifyStrength(0f);
             s.setBsPreset(preset.rotationDeg,
@@ -7060,10 +7137,57 @@ public class GpuSurveillancePipeline {
             s.setContentRotation(0, alignX);
             return 0;   // a preset framing carries no dewarp
         }
-        s.clearBsPreset();
+        if (!applyBsCameraFraming(s, bs, rot, viewMode)) s.clearBsPreset();
         s.setBlindSpotRectifyStrength((float) fisheyeStrength);
         s.setContentRotation(rot, alignX);
         return fisheyeStrength;
+    }
+
+    /**
+     * Side-only quarter-turn card: apply that side's saved view adjustment
+     * (framingCamMirror/Angle/Zoom/PanX/PanY + Left|Right). Returns false, touching
+     * nothing, when the mode is not "side" or every value is neutral.
+     */
+    private static boolean applyBsCameraFraming(com.overdrive.app.streaming.GpuStreamScaler s,
+                                                org.json.JSONObject bs, int rot, int viewMode) {
+        if (bs == null || !"side".equals(bs.optString("mergeMode", "both"))) return false;
+        String side = (viewMode == 8) ? "Right" : "Left";
+        boolean mirror = bs.optBoolean("framingCamMirror" + side, false);
+        float angle = bsFramingValue(bs, "framingCamAngle" + side, -180.0, 180.0, 0.0);
+        float zoom = bsFramingValue(bs, "framingCamZoom" + side, 0.5, 2.0, 1.0);
+        float panX = bsFramingValue(bs, "framingCamPanX" + side, -0.5, 0.5, 0.0);
+        float panY = bsFramingValue(bs, "framingCamPanY" + side, -0.5, 0.5, 0.0);
+        if (!mirror && angle == 0f && zoom == 1f && panX == 0f && panY == 0f) return false;
+        // Mirror and pan are as seen on screen: undo the card's own quarter turn
+        // (setContentRotation 90 turns card +x to screen-up, card +y to screen-right).
+        int d = ((rot % 360) + 360) % 360;
+        boolean sideways = (d == 90 || d == 270);
+        float tx = (d == 90) ? -panY : (d == 180) ? -panX : (d == 270) ? panY : panX;
+        float ty = (d == 90) ? panX : (d == 180) ? -panY : (d == 270) ? -panX : panY;
+        s.setBsCameraFraming(angle, mirror && !sideways, mirror && sideways, zoom, tx, ty);
+        return true;
+    }
+
+    /** The preset framing for this angle and camera with that side's saved adjustment
+     *  (framingMirror/Angle/Zoom/PanX/PanY + Left|Right); null for a non-preset angle. */
+    private static BsAnglePreset bsFramingFor(org.json.JSONObject bs, int rot, int viewMode) {
+        BsAnglePreset preset = BsAnglePreset.forView(rot, viewMode);
+        if (preset == null || bs == null) return preset;
+        String side = (viewMode == 8) ? "Right" : "Left";
+        return preset.adjusted(
+                bs.optBoolean("framingMirror" + side, false),
+                bsFramingValue(bs, "framingAngle" + side, -180.0, 180.0, 0.0),
+                bsFramingValue(bs, "framingZoom" + side, 0.5, 2.0, 1.0),
+                bsFramingValue(bs, "framingPanX" + side, -0.5, 0.5, 0.0),
+                bsFramingValue(bs, "framingPanY" + side, -0.5, 0.5, 0.0));
+    }
+
+    /** A framing adjustment clamped to its range; missing or non-finite reads as neutral. */
+    private static float bsFramingValue(org.json.JSONObject bs, String key,
+                                        double min, double max, double neutral) {
+        double v = bs.optDouble(key, neutral);
+        if (!Double.isFinite(v)) v = neutral;
+        return (float) Math.max(min, Math.min(max, v));
     }
 
     /**
@@ -8512,7 +8636,7 @@ public class GpuSurveillancePipeline {
                     // full width — pushing the angle alone would leave the narrowed
                     // card behind and letterbox an ordinary view.
                     if (bss != null) {
-                        applyBsAngleToScaler(bss, wantRot, bsRotationAlignX(),
+                        applyBsAngleToScaler(bss, bs, wantRot, bsRotationAlignX(),
                                 bs.optInt("rectifyStrength", 0), bsViewMode);
                     }
                 }
@@ -8870,15 +8994,38 @@ public class GpuSurveillancePipeline {
      * @return the new session id, which the deferred-arm retry uses to undo an arm
      *         that raced its own cancellation (see startCamViewArmRetry).
      */
-    public long noteCamViewShowRequest(Long ownerToken) {
+    public long noteCamViewShowRequest(String ownerToken) {
         bsLifecycleLock.lock();
         try {
             camViewSessionId = camViewSessionSeq.incrementAndGet();
             camViewOwnerToken = ownerToken;
+            if (ownerToken != null) {
+                camViewShowerTokens.remove(ownerToken);
+                camViewShowerTokens.add(ownerToken);
+                if (camViewShowerTokens.size() > CAMVIEW_SHOWER_TOKENS_MAX) {
+                    java.util.Iterator<String> eldest = camViewShowerTokens.iterator();
+                    eldest.next();
+                    eldest.remove();
+                }
+            }
             return camViewSessionId;
         } finally {
             bsLifecycleLock.unlock();
         }
+    }
+
+    /** A show request for {@code session} ended without arming: it owns nothing. */
+    public void abandonCamViewShowRequest(long session) {
+        bsLifecycleLock.lock();
+        try {
+            if (camViewSessionId == session) camViewOwnerToken = null;
+        } finally {
+            bsLifecycleLock.unlock();
+        }
+    }
+
+    public void setCamViewOwnerLiveness(java.util.function.Predicate<String> live) {
+        camViewOwnerLive = live != null ? live : owner -> true;
     }
 
     /**
@@ -8901,14 +9048,21 @@ public class GpuSurveillancePipeline {
         return camViewHideSessionId;
     }
 
-    /** May a hide carrying {@code token} close the current camera view? An ownerless
-     *  hide (null) always may — legacy global close. A tokened hide only when it
-     *  matches the current owner, so an automation can never close a view a later
-     *  automation (or the user) put up. */
-    public boolean camViewHideAllowedFor(Long token) {
+    /** May a hide from automation {@code token} close the current camera view? Yes
+     *  unless the token has shown a view and a different automation that is still
+     *  enabled owns the current one — legacy global close everywhere else (ownerless
+     *  hide, ownerless view, an automation that never showed). Caller holds
+     *  bsLifecycleLock. */
+    private boolean camViewHideAllowedFor(String token) {
         if (token == null) return true;
-        Long owner = camViewOwnerToken;
-        return owner != null && owner.equals(token);
+        String owner = camViewOwnerToken;
+        if (owner == null || owner.equals(token)) return true;
+        if (!camViewShowerTokens.contains(token)) return true;
+        try {
+            return !camViewOwnerLive.test(owner);
+        } catch (Throwable unknown) {
+            return true;
+        }
     }
 
     /** Fail-open geometry for the current session — see {@link #camViewGeomOverride}. */
@@ -8950,6 +9104,7 @@ public class GpuSurveillancePipeline {
      */
     public boolean enableCamView(int mode, String target, int autoHideSec,
             long showSession) throws Exception {
+        resumeIdleCameraSource("camera view");
         String preTarget = "cluster".equals(target) ? "cluster" : "head_unit";
         // Calculate the on-screen rect BEFORE taking the lane lock (audit: persist +
         // calculate outside bsLifecycleLock). Geometry resolution reads UCM (which can
@@ -9153,7 +9308,7 @@ public class GpuSurveillancePipeline {
      * @return {@link #CAMVIEW_HIDE_NOT_OWNER}, {@link #CAMVIEW_HIDE_CLOSED} or
      *         {@link #CAMVIEW_HIDE_ALREADY_HIDDEN}.
      */
-    public int hideCamViewIfAllowed(Long token) {
+    public int hideCamViewIfAllowed(String token) {
         return disableCamViewInternal(null, token, true, false);
     }
 
@@ -9174,7 +9329,7 @@ public class GpuSurveillancePipeline {
         return disableCamViewInternal(null, null, false, true);
     }
 
-    private int disableCamViewInternal(Long requiredSessionId, Long token,
+    private int disableCamViewInternal(Long requiredSessionId, String token,
             boolean checkOwner, boolean invalidateSession) {
         boolean wasActive = false;
         bsLifecycleLock.lock();
@@ -9639,6 +9794,7 @@ public class GpuSurveillancePipeline {
             }
             encoder.addStreamCallback(callback);
             server.registerExternalClient();
+            resumeIdleCameraSource("external stream client");
             return new ExternalStreamClientSubscription(encoder, server, callback);
         } catch (Throwable t) {
             logger.warn("registerExternalStreamClient failed: " + t.getMessage());
@@ -9843,6 +9999,53 @@ public class GpuSurveillancePipeline {
         }
     }
 
+    /**
+     * Calibration preview of unsaved framing / fisheye values while a slider is dragged:
+     * the saved config with {@code overrides} on top, pushed to the card's scaler only.
+     * Nothing is persisted, and it only applies while the preview is on.
+     */
+    public boolean previewBlindSpotTuning(org.json.JSONObject overrides) {
+        bsLifecycleLock.lock();
+        try {
+            com.overdrive.app.streaming.GpuStreamScaler s = bsScaler;
+            if (s == null || camViewOwnsLane()) return false;
+            org.json.JSONObject saved = com.overdrive.app.config.UnifiedConfigManager.getBlindSpot();
+            if (!saved.optBoolean("debugPreview", false)) return false;
+            org.json.JSONObject bs = new org.json.JSONObject(saved.toString());
+            java.util.Iterator<String> keys = overrides.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                bs.put(k, overrides.get(k));
+            }
+            int rot = resolveBsRotation(bs, bsViewMode);
+            bsRotationDeg = rot;
+            applyBsAngleToScaler(s, bs, rot, bsRotationAlignX(),
+                    bs.optInt("rectifyStrength", 0), bsViewMode);
+            return true;
+        } catch (Throwable t) {
+            logger.warn("previewBlindSpotTuning failed: " + t.getMessage());
+            return false;
+        } finally {
+            bsLifecycleLock.unlock();
+        }
+    }
+
+    /** Put the card back on the saved calibration, dropping unsaved preview values. */
+    public boolean revertBlindSpotPreview() {
+        bsLifecycleLock.lock();
+        try {
+            com.overdrive.app.streaming.GpuStreamScaler s = bsScaler;
+            if (s == null || camViewOwnsLane()) return false;
+            applyBlindSpotCalibration(s);
+            return true;
+        } catch (Throwable t) {
+            logger.warn("revertBlindSpotPreview failed: " + t.getMessage());
+            return false;
+        } finally {
+            bsLifecycleLock.unlock();
+        }
+    }
+
     
     /**
      * Gets the current stream view mode.
@@ -9909,6 +10112,31 @@ public class GpuSurveillancePipeline {
      */
     public boolean isRunning() {
         return running;
+    }
+
+    /** True while another caller's start() has not yet returned and the pipeline is not up. */
+    public synchronized boolean isStartInFlight() {
+        return startCallsInFlight > 0 && !running;
+    }
+
+    /** Waits up to timeoutMs for another caller's in-flight start() to return; returns isRunning(). */
+    public boolean awaitStartInFlight(long timeoutMs) {
+        long deadline = android.os.SystemClock.elapsedRealtime() + Math.max(0L, timeoutMs);
+        synchronized (this) {
+            while (startCallsInFlight > 0) {
+                long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+                if (remaining <= 0L) {
+                    break;
+                }
+                try {
+                    wait(Math.min(remaining, 250L));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return running;
+        }
     }
 
     /**
@@ -10033,6 +10261,22 @@ public class GpuSurveillancePipeline {
         PanoramicCameraGpu current = camera;
         if (current != null) {
             current.setDiLink4FrameDemand(demanded, reason);
+        }
+    }
+
+    /** DiLink 5: close the camera source while nothing needs frames (RMM, parked idle). */
+    public void releaseIdleCameraSource(String reason, long minQuietMs) {
+        PanoramicCameraGpu current = camera;
+        if (current != null) {
+            current.releaseDiLink5IdleSource(reason, minQuietMs);
+        }
+    }
+
+    /** DiLink 5: a consumer needs frames; reopens a camera source released while idle. */
+    public void resumeIdleCameraSource(String consumer) {
+        PanoramicCameraGpu current = camera;
+        if (current != null) {
+            current.resumeDiLink5IdleSource(consumer);
         }
     }
 

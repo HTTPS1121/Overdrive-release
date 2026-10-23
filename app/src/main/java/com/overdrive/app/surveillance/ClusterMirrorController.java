@@ -97,7 +97,7 @@ public final class ClusterMirrorController {
     // stays negligible. Capped, single-thread, torn down on stop.
     private static final long STILL_POLL_MS = 500;   // 2 Hz
     private static final long EXEC_KEEPALIVE_MS = 5000;
-    private static final String SCREENCAP_DIR = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.overdrive/mirror");
+    private static final String SCREENCAP_DIR = com.overdrive.app.util.ScratchRoot.path(".overdrive/mirror");
 
     /** Mode after {@link #startOnExec}. Reported to the UI so it can show the right state. */
     public static final int MODE_STOPPED       = 0;
@@ -354,7 +354,7 @@ public final class ClusterMirrorController {
         Process p = null;
         try {
             p = new ProcessBuilder("sh", "-c",
-                    "dumpsys SurfaceFlinger | grep -iA25 " + layerName)
+                    com.overdrive.app.util.ScratchRoot.remap("dumpsys SurfaceFlinger | grep -iA25 " + layerName))
                     .redirectErrorStream(true).start();
             StringBuilder sb = new StringBuilder();
             java.io.BufferedReader r = new java.io.BufferedReader(
@@ -413,7 +413,7 @@ public final class ClusterMirrorController {
         // (what the 1-arg clusterDisplaySize does internally) could straddle a layerStack/id
         // change across a projection re-open and pair one display's size with another's stack.
         boolean diLink5 =
-                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+                com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5();
         if (!diLink5 && ClusterProjectionController
                 .isLegacyProjectionAdmissionBlocked()) {
             logger.info("start: legacy projection blocked by DI5 recovery");
@@ -803,7 +803,7 @@ public final class ClusterMirrorController {
                 + " -p " + f.getAbsolutePath();
         Process p = null;
         try {
-            p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             activeStillCapture = p;
             if (!p.waitFor(3, TimeUnit.SECONDS)) { p.destroyForcibly(); return null; }
             if (p.exitValue() != 0) return null;

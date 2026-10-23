@@ -21,81 +21,112 @@
         else console.log('[Update] ' + msg);
     }
 
+    var UPD_ICONS = {
+        clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+        rotate: '<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>',
+        link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+        home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+        down: '<circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12l4 4 4-4"/>',
+        warn: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>'
+    };
+    function updSvg(body) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
+    }
+    function updIcon(name) {
+        return '<span class="upd-icon" aria-hidden="true">' + updSvg(UPD_ICONS[name]) + '</span>';
+    }
+    var UPD_DONE_ICON = '<div class="upd-done-ico" aria-hidden="true">' + updSvg('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>') + '</div>';
+
     // ─────────────────────────── Styles ───────────────────────────
 
     function injectStyles() {
         if (STYLE_INJECTED) return;
         STYLE_INJECTED = true;
         var css = `
-        .upd-modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.72); z-index:9000; display:flex; align-items:center; justify-content:center; padding:16px; }
-        .upd-modal { background:#0e1218; color:#e8eef5; padding:24px; max-width:520px; width:100%; border-radius:14px; border:1px solid #232a35; box-shadow:0 24px 60px rgba(0,0,0,0.6); max-height:90vh; overflow:auto; }
-        .upd-modal h2 { margin:0 0 6px; font-size:18px; font-weight:600; color:#fff; }
-        .upd-modal h2 span.upd-newv { color:#3b82f6; }
-        .upd-modal .upd-current { color:#9aa6b3; font-size:12px; margin-bottom:14px; }
-        .upd-rel-notes { background:#0a0d12; border:1px solid #1a1f28; border-radius:8px; padding:10px 12px; color:#cdd6e0; font-size:12px; line-height:1.55; max-height:140px; overflow:auto; white-space:pre-wrap; margin-bottom:14px; }
-        .upd-warn { background:#1a1f28; border:1px solid #2a3340; border-radius:10px; padding:4px 14px; }
-        .upd-row { display:flex; gap:12px; align-items:flex-start; padding:12px 0; font-size:13px; line-height:1.5; }
-        .upd-row + .upd-row { border-top:1px solid #232a35; }
-        .upd-row .upd-icon { font-size:18px; flex:none; line-height:1.2; }
-        .upd-row strong { color:#fff; font-weight:600; }
-        .upd-row code { background:#0a0d12; padding:1px 6px; border-radius:4px; font-family:ui-monospace,monospace; font-size:12px; }
-        .upd-row.upd-rec { background:linear-gradient(0deg,rgba(245,158,11,0.05),rgba(245,158,11,0.05)); margin:0 -14px; padding:12px 14px; border-radius:8px; }
-        .upd-row.upd-rec strong { color:#f59e0b; }
-        .upd-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:18px; }
-        .upd-btn { padding:10px 20px; border-radius:8px; font-weight:600; font-size:13px; border:0; cursor:pointer; font-family:inherit; }
-        .upd-btn-cancel { background:transparent; color:#cdd6e0; }
-        .upd-btn-cancel:hover { background:#1a1f28; }
-        .upd-btn-primary { background:#3b82f6; color:#fff; }
-        .upd-btn-primary:hover { background:#2563eb; }
-        .upd-btn-primary:disabled { background:#374151; cursor:not-allowed; }
+        .upd-modal-bg { position:fixed; top:0; right:0; bottom:0; left:0; background:rgba(0,0,0,0.6); z-index:9000; display:flex; align-items:center; justify-content:center; padding:16px; }
+        .upd-modal { background:var(--surface-container-high); color:var(--on-surface); padding:24px; max-width:560px; width:100%; border-radius:28px; border:0; box-shadow:0 24px 64px rgba(0,0,0,0.45); max-height:90vh; overflow:auto; }
+        .upd-modal h2 { margin:0 0 6px; font-size:22px; font-weight:700; line-height:1.3; color:var(--on-surface); }
+        .upd-modal h2 span.upd-newv { color:var(--primary); }
+        .upd-modal .upd-current { color:var(--on-surface-variant); font-size:13px; margin-bottom:16px; }
+        .upd-rel-notes { background:var(--well); border:0; border-radius:var(--radius-md); padding:12px 14px; color:var(--on-surface-variant); font-size:13px; line-height:1.55; max-height:160px; overflow:auto; white-space:pre-wrap; margin-bottom:16px; }
+        .upd-warn { background:var(--well); border:0; border-radius:var(--radius-lg); padding:4px 16px; }
+        .upd-row { display:flex; align-items:flex-start; padding:12px 0; font-size:13px; line-height:1.5; }
+        .upd-row > * + * { margin-left:12px; }
+        [dir="rtl"] .upd-row > * + * { margin-left:0; margin-right:12px; }
+        .upd-row + .upd-row { border-top:1px solid var(--hairline); }
+        .upd-row .upd-icon { flex:none; display:flex; width:20px; height:20px; color:var(--on-surface-variant); }
+        .upd-row .upd-icon svg { width:20px; height:20px; }
+        .upd-row.upd-rec .upd-icon { color:var(--warning); }
+        .upd-done-ico { display:flex; align-items:center; justify-content:center; width:48px; height:48px; margin-bottom:12px; border-radius:50%; background:var(--primary-soft); color:var(--primary); }
+        .upd-done-ico svg { width:26px; height:26px; }
+        .upd-row strong { color:var(--on-surface); font-weight:600; }
+        .upd-row code { background:var(--well-2); padding:1px 6px; border-radius:var(--radius-xs); font-family:ui-monospace,monospace; font-size:12px; }
+        .upd-row.upd-rec { background:var(--warning-soft); margin:0 -16px; padding:12px 16px; border-radius:var(--radius-md); }
+        .upd-row.upd-rec strong { color:var(--warning); }
+        .upd-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; margin-top:20px; }
+        .upd-actions > * + * { margin-left:8px; }
+        [dir="rtl"] .upd-actions > * + * { margin-left:0; margin-right:8px; }
+        .upd-btn { min-height:48px; padding:0 22px; border-radius:var(--radius-full); font-weight:600; font-size:14px; border:0; cursor:pointer; font-family:inherit; }
+        .upd-btn-cancel { background:transparent; color:var(--primary); }
+        .upd-btn-cancel:hover { background:var(--state-hover); }
+        .upd-btn-primary { background:var(--primary); color:var(--on-primary); }
+        .upd-btn-primary:hover { background:var(--primary); box-shadow:0 6px 18px var(--primary-glow); }
+        .upd-btn-primary:disabled { background:var(--well-2); color:var(--on-surface-variant); box-shadow:none; cursor:not-allowed; }
 
         /* Progress card */
         .upd-progress { padding:8px 0 4px; }
-        .upd-progress-phase { font-size:13px; color:#cdd6e0; margin-bottom:10px; min-height:18px; }
-        .upd-progress-bar { height:8px; background:#0a0d12; border-radius:4px; overflow:hidden; margin-bottom:8px; }
-        .upd-progress-fill { height:100%; background:linear-gradient(90deg,#3b82f6,#60a5fa); transition:width 0.4s ease; width:0%; }
-        .upd-progress-fill.indeterminate { background:linear-gradient(90deg,#1a1f28 0%,#3b82f6 50%,#1a1f28 100%); background-size:200% 100%; animation:updIndet 1.4s linear infinite; width:100%; }
+        .upd-progress-phase { font-size:14px; color:var(--on-surface); margin-bottom:10px; min-height:18px; }
+        .upd-progress-bar { height:8px; background:var(--well-2); border-radius:var(--radius-full); overflow:hidden; margin-bottom:8px; }
+        .upd-progress-fill { height:100%; background:var(--primary); border-radius:var(--radius-full); transition:width 0.4s ease; width:0%; }
+        .upd-progress-fill.indeterminate { background:linear-gradient(90deg,var(--well-2) 0%,var(--primary) 50%,var(--well-2) 100%); background-size:200% 100%; animation:updIndet 1.4s linear infinite; width:100%; }
         @keyframes updIndet { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
-        .upd-progress-msg { font-size:11px; color:#9aa6b3; min-height:14px; }
-        .upd-disconnect { background:#0a0d12; border:1px dashed #2a3340; border-radius:8px; padding:14px; margin-top:14px; font-size:12px; color:#cdd6e0; line-height:1.55; }
-        .upd-disconnect strong { color:#f59e0b; }
+        .upd-progress-msg { font-size:12px; color:var(--on-surface-variant); min-height:14px; }
+        .upd-disconnect { background:var(--well); border:1px dashed var(--outline-variant); border-radius:var(--radius-md); padding:14px; margin-top:14px; font-size:13px; color:var(--on-surface-variant); line-height:1.55; }
+        .upd-disconnect strong { color:var(--warning); }
 
         /* Sidebar entry — match existing .nav-link visual treatment */
-        .nav-link.nav-link-update .upd-badge { margin-left:auto; background:#3b82f6; color:#fff; font-size:10px; font-weight:700; padding:2px 7px; border-radius:9px; line-height:1.2; }
-        .nav-link.nav-link-update.has-update svg { color:#3b82f6; }
+        .nav-link.nav-link-update .upd-badge { margin-left:auto; background:var(--primary); color:var(--on-primary); font-size:11px; font-weight:700; padding:2px 8px; border-radius:var(--radius-full); line-height:1.2; }
+        .nav-link.nav-link-update.has-update svg { color:var(--primary); }
         /* Quiet dot for the alpha "newer exists" hint — subtler than the badge. */
-        .nav-link.nav-link-update .upd-dot { margin-left:auto; width:8px; height:8px; border-radius:50%; background:#3b82f6; flex:none; }
+        .nav-link.nav-link-update .upd-dot { margin-left:auto; width:8px; height:8px; border-radius:50%; background:var(--primary); flex:none; }
+        [dir="rtl"] .nav-link.nav-link-update .upd-badge,
+        [dir="rtl"] .nav-link.nav-link-update .upd-dot { margin-left:0; margin-right:auto; }
 
         /* Channel switcher (segmented control) */
-        .upd-channel { display:flex; border:1px solid #232a35; border-radius:10px; overflow:hidden; margin-bottom:16px; }
-        .upd-channel-seg { flex:1; padding:10px 8px; background:#0a0d12; color:#9aa6b3; font-size:13px; font-weight:600; text-align:center; cursor:pointer; border:0; font-family:inherit; }
-        .upd-channel-seg + .upd-channel-seg { border-left:1px solid #232a35; }
-        .upd-channel-seg.active { background:#16202c; color:#fff; }
+        .upd-channel { display:flex; border:0; border-radius:var(--radius-full); background:var(--well); padding:4px; overflow:hidden; margin-bottom:16px; }
+        .upd-channel-seg { flex:1; min-height:44px; padding:8px; background:transparent; color:var(--on-surface-variant); font-size:13px; font-weight:600; text-align:center; cursor:pointer; border:0; border-radius:var(--radius-full); font-family:inherit; }
+        .upd-channel-seg + .upd-channel-seg { border-left:0; margin-left:4px; }
+        [dir="rtl"] .upd-channel-seg + .upd-channel-seg { margin-left:0; margin-right:4px; }
+        .upd-channel-seg.active { background:var(--secondary-container); color:var(--on-secondary-container); }
         .upd-channel-seg:disabled { cursor:default; opacity:0.7; }
-        .upd-channel-desc { font-size:11px; color:#9aa6b3; line-height:1.5; margin:-8px 0 16px; }
+        .upd-channel-desc { font-size:12px; color:var(--on-surface-variant); line-height:1.5; margin:-8px 0 16px; }
 
         /* Report-a-bug block (Braveheart beta channel) */
-        .upd-report { background:rgba(245,158,11,0.06); border:1px solid rgba(245,158,11,0.28); border-radius:10px; padding:12px 14px; margin:0 0 16px; }
-        .upd-report-how { font-size:12px; color:#cdd6e0; line-height:1.5; margin-bottom:10px; }
+        .upd-report { background:var(--warning-soft); border:0; border-radius:var(--radius-md); padding:12px 14px; margin:0 0 16px; }
+        .upd-report-how { font-size:13px; color:var(--on-surface); line-height:1.5; margin-bottom:10px; }
         .upd-report-links { display:flex; flex-wrap:wrap; }
-        .upd-report-link { font-size:12px; font-weight:600; color:#f59e0b; text-decoration:none; padding:6px 12px; border:1px solid rgba(245,158,11,0.4); border-radius:8px; }
+        .upd-report-link { font-size:13px; font-weight:600; color:var(--warning); text-decoration:none; min-height:40px; display:inline-flex; align-items:center; padding:0 14px; border:1px solid var(--warning); border-radius:var(--radius-full); }
         /* Margin-based gap (Chrome 58 head unit lacks flex gap) */
         .upd-report-link + .upd-report-link { margin-left:8px; }
+        [dir="rtl"] .upd-report-link + .upd-report-link { margin-left:0; margin-right:8px; }
 
         /* Alpha version catalog */
         .upd-catalog { display:block; max-height:48vh; overflow:auto; margin:4px 0 4px; }
-        .upd-ver { display:block; width:100%; text-align:left; background:#0a0d12; border:1px solid #1a1f28; border-radius:10px; padding:12px 14px; color:#e8eef5; font-family:inherit; cursor:pointer; }
+        .upd-ver { display:block; width:100%; text-align:left; background:var(--well); border:1px solid transparent; border-radius:var(--radius-md); padding:12px 14px; color:var(--on-surface); font-family:inherit; cursor:pointer; }
+        [dir="rtl"] .upd-ver { text-align:right; }
         /* Sibling spacing via margin (NOT flex gap — Chrome 58 head-unit). */
         .upd-ver + .upd-ver { margin-top:8px; }
-        .upd-ver:hover { background:#11161d; border-color:#2a3340; }
+        .upd-ver:hover { background:var(--well-2); border-color:var(--outline-variant); }
         .upd-ver-top { display:flex; align-items:center; }
-        .upd-ver-name { font-size:14px; font-weight:600; color:#fff; }
-        .upd-ver-pill { margin-left:8px; font-size:10px; font-weight:700; padding:1px 7px; border-radius:9px; line-height:1.4; }
-        .upd-ver-pill.current { background:#1f6f4a; color:#d6ffe8; }
-        .upd-ver-pill.older { background:#3a2a18; color:#f3c98b; }
-        .upd-ver-date { margin-left:auto; font-size:11px; color:#9aa6b3; }
-        .upd-ver-notes { font-size:11px; color:#9aa6b3; line-height:1.5; margin-top:6px; max-height:54px; overflow:hidden; white-space:pre-wrap; }
-        .upd-catalog-empty { padding:18px 4px; font-size:13px; color:#9aa6b3; text-align:center; }
+        .upd-ver-name { font-size:14px; font-weight:600; color:var(--on-surface); }
+        .upd-ver-pill { margin-left:8px; font-size:11px; font-weight:700; padding:1px 8px; border-radius:var(--radius-full); line-height:1.4; }
+        .upd-ver-pill.current { background:var(--primary-soft); color:var(--primary); }
+        .upd-ver-pill.older { background:var(--warning-soft); color:var(--warning); }
+        .upd-ver-date { margin-left:auto; font-size:12px; color:var(--on-surface-variant); }
+        [dir="rtl"] .upd-ver-pill { margin-left:0; margin-right:8px; }
+        [dir="rtl"] .upd-ver-date { margin-left:0; margin-right:auto; }
+        .upd-ver-notes { font-size:12px; color:var(--on-surface-variant); line-height:1.5; margin-top:6px; max-height:54px; overflow:hidden; white-space:pre-wrap; }
+        .upd-catalog-empty { padding:18px 4px; font-size:13px; color:var(--on-surface-variant); text-align:center; }
         `;
         var s = document.createElement('style');
         s.textContent = css;
@@ -247,25 +278,25 @@
 
         var rotationRowHtml = rotates ?
             '<div class="upd-row">' +
-              '<span class="upd-icon">🔁</span>' +
+              updIcon('rotate') +
               '<div>' + BYD.i18n.t('update.rotation_warning') + '</div>' +
             '</div>' : (
                 tunnelType !== 'unknown' && tunnelType !== 'cloudflared' ?
                 '<div class="upd-row">' +
-                  '<span class="upd-icon">🔗</span>' +
+                  updIcon('link') +
                   '<div>' + BYD.i18n.t('update.tunnel_stable', {type: escapeHtml(tunnelType)}) + '</div>' +
                 '</div>' : ''
             );
 
         var lanRowHtml = lanIps ?
             '<div class="upd-row">' +
-              '<span class="upd-icon">🏠</span>' +
+              updIcon('home') +
               '<div>' + BYD.i18n.t('update.lan_hint', {ips: escapeHtml(lanIps), seconds: Math.round((downSec - localSec))}) + '</div>' +
             '</div>' : '';
 
         var recommendRowHtml = recommend ?
             '<div class="upd-row upd-rec">' +
-              '<span class="upd-icon">⚠️</span>' +
+              updIcon('warn') +
               '<div>' + BYD.i18n.t('update.recommend_inapp_intro', {reason: escapeHtml(recommendReason || BYD.i18n.t('update.recommend_inapp_default'))}) +
               '</div>' +
             '</div>' : '';
@@ -273,7 +304,7 @@
         // Downgrade note — only for an alpha pick that's older than installed.
         var downgradeRowHtml = res._isDowngrade ?
             '<div class="upd-row">' +
-              '<span class="upd-icon">⬇️</span>' +
+              updIcon('down') +
               '<div>' + BYD.i18n.t('update.downgrade_note') + '</div>' +
             '</div>' : '';
 
@@ -284,7 +315,7 @@
               (res.releaseNotes ? '<div class="upd-rel-notes">' + escapeHtml(res.releaseNotes) + '</div>' : '') +
               '<div class="upd-warn">' +
                 '<div class="upd-row">' +
-                  '<span class="upd-icon">⏱️</span>' +
+                  updIcon('clock') +
                   '<div>' + BYD.i18n.t('update.downtime_warning', {minutes: Math.round(downSec / 60)}) + '</div>' +
                 '</div>' +
                 rotationRowHtml +
@@ -322,6 +353,7 @@
         bg.id = 'updModalBg';
         bg.innerHTML =
             '<div class="upd-modal" role="dialog">' +
+              UPD_DONE_ICON +
               '<h2>' + escapeHtml(BYD.i18n.t('update.latest_version', {version: currentVersion})) + '</h2>' +
               '<div id="updChannelMount"></div>' +
               '<div class="upd-channel-desc">' + escapeHtml(BYD.i18n.t('update.channel_braveheart_desc')) + '</div>' +
@@ -870,6 +902,7 @@
         var modal = document.querySelector('.upd-modal');
         if (modal) {
             modal.innerHTML =
+                UPD_DONE_ICON +
                 '<h2>' + escapeHtml(BYD.i18n.t('update.updated_to', {version: newVersion})) + '</h2>' +
                 '<div class="upd-current">' + escapeHtml(BYD.i18n.t('update.reloading')) + '</div>';
         }

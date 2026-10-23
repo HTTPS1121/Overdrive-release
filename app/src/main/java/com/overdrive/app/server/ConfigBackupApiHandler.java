@@ -16,10 +16,14 @@ import java.io.OutputStream;
  * exactly as {@link UpdateApiHandler} calls {@link AppUpdater} directly. The
  * EXPORT_CONFIG / REPLACE_CONFIG IPC commands in {@link SurveillanceIpcServer}
  * exist for the OTHER-process surfaces (app UID, Telegram daemon); all three
- * funnel through the one core, so nothing is duplicated.
+ * funnel through the one core. NOTE one deliberate asymmetry: this web surface
+ * additionally strips the shell gates out of an untrusted bundle (see
+ * stripShellGatesIfUntrusted), which the REPLACE_CONFIG IPC path does not — that
+ * path is the app's own loopback write channel.
  *
- * Endpoints (all require AuthMiddleware JWT — /api/backup/* is a non-public
- * path, so a token is enforced in EVERY access mode, tunnel included):
+ * Endpoints (all non-public, so AuthMiddleware applies in every mode — but note
+ * that is checkAuth, not checkJwtOnly, so a loopback caller still passes via the
+ * Tier-2 safety net WITHOUT a token; that is exactly why the strip above exists):
  *   GET  /api/backup/export          → the bundle JSON (UI saves it as a file)
  *   POST /api/backup/import/preview  → {valid, message, warnings[]} — no write
  *   POST /api/backup/import?confirm=true → applies the bundle atomically
@@ -101,6 +105,11 @@ public class ConfigBackupApiHandler {
         String appVer = AppUpdater.getInstalledVersion();
         String model = deviceModel();
 
+        // Strip on BOTH paths so a preview describes what an import would actually apply.
+        // Previewing the un-stripped bundle let a tunnel user be shown a restore that
+        // silently differs from the one they then confirm.
+        stripShellGatesIfUntrusted(bundle);
+
         ConfigBackupService.ApplyResult result = preview
                 ? ConfigBackupService.validateBundle(bundle, appVer, model)
                 : ConfigBackupService.applyBundle(bundle, appVer, model);
@@ -117,6 +126,23 @@ public class ConfigBackupApiHandler {
             r.put("reloadRecommended", true);
         }
         HttpResponse.sendJson(out, r.toString());
+    }
+
+    /**
+     * A restored bundle must not arm shell execution the caller could not have enabled
+     * directly — restore is JWT-gated but deliberately allowed over a tunnel, which would
+     * otherwise route straight around the {@code allowAdvanced} / {@code allowShell} checks
+     * in KeymapApiHandler and AutomationApiHandler.
+     *
+     * <p>applyBundle deep-merges each section and only ever walks the INCOMING keys, so
+     * dropping these two leaves whatever the device already has: everything else in the
+     * backup still restores, and a locally signed-in restore is unaffected.
+     */
+    private static void stripShellGatesIfUntrusted(JSONObject bundle) {
+        if (HttpServer.canGrantShellAccess()) return;
+        JSONObject settings = bundle.optJSONObject("settings");
+        ConfigBackupService.stripShellGates(
+                settings == null ? null : settings.optJSONObject("unified"));
     }
 
     /** Exact-match the {@code confirm=true} query parameter (no substring match). */

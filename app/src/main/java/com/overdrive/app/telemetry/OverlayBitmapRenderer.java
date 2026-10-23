@@ -49,7 +49,7 @@ public class OverlayBitmapRenderer {
 
     private static final int WIDTH = 1280;
     private static final int HEIGHT = 80;
-    private static final String ICON_DIR = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overlay/");
+    private static final String ICON_DIR = com.overdrive.app.util.ScratchRoot.path("overlay/");
     private static final int ICON_SIZE = 40;
     private static final double KM_TO_MI = 0.621371;
 
@@ -384,9 +384,11 @@ public class OverlayBitmapRenderer {
                         com.overdrive.app.byd.BydDataCollector.getInstance();
                 milesMode = collector != null && collector.isMilesMode();
             } catch (Throwable ignored) {}
-            String spd = milesMode
-                ? String.valueOf((int) Math.round(snap.speedKmh * KM_TO_MI))
-                : String.valueOf(snap.speedKmh);
+            String spd = isUnknownOnDiLink5(snap.speedValid, snap.speedReadElapsedRealtimeMs, snap)
+                ? "--"
+                : milesMode
+                    ? String.valueOf((int) Math.round(snap.speedKmh * KM_TO_MI))
+                    : String.valueOf(snap.speedKmh);
             String spdUnit = milesMode ? "mph" : "km/h";
 
             float contentW = 0f;
@@ -548,7 +550,10 @@ public class OverlayBitmapRenderer {
         switch (f) {
             case SPEED:
                 if (canText) {
+                    boolean stale = isStaleOnDiLink5(snap.speedReadElapsedRealtimeMs);
+                    if (stale) speedPaint.setColor(STALE_COLOR);
                     c.drawText(spd, x, 54, speedPaint);
+                    if (stale) speedPaint.setColor(Color.WHITE);
                     float sx = x + speedPaint.measureText(spd) + 4;
                     c.drawText(spdUnit, sx, 54, unitPaint);
                 }
@@ -560,21 +565,28 @@ public class OverlayBitmapRenderer {
                 }
                 break;
             case BRAKE_PEDAL: {
-                int brakeCol = snap.brakePedalPercent > 5 ? 0xFFFF2222 : 0xFF888888;
-                drawIcon(c, alphaPedal, x, iy, brakeCol);
+                boolean known = !isUnknownOnDiLink5(snap.brakePedalValid, snap.brakePedalReadElapsedRealtimeMs, snap);
+                int brakeCol = known && snap.brakePedalPercent > 5 ? 0xFFFF2222 : 0xFF888888;
+                if (isStaleOnDiLink5(snap.brakePedalReadElapsedRealtimeMs)) brakeCol = STALE_COLOR;
+                // Unknown hides the glyph, like unknown beams.
+                if (known) drawIcon(c, alphaPedal, x, iy, brakeCol);
                 if (canText) {
                     labelPaint.setColor(brakeCol);
-                    String t = snap.brakePedalPercent > 5 ? "B " + snap.brakePedalPercent + "%" : "B";
+                    String t = !known ? "B --"
+                            : snap.brakePedalPercent > 5 ? "B " + snap.brakePedalPercent + "%" : "B";
                     c.drawText(t, x, iy + ICON_SIZE + 14, labelPaint);
                 }
                 break;
             }
             case ACCEL_PEDAL: {
-                int accelCol = snap.accelPedalPercent > 5 ? 0xFF22DD22 : 0xFF888888;
-                drawIcon(c, alphaPedal, x, iy, accelCol);
+                boolean known = !isUnknownOnDiLink5(snap.accelPedalValid, snap.accelPedalReadElapsedRealtimeMs, snap);
+                int accelCol = known && snap.accelPedalPercent > 5 ? 0xFF22DD22 : 0xFF888888;
+                if (isStaleOnDiLink5(snap.accelPedalReadElapsedRealtimeMs)) accelCol = STALE_COLOR;
+                if (known) drawIcon(c, alphaPedal, x, iy, accelCol);
                 if (canText) {
                     labelPaint.setColor(accelCol);
-                    String t = snap.accelPedalPercent > 5 ? "A " + snap.accelPedalPercent + "%" : "A";
+                    String t = !known ? "A --"
+                            : snap.accelPedalPercent > 5 ? "A " + snap.accelPedalPercent + "%" : "A";
                     c.drawText(t, x, iy + ICON_SIZE + 14, labelPaint);
                 }
                 break;
@@ -839,6 +851,29 @@ public class OverlayBitmapRenderer {
             c.drawText(v.substring(split), x, 58, timePaint);
         }
         timePaint.setTextSize(20);
+    }
+
+    // DI5 car_service values age from about the dump time to 2 dumps + 3 s before the next lands;
+    // a 4 s dump allowed by the collector's 12 s backstop is still a live value, only gray.
+    private static final long DILINK5_STALE_AFTER_MS = 4_000L;
+    private static final long DILINK5_UNKNOWN_AFTER_MS = 12_000L;
+    private static final int STALE_COLOR = 0xFF888888;
+
+    /**
+     * DI5: a field the collector marked invalid, observed over 12 s ago, or from a snapshot it
+     * stopped refreshing, is unknown rather than burned in as current.
+     */
+    private static boolean isUnknownOnDiLink5(boolean valid, long readAtElapsedMs, TelemetrySnapshot snap) {
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return false;
+        long now = android.os.SystemClock.elapsedRealtime();
+        return !valid || now - readAtElapsedMs > DILINK5_UNKNOWN_AFTER_MS
+                || now - snap.elapsedRealtimeMs > 3_000L;
+    }
+
+    /** DI5: a value observed over 4 s ago (a slow dump) is drawn gray, as not current. */
+    private static boolean isStaleOnDiLink5(long readAtElapsedMs) {
+        return com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                && android.os.SystemClock.elapsedRealtime() - readAtElapsedMs > DILINK5_STALE_AFTER_MS;
     }
 
     /** Gear colors for dark background — bright and readable */

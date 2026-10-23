@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Glass navigation HUD over the map. NavHudLayout places every child itself (SPEC §6 frames);
+     the Then tab is declared before the card so it tucks under the card's bottom edge. -->
+<com.overdrive.app.navmap.ui.NavHudLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/navHud"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:visibility="gone">
+
+    <com.overdrive.app.navmap.ui.TopHazeView
+        android:id="@+id/hudHaze"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <com.overdrive.app.navmap.ui.ThenTabView
+        android:id="@+id/hudThen"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <com.overdrive.app.navmap.ui.ManeuverCardView
+        android:id="@+id/hudCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <com.overdrive.app.navmap.ui.CompassView
+        android:id="@+id/hudCompass"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <com.overdrive.app.navmap.ui.HudOrbKeyView
+        android:id="@+id/hudBack"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <com.overdrive.app.navmap.ui.SpeedOrbView
+        android:id="@+id/hudSpeed"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <com.overdrive.app.navmap.ui.TripBarView
+        android:id="@+id/hudTrip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <com.overdrive.app.navmap.ui.RecenterPillView
+        android:id="@+id/hudRecenter"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <com.overdrive.app.navmap.ui.AttributionPlateView
+        android:id="@+id/hudAttribution"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+</com.overdrive.app.navmap.ui.NavHudLayout>

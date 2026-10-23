@@ -182,7 +182,7 @@ public class DaemonManager implements IDaemonManager {
     
     private String execShell(String cmd) {
         try {
-            Process process = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            Process process = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
             process.waitFor();
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             StringBuilder output = new StringBuilder();

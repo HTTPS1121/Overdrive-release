@@ -86,14 +86,15 @@ public final class HomeAssistantDiscovery {
             origin.put("url", "https://www.overdrive.qd.je");
             bundle.put("o", origin);
 
-            // ----- shared availability (reuses the LWT) -----
+            // ----- link availability (the LWT) -----
+            // Controls only: read-only sensors keep their last retained value while the car is
+            // offline, and the Connection sensor below reports the link itself.
             JSONArray avail = new JSONArray();
             JSONObject a = new JSONObject();
             a.put("topic", availabilityTopic);
             a.put("payload_available", "online");
             a.put("payload_not_available", "offline");
             avail.put(a);
-            bundle.put("availability", avail);
 
             // ----- components -----
             JSONObject cmps = new JSONObject();
@@ -138,6 +139,17 @@ public final class HomeAssistantDiscovery {
                 cmps.put("location", tracker);
             }
 
+            JSONObject link = new JSONObject();
+            link.put("p", "binary_sensor");
+            link.put("name", "Connection");
+            link.put("unique_id", node + "_connection");
+            link.put("state_topic", availabilityTopic);
+            link.put("payload_on", "online");
+            link.put("payload_off", "offline");
+            link.put("device_class", "connectivity");
+            link.put("entity_category", "diagnostic");
+            cmps.put("connection", link);
+
             // ----- control components (only when vehicle control is enabled) -----
             if (includeControls) {
                 BydVehicleData snap = currentVehicleData();
@@ -159,7 +171,10 @@ public final class HomeAssistantDiscovery {
                     }
                     if (!ent.isAvailable(snap)) continue;
                     JSONObject comp = ent.component(baseTopic, node);
-                    if (comp != null) cmps.put("ctl_" + ent.key, comp);
+                    if (comp != null) {
+                        comp.put("availability", avail); // a command can't reach an offline car
+                        cmps.put("ctl_" + ent.key, comp);
+                    }
                 }
             }
 
@@ -180,8 +195,10 @@ public final class HomeAssistantDiscovery {
         if (f.icon != null) c.put("icon", f.icon);
         if (f.diagnostic) c.put("entity_category", "diagnostic");
         if (f.isBinary()) {
-            c.put("payload_on", "1");
-            c.put("payload_off", "0");
+            // HA's lock class reads "on" as unlocked; telemetry publishes locked = 1.
+            boolean lockClass = "lock".equals(f.deviceClass);
+            c.put("payload_on", lockClass ? "0" : "1");
+            c.put("payload_off", lockClass ? "1" : "0");
         }
         return c;
     }

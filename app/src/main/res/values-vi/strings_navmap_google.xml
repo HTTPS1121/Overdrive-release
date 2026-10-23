@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">Lớp bản đồ</string>
+    <string name="navmap_google_type_default">Bản đồ Google</string>
+    <string name="navmap_google_type_satellite">Vệ tinh</string>
+    <string name="navmap_google_type_hybrid">Kết hợp</string>
+    <string name="navmap_google_type_terrain">Địa hình</string>
+    <string name="navmap_google_type_overdrive">Bản đồ OverDrive</string>
+    <string name="navmap_google_traffic">Giao thông trực tiếp</string>
+    <string name="navmap_google_traffic_on">Đã bật giao thông trực tiếp</string>
+    <string name="navmap_google_traffic_off">Đã tắt giao thông trực tiếp</string>
+    <string name="navmap_google_traffic_paused">Giao thông trực tiếp tạm dừng đến %1$s (đã đạt giới hạn miễn phí hằng ngày)</string>
+    <string name="navmap_google_map_paused">Bản đồ Google tạm dừng đến %1$s (đã đạt giới hạn miễn phí hằng ngày)</string>
+    <string name="navmap_google_map_unavailable">Bản đồ Google không khả dụng, đang hiển thị bản đồ OverDrive</string>
+    <string name="navmap_google_key_problem">Khóa Google Maps có vấn đề. Hãy kiểm tra cài đặt RoadSense.</string>
+    <string name="navmap_google_route_key_problem">Định tuyến Google đã từ chối khóa. Hãy kiểm tra cài đặt RoadSense.</string>
+    <string name="navmap_google_route_limit">Đã đạt giới hạn định tuyến Google hôm nay</string>
+    <string name="navmap_google_arrived">Bạn đã đến điểm đến</string>
+    <string name="navmap_google_traffic_delay">+%1$s do ùn tắc</string>
+    <string name="navmap_google_no_delays">Không ùn tắc</string>
+    <string name="navmap_google_faster_route">Đã tìm thấy tuyến nhanh hơn, tiết kiệm %1$s</string>
+    <string name="navmap_google_faster_route_switch">Chuyển</string>
+    <string name="navmap_google_routes_by_google">Tuyến đường do Google cung cấp</string>
+    <string name="navmap_google_routing_provided_by">Định tuyến do %1$s cung cấp</string>
+    <string name="navmap_google_place_failed">Không thể mở địa điểm đó</string>
+    <string name="navmap_google_finding_place">Đang tìm địa điểm…</string>
+</resources>

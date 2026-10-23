@@ -400,7 +400,7 @@ object AutoServiceBridge {
         val cmd = StringBuilder("service call ").append(SERVICE_NAME).append(' ').append(tx)
         for (a in args) cmd.append(' ').append(a)
         return try {
-            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd.toString()))
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd.toString())))
             val text = BufferedReader(InputStreamReader(p.inputStream)).use { it.readText() }
             p.waitFor()
             text.trim()

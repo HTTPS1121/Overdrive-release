@@ -32,7 +32,7 @@ public class SeatPositionsAssetTest {
         String script = readRepositoryFile("app/src/main/assets/web/shared/seat-positions.js");
 
         assertTrue(html.contains("seat-positions.css?v=9"));
-        assertTrue(html.contains("seat-positions.js?v=8"));
+        assertTrue(html.contains("seat-positions.js?v=9"));
         assertTrue(html.contains("class=\"modal-card sp-dialog\""));
         assertTrue(html.contains("class=\"btn sp-dialog-cancel\""));
 

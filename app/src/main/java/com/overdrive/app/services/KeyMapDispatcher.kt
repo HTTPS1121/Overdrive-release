@@ -103,9 +103,9 @@ object KeyMapDispatcher {
     // so it can be rare. A disabled dispatcher therefore does at most one config
     // reparse per this interval (and only while hardware buttons are being pressed)
     // instead of one per REFRESH_THROTTLE_MS — the zero-overhead-when-disabled bar.
-    private val REENABLE_POLL_MS = 30_000L
+    private const val REENABLE_POLL_MS = 30_000L
     // Unified config file — watched for instant propagation of settings edits.
-    private val CONFIG_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json")
+    private val CONFIG_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("overdrive_config.json")
 
     // Pooled I/O executor for daemon POSTs and config refreshes. Cached (not
     // single-thread) so one slow/hung POST never blocks either the timing
@@ -128,6 +128,9 @@ object KeyMapDispatcher {
 
     @Volatile private var cache: Snapshot? = null
     @Volatile private var foregroundPackage: String? = null
+    // the home-screen widgets' own reading (see onTopAppChanged), never read by key filtering
+    @Volatile private var topApp: TopApp? = null
+    @Volatile private var windowEventAtMs = 0L
     @Volatile private var lastRefreshKickMs = 0L
     // Separate timestamp for the coarse re-enable poll (see maybeRefreshSlow), so
     // the disabled-state backstop throttles independently of the enabled hot path.
@@ -249,6 +252,26 @@ object KeyMapDispatcher {
     fun onForegroundPackageChanged(packageName: String?) {
         foregroundPackage = packageName?.trim()?.takeIf { it.isNotEmpty() }
     }
+
+    /** A reading of the app on top of the main screen; [cls] is its activity (null when unknown), [atMs] elapsedRealtime. */
+    class TopApp(val pkg: String?, val cls: String?, val atMs: Long)
+
+    /** Only activities move it: overlays, the system UI and the keyboard don't. A launcher's home and app list share a package. */
+    fun onTopAppChanged(packageName: String?, className: String?) {
+        topApp = TopApp(packageName?.trim()?.takeIf { it.isNotEmpty() }, className?.trim()?.takeIf { it.isNotEmpty() },
+            android.os.SystemClock.elapsedRealtime())
+    }
+
+    /** Any window-state change on the main screen, whatever its window: the widgets ask the daemon soon after. */
+    fun onWindowEvent() {
+        windowEventAtMs = android.os.SystemClock.elapsedRealtime()
+    }
+
+    /** Last top-app reading from the accessibility service; null when it isn't running. */
+    fun topApp(): TopApp? = topApp
+
+    /** elapsedRealtime of the last window-state change, 0 if none. */
+    fun windowEventAt(): Long = windowEventAtMs
 
     /**
      * Camera-view actions are eligible only while the OEM panorama application is
@@ -902,6 +925,8 @@ object KeyMapDispatcher {
             injectGuard.clear(); injectGuardUntilMs.clear()
         }
         foregroundPackage = null
+        topApp = null
+        windowEventAtMs = 0L
     }
 
     /**
@@ -937,6 +962,10 @@ object KeyMapDispatcher {
     /** Punt the bound action's daemon POST to the pooled I/O executor. */
     private fun fire(binding: JSONObject) {
         val action = binding.optJSONObject("action") ?: return
+        if (action.optString("kind") == "voice_assistant") {
+            com.overdrive.app.voice.VoiceAssistantRuntime.pushToTalk()
+            return
+        }
         io.submit {
             try {
                 // Local loopback to the in-process daemon — keep timeouts tight so

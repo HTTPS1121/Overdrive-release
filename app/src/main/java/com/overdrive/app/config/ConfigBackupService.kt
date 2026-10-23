@@ -52,9 +52,8 @@ object ConfigBackupService {
     // CredentialCipher.DID_PATH — duplicated as a literal rather than exposing
     // it, to keep this class free of a crypto dependency. Must match
     // CredentialCipher.java:29.
-    private val DID_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.byd_device_id")
-    private val RESTORE_JOURNAL_PATH =
-        com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.overdrive_config_restore_txn.json")
+    private val DID_PATH: String get() = com.overdrive.app.util.ScratchRoot.path(".byd_device_id")
+    private val RESTORE_JOURNAL_PATH: String get() = com.overdrive.app.util.ScratchRoot.path(".overdrive_config_restore_txn.json")
     private const val RESTORE_JOURNAL_VERSION = 1
     private val didTempSequence = AtomicLong(0)
     private val restoreJournalTempSequence = AtomicLong(0)
@@ -91,7 +90,42 @@ object ConfigBackupService {
     // decrypt (key derives from the DID) — actively making things worse. In
     // that one case we skip them so the live credentials survive.
     private val CREDENTIAL_SECTIONS =
-        listOf("bydCloud", "navMap", "telegram", "genAi")
+        listOf("bydCloud", "navMap", "telegram", "genAi") + listOf("safeKeepCredentials")
+
+    /** Credential section names, for exporters that must strip every secret. */
+    @JvmStatic
+    fun credentialSectionNames(): List<String> = CREDENTIAL_SECTIONS
+
+    /**
+     * Drop the two flags that arm arbitrary shell execution (`keymap.allowAdvanced`,
+     * `automation.allowShell`) from a bundle's `unified` object.
+     *
+     * Call this on any apply path whose bundle did not come from a caller that could have
+     * set those flags directly — a remote restore, or one read back from storage someone
+     * else can write. [applyBundle] deep-merges and only walks INCOMING keys, so removing
+     * them leaves whatever the device already has; nothing else in the bundle is affected.
+     */
+    @JvmStatic
+    fun stripShellGates(unified: JSONObject?) {
+        if (unified == null) return
+        stripShellGateKeys("keymap", unified.optJSONObject("keymap"))
+        stripShellGateKeys("automation", unified.optJSONObject("automation"))
+    }
+
+    /**
+     * Single-section form of [stripShellGates], for callers holding ONE section's data
+     * rather than a whole `unified` object (e.g. the generic `/api/settings/unified`
+     * writer). Keeping both forms here means the flag names live in exactly one place and
+     * cannot drift between the strip sites.
+     */
+    @JvmStatic
+    fun stripShellGateKeys(section: String?, data: JSONObject?) {
+        if (data == null) return
+        when (section) {
+            "keymap" -> data.remove("allowAdvanced")
+            "automation" -> data.remove("allowShell")
+        }
+    }
 
     // Recursion cap for [deepMergeInto] — guards against a pathological
     // hand-edited bundle with deeply nested objects. Real config nesting is
@@ -690,6 +724,7 @@ object ConfigBackupService {
         "navMap"   -> "navigation API key"
         "telegram" -> "Telegram bot token"
         "genAi"    -> "GenAI provider API key"
+        "safeKeepCredentials" -> "SafeKeep storage sign-ins"
         else        -> section
     }
 

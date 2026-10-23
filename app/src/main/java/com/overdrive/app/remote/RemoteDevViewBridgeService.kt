@@ -41,12 +41,29 @@ class RemoteDevViewBridgeService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ensureListening()
+        // A service can be recreated while the Application stays alive.
+        // Restore saved monitoring here as well as at process startup.
+        com.overdrive.app.remoteaccess.KeyFobAccessMonitor.resumeIfEnabled(application)
+        com.overdrive.app.remoteaccess.BluetoothAccessMonitor.resumeIfEnabled(application)
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        // Neither monitor uses this bridge: both publish to the daemon over loopback
+        // HTTP (DaemonHttpClient -> /api/remote-access/relay). Tearing them down here
+        // meant that whenever the platform reaped this non-foreground START_NOT_STICKY
+        // service, proximity sampling stopped and nothing re-armed it — the daemon's
+        // bridge client can only connect to the socket, it cannot start the service.
+        // The reported symptom was that unlock worked only while the proximity page
+        // was open, because opening it is what issues the `apply` that restarts them.
+        // Their real lifecycle is the persisted setting, which each collector loop
+        // rechecks every tick, so an off/revoked feature still stops on its own.
+        if (!com.overdrive.app.remoteaccess.RemoteAccessSettings.read().optBoolean("enabled")) {
+            com.overdrive.app.remoteaccess.BluetoothAccessMonitor.stop()
+            com.overdrive.app.remoteaccess.KeyFobAccessMonitor.stop()
+        }
         RemoteDevVirtualDisplay.stop()
         try { serverSocket?.close() } catch (_: Exception) {}
         listener.shutdownNow()
@@ -87,6 +104,38 @@ class RemoteDevViewBridgeService : Service() {
                 rememberNonce(authenticated.nonce, authenticated.timestampMs)
                 val request = authenticated.request
                 when (request.optString("command", "")) {
+                    "bluetoothStatus" -> {
+                        // State only, including OFF: no SDK power read, reconciliation,
+                        // phone search, connection request or monitor startup.
+                        response.put("success", true)
+                        response.put(
+                            "bluetooth",
+                            com.overdrive.app.monitor.BluetoothRadioState.readCurrent(),
+                        )
+                    }
+                    "remoteAccess" -> {
+                        val result = if (request.optString("operation") == "bluetoothKeepAlive") {
+                            JSONObject().put("success", true).put(
+                                "runtime",
+                                com.overdrive.app.remoteaccess.SharedBluetoothKeepAliveController
+                                    .reconcile(
+                                        application,
+                                        request.optBoolean("vehicleOff", false),
+                                        request.optBoolean("vehicleOn", false),
+                                        request.optBoolean("forceDisable", false),
+                                    ),
+                            )
+                        } else {
+                            com.overdrive.app.remoteaccess.BluetoothAccessMonitor.command(
+                                application, request,
+                            )
+                        }
+                        val keys = result.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            response.put(key, result.get(key))
+                        }
+                    }
                     "launch" -> {
                         val launch = RemoteDevVirtualDisplay.start(application)
                         response.put("success", launch.success)

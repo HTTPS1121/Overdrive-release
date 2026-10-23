@@ -74,6 +74,7 @@ public class DeterrentActivity extends Activity {
     private java.io.PrintWriter inputCaptureWriter;
     private String inputCaptureToken = "";
     private volatile boolean inputWindowFocused = false;
+    private boolean di5FocusReported = false;
     private volatile boolean authenticatedInputCaptureSeen = false;
     private final java.util.concurrent.ExecutorService gateWriter =
             java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
@@ -139,6 +140,22 @@ public class DeterrentActivity extends Activity {
         setContentView(root);
 
         mainHandler.postDelayed(deadlinePoll, POLL_INTERVAL_MS);
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            // DI5 Standby keeps the panel dark and the focus on BYD's power window; ask it to light.
+            // A car BYD reports as on or out of Standby means the owner is here: never show then.
+            final android.content.Context app = getApplicationContext();
+            new Thread(() -> {
+                String awake = com.overdrive.app.byd.dilink5.Dilink5PanelPower.carAwakeReason(app);
+                if (awake != null) {
+                    com.overdrive.app.byd.dilink5.Dilink5PanelPower.report(
+                            "deterrent-skipped", "car awake: " + awake);
+                    mainHandler.post(this::finishCleanly);
+                    return;
+                }
+                com.overdrive.app.byd.dilink5.Dilink5PanelPower.report("deterrent-panel",
+                        com.overdrive.app.byd.dilink5.Dilink5PanelPower.lightPanel(app));
+            }, "Di5PanelOn").start();
+        }
     }
 
     @Override
@@ -182,6 +199,11 @@ public class DeterrentActivity extends Activity {
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         inputWindowFocused = hasFocus;
+        if (hasFocus && !di5FocusReported
+                && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            di5FocusReported = true;
+            com.overdrive.app.byd.dilink5.Dilink5PanelPower.report("deterrent-focus", "gained");
+        }
         if (hasFocus) {
             applyImmersive();
             restartInputCapture();
@@ -437,6 +459,13 @@ public class DeterrentActivity extends Activity {
         }
         if (!stop.isEmpty()) writeGate(stop);
         gateWriter.shutdown();
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            final android.content.Context app = getApplicationContext();
+            new Thread(() -> com.overdrive.app.byd.dilink5.Dilink5PanelPower.report(
+                    "deterrent-panel-restore",
+                    com.overdrive.app.byd.dilink5.Dilink5PanelPower.restorePanel(app)),
+                    "Di5PanelRestore").start();
+        }
         super.onDestroy();
     }
 }

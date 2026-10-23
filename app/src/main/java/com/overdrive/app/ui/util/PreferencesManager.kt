@@ -28,6 +28,11 @@ object PreferencesManager {
     /** Rail keys the user has already been offered, so a NEW one can default to
      *  visible without un-hiding something they deliberately switched off. */
     private const val KEY_NAVIGATION_SEEN_V1 = "navigation_seen_v1"
+    /** The rail's customisable keys when offers started being recorded (v40.2). */
+    private val NAVIGATION_KEYS_BEFORE_OFFERS = setOf(
+        "live", "recordings", "vehicle", "projection", "trips", "charging", "automations",
+        "key_mapping", "integrations", "road_sense", "map", "network", "diagnostics",
+    )
 
     private var prefs: SharedPreferences? = null
     // Held so theme-mode changes can poke the floating overlay service —
@@ -116,6 +121,7 @@ object PreferencesManager {
                 Log.w(TAG, "overlay theme refresh failed: ${e.message}")
             }
         }
+        com.overdrive.app.overlay.GlassWidgetsOverlayService.refreshThemeIfRunning()
     }
 
     // Enabled Daemons
@@ -240,11 +246,16 @@ object PreferencesManager {
         }
         // A key the user has never been offered is NEW: show it rather than leaving
         // a shipped feature invisible on every existing install. Record the offer so
-        // this only ever happens once per key.
-        val seen = p.getStringSet(KEY_NAVIGATION_SEEN_V1, emptySet())?.toSet() ?: emptySet()
+        // this only ever happens once per key. A rail customised before offers were
+        // recorded had been offered every key of that release.
+        val recorded = p.getStringSet(KEY_NAVIGATION_SEEN_V1, null)?.toSet()
+        val seen = recorded ?: if (stored != null) NAVIGATION_KEYS_BEFORE_OFFERS else emptySet()
         val resolved = NavigationVisibilityPolicy.resolveWithNewDefaults(stored, knownKeys, seen)
-        if (!seen.containsAll(knownKeys)) {
-            p.edit().putStringSet(KEY_NAVIGATION_SEEN_V1, seen + knownKeys).apply()
+        if (recorded == null || !seen.containsAll(knownKeys)) {
+            val edit = p.edit().putStringSet(KEY_NAVIGATION_SEEN_V1, seen + knownKeys)
+            // a new key stays pinned until the user unpins it, not just until the next refresh
+            if (stored != null) edit.putStringSet(KEY_NAVIGATION_VISIBLE_V1, resolved)
+            edit.apply()
         }
         return resolved
     }

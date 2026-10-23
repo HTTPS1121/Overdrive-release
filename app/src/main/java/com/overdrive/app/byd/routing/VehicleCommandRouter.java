@@ -50,6 +50,19 @@ public final class VehicleCommandRouter {
     /** The cloud MQTT/realtime payload is safe only while its connection-health window holds. */
     private static final long CLOUD_SEAT_SNAPSHOT_MAX_AGE_MS =
             VehicleCloudSnapshot.CONNECTION_HEALTH_MAX_AGE_MS;
+    /** Bodywork getPowerLevel() values (SDK BODYWORK_POWER_LEVEL_OFF / _ON). */
+    private static final int POWER_LEVEL_OFF = 0;
+    private static final int POWER_LEVEL_ON = 2;
+    /** Climate wake-up: power-on wait after a local power-on, and the HVAC settle after it. */
+    private static final long CLIMATE_WAKE_TIMEOUT_MS = 15_000L;
+    private static final long CLIMATE_WAKE_POLL_MS = 250L;
+    private static final long CLIMATE_WAKE_SETTLE_MS = 2_000L;
+    /** Read-back window per write after the wake, and the gap before the one retry. */
+    private static final long CLIMATE_WAKE_CONFIRM_MS = 3_000L;
+    private static final long CLIMATE_WAKE_RETRY_GAP_MS = 1_000L;
+    private static final int CLIMATE_WAKE_WRITE_ATTEMPTS = 2;
+    /** No climate wake this soon after the car was switched off. */
+    private static final long CLIMATE_WAKE_AFTER_OFF_MS = 120_000L;
     /** BYD response code meaning "previous command in progress". */
     private static final String CLOUD_CODE_RATE_LIMITED = "6024";
 
@@ -72,6 +85,9 @@ public final class VehicleCommandRouter {
     // write must not slip between snapshot capture and a cloud fallback from
     // another seat command.
     private final Object seatCommandLock = new Object();
+    // Serializes CabinClimateCommand: an AC-off sent during an AC-on wake must not run against
+    // the still-off car and then be overridden by the wake's write.
+    private final Object climateCommandLock = new Object();
     private long remoteClimateActiveUntilMs;
     // Guarded by cloudLock. Updated only after a terminally-confirmed cloud or SDK seat result.
     private int[] seatCompositeState;
@@ -272,6 +288,22 @@ public final class VehicleCommandRouter {
      */
     public static abstract class VehicleCommand implements java.io.Serializable {
         private static final long serialVersionUID = 1L;
+        private transient volatile com.overdrive.app.byd.LocalActuationAttempt localAttempt;
+
+        private void beginLocalAttempt() {
+            localAttempt = new com.overdrive.app.byd.LocalActuationAttempt();
+        }
+
+        private com.overdrive.app.byd.LocalActuationAttempt localAttempt() {
+            com.overdrive.app.byd.LocalActuationAttempt attempt = localAttempt;
+            if (attempt == null) {
+                synchronized (this) {
+                    if (localAttempt == null) beginLocalAttempt();
+                    attempt = localAttempt;
+                }
+            }
+            return attempt;
+        }
 
         public abstract String name();
 
@@ -325,8 +357,7 @@ public final class VehicleCommandRouter {
 
         /**
          * Latency-sensitive commands skip the cloud leg when the vehicle is
-         * already awake (SDK is instant; cloud is 5–30 s) — find-car / flash.
-         * Overridden for the find/flash commands; default is normal latency.
+         * already awake (SDK is instant; cloud is 5–30 s). Default is normal latency.
          */
         public boolean isLatencySensitive() { return false; }
 
@@ -356,6 +387,23 @@ public final class VehicleCommandRouter {
          * (that is the actual pre-conditioning use case).
          */
         public boolean localOnlyWhenAwake() { return false; }
+
+        /**
+         * The HVAC accepts writes while the car is off and ignores them. When true and the car is
+         * confirmed off, {@link VehicleCommandRouter#execute} powers it on through the local rail
+         * first. Only for absolute writes (the post-wake write may be repeated) the local leg
+         * can represent.
+         */
+        public boolean wakeVehicleIfOff() { return false; }
+
+        /** The local write made right after that power-on. */
+        public boolean executeViaSdkAfterWake(BydDataCollector c) { return executeViaSdk(c); }
+
+        /**
+         * Read-back for the post-wake write: TRUE/FALSE when the live state shows it applied or
+         * not, null when it cannot be read. The default trusts the write's own result code.
+         */
+        public Boolean landedAfterWake(BydDataCollector c) { return Boolean.TRUE; }
 
         /**
          * Whether Home Assistant / MQTT may use this command's normal router path.
@@ -430,13 +478,22 @@ public final class VehicleCommandRouter {
     // router never special-cases a command (except TrunkOpenCommand, which is
     // a composite). To add a new control: extend, declare, override legs.
 
+    // Lock / unlock / find-car / flash run the local rail FIRST — it is instant and needs no
+    // account — and fall through to the terminally-confirmed cloud leg when the local write is
+    // refused (a sleeping body controller, or a frame this firmware does not honour).
     public static final class LockCommand extends VehicleCommand {
         public String name() { return "lock"; }
-        public Capability cloudCapability() { return Capability.REQUIRED; }
-        public Capability sdkCapability() { return Capability.NONE; }
-        public RoutePreference defaultPreference() { return RoutePreference.CLOUD_ONLY; }
+        public Capability cloudCapability() { return Capability.AVAILABLE; }
+        public Capability sdkCapability() { return Capability.AVAILABLE; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_FIRST; }
         public CloudOutcome executeViaCloud(BydCloudClient client, String vin) throws Exception {
             return remoteCommand(client, vin, "LOCKDOOR", null);
+        }
+        public boolean executeViaSdk(BydDataCollector c) {
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                return c.setDiLink5AllDoorsLocked(true);
+            }
+            return com.overdrive.app.byd.RemoteKeyControl.lock(c.getRuntimeContext());
         }
         public CloudCapabilities.Feature cloudFeature() { return CloudCapabilities.Feature.LOCK; }
         public boolean requiresKnownCloudFeature() { return true; }
@@ -445,12 +502,32 @@ public final class VehicleCommandRouter {
     }
 
     public static final class UnlockCommand extends VehicleCommand {
+        private final boolean confirmLanded;
+        public UnlockCommand() { this(true); }
+        /** {@code confirmLanded=false} for callers that confirm and re-send on their own. */
+        public UnlockCommand(boolean confirmLanded) { this.confirmLanded = confirmLanded; }
         public String name() { return "unlock"; }
-        public Capability cloudCapability() { return Capability.REQUIRED; }
-        public Capability sdkCapability() { return Capability.NONE; }
-        public RoutePreference defaultPreference() { return RoutePreference.CLOUD_ONLY; }
+        public Capability cloudCapability() { return Capability.AVAILABLE; }
+        public Capability sdkCapability() { return Capability.AVAILABLE; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_FIRST; }
         public CloudOutcome executeViaCloud(BydCloudClient client, String vin) throws Exception {
             return remoteCommand(client, vin, "OPENDOOR", null);
+        }
+        public boolean executeViaSdk(BydDataCollector c) {
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                return c.setDiLink5AllDoorsLocked(false);
+            }
+            boolean typed = c.isLocalTypedDoorLockAvailable();
+            // unlockConfirmed registers one door intent on the remote-key rail; the typed rail none.
+            return com.overdrive.app.byd.FourDoorUnlock.unlock(c, confirmLanded, typed ? 0 : 1,
+                    () -> unlockLocally(c, typed));
+        }
+        private boolean unlockLocally(BydDataCollector c, boolean typed) {
+            if (typed) {
+                return c.setLocalTypedDoorsLocked(false);
+            }
+            return com.overdrive.app.byd.RemoteKeyControl.unlockConfirmed(
+                    c.getRuntimeContext(), confirmLanded ? c : null);
         }
         public CloudCapabilities.Feature cloudFeature() { return CloudCapabilities.Feature.UNLOCK; }
         public boolean requiresKnownCloudFeature() { return true; }
@@ -458,35 +535,83 @@ public final class VehicleCommandRouter {
         public String motionSafetyGuardKey() { return DrivingSafetyGuard.GUARD_DOOR_LOCKS; }
     }
 
-    /** Horn + lights — BYD cloud only (no SDK FINDCAR primitive on this gen). */
+    // cloudOnly: the cloud leg alone, ungated as before the local rail existed (BYD refuses it in
+    // motion). For BYD Cloud "Test Connection", whose result must come from the account.
+
+    /** Horn + lights. */
     public static final class FindCarCommand extends VehicleCommand {
+        private final boolean cloudOnly;
+        public FindCarCommand() { this(false); }
+        public FindCarCommand(boolean cloudOnly) { this.cloudOnly = cloudOnly; }
         public String name() { return "find-car"; }
-        public Capability cloudCapability() { return Capability.REQUIRED; }
-        public Capability sdkCapability() { return Capability.NONE; }
-        public RoutePreference defaultPreference() { return RoutePreference.CLOUD_ONLY; }
-        public boolean isLatencySensitive() { return true; }
+        public Capability cloudCapability() { return Capability.AVAILABLE; }
+        public Capability sdkCapability() { return cloudOnly ? Capability.NONE : Capability.AVAILABLE; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_FIRST; }
         public CloudOutcome executeViaCloud(BydCloudClient client, String vin) throws Exception {
             return remoteCommand(client, vin, "FINDCAR", null);
         }
+        public boolean executeViaSdk(BydDataCollector c) {
+            return com.overdrive.app.byd.RemoteKeyControl.findCar(c.getRuntimeContext());
+        }
         public CloudCapabilities.Feature cloudFeature() { return CloudCapabilities.Feature.FIND_CAR; }
         public boolean requiresKnownCloudFeature() { return true; }
+        public MotionSafety motionSafety() {
+            return cloudOnly ? MotionSafety.UNRESTRICTED : MotionSafety.BLOCK_WHILE_MOVING;
+        }
+        public String motionSafetyGuardKey() { return DrivingSafetyGuard.GUARD_HORN_LIGHTS; }
     }
 
-    /** Lights-only flash — BYD cloud only (no SDK flash primitive on this gen). */
+    /** Lights-only flash. */
     public static final class FlashLightsCommand extends VehicleCommand {
+        private final boolean cloudOnly;
+        public FlashLightsCommand() { this(false); }
+        public FlashLightsCommand(boolean cloudOnly) { this.cloudOnly = cloudOnly; }
         public String name() { return "flash"; }
-        public Capability cloudCapability() { return Capability.REQUIRED; }
-        public Capability sdkCapability() { return Capability.NONE; }
-        public RoutePreference defaultPreference() { return RoutePreference.CLOUD_ONLY; }
-        public boolean isLatencySensitive() { return true; }
+        public Capability cloudCapability() { return Capability.AVAILABLE; }
+        public Capability sdkCapability() { return cloudOnly ? Capability.NONE : Capability.AVAILABLE; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_FIRST; }
         public CloudOutcome executeViaCloud(BydCloudClient client, String vin) throws Exception {
             return remoteCommand(client, vin, "FLASHLIGHTNOWHISTLE", null);
         }
+        public boolean executeViaSdk(BydDataCollector c) {
+            return com.overdrive.app.byd.RemoteKeyControl.flashLights(c.getRuntimeContext());
+        }
         public CloudCapabilities.Feature cloudFeature() { return CloudCapabilities.Feature.FLASH_LIGHTS; }
         public boolean requiresKnownCloudFeature() { return true; }
+        public MotionSafety motionSafety() {
+            return cloudOnly ? MotionSafety.UNRESTRICTED : MotionSafety.BLOCK_WHILE_MOVING;
+        }
+        public String motionSafetyGuardKey() { return DrivingSafetyGuard.GUARD_HORN_LIGHTS; }
     }
 
-    public static final class ClimateOnCommand extends VehicleCommand {
+    /** Vehicle power on (local remote-key frame). Never while moving; the guard cannot be disabled. */
+    public static final class VehiclePowerOnCommand extends VehicleCommand {
+        public String name() { return "vehicle-power-on"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) {
+            return DrivingSafetyGuard.isAccConfirmedOff()
+                    ? com.overdrive.app.byd.RemoteKeyControl.powerOnFromOff(c.getRuntimeContext())
+                    : com.overdrive.app.byd.RemoteKeyControl.powerOn(c.getRuntimeContext());
+        }
+        public MotionSafety motionSafety() { return MotionSafety.BLOCK_WHILE_MOVING; }
+        public String motionSafetyGuardKey() { return DrivingSafetyGuard.GUARD_VEHICLE_POWER; }
+    }
+
+    /** Vehicle power off (local remote-key frame). Never while moving; the guard cannot be disabled. */
+    public static final class VehiclePowerOffCommand extends VehicleCommand {
+        public String name() { return "vehicle-power-off"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) {
+            return com.overdrive.app.byd.RemoteKeyControl.powerOff(c.getRuntimeContext());
+        }
+        public MotionSafety motionSafety() { return MotionSafety.BLOCK_WHILE_MOVING; }
+        public String motionSafetyGuardKey() { return DrivingSafetyGuard.GUARD_VEHICLE_POWER; }
+    }
+
+    public static final class ClimateOnCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final double tempCelsius;
         /** Requested cloud preconditioning duration; local HVAC ignores this setting. */
         public final int remoteDurationMinutes;
@@ -526,6 +651,16 @@ public final class VehicleCommandRouter {
         // OPENAIR starts a TIMED REMOTE session; on an already-running car the occupant wants
         // the cabin AC, not a remote window. See localOnlyWhenAwake().
         public boolean localOnlyWhenAwake() { return true; }
+        public boolean wakeVehicleIfOff() { return isSdkTemperatureRepresentable(); }
+        /** The car may restore the AC at power-on, and start() refuses an AC that is already on. */
+        public boolean executeViaSdkAfterWake(BydDataCollector c) {
+            return isSdkTemperatureRepresentable() && c.setAcTemperature(0, tempCelsius)
+                    && (c.setAcPower(true) || c.readAcPowerNow() == 1);
+        }
+        public Boolean landedAfterWake(BydDataCollector c) {
+            int state = c.readAcPowerNow();
+            return state == 1 ? Boolean.TRUE : state == 0 ? Boolean.FALSE : null;
+        }
         public boolean allowCloudFallbackFromMqtt() { return true; }
 
         private boolean isCloudTemperatureRepresentable() {
@@ -547,7 +682,8 @@ public final class VehicleCommandRouter {
         }
     }
 
-    public static final class ClimateOffCommand extends VehicleCommand {
+    public static final class ClimateOffCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public String name() { return "climate-off"; }
         public Capability cloudCapability() { return Capability.AVAILABLE; }
         public Capability sdkCapability() { return Capability.AVAILABLE; }
@@ -871,12 +1007,16 @@ public final class VehicleCommandRouter {
         }
     }
 
-    public static final class ClimateSetTempCommand extends VehicleCommand {
+    public static final class ClimateSetTempCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final double tempCelsius; public final int zone;
         public ClimateSetTempCommand(int zone, double t) { this.zone = zone; this.tempCelsius = t; }
         public String name() { return "climate-temp"; }
         public Capability sdkCapability() { return Capability.REQUIRED; }
         public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean wakeVehicleIfOff() {
+            return !Double.isNaN(tempCelsius) && !Double.isInfinite(tempCelsius);
+        }
         public boolean executeViaSdk(BydDataCollector c) { return c.setAcTemperature(zone, tempCelsius); }
     }
 
@@ -889,7 +1029,8 @@ public final class VehicleCommandRouter {
      * a second read (which could observe someone else's change and report a value this command
      * never wrote).
      */
-    public static final class ClimateStepTempCommand extends VehicleCommand {
+    public static final class ClimateStepTempCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final int zone, area, delta;
         /** The setpoint actually written, or UNAVAILABLE when the step didn't happen. */
         public volatile int resultSetpoint = com.overdrive.app.byd.BydVehicleData.UNAVAILABLE;
@@ -906,7 +1047,8 @@ public final class VehicleCommandRouter {
         }
     }
 
-    public static final class ClimateSetFanCommand extends VehicleCommand {
+    public static final class ClimateSetFanCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final int level;
         public ClimateSetFanCommand(int l) { this.level = l; }
         public String name() { return "climate-fan"; }
@@ -924,6 +1066,9 @@ public final class VehicleCommandRouter {
      * captures the rest of the state at the moment the command is built so
      * unchanged seats retain their level.
      */
+    /** Cabin HVAC writes. They run one at a time so none can land inside a power-on wake. */
+    private interface CabinClimateCommand {}
+
     private interface SeatClimateCommand {
         int targetLevel();
         int targetStateIndex();
@@ -1137,22 +1282,54 @@ public final class VehicleCommandRouter {
         public boolean executeViaSdk(BydDataCollector c) { return c.setHazardLights(on); }
     }
 
+    /** One turn indicator on/off. Same class of control as {@link HazardCommand}. */
+    public static final class TurnSignalCommand extends VehicleCommand {
+        public final int side;
+        public final boolean on;
+        public TurnSignalCommand(int side, boolean on) { this.side = side; this.on = on; }
+        public String name() { return "turn-signal"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) {
+            return com.overdrive.app.byd.TurnSignalControl.set(c, side, on);
+        }
+    }
+
     public static final class AmbientColourCommand extends VehicleCommand {
         public final int colour;
         public final String zone; // front/rear/both — null defaults to both (whole cabin)
+        /** 0xRRGGBB to match against the car's palette, or -1 for a palette index request. */
+        public final int rgb;
+        /** The 1-based colour actually written, published so the caller can report it. */
+        public volatile int resultColour = com.overdrive.app.byd.BydVehicleData.UNAVAILABLE;
         public AmbientColourCommand(int colour) { this(colour, "both"); }
-        public AmbientColourCommand(int colour, String zone) {
+        public AmbientColourCommand(int colour, String zone) { this(colour, zone, -1); }
+        private AmbientColourCommand(int colour, String zone, int rgb) {
             this.colour = colour;
             this.zone = (zone == null || zone.isEmpty()) ? "both" : zone;
+            this.rgb = rgb;
+        }
+        public static AmbientColourCommand rgb(int rgb, String zone) {
+            return new AmbientColourCommand(0, zone, rgb & 0xFFFFFF);
         }
         public String name() { return "ambient"; }
         public Capability sdkCapability() { return Capability.REQUIRED; }
         public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
-        public boolean executeViaSdk(BydDataCollector c) { return c.setAmbientLightZoned(zone, colour); }
+        public boolean executeViaSdk(BydDataCollector c) {
+            if (rgb >= 0) {
+                int written = c.setAmbientLightRgb(zone, rgb);
+                if (written > 0) resultColour = written;
+                return written > 0;
+            }
+            boolean ok = c.setAmbientLightZoned(zone, colour);
+            if (ok) resultColour = colour;
+            return ok;
+        }
     }
 
     /** AC auto mode on/off (feature-id Ac.AUTO_MODE_SET). SDK-only. */
-    public static final class AcAutoModeCommand extends VehicleCommand {
+    public static final class AcAutoModeCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final boolean on;
         public AcAutoModeCommand(boolean on) { this.on = on; }
         public String name() { return "ac-auto"; }
@@ -1162,7 +1339,8 @@ public final class VehicleCommandRouter {
     }
 
     /** Link or separate the driver/passenger AC temperature zones. SDK-only. */
-    public static final class AcTemperatureSyncCommand extends VehicleCommand {
+    public static final class AcTemperatureSyncCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final boolean synced;
         public AcTemperatureSyncCommand(boolean synced) { this.synced = synced; }
         public String name() { return "ac-temperature-sync"; }
@@ -1173,7 +1351,8 @@ public final class VehicleCommandRouter {
 
     /** Air intake: recirculate cabin air vs draw fresh outside air (feature-id
      *  Ac.CYCLE_MODE_SET, FRESH_AIR=0 / RECIRCULATION=1). SDK-only. */
-    public static final class AcRecirculationCommand extends VehicleCommand {
+    public static final class AcRecirculationCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final boolean recirculate;
         public AcRecirculationCommand(boolean recirculate) { this.recirculate = recirculate; }
         public String name() { return "ac-recirculation"; }
@@ -1184,7 +1363,8 @@ public final class VehicleCommandRouter {
 
     /** Front windscreen defrost/demist on/off (feature-id Ac.DEFROST_FRONT_SET). SDK-only —
      *  no BYD cloud remote-control equivalent; same AC-device routing as recirculation. */
-    public static final class FrontDefrostCommand extends VehicleCommand {
+    public static final class FrontDefrostCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final boolean on;
         public FrontDefrostCommand(boolean on) { this.on = on; }
         public String name() { return "defrost-front"; }
@@ -1194,7 +1374,8 @@ public final class VehicleCommandRouter {
     }
 
     /** Rear windscreen defrost/demist on/off (feature-id Ac.DEFROST_REAR_SET). SDK-only. */
-    public static final class RearDefrostCommand extends VehicleCommand {
+    public static final class RearDefrostCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final boolean on;
         public RearDefrostCommand(boolean on) { this.on = on; }
         public String name() { return "defrost-rear"; }
@@ -1204,13 +1385,44 @@ public final class VehicleCommandRouter {
     }
 
     /** Fan-only (ventilation, no compressor) on/off. SDK-only, named-method HAL call. */
-    public static final class FanOnlyModeCommand extends VehicleCommand {
+    public static final class FanOnlyModeCommand extends VehicleCommand
+            implements CabinClimateCommand {
         public final boolean on;
         public FanOnlyModeCommand(boolean on) { this.on = on; }
         public String name() { return "fan-only"; }
         public Capability sdkCapability() { return Capability.REQUIRED; }
         public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
         public boolean executeViaSdk(BydDataCollector c) { return c.setFanOnlyMode(on); }
+    }
+
+    public static final class AcMaxCoolingCommand extends VehicleCommand
+            implements CabinClimateCommand {
+        public final boolean on;
+        public AcMaxCoolingCommand(boolean on) { this.on = on; }
+        public String name() { return "ac-max-cooling"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) { return c.setAcMaxCooling(on); }
+    }
+
+    public static final class AirPurifyCommand extends VehicleCommand
+            implements CabinClimateCommand {
+        public final boolean on;
+        public AirPurifyCommand(boolean on) { this.on = on; }
+        public String name() { return "air-purify"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) { return c.setAirPurify(on); }
+    }
+
+    /** Persistent setting: the vehicle closes its windows itself when rain is sensed. */
+    public static final class RainCloseWindowCommand extends VehicleCommand {
+        public final boolean on;
+        public RainCloseWindowCommand(boolean on) { this.on = on; }
+        public String name() { return "rain-close-windows"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) { return c.setRainCloseWindow(on); }
     }
 
     /**
@@ -1268,6 +1480,17 @@ public final class VehicleCommandRouter {
         public boolean executeViaSdk(BydDataCollector c) { return c.setReadingLight(on); }
     }
 
+    /** DI5 on-car calibration: one raw cabin-light write ({@code /api/debug/light/cabin}). */
+    public static final class CabinLightProbeCommand extends VehicleCommand {
+        public final String api;
+        public final int value;
+        public CabinLightProbeCommand(String api, int value) { this.api = api; this.value = value; }
+        public String name() { return "cabin-light-probe"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) { return c.probeDiLink5CabinLight(api, value); }
+    }
+
     /**
      * Interior-ambient brightness as a 0-100 percent (converted to the SDK's 0..5 level by the
      * collector), per zone. SDK-only.
@@ -1322,6 +1545,22 @@ public final class VehicleCommandRouter {
         }
         public boolean executeViaSdk(BydDataCollector c) {
             return c.setHudBrightness(percent);
+        }
+    }
+
+    /** Driver-cluster brightness; routed only on DiLink 5, whose daemon has no car adapter. */
+    public static final class DriverDisplayBrightnessCommand extends VehicleCommand {
+        public final int percent;
+        public DriverDisplayBrightnessCommand(int percent) { this.percent = percent; }
+        public String name() { return "driver-display-brightness"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public MotionSafety motionSafety() { return MotionSafety.BLOCK_WHILE_MOVING; }
+        public String motionSafetyGuardKey() {
+            return DrivingSafetyGuard.GUARD_DISPLAY_BRIGHTNESS;
+        }
+        public boolean executeViaSdk(BydDataCollector c) {
+            return c.setDriverDisplayBrightness(percent);
         }
     }
 
@@ -1424,6 +1663,16 @@ public final class VehicleCommandRouter {
         public Capability sdkCapability() { return Capability.REQUIRED; }
         public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
         public boolean executeViaSdk(BydDataCollector c) { return c.setChildPresenceDetection(value); }
+    }
+
+    /** DiLink 5 only: app-process half of the setting-cpd DiPilot fallback; never routed directly. */
+    public static final class DiLink5DiPilotCpdCommand extends VehicleCommand {
+        public final int value;
+        public DiLink5DiPilotCpdCommand(int value) { this.value = value; }
+        public String name() { return "setting-cpd"; }
+        public Capability sdkCapability() { return Capability.REQUIRED; }
+        public RoutePreference defaultPreference() { return RoutePreference.SDK_ONLY; }
+        public boolean executeViaSdk(BydDataCollector c) { return c.writeDiLink5DiPilotCpd(value); }
     }
 
     // ── Expanded ADAS matrix (all SDK-only, on adasDevice via BydDataCollector) ──
@@ -1820,8 +2069,14 @@ public final class VehicleCommandRouter {
         // a still-earlier message-ingress snapshot, so an already-queued open cannot overtake
         // a STOP while its per-connection worker is busy.
         long tailgateOpenStopGeneration = tailgateOpenStopGeneration(cmd);
+        cmd.beginLocalAttempt();
         if (cmd instanceof SeatClimateCommand) {
             synchronized (seatCommandLock) {
+                return executeUnserialized(cmd, tailgateOpenStopGeneration);
+            }
+        }
+        if (cmd instanceof CabinClimateCommand) {
+            synchronized (climateCommandLock) {
                 return executeUnserialized(cmd, tailgateOpenStopGeneration);
             }
         }
@@ -1867,9 +2122,11 @@ public final class VehicleCommandRouter {
             return CommandResult.notSupported(msg("not_supported"));
         }
 
+        CommandResult result = runWithVehicleWake(cmd);
+
         // Applied BEFORE route resolution so no preference — including an explicit
         // routePolicy override to cloud_only — can reach the remote leg while occupied.
-        CommandResult result = runLocalOnlyWhileAwake(cmd);
+        if (result == null) result = runLocalOnlyWhileAwake(cmd);
         if (result == null) {
             RoutePreference pref = resolveEffectivePreference(cmd);
             switch (pref) {
@@ -1889,6 +2146,131 @@ public final class VehicleCommandRouter {
             }
         }
         return finishCommand(cmd, result);
+    }
+
+    private enum Wake { AWAKE, NOT_SENT, NOT_ON, STATE_CHANGED, ABORTED }
+
+    /**
+     * {@link VehicleCommand#wakeVehicleIfOff()}: power on, then write. Requires the live power
+     * level AND ACC to read off, since the power-on primer is a power-OFF frame. Cloud only when
+     * no power-on was sent: OPENAIR must never reach a car that may be coming on. Null = normal
+     * routing.
+     */
+    private CommandResult runWithVehicleWake(VehicleCommand cmd) {
+        // DiLink 5 virtualizes the bodywork power level and its local rail is unconfirmed.
+        if (!cmd.wakeVehicleIfOff() || com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                || !DrivingSafetyGuard.isAccConfirmedOff() || isRemoteClimateActive()
+                || isRecentPowerOff()) {
+            return null;
+        }
+        BydDataCollector collector = BydDataCollector.getInstance();
+        if (collector.readPowerLevelNow() != POWER_LEVEL_OFF) return null;
+        long start = System.currentTimeMillis();
+        Wake wake = powerOnAndAwaitOn(cmd, collector);
+        if (wake == Wake.ABORTED) {
+            return stoppedLocalAttempt(cmd, System.currentTimeMillis() - start);
+        }
+        if (wake == Wake.AWAKE) return runSdkAfterWake(cmd, collector, start);
+        if (wake == Wake.STATE_CHANGED) return null;
+        if (wake == Wake.NOT_SENT) {
+            return resolveEffectivePreference(cmd) != RoutePreference.SDK_ONLY
+                    && cloudHandshakeSatisfied(cmd) ? runCloudOnly(cmd) : null;
+        }
+        return CommandResult.failed(Path.SDK, msg("local_failed"),
+                System.currentTimeMillis() - start, null);
+    }
+
+    /** A climate write just after a switch-off is a power-off rule or an occupant, not a wake. */
+    private static boolean isRecentPowerOff() {
+        long offAt = com.overdrive.app.monitor.AccMonitor.lastAccOffEdgeElapsedMs();
+        return offAt > 0L
+                && android.os.SystemClock.elapsedRealtime() - offAt < CLIMATE_WAKE_AFTER_OFF_MS;
+    }
+
+    private Wake powerOnAndAwaitOn(VehicleCommand cmd, BydDataCollector collector) {
+        if (!com.overdrive.app.byd.RemoteKeyControl.isEnabled()) return Wake.NOT_SENT;
+        logger.info("'" + cmd.name() + "' with the vehicle off — powering on first");
+        SdkLeg power = invokeSdk(new VehiclePowerOnCommand());
+        if (power.error instanceof com.overdrive.app.byd.LocalActuationAbort) {
+            cmd.localAttempt().abort((com.overdrive.app.byd.LocalActuationAbort) power.error);
+            return Wake.ABORTED;
+        }
+        // Blocked means ACC changed after the gate read it off: the car may be coming on.
+        if (power.blocked) return Wake.STATE_CHANGED;
+        if (!power.success) {
+            logger.warn("'" + cmd.name() + "': power-on refused");
+            return Wake.NOT_SENT;
+        }
+        long deadline = android.os.SystemClock.elapsedRealtime() + CLIMATE_WAKE_TIMEOUT_MS;
+        try {
+            while (collector.readPowerLevelNow() < POWER_LEVEL_ON) {
+                if (android.os.SystemClock.elapsedRealtime() >= deadline) {
+                    logger.warn("'" + cmd.name() + "': vehicle not on within "
+                            + CLIMATE_WAKE_TIMEOUT_MS + " ms of power-on");
+                    return Wake.NOT_ON;
+                }
+                Thread.sleep(CLIMATE_WAKE_POLL_MS);
+            }
+            Thread.sleep(CLIMATE_WAKE_SETTLE_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Wake.NOT_ON;
+        }
+        return Wake.AWAKE;
+    }
+
+    /** Just after power-on the HVAC can ignore an accepted write: read back, retry once. */
+    private CommandResult runSdkAfterWake(VehicleCommand cmd, BydDataCollector collector,
+                                          long start) {
+        SdkLeg leg = null;
+        for (int attempt = 1; attempt <= CLIMATE_WAKE_WRITE_ATTEMPTS; attempt++) {
+            if (attempt > 1) {
+                try {
+                    Thread.sleep(CLIMATE_WAKE_RETRY_GAP_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            leg = invokeSdkAfterWake(cmd, collector);
+            if (leg.blocked) return CommandResult.blocked(msg("blocked_driving"));
+            if (leg.success && awaitLandedAfterWake(cmd, collector)) {
+                logger.info("'" + cmd.name() + "' landed after power-on (attempt " + attempt + ")");
+                return CommandResult.success(Path.SDK, msg("local_sent"),
+                        System.currentTimeMillis() - start);
+            }
+            logger.warn("'" + cmd.name() + "' after power-on: attempt " + attempt
+                    + (leg.success ? " accepted but did not take effect" : " refused"));
+        }
+        return CommandResult.failed(Path.SDK, msg("local_failed"),
+                System.currentTimeMillis() - start, leg != null ? leg.error : null);
+    }
+
+    /** The wake path is never DiLink 5, so the write runs here rather than over the bridge. */
+    private SdkLeg invokeSdkAfterWake(VehicleCommand cmd, BydDataCollector collector) {
+        if (checkDrivingSafety(cmd) != null) return new SdkLeg(false, null, true);
+        try {
+            return new SdkLeg(cmd.executeViaSdkAfterWake(collector), null);
+        } catch (Exception e) {
+            logger.warn("SDK exec for " + cmd.name() + " after power-on threw: " + e.getMessage());
+            return new SdkLeg(false, e);
+        }
+    }
+
+    /** Waits for the read-back to confirm; a state that stays unreadable trusts the write. */
+    private static boolean awaitLandedAfterWake(VehicleCommand cmd, BydDataCollector collector) {
+        long deadline = android.os.SystemClock.elapsedRealtime() + CLIMATE_WAKE_CONFIRM_MS;
+        while (true) {
+            Boolean landed = cmd.landedAfterWake(collector);
+            if (Boolean.TRUE.equals(landed)) return true;
+            if (android.os.SystemClock.elapsedRealtime() >= deadline) return landed == null;
+            try {
+                Thread.sleep(CLIMATE_WAKE_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
     }
 
     /**
@@ -2037,8 +2419,14 @@ public final class VehicleCommandRouter {
         // See execute(): this must happen before checkDrivingSafety() in the
         // unserialized helper so STOP invalidates an already-entered request.
         long tailgateOpenStopGeneration = tailgateOpenStopGeneration(cmd);
+        cmd.beginLocalAttempt();
         if (cmd instanceof SeatClimateCommand) {
             synchronized (seatCommandLock) {
+                return executeSdkOnlyUnserialized(cmd, tailgateOpenStopGeneration);
+            }
+        }
+        if (cmd instanceof CabinClimateCommand) {
+            synchronized (climateCommandLock) {
                 return executeSdkOnlyUnserialized(cmd, tailgateOpenStopGeneration);
             }
         }
@@ -2078,7 +2466,19 @@ public final class VehicleCommandRouter {
         updateRemoteClimateSession(cmd, result);
         updateSeatCloudCacheAfterLocalSuccess(cmd, result);
         retireAcAutoOffWindow(cmd, result);
+        confirmLockStateAfterCommand(cmd, result);
         return result;
+    }
+
+    /** Rules that check the lock after this command must see the car's new state, not the poll's. */
+    private static void confirmLockStateAfterCommand(VehicleCommand cmd, CommandResult result) {
+        if (result == null || result.outcome != Outcome.SUCCESS) return;
+        if (!(cmd instanceof LockCommand) && !(cmd instanceof UnlockCommand)) return;
+        try {
+            BydDataCollector.getInstance().confirmLockStateAfterCommand(cmd instanceof LockCommand);
+        } catch (Throwable t) {
+            // Never let lock-state bookkeeping affect the command's own reported outcome.
+        }
     }
 
     private synchronized void updateRemoteClimateSession(VehicleCommand cmd, CommandResult result) {
@@ -2140,6 +2540,28 @@ public final class VehicleCommandRouter {
         return mapCloudOnlyResult(cr, elapsed);
     }
 
+    /**
+     * Cloud-only dispatch for the cloud fallback ACTUATOR of the proximity path
+     * ({@code RemoteAccessApiHandler.performDecision}). Runs ONLY the cloud leg of {@code cmd}: no
+     * SDK leg, no vehicle wake, no SDK_FIRST/CLOUD_FIRST cascade. Same driving-safety gate, cloud
+     * handshake, capability discovery, PIN handshake and {@link VehicleCommand#cloudTimeoutMs()}
+     * budget as the manual path's cloud leg; exactly one attempt, serialized on cloudLock. The caller
+     * bounds its own wait and interrupts this thread at its deadline: the interrupted leg is
+     * cancelled exactly like a timed-out manual leg (no dispatch after the interrupt). An explicit
+     * {@code bydCloud.routePolicy.<name> = sdk_only} disables this leg (NOT_SUPPORTED). AUTH_REQUIRED
+     * means "cloud not configured" and is returned before any network call.
+     */
+    public CommandResult executeCloudOnly(VehicleCommand cmd) {
+        CommandResult blocked = checkDrivingSafety(cmd);
+        if (blocked != null) return blocked;
+        if (resolveEffectivePreference(cmd) == RoutePreference.SDK_ONLY) {
+            return CommandResult.notSupported(msg("not_supported"));
+        }
+        CommandResult stopped = stoppedLocalAttempt(cmd, 0L);
+        if (stopped != null) return stopped;
+        return finishCommand(cmd, runCloudOnly(cmd));
+    }
+
     private CommandResult runCloudFirst(VehicleCommand cmd) {
         long start = System.currentTimeMillis();
 
@@ -2156,6 +2578,8 @@ public final class VehicleCommandRouter {
                         System.currentTimeMillis() - start);
             }
             if (leg.blocked) return CommandResult.blocked(msg("blocked_driving"));
+            CommandResult stopped = stoppedLocalAttempt(cmd, System.currentTimeMillis() - start);
+            if (stopped != null) return stopped;
             // SDK failed despite being awake — fall through to cloud.
         }
 
@@ -2214,6 +2638,8 @@ public final class VehicleCommandRouter {
                         System.currentTimeMillis() - start);
             }
             if (sdkLeg.blocked) return CommandResult.blocked(msg("blocked_driving"));
+            CommandResult stopped = stoppedLocalAttempt(cmd, System.currentTimeMillis() - start);
+            if (stopped != null) return stopped;
         }
         // SDK failed or absent — try cloud.
         if (!cmd.hasCloudPath()) {
@@ -2613,6 +3039,16 @@ public final class VehicleCommandRouter {
     }
 
     private SdkLeg invokeSdk(VehicleCommand cmd) {
+        com.overdrive.app.byd.LocalActuationAttempt attempt = cmd.localAttempt();
+        com.overdrive.app.byd.RemoteKeyControl.takeLastAbort();
+        if (Thread.currentThread().isInterrupted()) {
+            com.overdrive.app.byd.LocalActuationAbort stopped =
+                    new com.overdrive.app.byd.LocalActuationAbort(
+                            com.overdrive.app.byd.LocalActuationAbort.Kind.CANCELLED,
+                            "vehicle command cancelled");
+            attempt.abort(stopped);
+            return new SdkLeg(false, stopped);
+        }
         // A command can spend time behind a cloud request or local transaction
         // after the routing-entry gate. Check again immediately before every
         // local actuator write and keep this a terminal block.
@@ -2620,8 +3056,23 @@ public final class VehicleCommandRouter {
             return new SdkLeg(false, null, true);
         }
         try {
-            return new SdkLeg(executeSdkCommand(cmd), null);
+            boolean accepted = executeSdkCommand(cmd);
+            com.overdrive.app.byd.LocalActuationAbort stopped =
+                    com.overdrive.app.byd.RemoteKeyControl.takeLastAbort();
+            if (stopped != null) {
+                attempt.abort(stopped);
+                return new SdkLeg(false, stopped,
+                        stopped.kind == com.overdrive.app.byd.LocalActuationAbort.Kind.BLOCKED_DRIVING);
+            }
+            return new SdkLeg(accepted, null);
         } catch (Exception e) {
+            com.overdrive.app.byd.LocalActuationAbort stopped =
+                    com.overdrive.app.byd.RemoteKeyControl.takeLastAbort();
+            if (stopped != null) {
+                attempt.abort(stopped);
+                return new SdkLeg(false, stopped,
+                        stopped.kind == com.overdrive.app.byd.LocalActuationAbort.Kind.BLOCKED_DRIVING);
+            }
             logger.warn("SDK exec for " + cmd.name() + " threw: " + e.getMessage());
             return new SdkLeg(false, e);
         }
@@ -2645,6 +3096,14 @@ public final class VehicleCommandRouter {
         // Serialize cloud commands so we never race two simultaneous BYD
         // remote-control posts from different HTTP threads.
         synchronized (cloudLock) {
+            final com.overdrive.app.byd.LocalActuationAttempt localAttempt = cmd.localAttempt();
+            com.overdrive.app.byd.LocalActuationAbort localAbort = localAttempt.cloudAbort();
+            if (localAbort != null) {
+                return new CloudCallResult(
+                        localAbort.kind == com.overdrive.app.byd.LocalActuationAbort.Kind.BLOCKED_DRIVING
+                                ? CloudOutcomeKind.BLOCKED_DRIVING : CloudOutcomeKind.FAILED,
+                        localAbort);
+            }
             Future<CloudOutcome> future = null;
             final AtomicReference<Thread> workerThread = new AtomicReference<>();
             final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -2715,12 +3174,14 @@ public final class VehicleCommandRouter {
                             }
                         }
                         if (isCloudCallCancelled(cancelled)) return CloudOutcome.failed();
+                        if (localAttempt.cloudAbort() != null) return CloudOutcome.failed();
                         // /control/remoteControl commands require the PIN handshake;
                         // /control/smartCharge/* and similar config writes do not.
                         if (cmd.requiresControlPin()) {
                             cloudClient.verifyControlPassword(vin);
                         }
                         if (isCloudCallCancelled(cancelled)) return CloudOutcome.failed();
+                        if (localAttempt.cloudAbort() != null) return CloudOutcome.failed();
                         // The command may have waited behind another cloud
                         // request, capability discovery, or PIN verification.
                         // Recheck here, directly before physical dispatch.
@@ -2792,6 +3253,8 @@ public final class VehicleCommandRouter {
                 // starts immediately after this timeout returns to the caller.
                 cancelled.set(true);
                 cancelCloudRequest(future, client, workerThread.get(), trackTailgateOpen);
+                logger.warn("Cloud leg for '" + cmd.name() + "' timed out after "
+                        + cmd.cloudTimeoutMs() + "ms");
                 return new CloudCallResult(CloudOutcomeKind.FAILED, te);
             } catch (InterruptedException ie) {
                 // Treat caller cancellation exactly like timeout. Returning
@@ -2806,8 +3269,10 @@ public final class VehicleCommandRouter {
                 if (cause instanceof BydCloudClient.SmartChargeVehicleUnreachableException) {
                     return new CloudCallResult(CloudOutcomeKind.VEHICLE_UNREACHABLE, cause);
                 }
+                logger.warn("Cloud leg for '" + cmd.name() + "' failed: " + cause);
                 return new CloudCallResult(CloudOutcomeKind.FAILED, cause);
             } catch (Exception e) {
+                logger.warn("Cloud leg for '" + cmd.name() + "' failed: " + e);
                 return new CloudCallResult(CloudOutcomeKind.FAILED, e);
             } finally {
                 if (trackTailgateOpen) {
@@ -2844,8 +3309,10 @@ public final class VehicleCommandRouter {
         if (cmd.motionSafety() != VehicleCommand.MotionSafety.BLOCK_WHILE_MOVING) {
             return false;
         }
-        if (!DrivingSafetyGuard.isActionBlocked(cmd.motionSafetyGuardKey())) return false;
-        logger.warn("Blocked cloud dispatch for '" + cmd.name() + "' — vehicle in motion");
+        String reason = DrivingSafetyGuard.getActionBlockReason(cmd.motionSafetyGuardKey());
+        if (reason == null) return false;
+        logger.warn("Blocked cloud dispatch for '" + cmd.name()
+                + "' — not confirmed parked (" + reason + ")");
         return true;
     }
 
@@ -2918,9 +3385,19 @@ public final class VehicleCommandRouter {
      */
     private CommandResult checkDrivingSafety(VehicleCommand cmd) {
         if (cmd.motionSafety() != VehicleCommand.MotionSafety.BLOCK_WHILE_MOVING) return null;
-        if (!DrivingSafetyGuard.isActionBlocked(cmd.motionSafetyGuardKey())) return null;
-        logger.warn("Blocked '" + cmd.name() + "' — vehicle in motion");
+        String reason = DrivingSafetyGuard.getActionBlockReason(cmd.motionSafetyGuardKey());
+        if (reason == null) return null;
+        logger.warn("Blocked '" + cmd.name() + "' — not confirmed parked (" + reason + ")");
         return CommandResult.blocked(msg("blocked_driving"));
+    }
+
+    /** An expired/cancelled generic frame cannot escape through an explicit second cloud leg. */
+    private static CommandResult stoppedLocalAttempt(VehicleCommand cmd, long elapsed) {
+        com.overdrive.app.byd.LocalActuationAbort stopped = cmd.localAttempt().cloudAbort();
+        if (stopped == null) return null;
+        return stopped.kind == com.overdrive.app.byd.LocalActuationAbort.Kind.BLOCKED_DRIVING
+                ? CommandResult.blocked(msg("blocked_driving"))
+                : CommandResult.failed(Path.SDK, msg("local_failed"), elapsed, stopped);
     }
 
     // ── i18n key resolution ─────────────────────────────────────────────

@@ -282,8 +282,8 @@
     <string name="onboarding_expert_surveillance_body">微調整検出、品質とストレージここに。 これらはあなたの車から提供されるアプリ内の設定ページとして開きます - 空白の画面は、ヘルパーがまだ起動していることを意味します。</string>
     <string name="onboarding_expert_camprobe_title">カメラのプローブ：注意</string>
     <string name="onboarding_expert_camprobe_body">これは、物理的なカメラが各役割を供給し、カメラを再起動する再マップします。 フィードが間違っている場合にのみ変更してください — ガイドで以前設定したことになります。</string>
-    <string name="onboarding_expert_traffic_title">トラフィックモニター — リモートアクセスに必要です</string>
-    <string name="onboarding_expert_traffic_body">BYDの内蔵トラフィックモニターは、車の内蔵SIMを使用しない他のアプリをブロックします。 BYD SIMを介してリモートで車に到達したい場合は、ここでそれを無効にする必要があります。変更を適用するためにヘッドユニットが再起動します。</string>
+    <string name="onboarding_expert_traffic_title">トラフィックモニター — リモート アクセスに必要です</string>
+    <string name="onboarding_expert_traffic_body">BYD標準搭載のトラフィックモニターは、他のアプリが車の内蔵SIMを使用できないようにブロックします。BYD SIM経由で車にリモート接続したい場合は、ここで無効にする必要があります。変更を適用するため、ヘッドユニットが再起動します。</string>
     <string name="onboarding_expert_daemons_title">サービス — ハンドルに気をつけて。</string>
     <string name="onboarding_expert_daemons_body">これらのスイッチは、バックグラウンドサービスを開始および停止します。 カメラ、監視、ACCのいずれかをオフにすると、録画が停止し、再起動後でも、再起動をオンにするまでそれらをオフにします。</string>
     <string name="onboarding_expert_security_title">PINでロック</string>
@@ -548,7 +548,8 @@
     <string name="toast_soh_reset_failed_with_message">リセット失敗: %1$s</string>
     <string name="toast_select_at_least_one_category">少なくとも1つのカテゴリを選択する</string>
     <string name="toast_reset_failed_with_error">復元失敗: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s 交通モニター...</string>
+    <string name="toast_traffic_monitor_enabling">トラフィックモニターを有効にしています…</string>
+    <string name="toast_traffic_monitor_disabling">トラフィックモニターを無効にしています…</string>
     <string name="dialog_close">閉じる</string>
     <string name="dialog_reset">リセット</string>
     <string name="dialog_delete">削除</string>
@@ -566,14 +567,15 @@
     <string name="dialog_reset_complete_title">セット完了</string>
     <string name="dialog_traffic_cannot_check_title">ステータスを確認できない</string>
     <string name="dialog_traffic_cannot_check_message">ADB接続はまだ準備ができていない.\n\nアプリケーションはシステムパッケージを管理するために ADBアクセスを必要としています. 開発者オプションでは:\n\n• USB デバッグが有効になっていることを確認してください.</string>
-    <string name="dialog_traffic_disable_title">BYDトラフィックモニターを無効にするか?</string>
-    <string name="dialog_traffic_disable_message">BYD トラフィックモニター (com.byd.trafficmonitor) は,バックグラウンドでの道路交通状態を継続的に監視する内蔵システムアプリです.\n\n️ なぜそれを無効にするのですか?\n\n• 携帯電話データを消費します (駐車している場合でも)\n• CPUとバックグラウンドのバッテリーを使用します\n• 別なナビゲーションアプリを使用している場合は不要です\n• ダッシュカメラのネットワーク使用に干渉できます\n\n これは無効にできます.</string>
-    <string name="dialog_traffic_enable_title">BYDトラフィックモニターを再起動する?</string>
-    <string name="dialog_traffic_enable_message">BYD トラフィックモニターは現在無効です.\n\n再起動すると,ナビゲーションマップの内蔵のトラフィックオーバーレイを回復します.バックグラウンドで実行し,モバイルデータを消費することを注意してください.\n\n有効化後にハードリブートが必要です (中央コンソールボタンを5秒保持します).</string>
-    <string name="dialog_traffic_status_title">交通モニター %1$s</string>
+    <string name="dialog_traffic_disable_title">BYD トラフィックモニターを無効にしますか？</string>
+    <string name="dialog_traffic_disable_message">BYD トラフィックモニター（com.byd.trafficmonitor）は、どのアプリがモバイルデータを使用できるかを管理する内蔵システムアプリです。OverDriveを含むサードパーティ製アプリが車の内蔵SIMを使用できないようにブロックします。\n\n無効にする理由は？\n\n• OverDriveやインストールした他のアプリが、BYD SIM経由でインターネットを使用できるようになります\n• BYD SIM経由で車にリモート接続するために必要です\n\nナビゲーション、Bluetooth、その他すべての車両機能には影響しません。\n\n無効にした後はハードリブートが必要です（センターコンソールのボタンを5秒間長押ししてください）。</string>
+    <string name="dialog_traffic_enable_title">BYD トラフィックモニターを再度有効にしますか？</string>
+    <string name="dialog_traffic_enable_message">BYD トラフィックモニターは現在無効になっています。\n\n再度有効にすると、OverDriveやその他のサードパーティ製アプリによる車の内蔵SIMの使用が再びブロックされるため、BYD SIM経由のリモート アクセスは機能しなくなります。\n\n有効にした後はハードリブートが必要です（センターコンソールのボタンを5秒間長押ししてください）。</string>
+    <string name="dialog_traffic_status_enabled">トラフィックモニターは有効です</string>
+    <string name="dialog_traffic_status_disabled">トラフィックモニターは無効です</string>
     <string name="dialog_traffic_reboot_message">変更が適用されました. 硬いリブートを実行してください. 鍵を押して中央コンソールボタンを5秒押してください.</string>
-    <string name="traffic_monitor_loading">交通モニター: チェック...</string>
-    <string name="traffic_monitor_tap_to_check">交通モニター (チェックするにはタップ)</string>
+    <string name="traffic_monitor_loading">トラフィックモニター：確認中…</string>
+    <string name="traffic_monitor_tap_to_check">トラフィックモニター（タップして確認）</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">走行履歴</string>
     <string name="reset_label_soc_history">SoC + 12V 過去</string>
@@ -629,6 +631,10 @@
     <string name="dialog_tailscale_proxy_enable_message">MQTT は Tailscale 経由で MQTT 経由するので,端口転送なしで,あなたの尾ネット上のプライベートブローカーに連絡することができます.\n\n有効である間:\n• MQTT は尾ネットのブローカーに動作します (例えば,あなたの尾ネット上のデバイス上のMosquitto) \n• MQTT は公共のブローカーに (HiveMQ, AWS IoT,など) 失敗します  Tailscale 唯一の尾ネットへのルート\n• Tailscale デイモンが変更を適用するために再起動します \n• 他のアプリとデバイスのトラフィックが影響を受けません\n\n•あなたはいつでもこれをオフにすることができます.</string>
     <string name="dialog_zrok_reset_title">Zrok 環境をリセットする</string>
     <string name="dialog_zrok_reset_message">このデバイスから zrok 環境を削除します 保存されたトークンを削除します 再びトークンを入力して有効化する必要があります. これはzrok.ioのデバイスの5つのスロットの1つを使用します.</string>
+    <string name="dialog_tunnel_conflict_title">別のトンネルが実行中です</string>
+    <string name="dialog_tunnel_conflict_message">%1$sはすでに実行中です。%2$sに切り替えますか（%1$sは停止します）？それとも両方のトンネルを同時に実行しますか？\n\n両方を実行すると:\n• 2つの公開リンクからダッシュボードにアクセスできます\n• 待機中のモバイルデータ通信量がわずかに増えます\n• 再起動後も両方が自動的に起動します</string>
+    <string name="dialog_tunnel_conflict_switch">切り替える</string>
+    <string name="dialog_tunnel_conflict_run_both">両方を実行</string>
     <string name="toast_resetting_zrok">Zrok環境をリセットする...</string>
     <string name="toast_zrok_reset_success">Zrok 環境リセット. また設定するために新しいトークンを入力します.</string>
     <string name="toast_zrok_reset_partial">環境リセット (トークンファイルは手動の掃除が必要になる可能性があります)</string>
@@ -690,8 +696,8 @@
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">提示 &amp; トラブルシューティング</string>
     <string name="setup_traffic_title">BYD トラフィックモニターを無効にする</string>
-    <string name="setup_traffic_body">BYD トラフィックモニターは,インターネットにアクセスできない第三者のアプリをブロックします.それを無効化すると,OverDriveとインストールする他のアプリが実際にネットワークを使用できます.その後ハードリブートが必要になります.</string>
-    <string name="setup_traffic_button">オープントラフィックモニター</string>
+    <string name="setup_traffic_body">BYD トラフィックモニターは、サードパーティ製アプリがインターネットにアクセスできないようにブロックします。無効にすると、OverDriveやインストールした他のアプリが実際にネットワークを使用できるようになります。その後、ハードリブートが必要です。</string>
+    <string name="setup_traffic_button">トラフィックモニターを開く</string>
     <string name="setup_camera_fix_title">カメラは黒か間違ってるのか?</string>
     <string name="setup_camera_fix_body">カメラのIDを0に設定し,保存をタップして,カメラデモンを再起動します.フィードがまだ間違っている場合は,カメラID1で繰り返します.マッピングセクションを未然にしてください.</string>
     <!-- Recording storage path -->
@@ -805,6 +811,8 @@
     <string name="settings_about_support_share_value">共有されたリンクは 他のBYDのオーナーがOverdriveを発見するのに役立ちます</string>
     <string name="settings_about_support_share_message">BYDのOverdrive オープンソース監視とダッシュカメラをチェックしてください: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Overdrive を共有</string>
+    <string name="settings_about_youtube_title">YouTube でチャンネル登録</string>
+    <string name="settings_about_youtube_value">高評価・チャンネル登録・共有をお願いします。視聴のひとつひとつが Overdrive の力になります。</string>
     <string name="settings_about_open_link_failed">リンクを開けられなかった</string>
     <string name="settings_about_open_link_copied">ブラウザが見つかりませんでした. URLコピー: %1$s</string>
     <string name="settings_about_support_kofi_title">次のリリースに燃料</string>
@@ -843,7 +851,7 @@
     <string name="recordings_preview_placeholder_body">左側にある任意のアイテムをタップして演奏します.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">ADB コンソール</string>
-    <string name="diagnostics_section_traffic">交通モニター</string>
+    <string name="diagnostics_section_traffic">トラフィックモニター</string>
     <string name="diagnostics_section_camera_probe">カメラ探査機</string>
     <string name="diagnostics_section_battery">バッテリーの健康</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -959,6 +967,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">預設/後設バッファ,コードック,保存制限</string>
     <string name="settings_section_surveillance_subtitle">検出ゾーン スケジュール 動き感</string>
+    <string name="settings_section_storage_subtitle">録画の保存先、容量の上限、BYDドラレコの整理。</string>
     <string name="settings_section_daemons_subtitle">Cloudflared、Zrok、Telegram、MQTT のランナー。</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">OverDriveについて</string>
@@ -1343,6 +1352,10 @@
     <string name="projection_autostart_conflict_confirm">このアプリを使用</string>
     <string name="projection_app_uninstalled">そのアプリはインストールされていません。</string>
     <string name="projection_status_service_down">ミラーサービスの準備ができていません。アプリ（またはカメラデーモン）を再起動してもう一度お試しください。</string>
+    <string name="projection_status_connecting">クラスターに接続中…</string>
+    <string name="projection_status_mirror_unavailable">ミラーを利用できません</string>
+    <string name="projection_fullscreen_enter">全画面表示</string>
+    <string name="projection_fullscreen_exit">全画面表示を終了</string>
     <string name="cd_replay_status">即時再生の状態</string>
     <string name="recording_lib_type_replay">リプレイ</string>
     <string name="settings_overlay_replay_title">インスタントリプレイインジケーターを表示</string>
@@ -1368,4 +1381,17 @@
     <string name="rail_section_automation">オートメーション</string>
     <string name="rail_section_system">システム</string>
     <string name="rail_collapse_label">折りたたむ</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">聞いています…</string>
+    <string name="voice_overlay_thinking">考えています…</string>
+    <string name="voice_overlay_speaking">話しています…</string>
+    <string name="voice_overlay_done">完了</string>
+    <string name="voice_overlay_cancelled">キャンセルしました</string>
+    <string name="voice_overlay_not_understood">すみません、聞き取れませんでした</string>
+    <string name="voice_overlay_offline">AIアシスタントを利用できません</string>
+    <string name="voice_overlay_busy">アシスタントはすでに使用中です</string>
+    <string name="voice_overlay_blocked_moving">運転中は利用できません</string>
+    <string name="voice_overlay_refused">その操作は音声ではできません</string>
+    <string name="voice_overlay_failed">完了できませんでした</string>
 </resources>

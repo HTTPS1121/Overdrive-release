@@ -39,6 +39,11 @@ public final class RemoteDevViewApiHandler {
     private RemoteDevViewApiHandler() {}
 
     /** Package-private hooks used only by the authenticated WebSocket path. */
+    /** True while a remote dev-view session is open (SafeKeep yields bandwidth to it). */
+    public static boolean isSessionActive() {
+        return SESSIONS.hasActiveSession();
+    }
+
     static boolean validateStreamSession(String session) {
         return SESSIONS.validateAndTouch(session) != null;
     }

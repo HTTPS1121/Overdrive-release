@@ -350,7 +350,7 @@ class RoadSenseImuSidecarService : Service(), SensorEventListener {
          */
         private fun exec(cmd: String) {
             try {
-                Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+                Runtime.getRuntime().exec(arrayOf("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)))
             } catch (t: Throwable) {
                 android.util.Log.w(TAG, "exec failed [$cmd]: ${t.message}")
             }

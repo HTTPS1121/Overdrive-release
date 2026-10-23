@@ -55,10 +55,13 @@ object NavTripStore {
             val arr = JSONArray()
             for (s in stops) {
                 if (s.label.isBlank()) continue
-                arr.put(JSONObject()
+                if (s.lat.isNaN() || s.lng.isNaN()) continue
+                val obj = JSONObject()
                     .put(KEY_LABEL, s.label)
                     .put(KEY_LAT, s.lat)
-                    .put(KEY_LNG, s.lng))
+                    .put(KEY_LNG, s.lng)
+                RecentSearchStore.putPlaceFields(obj, s)
+                arr.put(obj)
             }
             prefs(context).edit()
                 .putString(KEY_STOPS, arr.toString())
@@ -83,7 +86,7 @@ object NavTripStore {
                 val lat = obj.optDouble(KEY_LAT, Double.NaN)
                 val lng = obj.optDouble(KEY_LNG, Double.NaN)
                 if (lat.isNaN() || lng.isNaN()) continue
-                stops.add(SearchResult(label, lat, lng))
+                stops.add(RecentSearchStore.readPlace(obj, label, lat, lng))
             }
             if (stops.isEmpty()) null
             else Trip(stops, prefs(context).getBoolean(KEY_NAVIGATING, false))

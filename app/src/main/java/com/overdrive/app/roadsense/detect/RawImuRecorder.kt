@@ -253,9 +253,9 @@ class RawImuRecorder(
     }
 
     companion object {
-        private val TAG = "RoadSense/RawRec"
+        private const val TAG = "RoadSense/RawRec"
         /** Daemon (uid 2000) writes here — same dir as cam_daemon.log + the H2 stores. */
-        @JvmField val DEFAULT_DIR = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp")
+        val DEFAULT_DIR: String get() = com.overdrive.app.util.ScratchRoot.dir()
         /** Hard per-recording size cap (~30 min of 200 Hz accel+gyro at ~150 B/row). Auto-
          *  stops at this size so one recording can't bloat /data/local/tmp. */
         private const val MAX_FILE_BYTES = 64L * 1024 * 1024   // 64 MB

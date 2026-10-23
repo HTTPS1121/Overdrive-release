@@ -169,7 +169,7 @@ public final class ChargeSourceClassifier {
     public static synchronized void initializePersistence(Context context) {
         if (context == null) return;
         File next = android.os.Process.myUid() == 2000
-                ? new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/od_charge_source_kinds.json"))
+                ? new File(com.overdrive.app.util.ScratchRoot.path("od_charge_source_kinds.json"))
                 : new File(context.getFilesDir(), "od_charge_source_kinds.json");
         if (next.equals(stateFile)) return;
         stateFile = next;
@@ -569,7 +569,8 @@ public final class ChargeSourceClassifier {
                 // Different firmware/head unit (or a file written before identities were stamped).
                 // Discard rather than inherit: an accessor's unit is not guaranteed across an OTA.
                 logger.warn("Discarding stored charge-source kinds — firmware identity changed"
-                        + " (stored='" + storedIdentity + "'). Sources will be re-learned.");
+                        + " (stored='" + storedIdentity + "', current='" + identity
+                        + "'). Sources will be re-learned.");
                 return;
             }
             for (java.util.Iterator<String> it = root.keys(); it.hasNext(); ) {

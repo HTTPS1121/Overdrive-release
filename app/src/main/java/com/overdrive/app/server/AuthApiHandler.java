@@ -14,24 +14,62 @@ import java.util.concurrent.ConcurrentHashMap;
  * HTTP API handler for authentication endpoints.
  *
  * Endpoints:
- * - GET  /auth/status     - Check auth status (auth required — surfaces deviceId)
+ * - GET  /auth/status     - Device info. PUBLIC: the login page needs the deviceId
+ *                           before the user has a JWT (see AuthMiddleware.PUBLIC_PATHS).
  * - POST /auth/token      - Validate device token and get JWT (rate-limited)
  * - POST /auth/logout     - Clear session
  *
- * Rate limiting on /auth/token: 10 attempts per minute per client identity, then
- * 30s lockout. Identity is the X-Forwarded-For value when present (so a tunnel
- * attacker can't share the loopback bucket with the legitimate WebView), falling
- * back to socket address otherwise.
+ * Rate limiting on /auth/token, two buckets, both of which must pass:
+ *
+ *   1. Shared per-socket-peer ceiling: 600 attempts per sliding minute, keyed on the peer IP
+ *      WITHOUT its port, and never latching a lockout. This is the only constraint added
+ *      here; it exists because the per-client identity below can be rotated (a caller that
+ *      varies X-Forwarded-For minted a fresh bucket on every request, so nothing bounded it).
+ *      It must not latch: every client behind one tunnel shares this peer, so a latch would
+ *      deny them all. Charged FIRST, so a request it refuses — which never reaches token
+ *      validation — costs nobody their personal allowance.
+ *   2. Per-client budget: 10 attempts per minute, then a 30s lockout which clears the window
+ *      so capacity returns whole. UNCHANGED from the original, including its identity: the
+ *      leftmost X-Forwarded-For when present, else the full socket address WITH its port.
+ *      Keeping the port is deliberate — it makes a non-forwarded identity per-connection, so
+ *      those callers stay unthrottled, and keying on the bare IP instead turned 127.0.0.1
+ *      into one shared budget for the on-screen login, adb, and every remote client arriving
+ *      through a forward that injects no header.
+ *
+ * Known, pre-existing and unchanged: the leftmost X-Forwarded-For is attacker-supplied on a
+ * non-PROXY tunnel, so a caller can spend (and latch) a budget keyed on an address it does
+ * not own. Fixing that needs an authenticated client identity, not a different bucket key.
  */
 public class AuthApiHandler {
 
     // Rate-limit constants — small numbers picked for human convenience while
-    // making brute-force attempts on a 64-bit token costly.
+    // making brute-force attempts on the device secret costly.
     private static final int RATE_LIMIT_WINDOW_MS = 60_000;     // 1 minute window
     private static final int RATE_LIMIT_MAX_ATTEMPTS = 10;      // 10 attempts allowed
     private static final long RATE_LIMIT_LOCKOUT_MS = 30_000;   // 30s lockout after exceeded
 
+    // Loose ceiling for the socket-peer bucket, charged on every /auth/token attempt.
+    // Its ONLY job is to make a caller that rotates X-Forwarded-For bounded rather than
+    // unlimited; the per-client bucket above is the real budget. Deliberately high and
+    // LOCKOUT-FREE (see checkRateLimit): behind a tunnel every remote client shares one
+    // socket peer (127.0.0.1), so a lockout here would be a login kill-switch against the
+    // owner — ~2 req/s would have kept them permanently locked out.
+    private static final int RATE_LIMIT_MAX_ATTEMPTS_PER_SOCKET = 600;
+
+    // Bucket-key namespaces, so a socket address and a forwarded address never collide.
+    private static final String CLIENT_KEY_PREFIX = "client:";
+
     private static final ConcurrentHashMap<String, RateLimitBucket> rateLimits = new ConcurrentHashMap<>();
+
+    // The shared ceiling's counters live in their OWN map, NOT in rateLimits. The per-client
+    // map keeps HEAD's unconditional hard-cap eviction (restored on purpose), and because a
+    // non-forwarded client bucket is minted per CONNECTION it churns fast — a ceiling bucket
+    // sitting in there would be evicted in hash order long before reaching its threshold,
+    // silently voiding the bound. Distinct peer IPs are few, so this map needs only a light
+    // bound of its own.
+    private static final ConcurrentHashMap<String, RateLimitBucket> socketCeilings =
+            new ConcurrentHashMap<>();
+    private static final int MAX_CEILING_BUCKETS = 256;
 
     // Inline GC counter for the rateLimits map. Without this, a publicly
     // tunneled instance accumulates a permanent entry per scanner IP that
@@ -54,28 +92,46 @@ public class AuthApiHandler {
 
     /**
      * Handle auth API requests.
-     */
-    public static boolean handle(String method, String path, String body, OutputStream out) throws Exception {
-        return handle(method, path, body, out, null);
-    }
-
-    /**
-     * Handle auth API requests with rate-limit identity (X-Forwarded-For or socket).
+     *
+     * @param clientIdentity per-client rate-limit identity, UNCHANGED from the original
+     *                       behaviour: the forwarded client address when the request carried
+     *                       one, else the full socket address INCLUDING its port. The port
+     *                       makes a non-forwarded identity effectively per-connection, so
+     *                       such callers are not throttled — that is deliberate. Keying on
+     *                       the bare IP instead made `127.0.0.1` one shared budget for the
+     *                       on-screen WebView, adb, and every remote client arriving through
+     *                       a forward that injects no header (WireGuard, ssh -R, socat), so
+     *                       two people mistyping could lock each other out.
+     * @param socketIp       the peer IP WITHOUT its port, used only for the shared ceiling
+     *                       below. That ceiling is the one genuinely new constraint: it
+     *                       bounds a caller who rotates X-Forwarded-For, which otherwise
+     *                       minted a fresh per-client bucket on every single request.
      */
     public static boolean handle(String method, String path, String body, OutputStream out,
-                                  String rateLimitIdentity) throws Exception {
+                                  String clientIdentity, String socketIp)
+            throws Exception {
 
         if (path.equals("/auth/status") && method.equals("GET")) {
             return handleStatus(out);
         }
 
         if (path.equals("/auth/token") && method.equals("POST")) {
-            // Rate-limit token validation to slow down brute-force attempts
-            // through public tunnels. Identity prefers X-Forwarded-For so a
-            // tunnel attacker can't share a bucket with the loopback caller.
-            String idForLimit = (rateLimitIdentity != null && !rateLimitIdentity.isEmpty())
-                ? rateLimitIdentity : "unknown";
-            String rateError = checkRateLimit(idForLimit);
+            String clientKey = CLIENT_KEY_PREFIX
+                    + ((clientIdentity != null && !clientIdentity.isEmpty())
+                        ? clientIdentity : "unknown");
+
+            // The shared ceiling is consulted FIRST: a request it refuses never reaches token
+            // validation, so it must not consume anybody's personal allowance. It never
+            // latches, because every client behind one tunnel shares this socket peer and a
+            // latch here would be a login kill-switch rather than a throttle.
+            String rateError = checkSocketCeiling(
+                    (socketIp != null && !socketIp.isEmpty()) ? socketIp : "unknown");
+
+            // Then the per-client budget, with the original latch-and-clear semantics.
+            if (rateError == null) {
+                rateError = checkRateLimit(clientKey);
+            }
+
             if (rateError != null) {
                 JSONObject resp = new JSONObject();
                 resp.put("success", false);
@@ -83,7 +139,7 @@ public class AuthApiHandler {
                 HttpResponse.sendJson(out, resp.toString());
                 return true;
             }
-            return handleTokenValidation(body, out, idForLimit);
+            return handleTokenValidation(body, out, clientKey);
         }
 
         if (path.equals("/auth/logout") && method.equals("POST")) {
@@ -94,6 +150,9 @@ public class AuthApiHandler {
     }
 
     /**
+     * Per-client budget. IDENTICAL to the original: 10 attempts per sliding minute, then a
+     * 30s lockout that also clears the window so capacity returns whole when it expires.
+     *
      * @return null if request may proceed, error string if rate limited.
      */
     private static String checkRateLimit(String identity) {
@@ -127,6 +186,47 @@ public class AuthApiHandler {
     }
 
     /**
+     * Shared per-peer ceiling: {@value #RATE_LIMIT_MAX_ATTEMPTS_PER_SOCKET} attempts per
+     * sliding minute, keyed on the peer IP without its port. NEVER latches a lockout —
+     * every client behind one tunnel shares this peer, so a latch would deny them all
+     * rather than throttle one. Refuses only the over-budget request, so capacity returns
+     * as the oldest attempt ages out.
+     *
+     * @return null if request may proceed, error string if over the ceiling
+     */
+    private static String checkSocketCeiling(String ip) {
+        long now = System.currentTimeMillis();
+        if (socketCeilings.size() > MAX_CEILING_BUCKETS) {
+            // Drop peers with nothing inside the current window. Evicting a bucket a
+            // concurrent caller just created can only LOSE a count, i.e. grant allowance;
+            // it can never deny a request that should have been served.
+            socketCeilings.entrySet().removeIf(e -> {
+                RateLimitBucket b = e.getValue();
+                synchronized (b) {
+                    return b.attempts.isEmpty()
+                            || b.attempts.peekLast() < now - RATE_LIMIT_WINDOW_MS;
+                }
+            });
+        }
+        RateLimitBucket bucket =
+                socketCeilings.computeIfAbsent(ip, k -> new RateLimitBucket());
+        synchronized (bucket) {
+            long windowStart = now - RATE_LIMIT_WINDOW_MS;
+            while (!bucket.attempts.isEmpty() && bucket.attempts.peekFirst() < windowStart) {
+                bucket.attempts.pollFirst();
+            }
+            if (bucket.attempts.size() >= RATE_LIMIT_MAX_ATTEMPTS_PER_SOCKET) {
+                // peekFirst is non-null here (size >= the ceiling, which is >= 1).
+                long retrySecs = Math.max(1L,
+                        (bucket.attempts.peekFirst() + RATE_LIMIT_WINDOW_MS - now) / 1000);
+                return Messages.get("errors.rate_limited_locked_for_seconds", retrySecs);
+            }
+            bucket.attempts.addLast(now);
+        }
+        return null;
+    }
+
+    /**
      * Reset the rate-limit bucket for an identity after a successful login.
      */
     private static void clearRateLimit(String identity) {
@@ -136,11 +236,11 @@ public class AuthApiHandler {
     /**
      * Walks the rateLimits map and removes buckets that are no longer
      * useful: lockout has expired AND the attempt window holds no entries.
-     * Then enforces RATE_LIMIT_MAX_BUCKETS as a hard ceiling by dropping
-     * the oldest-by-attempt bucket if we're over the cap. CHM iteration is
-     * weakly consistent and the per-bucket synchronized block in
-     * checkRateLimit keeps state-machine consistency, so concurrent
-     * iteration here is safe.
+     * Then enforces RATE_LIMIT_MAX_BUCKETS as a hard ceiling by dropping buckets in
+     * ConcurrentHashMap hash order (NOT oldest-first, so it is a capacity valve rather
+     * than an LRU) until the map is back under the cap. CHM iteration is weakly
+     * consistent and the per-bucket synchronized block in checkRateLimit keeps
+     * state-machine consistency, so concurrent iteration here is safe.
      */
     private static void pruneStaleRateLimits(long now) {
         long stalenessCutoff = now - RATE_LIMIT_LOCKOUT_MS - RATE_LIMIT_WINDOW_MS;
@@ -169,8 +269,10 @@ public class AuthApiHandler {
                 }
             }
         }
-        // Hard cap. Under a sustained scanner burst the prune above may not
-        // keep up; this enforces a ceiling regardless of bucket recency.
+        // Hard cap, unconditional — as originally written. Under a sustained scanner burst
+        // the staleness prune above may not keep up, and this must remain a genuine ceiling:
+        // skipping "recently active" buckets (an earlier revision did) let the map grow past
+        // the cap with nothing able to shrink it until those attempts aged out.
         if (rateLimits.size() > RATE_LIMIT_MAX_BUCKETS) {
             int over = rateLimits.size() - RATE_LIMIT_MAX_BUCKETS;
             java.util.Iterator<java.util.Map.Entry<String, RateLimitBucket>> dropIt =
@@ -207,7 +309,9 @@ public class AuthApiHandler {
      * POST /auth/token
      * Validates device token and returns JWT session.
      */
-    private static boolean handleTokenValidation(String body, OutputStream out, String rateLimitIdentity) throws Exception {
+    private static boolean handleTokenValidation(String body, OutputStream out,
+                                                  String clientKey)
+            throws Exception {
         JSONObject response = new JSONObject();
 
         try {
@@ -217,9 +321,11 @@ public class AuthApiHandler {
             boolean valid = AuthManager.validateDeviceToken(token);
 
             if (valid) {
-                // Successful login — wipe attempt counter so the user gets a
-                // fresh 10-attempt budget on their next session.
-                clearRateLimit(rateLimitIdentity);
+                // Successful login — wipe THIS client's counter so they get a fresh
+                // budget next session. Deliberately NOT the shared socket ceiling: that
+                // is not this client's to reset, and clearing it would let one legitimate
+                // login hand every other tunnel caller a full fresh allowance.
+                clearRateLimit(clientKey);
 
                 String jwt = AuthManager.generateJwt();
                 AuthManager.AuthState state = AuthManager.getState();
@@ -241,7 +347,7 @@ public class AuthApiHandler {
             } else {
                 response.put("success", false);
                 response.put("error", Messages.get("errors.invalid_device_token"));
-                log("Invalid token attempt from " + rateLimitIdentity);
+                log("Invalid token attempt from " + clientKey);
             }
 
         } catch (Exception e) {

@@ -220,7 +220,7 @@ public class StorageManager {
     public static final String TRIPS_SUBDIR = "trips";
     
     // Config file location
-    private static final String CONFIG_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json");
+    private static final String CONFIG_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_config.json");
 
     // Persisted UUID of whichever public volume we've previously confirmed as
     // the SD card. Used as the first-class signal in classifyPublicVolume()
@@ -232,7 +232,7 @@ public class StorageManager {
     // serial from a previous successful cycle bridges the gap. File is
     // tiny (~10 bytes), atomic-write semantics not required because a stale
     // value still resolves to the same physical card.
-    private static final String LEARNED_SD_UUID_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_sd_uuid");
+    private static final String LEARNED_SD_UUID_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_sd_uuid");
 
     /**
      * Cross-process proof that CameraDaemon recently observed the configured
@@ -243,7 +243,7 @@ public class StorageManager {
      * ~30-second reactive-recovery decision.
      */
     private static final String SD_MOUNTED_LEASE_FILE =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_sd_mounted_lease");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_sd_mounted_lease");
     private static final long SD_MOUNTED_LEASE_MS = 60_000L;
     private static final long SD_MOUNTED_LEASE_FAILURE_LOG_INTERVAL_MS =
             5 * 60_000L;
@@ -426,6 +426,67 @@ public class StorageManager {
     // resolveTargetWithEnospcFallback at each segment-target resolution; read by
     // getActiveRecordingsStorageType() so the existing UI banner surfaces it.
     private volatile boolean recordingsEnospcFallbackActive = false;
+
+    // WRITE FAULT: a card can stay mounted (StatFs, canWrite fine) while every open
+    // returns EIO (log_NPEYZRMQ). A writer's failed open + a failed write test latch
+    // the volume; while latched every category on it writes to internal storage.
+    private static final long WRITE_TEST_TIMEOUT_MS = 3_000L;
+    // Just after a mount a card can be briefly unwritable: failures must persist
+    // this long (with gaps under RUN_GAP) before latching.
+    private static final long WRITE_FAULT_MOUNT_SETTLE_MS = 60_000L;
+    private static final long WRITE_FAULT_SETTLE_PERSIST_MS = 20_000L;
+    private static final long WRITE_FAULT_RUN_GAP_MS = 60_000L;
+    private static final long WRITE_FAULT_RETEST_MIN_MS = 60_000L;
+    private static final long WRITE_FAULT_RETEST_MAX_MS = 10 * 60_000L;
+    private static final long WRITE_FAULT_NOTIFY_GAP_MS = 60 * 60_000L;
+    // A full card fails the write test too (ENOSPC); a 64 KB write failing with less
+    // than this free is "full", not faulty — the ENOSPC fallback and the reaper own it.
+    private static final long WRITE_FAULT_MIN_FREE_BYTES = 8L * 1024 * 1024;
+    // Failing again this soon after a passing re-test = flaky: keep the backoff, alert.
+    private static final long WRITE_FAULT_FLAP_WINDOW_MS = 30 * 60_000L;
+
+    private static final class WriteFault {
+        final String volumePath;      // the latch is void once the volume path changes
+        final File testDir;
+        volatile long retestAtMs;     // elapsedRealtime
+        long retestDelayMs;           // under writeFaultLock
+        boolean confirmed;            // user alerted for this latch; under writeFaultLock
+
+        WriteFault(String volumePath, File testDir, long nowMs, long delayMs, boolean confirmed) {
+            this.volumePath = volumePath;
+            this.testDir = testDir;
+            this.retestDelayMs = delayMs;
+            this.retestAtMs = nowMs + delayMs;
+            this.confirmed = confirmed;
+        }
+    }
+
+    /** One in-flight write test per volume; a concurrent caller waits for its result. */
+    private static final class WriteTest {
+        final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        volatile boolean ran;
+        volatile boolean ok;
+        volatile long freeBytesOnFail = -1;  // measured in the test thread, so it stays bounded
+    }
+    private static final int WRITE_TEST_PASS = 1, WRITE_TEST_FAIL = 0, WRITE_TEST_FULL = 2,
+            WRITE_TEST_UNKNOWN = -1;
+
+    private final Object writeFaultLock = new Object();
+    private volatile WriteFault sdWriteFault = null;
+    private volatile WriteFault usbWriteFault = null;
+    // Per volume ([0] SD, [1] USB), under writeFaultLock: the unlatched failing run,
+    // the last clear (flap detection) and the last alert.
+    private final long[] writeFailFirstMs = new long[2];
+    private final long[] writeFailLastMs = new long[2];
+    private final long[] writeFaultClearedAtMs = new long[2];
+    private final long[] writeFaultClearedDelayMs = new long[2];
+    private final long[] writeFaultNotifiedAtMs = new long[2];
+    private volatile long sdOnlineAtMs = 0;    // elapsedRealtime of the last came-online edge
+    private volatile long usbOnlineAtMs = 0;
+    private volatile long writeFaultRedirectLoggedAtMs = 0;
+    private final AtomicBoolean writeFaultRetestInFlight = new AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicReferenceArray<WriteTest> writeTests =
+            new java.util.concurrent.atomic.AtomicReferenceArray<>(2);
 
     // SD card state.
     // volatile: (re)assigned by discoverVolumes/ensureVolumeMounted on the
@@ -612,6 +673,18 @@ public class StorageManager {
      */
     public void markStorageDirty() {
         idleCleanupGate.markDirty();
+        bumpPool(null);
+    }
+
+    /** {@link #markStorageDirty()} scoped to the pools that count {@code changed}; null = all. */
+    public void markStorageDirty(File changed) {
+        idleCleanupGate.markDirty();
+        bumpPoolsForName(changed != null ? changed.getName() : null);
+    }
+
+    private void markStorageDirtyForPool(String category) {
+        idleCleanupGate.markDirty();
+        bumpPool(category);
     }
 
     /**
@@ -947,6 +1020,8 @@ public class StorageManager {
         long bytesFreed = 0;
 
         java.util.HashSet<String> seenPaths = new java.util.HashSet<>();
+        // Surveillance one-entry hop leftovers: removed after the category lock is released.
+        List<File> hopLeftovers = new ArrayList<>();
         for (String category : new String[]{"recordings", "surveillance", "proximity", "trips"}) {
             String[] partials = partialExtensionsForCategory(category);
             if (partials.length == 0) continue;
@@ -959,12 +1034,7 @@ public class StorageManager {
                     String path = dir.getAbsolutePath();
                     if (!seenPaths.add(path)) continue;
                     if (!dir.isDirectory()) continue;
-                    File[] files = dir.listFiles((d, name) -> {
-                        for (String ext : partials) {
-                            if (name.endsWith(ext)) return true;
-                        }
-                        return false;
-                    });
+                    File[] files = dir.listFiles((d, name) -> isSweptPartial(category, name, partials));
                     if (files == null) {
                         // FUSE-bridged SD/USB returns null under daemon UID 2000.
                         // Without this fallback the entire external dir is skipped,
@@ -979,10 +1049,7 @@ public class StorageManager {
                         if (all == null || all.length == 0) continue;
                         java.util.List<File> matched = new java.util.ArrayList<>();
                         for (File f : all) {
-                            String n = f.getName();
-                            for (String ext : partials) {
-                                if (n.endsWith(ext)) { matched.add(f); break; }
-                            }
+                            if (isSweptPartial(category, f.getName(), partials)) matched.add(f);
                         }
                         files = matched.toArray(new File[0]);
                     }
@@ -991,10 +1058,14 @@ public class StorageManager {
                         // Don't unlink a still-being-written trip file in case
                         // the recorder uses an atomic ".jsonl.gz.tmp → .jsonl.gz"
                         // rename and the in-flight file is the .tmp.
-                        if (isProtectedTripFile(f)) {
+                        if (isProtectedTripFile(f) || isParkedClip(f)) {
                             continue;
                         }
                         if (f.lastModified() > cutoff) continue;  // grace window
+                        if ("surveillance".equals(category) && isShortHopName(f.getName())) {
+                            hopLeftovers.add(f);
+                            continue;
+                        }
                         long size = f.length();
                         boolean ok = f.delete();
                         if (!ok) ok = deleteFileViaShell(f);
@@ -1006,6 +1077,15 @@ public class StorageManager {
                         }
                     }
                 }
+            }
+        }
+        // Re-checked under the hop lock (a clip may park there meanwhile), never under a cleanup lock.
+        for (File f : hopLeftovers) {
+            long size = f.length();
+            boolean ok = deleteHopLeftover(f, cutoff);
+            if (ok) {
+                deleted++;
+                bytesFreed += size;
             }
         }
         if (deleted > 0) {
@@ -1160,6 +1240,8 @@ public class StorageManager {
         boolean usbMoved = usbBeforeLive && usbAvailable
                 && usbPath != null && !usbPath.equals(usbPathBefore);
         if (sdCameOnline || usbCameOnline || sdMoved || usbMoved) {
+            if (sdCameOnline || sdMoved) onVolumeOnlineForWriteFault(StorageType.SD_CARD);
+            if (usbCameOnline || usbMoved) onVolumeOnlineForWriteFault(StorageType.USB);
             if ((sdCameOnline || sdMoved) && daemonMaintenanceStarted.get()) {
                 publishSdMountedLease();
             }
@@ -1187,6 +1269,12 @@ public class StorageManager {
             }
             if (usbCameOnline || usbMoved) {
                 maybeMigrateActiveRecordingToExternal(StorageType.USB, reason);
+            }
+            StorageType survType = surveillanceStorageType;
+            if ((survType == StorageType.SD_CARD && (sdCameOnline || sdMoved))
+                    || (survType == StorageType.USB && (usbCameOnline || usbMoved))) {
+                maybeMoveSurveillanceToExternal(reason, SURV_MOVE_STABLE_MS + RECORDING_MIGRATION_SETTLE_MS,
+                        RECORDING_MIGRATION_RETRY_WINDOW_MS);
             }
         }
     }
@@ -1514,7 +1602,9 @@ public class StorageManager {
             // configured type.
             ResolvedDir resolvedTarget = resolveActive(onlineType,
                 internalRecordingsDir, sdCardRecordingsDir, usbRecordingsDir, "recordings");
-            externalDir = (resolvedTarget.resolved == onlineType) ? resolvedTarget.dir : null;
+            // A card latched as refusing writes is not a target until its re-test clears it.
+            externalDir = (resolvedTarget.resolved == onlineType && !isWriteFaulted(onlineType))
+                    ? resolvedTarget.dir : null;
             volumePath = (onlineType == StorageType.SD_CARD) ? sdCardPath : usbPath;
         }
     }
@@ -1531,6 +1621,218 @@ public class StorageManager {
             state.internalRootPath,
             (state.externalDir != null) ? state.externalDir.getAbsolutePath() : null,
             externalWritable);
+    }
+
+    // ============ Continuous sentry session stranded on internal ============
+
+    /** One move worker at a time; every attempt re-reads all state. */
+    private final java.util.concurrent.atomic.AtomicBoolean surveillanceMoveInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    // A session left on internal survives the card dropping again; one moved onto it would not.
+    // So the card must stay mounted and fault-free this long before a session moves onto it.
+    private static final long SURV_MOVE_STABLE_MS = 5 * 60_000L;
+    // After a move whose segment could not be opened, wait this long (or for a remount/fault clear).
+    private static final long SURV_MOVE_FAIL_COOLDOWN_MS = 30 * 60_000L;
+    private volatile long survMoveFailedAtMs = 0;  // elapsedRealtime the failed move was armed
+    private volatile String survMoveFailedTarget = null;
+
+    /**
+     * Continuous segment listener hook. Cheap: acts only when the new segment opened on internal
+     * while the configured SD/USB is mounted (an absent card is handled by its online edge).
+     */
+    public void onContinuousSegmentStarted(File segment) {
+        File internal = internalSurveillanceDir;
+        if (segment == null || internal == null
+                || !internal.getAbsolutePath().equals(segment.getParent())) {
+            return;
+        }
+        StorageType type = surveillanceStorageType;
+        boolean mounted = (type == StorageType.SD_CARD && sdCardAvailable)
+                || (type == StorageType.USB && usbAvailable);
+        // One attempt per rotation: the next rotation is the retry.
+        if (mounted) maybeMoveSurveillanceToExternal("segment-rotation", RECORDING_MIGRATION_SETTLE_MS, 0);
+    }
+
+    private volatile long survMoveLoggedAtMs = 0;  // elapsedRealtime of the last "stays on internal" line
+
+    /**
+     * A continuous sentry session keeps the folder it started in, so one that opened on internal
+     * (card late after a restart, full, or refusing writes) stays there all park. Move its next
+     * segment to the configured SD/USB once that is usable, retrying for {@code retryWindowMs}.
+     */
+    private void maybeMoveSurveillanceToExternal(final String reason, final long firstDelayMs,
+                                                 final long retryWindowMs) {
+        if (!daemonMaintenanceStarted.get()) return;
+        StorageType type = surveillanceStorageType;
+        if (type != StorageType.SD_CARD && type != StorageType.USB) return;
+        if (!surveillanceMoveInFlight.compareAndSet(false, true)) return;
+        try {
+            Thread worker = new Thread(() -> {
+                try {
+                    Thread.sleep(firstDelayMs);
+                    final long deadline = android.os.SystemClock.elapsedRealtime() + retryWindowMs;
+                    String why;
+                    while (true) {
+                        why = tryMoveSurveillanceToExternal(reason);
+                        if (why == null) return;
+                        if (android.os.SystemClock.elapsedRealtime() >= deadline) break;
+                        Thread.sleep(RECORDING_MIGRATION_RETRY_INTERVAL_MS);
+                    }
+                    long now = android.os.SystemClock.elapsedRealtime();
+                    if (!why.isEmpty() && (survMoveLoggedAtMs == 0
+                            || now - survMoveLoggedAtMs >= 10 * 60_000L)) {
+                        survMoveLoggedAtMs = now;
+                        logInfo("Surveillance move (" + reason + "): continuous recording stays on"
+                                + " internal for now — " + why);
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                } catch (Throwable t) {
+                    logWarn("Surveillance move (" + reason + ") failed: " + t.getMessage());
+                } finally {
+                    surveillanceMoveInFlight.set(false);
+                }
+            }, "SurvStorageMove");
+            worker.setDaemon(true);
+            worker.start();
+        } catch (Throwable t) {
+            surveillanceMoveInFlight.set(false);
+        }
+    }
+
+    /**
+     * One move attempt. Null: stop (moved, or nothing to move). Otherwise retry; a non-empty
+     * value says why the configured volume isn't usable yet.
+     */
+    private String tryMoveSurveillanceToExternal(String reason) throws InterruptedException {
+        final StorageType type = surveillanceStorageType;
+        final boolean sd = type == StorageType.SD_CARD;
+        if (!sd && type != StorageType.USB) return null;
+        com.overdrive.app.surveillance.GpuSurveillancePipeline pipeline =
+                com.overdrive.app.daemon.CameraDaemon.getGpuPipeline();
+        com.overdrive.app.surveillance.SurveillanceEngineGpu sentry =
+                (pipeline != null) ? pipeline.getSentry() : null;
+        if (sentry == null || !sentry.isActive()) return "";
+        if (!sentry.isContinuousMode()) return null;  // event clips resolve their folder per event
+        if (!sentry.isRecording()) return "";
+        File internal = internalSurveillanceDir;
+        String activePath = activeEncoderOutputPath(pipeline);
+        if (internal == null || activePath == null) return "";
+        if (!internal.getAbsolutePath().equals(new File(activePath).getParent())) return null;
+        if (isWriteFaulted(type)) return null;  // its passing re-test kicks a new check
+        File target = sd ? sdCardSurveillanceDir : usbSurveillanceDir;
+        String volume = sd ? sdCardPath : usbPath;
+        if (!(sd ? sdCardAvailable : usbAvailable) || target == null || volume == null) {
+            return type + " is not available";
+        }
+        long settledAt;
+        synchronized (writeFaultLock) {
+            settledAt = Math.max(sd ? sdOnlineAtMs : usbOnlineAtMs, writeFaultClearedAtMs[sd ? 0 : 1]);
+        }
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        long usableForMs = nowMs - settledAt;
+        if (usableForMs < SURV_MOVE_STABLE_MS) {
+            return type + " has been usable for only " + (usableForMs / 1000) + " s";
+        }
+        long failedAt = survMoveFailedAtMs;
+        if (failedAt > settledAt && nowMs - failedAt < SURV_MOVE_FAIL_COOLDOWN_MS
+                && target.getAbsolutePath().equals(survMoveFailedTarget)) {
+            return "a move to " + target.getAbsolutePath() + " failed " + ((nowMs - failedAt) / 1000)
+                    + " s ago";
+        }
+        // Same "healthy" line as the physical-free reaper, so a moved session can't fill the card.
+        long free = sd ? getSdCardFreeSpace() : getUsbFreeSpace();
+        long floor = physicalFreeEmergencyFloorBytes(liveVolumeTotalBytes(type));
+        if (free < floor) {
+            return type + " has " + formatSize(free) + " free (needs " + formatSize(floor) + ")";
+        }
+        if (!isPathLikelyMounted(volume) || !pipeline.isStorageWriteReady(target)) {
+            return target.getAbsolutePath() + " failed the write probe";
+        }
+        // The probes can take seconds: the setting or the card may have changed meanwhile.
+        File currentTarget = sd ? sdCardSurveillanceDir : usbSurveillanceDir;
+        if (surveillanceStorageType != type || isWriteFaulted(type) || currentTarget == null
+                || !currentTarget.getAbsolutePath().equals(target.getAbsolutePath())) {
+            return "";
+        }
+        final long armedAtMs = android.os.SystemClock.elapsedRealtime();  // a remount after this lifts a cooldown
+        com.overdrive.app.surveillance.HardwareEventRecorderGpu.SegmentMove move =
+                sentry.moveContinuousSegments(internal, target);
+        if (move == null) return "the segment move could not be armed";
+        // An armed rotation swaps within ~10 s (splice deadline), so these waits only expire when
+        // the writer is stuck. Withdrawing then can still leave that rotation to run on internal,
+        // so every unresolved case backs off like a failure instead of retrying.
+        final int moved = com.overdrive.app.surveillance.HardwareEventRecorderGpu.SegmentMove.MOVED;
+        final int notTaken = com.overdrive.app.surveillance.HardwareEventRecorderGpu.SegmentMove.NOT_TAKEN;
+        final int failed = com.overdrive.app.surveillance.HardwareEventRecorderGpu.SegmentMove.FAILED;
+        int outcome;
+        try {
+            if (!move.await(SURV_MOVE_CONFIRM_MS) && move.cancel()) {
+                outcome = -1;
+            } else {
+                outcome = move.await(SURV_MOVE_CONFIRM_MS) ? move.outcome() : -1;
+            }
+        } catch (InterruptedException ie) {
+            move.cancel();  // never leave a request for a later rotation to take unchecked
+            throw ie;
+        }
+        if (outcome == moved) {
+            logInfo("Surveillance move (" + reason + "): continuous recording was on internal ("
+                    + activePath + ") — next segments go to " + target.getAbsolutePath());
+            return null;
+        }
+        if (outcome == notTaken) return "";  // the recording ended or restarted meanwhile
+        survMoveFailedTarget = target.getAbsolutePath();
+        survMoveFailedAtMs = armedAtMs;
+        if (outcome == failed) {
+            boolean latched = reportWriteFault(target);
+            logWarn("Surveillance move (" + reason + "): the next segment could not be opened in "
+                    + target.getAbsolutePath() + " — continuous recording stays on internal"
+                    + (latched ? " (card latched as refusing writes)"
+                               : "; next try in 30 min or after the card remounts"));
+        } else {
+            long waitedS = (android.os.SystemClock.elapsedRealtime() - armedAtMs) / 1000;
+            logWarn("Surveillance move (" + reason + "): the recorder did not start the next segment"
+                    + " within " + waitedS + " s — next try in 30 min or after the card remounts");
+        }
+        return null;
+    }
+
+    private static final long SURV_MOVE_CONFIRM_MS = 5 * 60_000L;
+
+    /** The shared recorder's open output file, or null. */
+    private static String activeEncoderOutputPath(
+            com.overdrive.app.surveillance.GpuSurveillancePipeline pipeline) {
+        try {
+            com.overdrive.app.surveillance.GpuMosaicRecorder rec = pipeline.getRecorder();
+            com.overdrive.app.surveillance.HardwareEventRecorderGpu enc =
+                    (rec != null) ? rec.getEncoder() : null;
+            return (enc != null) ? enc.getCurrentOutputPath() : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** True while a continuous sentry session writes to internal although surveillance is set to SD/USB. */
+    private boolean isContinuousSurveillanceOnInternal() {
+        if (surveillanceStorageType == StorageType.INTERNAL) return false;
+        File internal = internalSurveillanceDir;
+        if (internal == null) return false;
+        try {
+            com.overdrive.app.surveillance.GpuSurveillancePipeline pipeline =
+                    com.overdrive.app.daemon.CameraDaemon.getGpuPipeline();
+            com.overdrive.app.surveillance.SurveillanceEngineGpu sentry =
+                    (pipeline != null) ? pipeline.getSentry() : null;
+            if (sentry == null || !sentry.isActive() || !sentry.isContinuousMode()
+                    || !sentry.isRecording()) {
+                return false;
+            }
+            String path = activeEncoderOutputPath(pipeline);
+            return path != null && internal.getAbsolutePath().equals(new File(path).getParent());
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private boolean ensureVolumeMountedLocked(String targetClass, boolean force) {
@@ -1619,19 +1921,15 @@ public class StorageManager {
                 line = line.trim();
                 rawSmOutput.append(line).append('\n');
                 logDebug("sm list-volumes: " + line);
-                if (!line.startsWith("public:")) continue;
-                publicRowCount++;
                 String[] parts = line.split("\\s+");
+                if (!isPublicVolumeId(parts[0])) continue;
+                publicRowCount++;
                 if (parts.length < 3) continue;
 
-                String[] dev = parts[0].substring("public:".length()).split(",");
-                int major, minor;
-                try {
-                    major = Integer.parseInt(dev[0]);
-                    minor = Integer.parseInt(dev[1]);
-                } catch (Exception e) {
-                    continue;
-                }
+                int[] dev = parsePublicVolumeDevice(parts[0]);
+                if (dev == null) continue;
+                int major = dev[0];
+                int minor = dev[1];
                 String state = parts[1];
                 String thisUuid = parts[2];
                 String klass = classifyPublicVolume(major, minor, thisUuid);
@@ -2305,6 +2603,26 @@ public class StorageManager {
         discoverVolumes();
     }
 
+    // Some BYD vold builds (Shark 6) name public volumes "M:N" instead of AOSP's "public:M,N".
+    private static final java.util.regex.Pattern BARE_PUBLIC_VOLUME_ID =
+            java.util.regex.Pattern.compile("\\d+:\\d+");
+
+    private static boolean isPublicVolumeId(String volumeId) {
+        return volumeId.startsWith("public:") || BARE_PUBLIC_VOLUME_ID.matcher(volumeId).matches();
+    }
+
+    /** {major, minor} of an {@link #isPublicVolumeId} id, or null when unparsable. */
+    private static int[] parsePublicVolumeDevice(String volumeId) {
+        String[] dev = volumeId.startsWith("public:")
+                ? volumeId.substring("public:".length()).split(",")
+                : volumeId.split(":");
+        try {
+            return new int[]{Integer.parseInt(dev[0]), Integer.parseInt(dev[1])};
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /**
      * Classify a public volume as SD or USB.
      *
@@ -2393,7 +2711,7 @@ public class StorageManager {
         if (dir.canWrite()) return true;
         try {
             Process p = Runtime.getRuntime().exec(new String[]{
-                "sh", "-c", "touch " + mountPath + "/.overdrive_probe && rm " + mountPath + "/.overdrive_probe"
+                "sh", "-c", com.overdrive.app.util.ScratchRoot.remap("touch " + mountPath + "/.overdrive_probe && rm " + mountPath + "/.overdrive_probe")
             });
             // 2s ceiling — touch/rm against a healthy FUSE mount returns in
             // single-digit ms; anything slower is a stuck filesystem and
@@ -2497,6 +2815,8 @@ public class StorageManager {
         // never ABSENCE — the commit block below uses this flag to retain
         // previous state instead of clearing it on an inconclusive pass.
         boolean smEnumerationConclusive = false;
+        // Per-row outcome of this pass, for the shadow-classify log only.
+        StringBuilder smRows = new StringBuilder();
         try {
             // Bounded drain — see readProcessLinesBounded. This runs under
             // mountLock; an sm that hangs without closing its pipe used to
@@ -2505,32 +2825,33 @@ public class StorageManager {
             ProcessLines smList = readProcessLinesBounded(
                 listProcess, false, 4_000, "sm list-volumes (discoverVolumes)");
             smEnumerationConclusive = smList.complete && smList.exitCode == 0;
+            smRows.append("exit=").append(smList.exitCode).append(smList.complete ? "" : " partial");
 
             for (String line : smList.lines) {
                 // Parse lines like: "public:8,97 mounted 3661-3064"
                 line = line.trim();
-                if (!line.startsWith("public:") || !line.contains("mounted")) continue;
                 String[] parts = line.split("\\s+");
+                if (parts.length >= 2) smRows.append(' ').append(parts[0]).append('/').append(parts[1]);
+                if (!isPublicVolumeId(parts[0]) || !line.contains("mounted")) continue;
                 if (parts.length < 3) continue;
 
-                // parts[0] = "public:8,97" → major=8, minor=97
-                String[] dev = parts[0].substring("public:".length()).split(",");
-                int major, minor;
-                try {
-                    major = Integer.parseInt(dev[0]);
-                    minor = Integer.parseInt(dev[1]);
-                } catch (Exception e) {
-                    continue;
-                }
+                int[] dev = parsePublicVolumeDevice(parts[0]);
+                if (dev == null) continue;
+                int major = dev[0];
+                int minor = dev[1];
                 String volumeUuid = parts[2];
                 String mountPath = "/storage/" + volumeUuid;
                 // Use the cheap layered check — the expensive touch+rm probe
                 // here was the source of the false-negative cascade. If a
                 // public:* volume is in `mounted` state per `sm` AND the
                 // path exists with positive StatFs, trust it.
-                if (!isPathLikelyMounted(mountPath)) continue;
+                if (!isPathLikelyMounted(mountPath)) {
+                    smRows.append("=not-live");
+                    continue;
+                }
 
                 String klass = classifyPublicVolume(major, minor, volumeUuid);
+                smRows.append('=').append(klass == null ? "unclassified" : klass);
                 ambiguousMounts.add(new String[]{mountPath, volumeUuid,
                         klass == null ? "" : klass,
                         String.valueOf(major), String.valueOf(minor)});
@@ -2548,6 +2869,7 @@ public class StorageManager {
             }
         } catch (Exception e) {
             logDebug("Could not check sm list-volumes: " + e.getMessage());
+            smRows.append(" threw ").append(e.getMessage());
         }
 
         // Method 2: BYD UUID prop is SD-specific. Only use if Method 1 missed SD.
@@ -2767,7 +3089,7 @@ public class StorageManager {
         // unbounded and this method runs under mountLock (including
         // synchronously in the constructor), so the enumeration must never
         // execute inline here. See logShadowVolumeClassification.
-        logShadowVolumeClassification(foundSdPath, foundUsbPath);
+        logShadowVolumeClassification(foundSdPath, foundUsbPath, smRows.toString());
     }
 
     // ============= Shadow-mode framework volume classifier =============
@@ -2815,12 +3137,13 @@ public class StorageManager {
             new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /** Fire-and-forget dispatcher — safe to call under mountLock. */
-    private void logShadowVolumeClassification(String cascadeSdPath, String cascadeUsbPath) {
+    private void logShadowVolumeClassification(String cascadeSdPath, String cascadeUsbPath,
+            String cascadeSmRows) {
         if (!shadowClassifyInFlight.compareAndSet(false, true)) return;
         try {
             Thread t = new Thread(() -> {
                 try {
-                    shadowClassifyWorker(cascadeSdPath, cascadeUsbPath);
+                    shadowClassifyWorker(cascadeSdPath, cascadeUsbPath, cascadeSmRows);
                 } catch (Throwable th) {
                     logDebug("shadow-classify unavailable: " + th.getMessage());
                 } finally {
@@ -2834,7 +3157,8 @@ public class StorageManager {
         }
     }
 
-    private void shadowClassifyWorker(String cascadeSdPath, String cascadeUsbPath) {
+    private void shadowClassifyWorker(String cascadeSdPath, String cascadeUsbPath,
+            String cascadeSmRows) {
         try {
             long now = System.currentTimeMillis();
             android.content.Context ctx = com.overdrive.app.daemon.CameraDaemon.getAppContext();
@@ -2865,7 +3189,7 @@ public class StorageManager {
                 int type = (Integer) vi.getClass().getMethod("getType").invoke(vi);
                 if (type != 0) continue;  // TYPE_PUBLIC only
                 int state = (Integer) vi.getClass().getMethod("getState").invoke(vi);
-                // getId() is the "public:M,N" handle `sm mount` needs, and
+                // getId() is the handle `sm mount` needs, and
                 // getFsUuid() survives while the volume is UNMOUNTED (when
                 // getPath() is null) — both are logged for every public row
                 // so the evidence trail covers the unmounted/ejected states,
@@ -2904,6 +3228,18 @@ public class StorageManager {
                     + " cascadeUsb=" + cascadeUsbPath + " (" + usbCompare + ")"
                     + " | isSDExist=" + sdExist + " isUSBExist=" + usbExist
                     + " | volumes:" + rows;
+            // Detail only for a mounted volume the cascade missed under BOTH classes.
+            boolean missedSd = fwSdPath != null
+                    && !fwSdPath.equals(cascadeSdPath) && !fwSdPath.equals(cascadeUsbPath);
+            boolean missedUsb = fwUsbPath != null
+                    && !fwUsbPath.equals(cascadeUsbPath) && !fwUsbPath.equals(cascadeSdPath);
+            if (missedSd || missedUsb) {
+                verdict += " | mSdcardUuid=" + getSystemProperty("sys.byd.mSdcardUuid")
+                        + " mUsbotgUuid=" + getSystemProperty("sys.byd.mUsbotgUuid")
+                        + " | sm: " + cascadeSmRows;
+                if (missedSd) verdict += " | probe " + fwSdPath + ": " + describeMountProbe(fwSdPath);
+                if (missedUsb) verdict += " | probe " + fwUsbPath + ": " + describeMountProbe(fwUsbPath);
+            }
 
             boolean changed = !verdict.equals(lastShadowVerdict);
             if (changed || (now - lastShadowClassifyAtMs) >= SHADOW_CLASSIFY_INTERVAL_MS) {
@@ -2934,6 +3270,21 @@ public class StorageManager {
         if (fwMountedPath == null) return "DISAGREE-cascade-only";
         if (cascadePath == null) return "DISAGREE-fw-only";
         return "DISAGREE-different-paths";
+    }
+
+    /** The {@link #isPathLikelyMounted} checks, itemised for the shadow log. */
+    private static String describeMountProbe(String path) {
+        File d = new File(path);
+        boolean exists = d.exists();
+        boolean dir = exists && d.isDirectory();
+        String totalBytes;
+        try {
+            totalBytes = dir ? String.valueOf(new android.os.StatFs(path).getTotalBytes()) : "-";
+        } catch (Throwable t) {
+            totalBytes = "threw " + t.getMessage();
+        }
+        return "exists=" + exists + " dir=" + dir + " totalBytes=" + totalBytes
+                + " canWrite=" + (dir && d.canWrite());
     }
 
     // Budget for a single isPathLikelyMounted probe. A healthy mount answers
@@ -3485,6 +3836,9 @@ public class StorageManager {
             // Already internal — nothing to fall back to. Don't touch the flag:
             // an internal-configured user is never "fell back from external."
             if (targetPath.startsWith(INTERNAL_BASE_DIR)) return targetDir;
+            // A volume latched as refusing writes goes to internal whatever its free space.
+            File faultSafe = writeFaultRedirect(targetDir, "recordings");
+            if (faultSafe != targetDir) return faultSafe;
 
             // Measure free space on the target volume. A throw here means the
             // volume is unmounted/half-mounted (the GONE case) — not our job;
@@ -3612,6 +3966,8 @@ public class StorageManager {
         try {
             String targetPath = targetDir.getAbsolutePath();
             if (targetPath.startsWith(INTERNAL_BASE_DIR)) return targetDir;
+            File faultSafe = writeFaultRedirect(targetDir, "surveillance");
+            if (faultSafe != targetDir) return faultSafe;
 
             long targetFree;
             try {
@@ -3650,6 +4006,1527 @@ public class StorageManager {
         } catch (Throwable t) {
             logWarn("resolveSurveillanceTargetWithEnospcFallback failed, using target as-is: " + t.getMessage());
             return targetDir;
+        }
+    }
+
+    // ==================== Removable-volume write fault ====================
+
+    /** Where finished trip files are written: the trips dir, or internal while its volume refuses writes. */
+    public File getTripsWriteDir() {
+        File dir = tripsDir;
+        try {
+            return writeFaultRedirect(dir, "trips");
+        } catch (Throwable t) {
+            return dir;
+        }
+    }
+
+    /**
+     * A writer could not open or write a file in {@code dir}. Runs a bounded write test
+     * there; if dir's mounted SD/USB volume refuses it, latches that volume so every
+     * category on it writes to internal. Returns true while the volume is latched.
+     */
+    public boolean reportWriteFault(File dir) {
+        StorageType type = externalVolumeOf(dir);
+        if (type == null) return false;
+        if (isWriteFaulted(type)) return true;
+        boolean sd = type == StorageType.SD_CARD;
+        String volume = sd ? sdCardPath : usbPath;
+        // Unmounted or removed is the GONE case, owned by the mount fallback.
+        if (!(sd ? sdCardAvailable : usbAvailable) || volume == null
+                || !isPathLikelyMounted(volume)) {
+            return false;
+        }
+        int result = writeTest(type, dir);
+        if (result == WRITE_TEST_UNKNOWN) return false;  // caller cancelled / no thread
+        if (result == WRITE_TEST_FULL) {
+            logInfo("Write test failed in " + dir + " on a nearly full card — treated as full,"
+                + " not faulty (the ENOSPC fallback handles it)");
+            return false;
+        }
+        boolean passed = result == WRITE_TEST_PASS;
+        long now = android.os.SystemClock.elapsedRealtime();
+        int i = sd ? 0 : 1;
+        boolean runStarted = false;
+        boolean flapping = false;
+        long delayMs = 0;
+        WriteFault latched = null;
+        synchronized (writeFaultLock) {
+            if (isWriteFaulted(type)) return true;
+            if (passed) {
+                writeFailFirstMs[i] = 0;
+                return false;
+            }
+            if (writeFailFirstMs[i] == 0 || now - writeFailLastMs[i] > WRITE_FAULT_RUN_GAP_MS) {
+                writeFailFirstMs[i] = now;
+                runStarted = true;
+            }
+            writeFailLastMs[i] = now;
+            long onlineAt = sd ? sdOnlineAtMs : usbOnlineAtMs;
+            boolean settling = onlineAt > 0 && now - onlineAt < WRITE_FAULT_MOUNT_SETTLE_MS;
+            if (!settling || now - writeFailFirstMs[i] >= WRITE_FAULT_SETTLE_PERSIST_MS) {
+                flapping = writeFaultClearedAtMs[i] > 0
+                        && now - writeFaultClearedAtMs[i] < WRITE_FAULT_FLAP_WINDOW_MS;
+                delayMs = flapping
+                        ? Math.min(writeFaultClearedDelayMs[i] * 2, WRITE_FAULT_RETEST_MAX_MS)
+                        : WRITE_FAULT_RETEST_MIN_MS;
+                latched = new WriteFault(volume, dir, now, delayMs, flapping);
+                if (sd) sdWriteFault = latched; else usbWriteFault = latched;
+                writeFailFirstMs[i] = 0;
+            }
+        }
+        String card = sd ? "SD card" : "USB drive";
+        if (latched == null) {
+            if (runStarted) {
+                logInfo("Write test failed in " + dir + " shortly after the " + card
+                    + " mounted — treating it as faulty only if this persists");
+            }
+            return false;
+        }
+        logWarn(card + " refuses writes (write test failed in " + dir + ") — everything"
+            + " stored on it now goes to internal storage until a re-test passes"
+            + (flapping ? " (failed again soon after recovering; re-test in "
+                + delayMs / 60_000 + " min)" : ""));
+        markStorageDirty();  // idle gate: the pools on that volume rescope to internal
+        // Failing again right after a passing re-test: the card is flaky — alert now.
+        if (flapping) notifyWriteFault(type, latched);
+        return true;
+    }
+
+    /** True while {@code type}'s volume is latched as refusing writes. */
+    public boolean isWriteFaulted(StorageType type) {
+        WriteFault f = writeFaultFor(type);
+        if (f == null) return false;
+        return f.volumePath.equals(type == StorageType.SD_CARD ? sdCardPath : usbPath);
+    }
+
+    private WriteFault writeFaultFor(StorageType type) {
+        if (type == StorageType.SD_CARD) return sdWriteFault;
+        if (type == StorageType.USB) return usbWriteFault;
+        return null;
+    }
+
+    /** {@code dir}, or the same category's internal dir while dir's volume is latched. */
+    private File writeFaultRedirect(File dir, String category) {
+        if (dir == null || (sdWriteFault == null && usbWriteFault == null)) return dir;
+        StorageType type = externalVolumeOf(dir);
+        if (type == null || !isWriteFaulted(type)) return dir;
+        File internal = internalDirForCategory(categoryOfDir(dir, category));
+        if (internal == null) return dir;
+        if (!internal.exists()) internal.mkdirs();
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - writeFaultRedirectLoggedAtMs >= 60_000L) {  // starts log their own targets
+            writeFaultRedirectLoggedAtMs = now;
+            logWarn("Write fault: " + dir + " refuses writes — using " + internal);
+        }
+        maybeRetestWriteFaults();
+        return internal;
+    }
+
+    private StorageType externalVolumeOf(File dir) {
+        if (dir == null) return null;
+        String p = dir.getAbsolutePath();
+        if (isUnderRoot(p, sdCardPath)) return StorageType.SD_CARD;
+        if (isUnderRoot(p, usbPath)) return StorageType.USB;
+        return null;
+    }
+
+    private static boolean isUnderRoot(String path, String root) {
+        if (root == null || root.isEmpty()) return false;
+        String r = root.endsWith("/") ? root.substring(0, root.length() - 1) : root;
+        return path.equals(r) || path.startsWith(r + "/");
+    }
+
+    private String categoryOfDir(File dir, String fallback) {
+        if (samePath(dir, sdCardProximityDir) || samePath(dir, usbProximityDir)) return "proximity";
+        if (samePath(dir, sdCardSurveillanceDir) || samePath(dir, usbSurveillanceDir)) return "surveillance";
+        if (samePath(dir, sdCardTripsDir) || samePath(dir, usbTripsDir)) return "trips";
+        if (samePath(dir, sdCardRecordingsDir) || samePath(dir, usbRecordingsDir)) return "recordings";
+        return fallback;
+    }
+
+    private static boolean samePath(File a, File b) {
+        return a != null && b != null && a.getAbsolutePath().equals(b.getAbsolutePath());
+    }
+
+    // ==================== FAT32 folder-entry relief ====================
+
+    // FAT32 caps a folder at 65,536 directory entries; a full folder refuses new names with
+    // ENOSPC while the card still has space. Relief frees entries in that folder only, oldest
+    // events first, until a few events' worth of entries is free there (a clip needs its
+    // .tmp name and its final name at the same time, then its sidecars).
+    //
+    // Evictions that do not reach that headroom are bounded by an allowance: a folder that ran
+    // out may spend a few, each saved clip earns one back, and an exhausted allowance refills
+    // slowly. A pass that does reach headroom gets its spend refunded.
+    private static final int FOLDER_RELIEF_ALLOWANCE = 4;
+    private static final long FOLDER_RELIEF_REFILL_MS = 30 * 60_000L;
+    private static final int FOLDER_RELIEF_MAX_REPROBES = 3;
+    // Orphans deleted per hold of surveillanceCleanupLock, which the event-trigger path also takes.
+    private static final int FOLDER_RELIEF_ORPHAN_BATCH = 8;
+    private static final long FOLDER_RELIEF_MIN_AGE_MS = 10 * 60_000L;
+    private static final long FOLDER_RELIEF_RETRY_GAP_MS = 60_000L;
+    private static final long FOLDER_RELIEF_SKIP_LOG_GAP_MS = 10 * 60_000L;
+    private static final long FOLDER_RELIEF_DIRECT_LIST_TIMEOUT_MS = 4_000L;
+    // Relief lists on its own thread outside every lock, so the shell listing may outlast 4 s.
+    private static final long FOLDER_RELIEF_LIST_TIMEOUT_MS = 20_000L;
+    // After making room while callers wait, relief pauses so their retries land before it probes again.
+    private static final long FOLDER_RELIEF_OFFER_HOLD_MS = 150L;
+    // A rename retry (with its one-entry hop) starts only while this much of the caller's wait is left.
+    private static final long FOLDER_RELIEF_RETRY_RESERVE_MS = 200L;
+    // How often a waiting caller checks it still wants the retry.
+    private static final long FOLDER_RELIEF_WANTED_POLL_MS = 100L;
+    // Top-ups in a row that found room before a folder stops being watched (a later failure re-arms it).
+    private static final int FOLDER_RELIEF_ROOMY_TOP_UPS = 20;
+    // Lets a save's sidecars land before the top-up probes the folder.
+    private static final long FOLDER_TOP_UP_DELAY_MS = 30_000L;
+    private static final long FOLDER_TOP_UP_RETRY_MS = 10_000L;
+    // A later save's sidecars and thumbs are still landing this long after it; its probes could take their room.
+    private static final long FOLDER_TOP_UP_QUIET_MS = 10_000L;
+    // Folders that ran out of entries, kept across restarts so saves into them keep topping up.
+    private static final String FOLDER_RELIEF_STATE_FILE =
+        com.overdrive.app.util.ScratchRoot.path("overdrive_fat_relief_folders");
+    private static final Object FOLDER_RELIEF_STATE_LOCK = new Object();
+    private static final int FAT_DIR_MAX_ENTRIES = 65_536;
+    // Serializes the one-entry hops so two clips never pick the same 8.3 name.
+    private static final Object SHORT_NAME_RENAME_LOCK = new Object();
+    private static final long SHORT_HOP_RETRY_MS = 20L;
+    private static final long FOLDER_ENOSPC_NOTE_TTL_MS = 60_000L;
+    // A FAT long name takes ceil(len/13) + 1 entries: 39 chars = 4 (a clip .tmp), 52 = 5 (a per-actor thumb).
+    private static final String FOLDER_PROBE_FIT = folderProbeName(0, 39);
+    private static final int FOLDER_PROBE_ROOMY_LENGTH = 52;
+    // Headroom for a few more events (clips, sidecars, per-actor thumbs): 60 entries.
+    private static final int FOLDER_HEADROOM_NAMES = 12;
+
+    /** One relief pass. A caller that joins it waits for room the pass makes after that. */
+    private static final class ReliefPass {
+        java.util.concurrent.FutureTask<Void> task;  // set before the pass is published
+        // Guarded by this. A step is room the pass made; its end counts as a last one.
+        private int steps;
+        private int callers;   // callers waiting on this pass or retrying in its room
+        private boolean done;
+
+        /** Joins unless the pass has ended: the steps already seen, or -1. */
+        synchronized int join() {
+            if (done) return -1;
+            callers++;
+            return steps;
+        }
+
+        synchronized void leave() {
+            callers--;
+        }
+
+        /** Relief thread: room was made. True when a caller may be retrying in it now. */
+        synchronized boolean offer() {
+            steps++;
+            notifyAll();
+            return callers > 0;
+        }
+
+        /** The pass is over: a last retry for its callers. True when a caller may be retrying now. */
+        synchronized boolean finish() {
+            done = true;
+            steps++;
+            notifyAll();
+            return callers > 0;
+        }
+
+        /** Waits until {@code untilNs} for a step after {@code seen[0]}: 1 = a step, 0 = timed out, -1 = ended. */
+        synchronized int awaitStep(int[] seen, long untilNs) throws InterruptedException {
+            while (true) {
+                if (steps != seen[0]) {
+                    seen[0] = steps;
+                    return 1;
+                }
+                if (done) return -1;
+                long leftNs = untilNs - System.nanoTime();
+                if (leftNs <= 0) return 0;
+                TimeUnit.NANOSECONDS.timedWait(this, leftNs);
+            }
+        }
+    }
+
+    private final java.util.Map<String, Integer> folderReliefAllowance =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> folderReliefExhaustedAtMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> folderOrphanSweptAtMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> folderReliefGapUntilMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> folderEnospcNotedAtMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> folderReliefSkipLoggedAtMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, ReliefPass> folderReliefInFlight =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    // Folders that ran out this session (path -> volume root); saves into them top up headroom.
+    private final java.util.Map<String, String> folderReliefActive =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<String> folderTopUpPending =
+        java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.Map<String, Long> folderLastSaveAtMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> folderNotAtLimitUntilMs =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Integer> folderRoomyTopUps =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    // Final paths of clips waiting under a one-entry name; their sidecars are not orphans.
+    private final java.util.Set<String> parkedClips = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Hop leftovers with a shell `rm` in flight (guarded by SHORT_NAME_RENAME_LOCK): no hop reuses them yet.
+    private final java.util.Map<String, Integer> hopRmPending = new java.util.HashMap<>();
+    private volatile boolean folderReliefStateLoaded;
+    private volatile boolean folderReliefStateUnreadable;  // then this process never rewrites the list
+    private final Object folderProbeLock = new Object();
+    // Own thread, default priority: callers wait a bounded time on it, and its `ls`/`rm`
+    // children must not be throttled behind recording I/O.
+    private final java.util.concurrent.ScheduledExecutorService folderReliefExecutor =
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "FolderEntryRelief");
+            t.setDaemon(true);
+            return t;
+        });
+
+    private static String folderProbeName(int index, int length) {
+        StringBuilder sb = new StringBuilder(".od_entry_probe_").append(index).append('_');
+        while (sb.length() < length) sb.append('x');
+        return sb.toString();
+    }
+
+    /** A writer's create in {@code dir} failed with ENOSPC. */
+    public void noteFolderEnospc(File dir) {
+        java.util.Map<String, Long> notes = folderEnospcNotedAtMs;
+        if (dir != null && notes != null) {
+            notes.put(dir.getAbsolutePath(), android.os.SystemClock.elapsedRealtime());
+        }
+    }
+
+    /**
+     * A create/rename in {@code dir} failed; {@code knownFailure}: the caller saw it, otherwise
+     * only acted on after {@link #noteFolderEnospc}. If dir is the external surveillance folder on
+     * a FAT32 card that still has space but takes no new long name, frees entries there on the
+     * relief thread. Never waits.
+     */
+    public void relieveFolderEntries(File dir, boolean knownFailure) {
+        try {
+            submitFolderRelief(dir, knownFailure, false, null);
+        } catch (Throwable t) {
+            // Best effort.
+        }
+    }
+
+    /**
+     * The rename of a clip's .tmp to {@code to} failed with {@code errno}; only ENOSPC is acted on.
+     * In a full FAT32 surveillance folder the clip hops through a one-entry 8.3 name, so its final
+     * name can take the entries its .tmp name gave back. Relief runs either way, and the rename is
+     * retried each time it makes room (and once when it ends) while {@code retryWanted} holds and
+     * {@code maxWaitMs} lasts. Returns 0 or the last errno.
+     */
+    public int renameInFullFolder(File from, File to, int errno, long maxWaitMs,
+                                  java.util.function.BooleanSupplier retryWanted) {
+        final long startNs = System.nanoTime();
+        final int[] last = {errno};
+        final File[] at = {from};  // the clip: its .tmp, or the one-entry name a failed move back left it at
+        try {
+            if (errno != android.system.OsConstants.ENOSPC) return errno;
+            final File dir = to.getParentFile();
+            // The hop belongs to this first attempt; its pauses only while the caller can still wait.
+            final boolean canWait = maxWaitMs > 0 && retryWanted.getAsBoolean();
+            last[0] = renameThroughShortName(at, to, errno, canWait ? retryWanted : () -> false);
+            if (last[0] == 0 || !canWait) {
+                relieveFolderEntries(dir, true);  // its sidecars and the next clip need room too
+            } else {
+                final long endNs = startNs + TimeUnit.MILLISECONDS.toNanos(maxWaitMs);
+                final long cutoffNs = endNs - TimeUnit.MILLISECONDS.toNanos(FOLDER_RELIEF_RETRY_RESERVE_MS);
+                // No retry could start any more: relief only, without waiting or skipping the retry gap.
+                final boolean waits = retryWanted.getAsBoolean() && System.nanoTime() - cutoffNs < 0;
+                awaitFolderRelief(dir, waits, cutoffNs, retryWanted, () -> {
+                    if (!retryWanted.getAsBoolean()) return true;  // stop waiting
+                    last[0] = at[0] != from ? moveParkedClip(at, to, to)
+                        : renameThroughShortName(at, to, renameErrno(from, to), retryWanted);
+                    return last[0] == 0 || !retryWanted.getAsBoolean();
+                });
+            }
+            // Given up while parked: land if a save is still wanted (moving back takes as much room),
+            // else back to its .tmp, where the caller's failure path deletes it as before.
+            if (last[0] != 0 && at[0] != from) {
+                int landing = retryWanted.getAsBoolean() ? moveParkedClip(at, to, to) : -1;
+                if (landing == 0) {
+                    last[0] = 0;
+                } else {
+                    if (landing != -1) last[0] = landing;
+                    if (moveParkedClip(at, from, to) != 0) {
+                        logWarn("Folder-entry relief: " + at[0] + " stays until the orphan sweep removes it");
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            // Best effort: the caller keeps the last rename result.
+        } finally {
+            if (isShortHopName(at[0].getName())) {
+                // Stranded: it keeps that name, so no hop can reuse it while the sweeps wait it out.
+                parkedClips.remove(to.getAbsolutePath());
+                parkedClips.remove(parkedKey(at[0]));
+            }
+        }
+        return last[0];
+    }
+
+    /** Moves a parked clip off its one-entry name and unmarks it in one step under the hop lock. */
+    private int moveParkedClip(File[] at, File target, File to) {
+        synchronized (SHORT_NAME_RENAME_LOCK) {
+            int errno = renameErrno(at[0], target);
+            if (errno == 0) {
+                parkedClips.remove(parkedKey(at[0]));
+                parkedClips.remove(to.getAbsolutePath());
+                at[0] = target;
+            }
+            return errno;
+        }
+    }
+
+    /**
+     * Deletes a leftover one-entry hop file after re-checking, under the hop lock, that no clip
+     * parked there meanwhile; its name stays reserved from hops until a shell `rm` fallback is done.
+     */
+    private boolean deleteHopLeftover(File f, long newestAllowedMs) {
+        final String key = parkedKey(f);
+        synchronized (SHORT_NAME_RENAME_LOCK) {
+            if (isParkedClip(f) || !f.isFile() || f.lastModified() > newestAllowedMs) return false;
+            if (f.delete()) return true;
+            if (!f.exists()) return false;
+            hopRmPending.merge(key, 1, Integer::sum);
+        }
+        try {
+            rmForRelief(java.util.Collections.singletonList(f.getAbsolutePath()));
+            return !f.exists();
+        } finally {
+            synchronized (SHORT_NAME_RENAME_LOCK) {
+                hopRmPending.computeIfPresent(key, (k, n) -> n > 1 ? n - 1 : null);
+            }
+        }
+    }
+
+    /** A one-entry name the folder-entry relief uses briefly in a surveillance folder; its own sweeps own it. */
+    public boolean isFolderReliefHopFile(File f) {
+        return f != null && isShortHopName(f.getName())
+            && "surveillance".equals(categoryOfDir(f.getParentFile(), null));
+    }
+
+    /**
+     * 0 if the hop through a one-entry name landed; otherwise the last errno, with {@code at[0]}
+     * the clip's name now. Its short retries stop once {@code retryWanted} turns false.
+     */
+    private int renameThroughShortName(File[] at, File to, int errno,
+                                       java.util.function.BooleanSupplier retryWanted) {
+        final File from = at[0];
+        if (errno != android.system.OsConstants.ENOSPC || isShortHopName(from.getName())) return errno;
+        final File dir = to.getParentFile();
+        if (dir == null || !dir.equals(from.getParentFile())
+                || !"surveillance".equals(categoryOfDir(dir, null))) {
+            return errno;
+        }
+        String root = externalRootOf(dir);
+        if (root == null || !"vfat".equals(volumeFsType(root))) return errno;
+        final String[] note = new String[1];  // logged after the lock: the logger flushes a file
+        try {
+            return hopLocked(at, to, errno, retryWanted, note);
+        } finally {
+            if (note[0] != null) logInfo(note[0]);
+        }
+    }
+
+    private int hopLocked(File[] at, File to, int errno, java.util.function.BooleanSupplier retryWanted,
+                          String[] note) {
+        final File from = at[0];
+        final File dir = to.getParentFile();
+        synchronized (SHORT_NAME_RENAME_LOCK) {
+            File hop = null;
+            int seed = from.getName().hashCode();
+            for (int i = 0; i < 8 && hop == null; i++) {
+                File candidate = new File(dir, shortHopName(seed + i));
+                if (!hopRmPending.containsKey(parkedKey(candidate)) && nameIsFree(candidate)) {
+                    hop = candidate;  // FAT lookups also match 8.3 aliases
+                }
+            }
+            if (hop == null) return errno;
+            // Marked before the clip moves there, so no sweep ever sees an unmarked hop file.
+            final String hopKey = parkedKey(hop);
+            parkedClips.add(hopKey);
+            if (renameErrno(from, hop) != 0) {
+                parkedClips.remove(hopKey);
+                return errno;
+            }
+            // From here at[0] always names where the clip is, and its sidecars stay protected.
+            at[0] = hop;
+            parkedClips.add(to.getAbsolutePath());
+            // A probe or another writer can hold the entries the .tmp gave back for a moment.
+            int landed;
+            for (int i = 0; ; i++) {
+                landed = renameErrno(hop, to);
+                if (landed == 0) {
+                    parkedClips.remove(hopKey);
+                    parkedClips.remove(to.getAbsolutePath());
+                    at[0] = to;
+                    note[0] = "Saved " + to.getName() + " through a one-entry name: its FAT32 folder is out of entries";
+                    return 0;
+                }
+                if (landed != android.system.OsConstants.ENOSPC || i == 2 || !retryWanted.getAsBoolean()) break;
+                pauseMs(SHORT_HOP_RETRY_MS);
+                if (!retryWanted.getAsBoolean()) break;  // wanted no longer: don't land late
+            }
+            for (int i = 0; i < 3; i++) {
+                if (renameErrno(hop, from) == 0) {  // back as it was
+                    parkedClips.remove(hopKey);
+                    parkedClips.remove(to.getAbsolutePath());
+                    at[0] = from;
+                    return landed;
+                }
+                if (i == 2 || !retryWanted.getAsBoolean()) break;
+                pauseMs(SHORT_HOP_RETRY_MS);
+            }
+            // Parked: both names stay marked; later retries rename it from here.
+            note[0] = "Folder-entry relief: " + to.getName() + " waits as " + hop.getName() + " for room";
+            return landed;
+        }
+    }
+
+    /** True only when the name is confirmed absent: a failed lookup must not let a rename replace a file. */
+    private static boolean nameIsFree(File f) {
+        try {
+            android.system.Os.lstat(f.getAbsolutePath());
+            return false;
+        } catch (android.system.ErrnoException e) {
+            return e.errno == android.system.OsConstants.ENOENT;
+        }
+    }
+
+    private static void pauseMs(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    // Capitals and 8.3 only, so FAT stores it in one entry with no long-name entries.
+    private static String shortHopName(int seed) {
+        return String.format(java.util.Locale.US, "OD%06X.TMP", seed & 0xFFFFFF);
+    }
+
+    private static boolean isShortHopName(String name) {
+        // Case-blind: a FAT mount may list 8.3 names in lower case.
+        if (name.length() != 12 || !name.regionMatches(true, 0, "OD", 0, 2)
+                || !name.regionMatches(true, 8, ".TMP", 0, 4)) {
+            return false;
+        }
+        for (int i = 2; i < 8; i++) {
+            if (Character.digit(name.charAt(i), 16) < 0) return false;
+        }
+        return true;
+    }
+
+    private static int renameErrno(File from, File to) {
+        try {
+            android.system.Os.rename(from.getAbsolutePath(), to.getAbsolutePath());
+            return 0;
+        } catch (android.system.ErrnoException e) {
+            return e.errno;
+        }
+    }
+
+    /**
+     * Joins relief for a failure the caller saw (if {@code waits}) and runs {@code retry} after each
+     * step until it returns true or {@code stillWanted} turns false; no retry starts after
+     * {@code cutoffNs} (System.nanoTime).
+     */
+    private boolean awaitFolderRelief(File dir, boolean waits, long cutoffNs,
+                                      java.util.function.BooleanSupplier stillWanted,
+                                      java.util.function.BooleanSupplier retry) {
+        ReliefPass pass = null;
+        try {
+            int[] seen = {0};
+            pass = submitFolderRelief(dir, true, waits, seen);
+            if (pass == null || !waits) return false;
+            final long pollNs = TimeUnit.MILLISECONDS.toNanos(FOLDER_RELIEF_WANTED_POLL_MS);
+            while (stillWanted.getAsBoolean()) {  // checked outside the pass's monitor
+                long nowNs = System.nanoTime();
+                if (nowNs - cutoffNs >= 0) return false;
+                int step = pass.awaitStep(seen, nowNs + Math.min(pollNs, cutoffNs - nowNs));
+                if (step < 0) return false;
+                if (step > 0 && System.nanoTime() - cutoffNs < 0 && retry.getAsBoolean()) return true;
+            }
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            if (pass != null && waits) pass.leave();
+        }
+    }
+
+    /**
+     * {@code urgent}: a caller waits on this failure (joined to the returned pass, steps it had
+     * already seen in {@code seen[0]}), so the retry gap doesn't apply.
+     */
+    private ReliefPass submitFolderRelief(File dir, boolean knownFailure, boolean urgent, int[] seen) {
+        if (dir == null || !"surveillance".equals(categoryOfDir(dir, null))) return null;
+        final String path = dir.getAbsolutePath();
+        final long now = android.os.SystemClock.elapsedRealtime();
+        if (!knownFailure) {
+            Long noted = folderEnospcNotedAtMs.get(path);
+            if (noted == null || now - noted > FOLDER_ENOSPC_NOTE_TTL_MS) return null;
+        }
+        if (!urgent && untilMs(folderReliefGapUntilMs, path) > now) return null;
+        final String root = externalRootOf(dir);
+        if (root == null) return null;
+        String fs = volumeFsType(root);
+        if (!"vfat".equals(fs)) {
+            logReliefSkip(path, "fs", root + " is " + (fs.isEmpty() ? "an unknown filesystem" : fs)
+                + ", not FAT32 (vfat)");
+            return null;
+        }
+        final ReliefPass fresh = new ReliefPass();
+        fresh.task = new java.util.concurrent.FutureTask<>(() -> runFolderRelief(dir, root, false, fresh), null);
+        for (int i = 0; i < 3; i++) {
+            ReliefPass pass = registerRelief(path, fresh);
+            if (pass == null) return null;
+            if (pass == fresh) {
+                if (urgent) seen[0] = fresh.join();  // 0: every step of a new pass is fresh
+                try {
+                    folderReliefExecutor.execute(() -> runRegisteredRelief(path, fresh));
+                } catch (Throwable t) {
+                    folderReliefInFlight.remove(path, fresh);
+                    if (urgent) fresh.leave();
+                    fresh.finish();
+                    return null;
+                }
+                return fresh;
+            }
+            if (!urgent) return pass;  // a live pass covers this failure
+            // Room the live pass made before this failure was not enough for it.
+            int steps = pass.join();
+            if (steps >= 0) {
+                seen[0] = steps;
+                return pass;
+            }
+        }
+        return null;
+    }
+
+    /** Registers {@code pass} unless a live pass exists; returns the pass to wait on, or null. */
+    private ReliefPass registerRelief(String path, ReliefPass pass) {
+        for (int i = 0; i < 3; i++) {
+            ReliefPass running = folderReliefInFlight.putIfAbsent(path, pass);
+            if (running == null) return pass;
+            if (!running.task.isDone()) return running;
+            if (folderReliefInFlight.replace(path, running, pass)) return pass;
+        }
+        return null;
+    }
+
+    private void runRegisteredRelief(String path, ReliefPass pass) {
+        try {
+            pass.task.run();
+        } finally {
+            folderReliefInFlight.remove(path, pass);
+            if (pass.finish()) holdForRetries();  // before the next pass probes this folder
+        }
+    }
+
+    /** Offers new room to the pass's callers; while one may be retrying, waits before probing again. */
+    private static void offerRoom(ReliefPass pass) {
+        if (pass.offer()) holdForRetries();
+    }
+
+    private static void holdForRetries() {
+        try {
+            Thread.sleep(FOLDER_RELIEF_OFFER_HOLD_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** A clip was saved: if its folder ran out of entries (now or before a restart), top up its headroom. */
+    private void maybeTopUpFolder(File saved) {
+        java.util.Map<String, String> active = folderReliefActive;
+        if (active == null || saved == null) return;
+        try {
+            if (!folderReliefStateLoaded) loadFolderReliefState();
+            if (active.isEmpty()) return;
+            final File dir = saved.getParentFile();
+            if (dir == null) return;
+            final String path = dir.getAbsolutePath();
+            final String root = active.get(path);
+            if (root == null) return;
+            folderLastSaveAtMs.put(path, android.os.SystemClock.elapsedRealtime());
+            refundReliefAllowance(path, 1);  // one in, one out
+            if (folderTopUpPending.add(path)) scheduleTopUp(dir, path, root, FOLDER_TOP_UP_DELAY_MS, false);
+        } catch (Throwable t) {
+            // Never in the way of onFileSaved.
+        }
+    }
+
+    private void scheduleTopUp(File dir, String path, String root, long delayMs, boolean quietWaited) {
+        try {
+            folderReliefExecutor.schedule(() -> runTopUp(dir, path, root, quietWaited),
+                delayMs, TimeUnit.MILLISECONDS);
+        } catch (Throwable t) {
+            folderTopUpPending.remove(path);
+        }
+    }
+
+    private void runTopUp(File dir, String path, String root, boolean quietWaited) {
+        folderTopUpPending.remove(path);  // a save from here on schedules its own top-up
+        final long now = android.os.SystemClock.elapsedRealtime();
+        Long gapUntil = folderReliefGapUntilMs.get(path);
+        long waitMs = gapUntil != null && gapUntil > now ? gapUntil - now + FOLDER_TOP_UP_RETRY_MS : 0L;
+        Long lastSave = folderLastSaveAtMs.get(path);
+        if (!quietWaited && lastSave != null) {
+            waitMs = Math.max(waitMs, lastSave + FOLDER_TOP_UP_QUIET_MS - now);  // once per top-up
+        }
+        if (waitMs > 0) {
+            if (folderTopUpPending.add(path)) scheduleTopUp(dir, path, root, waitMs, true);
+            return;
+        }
+        final ReliefPass topUp = new ReliefPass();
+        topUp.task = new java.util.concurrent.FutureTask<>(() -> runFolderRelief(dir, root, true, topUp), null);
+        if (registerRelief(path, topUp) != topUp) {
+            // Another pass is queued; top up after it.
+            if (folderTopUpPending.add(path)) scheduleTopUp(dir, path, root, FOLDER_TOP_UP_RETRY_MS, true);
+            return;
+        }
+        runRegisteredRelief(path, topUp);
+    }
+
+    /** Once per process: folders that ran out before a restart (path TAB volume root per line). */
+    private void loadFolderReliefState() {
+        synchronized (FOLDER_RELIEF_STATE_LOCK) {
+            if (folderReliefStateLoaded) return;
+            File f = new File(FOLDER_RELIEF_STATE_FILE);
+            if (f.isFile()) {
+                try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        int tab = line.indexOf('\t');
+                        if (tab <= 0 || tab >= line.length() - 1) continue;
+                        String path = line.substring(0, tab);
+                        if (folderReliefActive.putIfAbsent(path, line.substring(tab + 1)) == null) {
+                            // One removal until saves earn more: a reboot must not re-grant a spent allowance.
+                            folderReliefAllowance.putIfAbsent(path, 1);
+                        }
+                    }
+                } catch (java.io.FileNotFoundException e) {
+                    if (f.exists()) folderReliefStateUnreadable = true;  // else removed meanwhile
+                } catch (Exception e) {
+                    folderReliefStateUnreadable = true;
+                    logDebug("Folder-entry relief state unreadable: " + e.getMessage());
+                }
+            }
+            folderReliefStateLoaded = true;  // last: readers that skip the lock must see the whole list
+        }
+    }
+
+    private void saveFolderReliefState() {
+        synchronized (FOLDER_RELIEF_STATE_LOCK) {
+            if (folderReliefStateUnreadable) return;
+            StringBuilder sb = new StringBuilder();
+            for (java.util.Map.Entry<String, String> e : folderReliefActive.entrySet()) {
+                sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+            }
+            File f = new File(FOLDER_RELIEF_STATE_FILE);
+            if (sb.length() == 0) {
+                if (f.exists() && !f.delete()) logDebug("Folder-entry relief state not removed");
+                return;
+            }
+            File tmp = new File(FOLDER_RELIEF_STATE_FILE + ".tmp");
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(tmp, false)) {
+                out.write(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.getFD().sync();  // a power cut right after the rename must not leave it empty
+            } catch (Exception e) {
+                logDebug("Folder-entry relief state not saved: " + e.getMessage());
+                return;
+            }
+            if (!tmp.renameTo(f)) {
+                logDebug("Folder-entry relief state not saved: rename failed");
+                tmp.delete();
+            }
+        }
+    }
+
+    private static long untilMs(java.util.Map<String, Long> map, String path) {
+        Long until = map.get(path);
+        return until != null ? until : Long.MIN_VALUE;
+    }
+
+    private String externalRootOf(File dir) {
+        StorageType type = externalVolumeOf(dir);
+        if (type == StorageType.SD_CARD) return sdCardAvailable ? sdCardPath : null;
+        if (type == StorageType.USB) return usbAvailable ? usbPath : null;
+        return null;
+    }
+
+    private void logReliefSkip(String path, String reason, String detail) {
+        String key = path + "|" + reason;
+        long now = android.os.SystemClock.elapsedRealtime();
+        Long last = folderReliefSkipLoggedAtMs.get(key);
+        if (last != null && now - last < FOLDER_RELIEF_SKIP_LOG_GAP_MS) return;
+        folderReliefSkipLoggedAtMs.put(key, now);
+        logWarn("Folder-entry relief skipped for " + path + ": " + detail);
+    }
+
+    private void refundReliefAllowance(String path, int count) {
+        if (count <= 0 || !folderReliefAllowance.containsKey(path)) return;
+        folderReliefAllowance.merge(path, count, (a, b) -> Math.min(FOLDER_RELIEF_ALLOWANCE, a + b));
+        folderReliefExhaustedAtMs.remove(path);
+    }
+
+    /** True when an eviction may run; a used-up allowance earns one back a refill period later. */
+    private boolean hasReliefAllowance(String path) {
+        Integer allowance = folderReliefAllowance.get(path);
+        if (allowance == null) return false;
+        if (allowance > 0) return true;
+        long now = android.os.SystemClock.elapsedRealtime();
+        Long exhaustedAt = folderReliefExhaustedAtMs.putIfAbsent(path, now);
+        Integer recheck = folderReliefAllowance.get(path);
+        if (recheck != null && recheck > 0) {  // a save refunded one meanwhile: nothing to time
+            if (exhaustedAt == null) folderReliefExhaustedAtMs.remove(path, now);
+            return true;
+        }
+        if (exhaustedAt == null || now - exhaustedAt < FOLDER_RELIEF_REFILL_MS) return false;
+        refundReliefAllowance(path, 1);
+        return true;
+    }
+
+    private boolean takeReliefAllowance(String path) {
+        boolean[] taken = {false};
+        folderReliefAllowance.computeIfPresent(path, (k, v) -> {
+            if (v <= 0) return v;
+            taken[0] = true;
+            return v - 1;
+        });
+        return taken[0];
+    }
+
+    private void runFolderRelief(File dir, String root, boolean topUp, ReliefPass pass) {
+        final String path = dir.getAbsolutePath();
+        try {
+            if (!folderReliefStateLoaded) loadFolderReliefState();
+            if (topUp && !folderReliefActive.containsKey(path)) return;
+            // Card not mounted right now (e.g. shutting down): keep watching its folder.
+            String mountedRoot = externalRootOf(dir);
+            if (mountedRoot == null) return;
+            // Re-checked on the relief thread: storage settings or the mounted card may have changed
+            // (or are still being restored after a remount). Skip this pass; the folder stays watched.
+            if (!"surveillance".equals(categoryOfDir(dir, null)) || !root.equals(mountedRoot)) return;
+            String fs = volumeFsType(root);
+            if (!"vfat".equals(fs)) {
+                // "" = /proc/mounts unreadable now
+                if (!fs.isEmpty() && folderReliefActive.remove(path) != null) saveFolderReliefState();
+                logReliefSkip(path, "fs", root + " is " + (fs.isEmpty() ? "an unknown filesystem" : fs)
+                    + ", not FAT32 (vfat)");
+                return;
+            }
+            int[] fit = new int[1];
+            int state = probeHeadroom(dir, fit);
+            if (fit[0] == 0) offerRoom(pass);  // only now: the probes could have taken that room
+            if (state == 0) {
+                if (topUp) noteRoomyTopUp(path);
+                return;
+            }
+            folderRoomyTopUps.remove(path);
+            final long now = android.os.SystemClock.elapsedRealtime();
+            // Non-waiting callers (rotation, continuous start, top-ups) don't try again for a minute.
+            final long gapUntil = now + FOLDER_RELIEF_RETRY_GAP_MS;
+            if (state != android.system.OsConstants.ENOSPC) {
+                folderReliefGapUntilMs.put(path, gapUntil);
+                logReliefSkip(path, "probe", state == android.system.OsConstants.EEXIST
+                    ? "a probe file could not be removed"
+                    : "probe failed (" + android.system.OsConstants.errnoName(state) + "), not a full folder");
+                return;
+            }
+            long free = new StatFs(path).getAvailableBytes();
+            // Bytes short: the card is full, which the ENOSPC fallback and the reaper own.
+            if (free < WRITE_FAULT_MIN_FREE_BYTES) {
+                folderReliefGapUntilMs.put(path, gapUntil);
+                return;
+            }
+            if (untilMs(folderNotAtLimitUntilMs, path) > now) return;  // logged when found
+            // With nothing left to evict, list only when an orphan sweep is due.
+            Long sweptAt = folderOrphanSweptAtMs.get(path);
+            boolean sweepDue = sweptAt == null || now - sweptAt >= FOLDER_RELIEF_MIN_AGE_MS;
+            if (!hasReliefAllowance(path) && !sweepDue) {
+                folderReliefGapUntilMs.put(path, gapUntil);
+                logReliefSkip(path, "allowance", "removal allowance used up; each saved clip earns one");
+                return;
+            }
+            File[] files = listFolderForRelief(dir);
+            if (files == null) {
+                // Each attempt re-lists the whole folder.
+                folderReliefGapUntilMs.put(path, gapUntil);
+                logReliefSkip(path, "listing", "folder listing incomplete, retrying in 1 min");
+                return;
+            }
+            // Far below 65,536 entries the refusal has another cause, and removing clips won't help.
+            int used = fatEntriesInUse(files);
+            if (used < FAT_DIR_MAX_ENTRIES / 2) {
+                folderNotAtLimitUntilMs.put(path, now + FOLDER_RELIEF_MIN_AGE_MS);
+                logReliefSkip(path, "entries", "only " + used + " of " + FAT_DIR_MAX_ENTRIES
+                    + " folder entries in use, so this is not the FAT32 folder limit");
+                return;
+            }
+            if (!root.equals(folderReliefActive.put(path, root))) {
+                // An unreadable state list can't tell a new folder from one that ran out before.
+                folderReliefAllowance.putIfAbsent(path, folderReliefStateUnreadable ? 1 : FOLDER_RELIEF_ALLOWANCE);
+                saveFolderReliefState();
+            }
+            relieveFolder(dir, files, free, topUp, pass);
+        } catch (Throwable t) {
+            logWarn("Folder-entry relief failed in " + path + ": " + t.getMessage());
+        }
+    }
+
+    /** A top-up found headroom without removing anything; after enough in a row the folder isn't watched. */
+    private void noteRoomyTopUp(String path) {
+        if (folderRoomyTopUps.merge(path, 1, Integer::sum) < FOLDER_RELIEF_ROOMY_TOP_UPS) return;
+        folderRoomyTopUps.remove(path);
+        if (folderReliefActive.remove(path) != null) {
+            saveFolderReliefState();
+            logInfo("Folder-entry relief: " + path + " has room again; top-ups stop until it runs out");
+        }
+    }
+
+    /** Directory entries the names take on FAT32, counting "." and "..": ceil(len/13) + 1 each. */
+    private static int fatEntriesInUse(File[] files) {
+        long used = 2;
+        for (File f : files) used += 1 + (f.getName().length() + 12) / 13;
+        return (int) Math.min(Integer.MAX_VALUE, used);
+    }
+
+    /** Probes dir for headroom: 0, ENOSPC or another errno; {@code fit[0]} gets the .tmp-sized probe's result. */
+    private int probeHeadroom(File dir, int[] fit) {
+        final int enospc = android.system.OsConstants.ENOSPC;
+        int goal = folderHeadroomErrno(dir);
+        fit[0] = goal == 0 ? 0 : probeFolderEntry(dir, FOLDER_PROBE_FIT);
+        if (goal == enospc && fit[0] != 0 && fit[0] != enospc) goal = fit[0];  // the probe itself failed
+        if (fit[0] == android.system.OsConstants.EEXIST) goal = fit[0];  // a stuck probe file decides
+        return goal;
+    }
+
+    /** Every name in dir, or null when the listing may be incomplete. */
+    private File[] listFolderForRelief(File dir) {
+        DirListing direct = listFilesDirectWithStatus(dir, null, FOLDER_RELIEF_DIRECT_LIST_TIMEOUT_MS);
+        if (direct.complete) return direct.files;
+        DirListing shell = listFilesViaShellChecked(dir, FOLDER_RELIEF_LIST_TIMEOUT_MS);
+        return shell.complete ? shell.files : null;
+    }
+
+    private long statInvalidationSeqNow() {
+        synchronized (categoryStatCacheLock) {
+            return statInvalidationSeq;
+        }
+    }
+
+    /**
+     * Orphans first, then one oldest event per probe, until headroom exists. Java unlinks run under
+     * surveillanceCleanupLock (orphans in batches, events one at a time); orphan checks, probes and
+     * the shell `rm` fallback run outside it.
+     */
+    private void relieveFolder(File dir, File[] files, long freeBytes, boolean topUp, ReliefPass pass) {
+        final String path = dir.getAbsolutePath();
+        final long newestAllowedMs = System.currentTimeMillis() - FOLDER_RELIEF_MIN_AGE_MS;  // mtime clock
+        final String prefix = namePrefixForCategory("surveillance");
+        final String ext = primaryExtensionForCategory("surveillance");
+        final String[] sidecarExts = sidecarExtensionsForCategory("surveillance");
+        final String[] auxPrefixes = auxiliaryPrefixesForCategory("surveillance");
+        final int enospc = android.system.OsConstants.ENOSPC;
+        Set<String> names = new HashSet<>(files.length * 2);
+        for (File f : files) names.add(f.getName());
+
+        List<File> events = new ArrayList<>();
+        List<File> orphanFiles = new ArrayList<>();
+        List<String> orphanStems = new ArrayList<>();  // null: a stale clip partial, no clip to check
+        for (File f : files) {
+            String name = f.getName();
+            if (name.startsWith(prefix) && name.endsWith(ext)) {
+                events.add(f);
+                continue;
+            }
+            if ((name.startsWith(prefix) && (name.endsWith(ext + ".tmp") || name.endsWith(ext + ".broken")))
+                    || isShortHopName(name)) {
+                orphanFiles.add(f);  // a clip partial; the age check keeps a live recording's .tmp
+                orphanStems.add(null);
+                continue;
+            }
+            String stem = sidecarOwnerStem(name, prefix, sidecarExts, auxPrefixes);
+            if (stem == null || names.contains(stem + ext) || names.contains(stem + ext + ".tmp")) continue;
+            orphanFiles.add(f);
+            orphanStems.add(stem);
+        }
+        // event_<yyyyMMdd_HHmmss> names sort oldest-first without a stat per file.
+        events.sort(Comparator.comparing(File::getName));
+        // Kept as size rotation keeps them: SafeKeep locks, then fresh upload pins (empty when off).
+        java.util.Set<String> safeKept;
+        try {
+            safeKept = com.overdrive.app.safekeep.SafeKeep.retainedAmong(events,
+                scopedLimitBytesForCategory("surveillance"));
+        } catch (Throwable t) {
+            safeKept = null;  // unknown what SafeKeep keeps: remove orphans only
+            logWarn("Folder-entry relief: SafeKeep state unavailable, no clips removed: " + t.getMessage());
+        }
+        final java.util.Map<String, List<File>> auxIndex = auxIndexOf(files, auxPrefixes);
+
+        int orphans = 0;
+        int nextOrphan = 0;
+        while (nextOrphan < orphanFiles.size()) {
+            List<File> doomed = new ArrayList<>();
+            while (nextOrphan < orphanFiles.size() && doomed.size() < FOLDER_RELIEF_ORPHAN_BATCH) {
+                File f = orphanFiles.get(nextOrphan);
+                String stem = orphanStems.get(nextOrphan);
+                nextOrphan++;
+                if (f.lastModified() > newestAllowedMs || !f.isFile()) continue;
+                // The listing can predate the clip's save, or miss names: confirm the clip is gone.
+                if (stem != null ? clipOnDisk(dir, stem + ext) : isParkedClip(f)) continue;
+                doomed.add(f);
+            }
+            if (doomed.isEmpty()) continue;
+            int deleted = 0;
+            List<String> stuck = new ArrayList<>();
+            List<File> plain = new ArrayList<>(doomed.size());
+            List<File> hops = new ArrayList<>();
+            for (File f : doomed) (isShortHopName(f.getName()) ? hops : plain).add(f);
+            synchronized (surveillanceCleanupLock) {
+                deleted += unlinkForRelief(plain, stuck);
+            }
+            // Leftover hop files (not in any size count) wait for the hop lock without holding this one.
+            for (File f : hops) {
+                if (deleteHopLeftover(f, newestAllowedMs)) deleted++;
+            }
+            // The shell fallback can block for seconds; the event-trigger path takes that lock too.
+            deleted += rmForRelief(stuck);
+            orphans += deleted;
+            if (deleted > 0) offerRoom(pass);
+        }
+        folderOrphanSweptAtMs.put(path, android.os.SystemClock.elapsedRealtime());
+
+        long seqAtProbe = statInvalidationSeqNow();
+        int[] fitOut = new int[1];
+        int goal = probeHeadroom(dir, fitOut);
+        int fit = fitOut[0];
+        if (fit == 0) offerRoom(pass);
+        int evicted = 0;
+        int spent = 0;
+        int next = 0;
+        int reprobes = 0;
+        boolean deleteFailed = false;
+        boolean allowanceUsedUp = false;
+        boolean bytesShort = false;
+        while (goal == enospc && safeKept != null) {
+            // Next eligible clip, checked outside the lock and again under it.
+            File event = null;
+            while (next < events.size()) {
+                File candidate = events.get(next++);
+                if (isReliefProtected(candidate, newestAllowedMs, safeKept)) continue;
+                event = candidate;
+                break;
+            }
+            if (event == null) break;
+            if (freeBytesOrZero(path) < WRITE_FAULT_MIN_FREE_BYTES) {
+                bytesShort = true;  // the card filled up meanwhile: not a folder-entry problem
+                break;
+            }
+            if (!hasReliefAllowance(path) || !takeReliefAllowance(path)) {
+                allowanceUsedUp = true;
+                break;
+            }
+            boolean evictedOne = false;
+            boolean otherCleanup = false;
+            boolean skipped = false;
+            final long size = event.length();
+            List<String> stuck = null;
+            synchronized (surveillanceCleanupLock) {
+                // Another cleanup deleted since the probe: measure again before deleting more.
+                if (statInvalidationSeqNow() != seqAtProbe) {
+                    otherCleanup = true;
+                } else if (isReliefProtected(event, newestAllowedMs, safeKept)) {
+                    skipped = true;  // removed, written or locked while this pass waited for the lock
+                } else {
+                    stuck = new ArrayList<>(1);
+                    unlinkForRelief(java.util.Collections.singletonList(event), stuck);
+                }
+            }
+            if (stuck != null) {
+                rmForRelief(stuck);  // outside the lock, as for orphans
+                evictedOne = !event.exists();
+            }
+            if (evictedOne) {
+                finishEviction(dir, event, size, ext, sidecarExts, auxIndex);
+                evicted++;
+                spent++;
+            } else {
+                refundReliefAllowance(path, 1);
+                if (otherCleanup) {
+                    next--;  // reconsider this clip after measuring again
+                    if (++reprobes > FOLDER_RELIEF_MAX_REPROBES) break;
+                } else if (!skipped) {
+                    logWarn("Folder-entry relief: failed to delete " + event.getAbsolutePath());
+                    deleteFailed = true;
+                    break;
+                }
+            }
+            seqAtProbe = statInvalidationSeqNow();
+            goal = probeHeadroom(dir, fitOut);
+            fit = fitOut[0];
+            if (evictedOne || fit == 0) offerRoom(pass);
+        }
+
+        if (orphans > 0 || evicted > 0) {
+            invalidateCategorySizeCache("surveillance");
+            markStorageDirtyForPool("surveillance");
+        }
+        final boolean fits = fit == 0;
+        String outcome;
+        if (goal == 0) {
+            refundReliefAllowance(path, spent);  // evictions that reached headroom were needed
+            outcome = "";
+        } else {
+            // Non-waiting callers (rotation, continuous start, top-ups) don't re-list for a minute.
+            folderReliefGapUntilMs.put(path,
+                android.os.SystemClock.elapsedRealtime() + FOLDER_RELIEF_RETRY_GAP_MS);
+            if (goal != enospc) {
+                outcome = "; probe failed (" + android.system.OsConstants.errnoName(goal) + ")";
+            } else if (safeKept == null) {
+                outcome = "; SafeKeep state unavailable";
+            } else if (allowanceUsedUp) {
+                outcome = "; removal allowance used up (each saved clip earns one)";
+            } else if (bytesShort) {
+                outcome = "; the card ran out of space";
+            } else if (deleteFailed) {
+                outcome = "; a delete failed";
+            } else if (next >= events.size()) {
+                outcome = "; nothing older than 10 min left to remove";
+            } else {
+                outcome = "; measurements kept changing";
+            }
+            outcome += fits ? ", the next clip fits" : ", still full";
+        }
+        String msg = "Folder full: " + dir + " (vfat, " + formatSize(freeBytes) + " free)"
+            + (topUp ? " top-up" : " refused a new file name") + " — removed " + orphans
+            + " orphan file(s) and " + evicted + " oldest event(s)" + outcome;
+        if (topUp && fits) {
+            logInfo(msg);
+        } else {
+            logWarn(msg);
+        }
+    }
+
+    /** Not evictable: gone, written in the last 10 minutes, SafeKeep-locked, or kept by SafeKeep. */
+    private static boolean isReliefProtected(File event, long newestAllowedMs, java.util.Set<String> safeKept) {
+        return !event.exists() || event.lastModified() > newestAllowedMs
+            || com.overdrive.app.safekeep.SafeKeep.isLockedForEmergency(event)
+            || safeKept.contains(event.getAbsolutePath());
+    }
+
+    private static long freeBytesOrZero(String path) {
+        try {
+            return new StatFs(path).getAvailableBytes();
+        } catch (Throwable t) {
+            return 0L;  // volume gone
+        }
+    }
+
+    /** The evicted clip is gone: its sidecars, per-actor thumbs and index row go too (no lock needed). */
+    private void finishEviction(File dir, File event, long size, String ext, String[] sidecarExts,
+                                java.util.Map<String, List<File>> auxIndex) {
+        String stem = stemForName(event.getName(), ext);
+        List<File> doomed = new ArrayList<>();
+        for (String sidecarExt : sidecarExts) doomed.add(new File(dir, stem + sidecarExt));
+        List<File> aux = auxIndex.get(stem);
+        if (aux != null) doomed.addAll(aux);
+        deleteAllForRelief(doomed);
+        try {
+            com.overdrive.app.server.RecordingsIndex.getInstance().removeByPath(event.getAbsolutePath());
+        } catch (Throwable ignored) {}
+        try {
+            com.overdrive.app.server.RecordingsApiHandler.invalidateRecordingCache(event.getAbsolutePath());
+        } catch (Throwable ignored) {}
+        logInfo("Deleted old file: " + event.getAbsolutePath() + " (" + formatSize(size)
+            + ") — FAT32 folder-entry relief [surveillance]");
+    }
+
+    /** A clip waiting under its one-entry name for room: never a leftover, however old it looks. */
+    private boolean isParkedClip(File f) {
+        java.util.Set<String> parked = parkedClips;
+        return parked != null && parked.contains(parkedKey(f));
+    }
+
+    /** parkedClips key: hop names case-blind (a FAT mount may list them in lower case), others as is. */
+    private static String parkedKey(File f) {
+        String name = f.getName();
+        if (!isShortHopName(name)) return f.getAbsolutePath();
+        return new File(f.getParentFile(), name.toUpperCase(java.util.Locale.US)).getAbsolutePath();
+    }
+
+    /** The clip is on disk as its .tmp, under its final name, or waiting under a one-entry name. */
+    private boolean clipOnDisk(File dir, String clipName) {
+        File clip = new File(dir, clipName);
+        synchronized (SHORT_NAME_RENAME_LOCK) {  // a hop in progress briefly hides both names
+            // In the order a clip moves (parked, .tmp, final), so a rename landing between checks is seen.
+            return parkedClips.contains(clip.getAbsolutePath())
+                || new File(dir, clipName + ".tmp").exists() || clip.exists();
+        }
+    }
+
+    /** Java unlink, then one shell `rm -f` for whatever the FUSE mount refused. */
+    private int deleteAllForRelief(List<File> files) {
+        List<String> stuck = new ArrayList<>();
+        int deleted = unlinkForRelief(files, stuck);
+        return deleted + rmForRelief(stuck);
+    }
+
+    /** Java unlink only (quick enough to hold a lock for); paths it couldn't remove go to {@code stuck}. */
+    private static int unlinkForRelief(List<File> files, List<String> stuck) {
+        int deleted = 0;
+        for (File f : files) {
+            if (f.delete()) {
+                deleted++;
+            } else if (f.exists()) {
+                stuck.add(f.getAbsolutePath());
+            }
+        }
+        return deleted;
+    }
+
+    /** One bounded shell `rm -f` for {@code stuck}; how many of them are gone afterwards. */
+    private int rmForRelief(List<String> stuck) {
+        if (stuck.isEmpty()) return 0;
+        int deleted = 0;
+        List<String> cmd = new ArrayList<>(stuck.size() + 2);
+        cmd.add("rm");
+        cmd.add("-f");
+        cmd.addAll(stuck);
+        try {
+            Process p = Runtime.getRuntime().exec(cmd.toArray(new String[0]));
+            waitForBounded(p, 4_000, "folderRelief rm(" + stuck.size() + ")");
+        } catch (Exception e) {
+            logWarn("Folder-entry relief rm failed: " + e.getMessage());
+        }
+        for (String p : stuck) {
+            if (!new File(p).exists()) deleted++;
+        }
+        return deleted;
+    }
+
+    /** Clip stem owning a surveillance sidecar or per-actor thumb (the orphan-pass parse), or null. */
+    private static String sidecarOwnerStem(String name, String prefix, String[] sidecarExts,
+                                           String[] auxPrefixes) {
+        for (String aux : auxPrefixes) {
+            if (name.startsWith(aux)) return auxOwnerStem(name, aux);
+        }
+        if (!name.startsWith(prefix)) return null;
+        for (String ext : sidecarExts) {
+            if (name.endsWith(ext)) return name.substring(0, name.length() - ext.length());
+        }
+        return null;
+    }
+
+    /** {@link #buildAuxiliaryIndex} from a listing the caller already holds. */
+    private static java.util.Map<String, List<File>> auxIndexOf(File[] files, String[] auxPrefixes) {
+        java.util.Map<String, List<File>> index = new java.util.HashMap<>();
+        for (File f : files) {
+            String name = f.getName();
+            for (String aux : auxPrefixes) {
+                if (!name.startsWith(aux)) continue;
+                String owner = auxOwnerStem(name, aux);
+                if (owner != null) index.computeIfAbsent(owner, k -> new ArrayList<>()).add(f);
+                break;   // first matching aux prefix wins
+            }
+        }
+        return index;
+    }
+
+    /** Creates then removes an empty file named {@code name} in dir: 0 on success, else the errno. */
+    private int probeFolderEntry(File dir, String name) {
+        synchronized (folderProbeLock) {  // leaf lock: probes reuse fixed names
+            List<File> probe = java.util.Collections.singletonList(new File(dir, name));
+            deleteAllForRelief(probe);
+            int errno = 0;
+            try {
+                java.io.FileDescriptor fd = android.system.Os.open(probe.get(0).getAbsolutePath(),
+                    android.system.OsConstants.O_CREAT | android.system.OsConstants.O_EXCL
+                        | android.system.OsConstants.O_WRONLY, 0600);
+                try {
+                    android.system.Os.close(fd);
+                } catch (android.system.ErrnoException e) {
+                    errno = e.errno;
+                }
+            } catch (android.system.ErrnoException e) {
+                return e.errno;
+            }
+            // A probe that stays would hold the very room it found.
+            deleteAllForRelief(probe);
+            return probe.get(0).exists() ? android.system.OsConstants.EEXIST : errno;
+        }
+    }
+
+    /** 0 when FOLDER_HEADROOM_NAMES 5-entry names fit at once, else the errno that stopped it. */
+    private int folderHeadroomErrno(File dir) {
+        synchronized (folderProbeLock) {
+            List<File> probes = new ArrayList<>(FOLDER_HEADROOM_NAMES);
+            for (int i = 1; i <= FOLDER_HEADROOM_NAMES; i++) {
+                probes.add(new File(dir, folderProbeName(i, FOLDER_PROBE_ROOMY_LENGTH)));
+            }
+            // Earlier passes' leftovers, the .tmp-sized probe's too, hold the room being measured.
+            List<File> leftovers = new ArrayList<>(probes);
+            leftovers.add(new File(dir, FOLDER_PROBE_FIT));
+            deleteAllForRelief(leftovers);
+            for (File leftover : leftovers) {
+                if (leftover.exists()) return android.system.OsConstants.EEXIST;
+            }
+            int made = 0;
+            int errno = 0;
+            try {
+                for (File probe : probes) {
+                    java.io.FileDescriptor fd = android.system.Os.open(probe.getAbsolutePath(),
+                        android.system.OsConstants.O_CREAT | android.system.OsConstants.O_EXCL
+                            | android.system.OsConstants.O_WRONLY, 0600);
+                    made++;
+                    android.system.Os.close(fd);
+                }
+            } catch (android.system.ErrnoException e) {
+                errno = e.errno;
+            }
+            List<File> madeProbes = probes.subList(0, made);
+            deleteAllForRelief(madeProbes);
+            for (File probe : madeProbes) {
+                if (probe.exists()) return android.system.OsConstants.EEXIST;
+            }
+            return errno;
+        }
+    }
+
+    /** Filesystem backing an external volume root ("vfat", "exfat", ...) per /proc/mounts; "" if unknown. */
+    private static String volumeFsType(String root) {
+        String volumeName = new File(root).getName();
+        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/mounts"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split("\\s+");
+                if (parts.length < 3) continue;
+                String fs = parts[2];
+                // FUSE / sdcardfs / esdfs are views over the real mount.
+                if (fs.startsWith("fuse") || "sdcardfs".equals(fs) || "esdfs".equals(fs)) continue;
+                if (parts[1].equals(root)
+                        || (!volumeName.isEmpty() && parts[1].endsWith("/" + volumeName))) {
+                    return fs;
+                }
+            }
+        } catch (Throwable ignored) {
+            // Unknown filesystem: relief stays off.
+        }
+        return "";
+    }
+
+    /**
+     * Bounded create + 64 KB write + fsync + delete in dir. One test per volume:
+     * concurrent callers share it, and a test still stuck past the timeout fails.
+     * FULL = failed on a card with under WRITE_FAULT_MIN_FREE_BYTES free (ENOSPC);
+     * UNKNOWN = caller interrupted, or the test thread couldn't start.
+     */
+    private int writeTest(StorageType type, File dir) {
+        int i = type == StorageType.USB ? 1 : 0;
+        WriteTest test = writeTests.get(i);
+        if (test == null || test.done.getCount() == 0) {
+            WriteTest fresh = new WriteTest();
+            String root = type == StorageType.USB ? usbPath : sdCardPath;
+            Thread t;
+            try {
+                t = new Thread(() -> runWriteTest(fresh, dir, root), "WriteFaultTest");
+                t.setDaemon(true);
+            } catch (Throwable e) {
+                return WRITE_TEST_UNKNOWN;
+            }
+            if (writeTests.compareAndSet(i, test, fresh)) {
+                try {
+                    t.start();
+                } catch (Throwable e) {
+                    fresh.done.countDown();  // never ran; sharers read UNKNOWN
+                    return WRITE_TEST_UNKNOWN;
+                }
+            }
+            test = writeTests.get(i);
+            if (test == null) return WRITE_TEST_UNKNOWN;
+        }
+        try {
+            if (!test.done.await(WRITE_TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                return WRITE_TEST_FAIL;  // stuck in the kernel: the card is not taking writes
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return WRITE_TEST_UNKNOWN;
+        }
+        if (!test.ran) return WRITE_TEST_UNKNOWN;
+        if (test.ok) return WRITE_TEST_PASS;
+        long free = test.freeBytesOnFail;
+        return free >= 0 && free < WRITE_FAULT_MIN_FREE_BYTES ? WRITE_TEST_FULL : WRITE_TEST_FAIL;
+    }
+
+    private static void runWriteTest(WriteTest test, File dir, String volumeRoot) {
+        test.ran = true;
+        File probe = new File(dir, ".od_write_test");
+        try {
+            if (!dir.isDirectory()) dir.mkdirs();
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(probe)) {
+                out.write(new byte[64 * 1024]);
+                out.getFD().sync();
+            }
+            test.ok = true;
+        } catch (Throwable ignored) {
+            try {
+                // The volume root: dir itself may not exist on a card too full to mkdir.
+                test.freeBytesOnFail = new StatFs(
+                        volumeRoot != null ? volumeRoot : dir.getAbsolutePath()).getAvailableBytes();
+            } catch (Throwable alsoIgnored) {
+                // unknown: not treated as full
+            }
+        } finally {
+            try { probe.delete(); } catch (Throwable ignored) {}
+            test.done.countDown();
+        }
+    }
+
+    /** Re-test latched volumes off-thread, backing off 1 → 10 min. */
+    private void maybeRetestWriteFaults() {
+        WriteFault sd = sdWriteFault, usb = usbWriteFault;
+        if (sd == null && usb == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        boolean due = (sd != null && now >= sd.retestAtMs) || (usb != null && now >= usb.retestAtMs);
+        if (!due || !writeFaultRetestInFlight.compareAndSet(false, true)) return;
+        try {
+            Thread t = new Thread(() -> {
+                try {
+                    retestWriteFault(StorageType.SD_CARD);
+                    retestWriteFault(StorageType.USB);
+                } catch (Throwable e) {
+                    logWarn("Write-fault re-test failed: " + e.getMessage());
+                } finally {
+                    writeFaultRetestInFlight.set(false);
+                }
+            }, "WriteFaultRetest");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable e) {
+            writeFaultRetestInFlight.set(false);  // the next kick tries again
+        }
+    }
+
+    private void retestWriteFault(StorageType type) {
+        WriteFault f = writeFaultFor(type);
+        if (f == null || android.os.SystemClock.elapsedRealtime() < f.retestAtMs) return;
+        String card = type == StorageType.SD_CARD ? "SD card" : "USB drive";
+        if (!isWriteFaulted(type)) {
+            clearWriteFault(type, f, card + " path changed", false);
+            return;
+        }
+        int result = writeTest(type, f.testDir);
+        if (result == WRITE_TEST_PASS || result == WRITE_TEST_FULL) {
+            // FULL: no longer faulty, just full — the ENOSPC fallback and the reaper take over.
+            String why = result == WRITE_TEST_PASS ? card + " accepts writes again"
+                    : card + " is full rather than faulty";
+            if (clearWriteFault(type, f, why, true)) {
+                // Move a drive recording that fell back to internal back onto the card.
+                maybeMigrateActiveRecordingToExternal(type, "write-fault-cleared");
+                if (surveillanceStorageType == type) {
+                    maybeMoveSurveillanceToExternal("write-fault-cleared",
+                            SURV_MOVE_STABLE_MS + RECORDING_MIGRATION_SETTLE_MS,
+                            RECORDING_MIGRATION_RETRY_WINDOW_MS);
+                }
+            }
+            return;
+        }
+        boolean alert = false;
+        long delayMs;
+        synchronized (writeFaultLock) {
+            if (writeFaultFor(type) != f) return;
+            long now = android.os.SystemClock.elapsedRealtime();
+            long onlineAt = type == StorageType.SD_CARD ? sdOnlineAtMs : usbOnlineAtMs;
+            if (result == WRITE_TEST_UNKNOWN
+                    || (onlineAt > 0 && now - onlineAt < WRITE_FAULT_MOUNT_SETTLE_MS)) {
+                // Inconclusive, or just (re)mounted: check again soon, no backoff, no alert.
+                delayMs = WRITE_FAULT_SETTLE_PERSIST_MS;
+            } else {
+                f.retestDelayMs = Math.min(f.retestDelayMs * 2, WRITE_FAULT_RETEST_MAX_MS);
+                delayMs = f.retestDelayMs;
+                alert = !f.confirmed;
+                f.confirmed = true;
+            }
+            f.retestAtMs = now + delayMs;
+        }
+        logWarn(card + " still refuses writes (" + f.testDir + "); next re-test in "
+            + delayMs / 1000 + " s");
+        // Alert only once a re-test confirms it, so a one-off glitch stays silent.
+        if (alert) notifyWriteFault(type, f);
+    }
+
+    /** Clears type's latch iff it is still {@code f}; a passed re-test arms flap detection. */
+    private boolean clearWriteFault(StorageType type, WriteFault f, String why, boolean passedRetest) {
+        synchronized (writeFaultLock) {
+            if (writeFaultFor(type) != f) return false;
+            if (type == StorageType.SD_CARD) sdWriteFault = null; else usbWriteFault = null;
+            int i = type == StorageType.USB ? 1 : 0;
+            writeFaultClearedAtMs[i] = passedRetest ? android.os.SystemClock.elapsedRealtime() : 0;
+            writeFaultClearedDelayMs[i] = f.retestDelayMs;
+        }
+        logInfo("Write fault cleared (" + why + "): " + f.testDir);
+        markStorageDirty();  // idle gate: the pools rescope back to the card
+        return true;
+    }
+
+    /** A (re)mount: stamp the settle window and re-test a latched volume right away. */
+    private void onVolumeOnlineForWriteFault(StorageType type) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (type == StorageType.SD_CARD) sdOnlineAtMs = now; else usbOnlineAtMs = now;
+        synchronized (writeFaultLock) {
+            WriteFault f = writeFaultFor(type);
+            if (f == null) return;
+            f.retestAtMs = now;
+        }
+        maybeRetestWriteFaults();
+    }
+
+    private void notifyWriteFault(StorageType type, WriteFault f) {
+        int i = type == StorageType.USB ? 1 : 0;
+        long now = android.os.SystemClock.elapsedRealtime();
+        synchronized (writeFaultLock) {
+            if (writeFaultNotifiedAtMs[i] != 0
+                    && now - writeFaultNotifiedAtMs[i] < WRITE_FAULT_NOTIFY_GAP_MS) {
+                return;  // this card was already reported within the hour
+            }
+            writeFaultNotifiedAtMs[i] = now;
+        }
+        boolean sd = type == StorageType.SD_CARD;
+        String card = sd ? "SD card" : "USB drive";
+        try {
+            JSONObject data = new JSONObject()
+                .put("volume", type.name())
+                .put("path", f.testDir.getAbsolutePath())
+                .put("internalFreeBytes", getInternalFreeSpace());
+            com.overdrive.app.notifications.NotificationBus.get().publish(
+                new com.overdrive.app.notifications.NotificationEvent(
+                    "storage.write.error",
+                    com.overdrive.app.notifications.NotificationEvent.Severity.WARN,
+                    card + " error",
+                    "The " + card + " is refusing to save files (it may be failing or corrupted). "
+                        + "New recordings and trips meant for it are being saved to internal "
+                        + "storage until it works again — check or replace it.",
+                    "storage-write-fault-" + (sd ? "sd" : "usb"),
+                    "/storage.html",
+                    data));
+        } catch (Throwable t) {
+            logDebug("Write-fault notification failed: " + t.getMessage());
         }
     }
 
@@ -3945,6 +5822,22 @@ public class StorageManager {
         }
     }
 
+    /**
+     * {@link #getLiveSurveillanceDir()}, but internal when its SD/USB fails the cheap liveness
+     * probe right now: the availability flag lags a card that just dropped by up to two watchdog ticks.
+     */
+    public File getLiveSurveillanceDirIfMounted() {
+        File live = getLiveSurveillanceDir();
+        StorageType volume = externalVolumeOf(live);
+        if (volume == null) return live;
+        String root = (volume == StorageType.SD_CARD) ? sdCardPath : usbPath;
+        if (root != null && isPathLikelyMounted(root)) return live;
+        File internal = internalSurveillanceDir;
+        logWarn("Surveillance restart: " + volume + " at " + root + " is not reachable — using "
+            + (internal != null ? internal.getAbsolutePath() : "the live dir"));
+        return (internal != null) ? internal : live;
+    }
+
     public File getProximityDir() {
         return proximityDir;
     }
@@ -4045,7 +5938,7 @@ public class StorageManager {
     }
     
     /** Marker file that stores the epoch millis of the last successful broadcast scan. */
-    private static final String BROADCAST_MARKER_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_last_mediascan");
+    private static final String BROADCAST_MARKER_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_last_mediascan");
     
     /** Throttle delay between individual file broadcasts (ms). */
     private static final long BROADCAST_THROTTLE_MS = 50;
@@ -4225,14 +6118,20 @@ public class StorageManager {
                 && recordingsStorageType != StorageType.INTERNAL) {
             return StorageType.INTERNAL;
         }
+        // Same for a card latched as refusing writes (isWriteFaulted is never true for INTERNAL).
+        if (isWriteFaulted(recordingsStorageType)) return StorageType.INTERNAL;
         return normalizeStorageType(recordingsStorageType);
     }
 
     public StorageType getActiveSurveillanceStorageType() {
+        // Clips redirected off a card that refuses writes: INTERNAL, so the reaper scopes
+        // to internal + its clamped limit instead of reaping it against the SD limit.
+        if (isWriteFaulted(surveillanceStorageType)) return StorageType.INTERNAL;
         return normalizeStorageType(surveillanceStorageType);
     }
 
     public StorageType getActiveTripsStorageType() {
+        if (isWriteFaulted(tripsStorageType)) return StorageType.INTERNAL;
         return normalizeStorageType(tripsStorageType);
     }
 
@@ -4963,7 +6862,6 @@ public class StorageManager {
             }
             if (files == null) continue;
             for (File f : files) {
-                if (!f.isFile()) continue;
                 String name = f.getName();
                 if (namePrefix != null
                         && !nameMatchesCategoryPrefix(name, namePrefix, auxPrefixes)) continue;
@@ -4982,11 +6880,29 @@ public class StorageManager {
                     }
                 }
                 if (!isPrimary && !isSidecar && !isPartial) continue;
+                long length = regularFileLength(f);
+                if (length < 0) continue;
                 if (!seen.add(name)) continue;
-                size += f.length();
+                size += length;
             }
         }
         return size;
+    }
+
+    /**
+     * {@code st_size} of a regular file, or -1 when {@code f} is not one — a single
+     * stat with the same follow-symlink semantics as {@code isFile()} + {@code length()}.
+     */
+    static long regularFileLength(File f) {
+        try {
+            java.nio.file.attribute.BasicFileAttributes attrs = java.nio.file.Files.readAttributes(
+                    f.toPath(), java.nio.file.attribute.BasicFileAttributes.class);
+            return attrs.isRegularFile() ? attrs.size() : -1L;
+        } catch (java.io.IOException notAFile) {
+            return -1L;
+        } catch (RuntimeException unparseablePath) {
+            return f.isFile() ? f.length() : -1L;
+        }
     }
     
     /**
@@ -5091,6 +7007,30 @@ public class StorageManager {
         updateActiveDirectories();
         reclampLimitsToMountedCeilings();
         logInfo("Volume refresh complete. SD=" + sdCardAvailable + ", USB=" + usbAvailable);
+    }
+
+    private final java.util.concurrent.atomic.AtomicBoolean asyncRefreshInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * {@link #refreshSdCard()} on a background thread, at most one at a time. For read
+     * paths (settings GETs): the refresh can wait on mountLock for a whole remount
+     * cascade, so the response uses the current snapshot and the next poll sees the
+     * result.
+     */
+    public void refreshSdCardAsync() {
+        if (!asyncRefreshInFlight.compareAndSet(false, true)) return;
+        Thread t = new Thread(() -> {
+            try {
+                refreshSdCard();
+            } catch (Throwable th) {
+                logWarn("Async volume refresh failed: " + th.getMessage());
+            } finally {
+                asyncRefreshInFlight.set(false);
+            }
+        }, "VolumeRefreshAsync");
+        t.setDaemon(true);
+        t.start();
     }
 
     /**
@@ -5392,7 +7332,9 @@ public class StorageManager {
         switch (category) {
             case "recordings":   return getActiveRecordingsStorageType();   // ENOSPC-aware (mounted-but-full → INTERNAL)
             case "surveillance": return getActiveSurveillanceStorageType();
-            case "proximity":    return normalizeStorageType(recordingsStorageType);  // proximity follows recordings (ACC-ON) volume; plain mount-based (no ENOSPC redirect of its own)
+            case "proximity":    return isWriteFaulted(recordingsStorageType)
+                                        ? StorageType.INTERNAL  // follows the write-fault redirect, not ENOSPC
+                                        : normalizeStorageType(recordingsStorageType);  // proximity follows recordings (ACC-ON) volume; plain mount-based (no ENOSPC redirect of its own)
             case "trips":        return getActiveTripsStorageType();
             default:             return StorageType.INTERNAL;
         }
@@ -5443,18 +7385,98 @@ public class StorageManager {
      *  fallback branch must use the raw {@link #getDirectoriesTotalSize} walk because
      *  the cached whole-pool sums span all volumes and wouldn't match internal-only. */
     private long scopedSizeForCategory(String category) {
+        java.util.concurrent.atomic.AtomicLong changeSeq = poolChangeSeq.get(category);
+        if (changeSeq == null) return measureScopedSize(category);
+        // Signals and scope are sampled BEFORE the walk, so a change that lands
+        // mid-walk always forces the next call to measure again.
+        long seqAtStart = changeSeq.get();
+        String scope = enforcementScope(category);
+        long now = statClockMs();
+        synchronized (enforcementSizes) {
+            EnforcementSize memo = enforcementSizes.get(category);
+            if (memo != null && memo.seq == seqAtStart && memo.scope.equals(scope)
+                    && now - memo.atMs >= 0 && now - memo.atMs < ENFORCEMENT_SIZE_MAX_AGE_MS) {
+                return memo.bytes;
+            }
+        }
+        long bytes = measureScopedSize(category);
+        synchronized (enforcementSizes) {
+            enforcementSizes.put(category, new EnforcementSize(bytes, seqAtStart, scope, now));
+        }
+        return bytes;
+    }
+
+    // Gate-only memo: ensureSpace always re-measures before it deletes anything.
+    private static final long ENFORCEMENT_SIZE_MAX_AGE_MS = 5 * 60_000L;
+    private static final String[] MEASURED_POOLS = {"recordings", "surveillance", "proximity"};
+    private final java.util.Map<String, java.util.concurrent.atomic.AtomicLong> poolChangeSeq = newPoolChangeSeq();
+    private final java.util.Map<String, EnforcementSize> enforcementSizes = new java.util.HashMap<>();
+
+    private static java.util.Map<String, java.util.concurrent.atomic.AtomicLong> newPoolChangeSeq() {
+        java.util.Map<String, java.util.concurrent.atomic.AtomicLong> m = new java.util.HashMap<>();
+        for (String pool : MEASURED_POOLS) m.put(pool, new java.util.concurrent.atomic.AtomicLong());
+        return m;
+    }
+
+    private static final class EnforcementSize {
+        final long bytes;
+        final long seq;
+        final String scope;
+        final long atMs;
+
+        EnforcementSize(long bytes, long seq, String scope, long atMs) {
+            this.bytes = bytes;
+            this.seq = seq;
+            this.scope = scope;
+            this.atMs = atMs;
+        }
+    }
+
+    /** What the measurement depends on besides file contents: fallback scoping, dirs, mounts. */
+    private String enforcementScope(String category) {
+        StringBuilder sb = new StringBuilder(isFallbackActiveForCategory(category) ? "fallback" : "normal");
+        for (File dir : getReapableDirs(category)) {
+            if (dir == null) continue;
+            sb.append('|').append(dir.getAbsolutePath()).append(dir.isDirectory() ? "+" : "-");
+        }
+        return sb.toString();
+    }
+
+    /** {@code category} changed on disk; recordings and proximity share dirs, so they move together. */
+    private void bumpPool(String category) {
+        if (category == null || "recordings".equals(category) || "proximity".equals(category)) {
+            if (category == null) {
+                for (java.util.concurrent.atomic.AtomicLong seq : poolChangeSeq.values()) seq.incrementAndGet();
+                return;
+            }
+            poolChangeSeq.get("recordings").incrementAndGet();
+            poolChangeSeq.get("proximity").incrementAndGet();
+            return;
+        }
+        java.util.concurrent.atomic.AtomicLong seq = poolChangeSeq.get(category);
+        if (seq != null) seq.incrementAndGet();
+    }
+
+    /** A file named {@code fileName} changed: bump every pool whose name gate counts it (null = all). */
+    private void bumpPoolsForName(String fileName) {
+        if (fileName == null) {
+            bumpPool(null);
+            return;
+        }
+        for (String pool : MEASURED_POOLS) {
+            if (nameMatchesCategoryPrefix(fileName, namePrefixForCategory(pool),
+                    auxiliaryPrefixesForCategory(pool))) {
+                poolChangeSeq.get(pool).incrementAndGet();
+            }
+        }
+    }
+
+    private long measureScopedSize(String category) {
         if (isFallbackActiveForCategory(category)) {
             return getDirectoriesTotalSize(category,
                 internalScopedDirs(getReapableDirs(category)), namePrefixForCategory(category));
         }
-        // UNCACHED on purpose: this feeds the reaper / limit enforcement, which
-        // must see the filesystem as it is right now. The public
-        // getRecordingsSize()/getSurveillanceSize()/getProximitySize() getters
-        // carry a short TTL cache for the UI reporting path; routing the reaper
-        // through those would let it delete against a stale measurement (over-
-        // reaping just-freed space, or under-reaping and overflowing to ENOSPC).
-        // trips keeps getTripsSize() because that path is DB-backed (an exact
-        // SUM over rows the reaper itself maintains), not a stale FS snapshot.
+        // trips keeps getTripsSize(): DB-backed, exact, and maintained by the reaper.
         switch (category) {
             case "recordings":   return getRecordingsSizeUncached();
             case "surveillance": return getSurveillanceSizeUncached();
@@ -6293,7 +8315,6 @@ public class StorageManager {
             }
             if (files == null) continue;
             for (File f : files) {
-                if (!f.isFile()) continue;
                 String name = f.getName();
                 if (namePrefix != null
                         && !nameMatchesCategoryPrefix(name, namePrefix, auxPrefixes)) continue;
@@ -6312,8 +8333,10 @@ public class StorageManager {
                     }
                 }
                 if (!isPrimary && !isSidecar && !isPartial) continue;
+                long length = regularFileLength(f);
+                if (length < 0) continue;
                 if (!seen.add(name)) continue;
-                size += f.length();
+                size += length;
                 // STRICT prefix gate for the count — see the javadoc. The gate
                 // above is aux-inclusive (needed for byte parity with the
                 // reaper); getFileCountAcross used a bare startsWith, so
@@ -6371,6 +8394,7 @@ public class StorageManager {
      * the reported figure — never reap enforcement, which reads uncached.
      */
     public void invalidateCategorySizeCache(String category) {
+        bumpPool(category);
         synchronized (categoryStatCacheLock) {
             statInvalidationSeq++;   // makes any in-flight walk publish as stale
             if (category == null) {
@@ -6381,6 +8405,24 @@ public class StorageManager {
                 markStale(cachedCategoryCount.get(category));
             }
         }
+    }
+
+    /** {@link #invalidateCategorySizeCache} for just the pools that count {@code changed}; null = all. */
+    public void invalidateSizeCacheFor(File changed) {
+        if (changed == null) {
+            invalidateCategorySizeCache(null);
+            return;
+        }
+        String name = changed.getName();
+        boolean matched = false;
+        for (String pool : MEASURED_POOLS) {
+            if (nameMatchesCategoryPrefix(name, namePrefixForCategory(pool),
+                    auxiliaryPrefixesForCategory(pool))) {
+                invalidateCategorySizeCache(pool);
+                matched = true;
+            }
+        }
+        if (!matched) invalidateCategorySizeCache(null);
     }
 
     /** Bumped by every invalidation; sampled by {@link #refreshCategoryStats}
@@ -6649,6 +8691,10 @@ public class StorageManager {
      * drain finished before the deadline AND the child exited 0.
      */
     private DirListing listFilesViaShellChecked(File dir) {
+        return listFilesViaShellChecked(dir, 4_000L);
+    }
+
+    private DirListing listFilesViaShellChecked(File dir, long drainTimeoutMs) {
         Process p = null;
         try {
             p = Runtime.getRuntime().exec(new String[]{"ls", dir.getAbsolutePath()});
@@ -6682,10 +8728,11 @@ public class StorageManager {
             }, "listFilesViaShell-drain");
             drain.setDaemon(true);
             drain.start();
-            drain.join(4_000);
+            drain.join(drainTimeoutMs);
             boolean complete = false;
             if (drain.isAlive()) {
-                logWarn("listFilesViaShell(" + dir.getName() + "): `ls` drain exceeded 4s"
+                logWarn("listFilesViaShell(" + dir.getName() + "): `ls` drain exceeded "
+                    + (drainTimeoutMs / 1000) + "s"
                     + " — killing child and returning partial list (" + files.size() + " so far)");
                 p.destroyForcibly();
                 // Give the kernel a moment to close the stream so the drain
@@ -7392,14 +9439,15 @@ public class StorageManager {
     private boolean isTelemetryVolumeAvailable(String telemetryPath) {
         if (telemetryPath == null || telemetryPath.isEmpty()) return false;
 
-        // Known removable roots, while mounted: gate on the live probe.
+        // Known removable roots, while mounted: gate on the live probe. A card latched
+        // as refusing writes fails stat with EIO, so its files only LOOK missing.
         String sd = sdCardPath;
         if (sd != null && !sd.isEmpty() && telemetryPath.startsWith(sd)) {
-            return isSdCardLikelyMounted();
+            return !isWriteFaulted(StorageType.SD_CARD) && isSdCardLikelyMounted();
         }
         String usb = usbPath;
         if (usb != null && !usb.isEmpty() && telemetryPath.startsWith(usb)) {
-            return isUsbLikelyMounted();
+            return !isWriteFaulted(StorageType.USB) && isUsbLikelyMounted();
         }
 
         // Provably-internal roots are always available. Only these return true.
@@ -7444,6 +9492,14 @@ public class StorageManager {
             case "trips":        return ".jsonl.gz";
             default:             return ".mp4";
         }
+    }
+
+    /** A partial the orphan sweep removes; in surveillance also a clip left under a one-entry hop name. */
+    private static boolean isSweptPartial(String category, String name, String[] partials) {
+        for (String ext : partials) {
+            if (name.endsWith(ext)) return true;
+        }
+        return "surveillance".equals(category) && isShortHopName(name);
     }
 
     /**
@@ -7669,6 +9725,8 @@ public class StorageManager {
         List<File> allFiles = new ArrayList<>();
         Set<String> seenNames = new HashSet<>();
         long currentSize = 0;
+        // Aux indexes built below are reused by the delete loop.
+        final AuxPass auxPass = new AuxPass();
         for (File dir : dirs) {
             if (dir == null || !dir.exists() || !dir.isDirectory()) continue;
             File[] files = dir.listFiles((d, name) -> name.endsWith(primaryExt));
@@ -7687,14 +9745,11 @@ public class StorageManager {
             // Only built when the category actually has aux prefixes
             // ("recordings" -> dvr_/replay_, "surveillance" -> thumb_); null
             // otherwise so no listing cost is added for categories without them.
-            // Deliberately reuses the same matching rule as
-            // findAuxiliarySiblings ("<auxPrefix><stem>_" prefix) so the byte
-            // accounting is identical to before — see the assertion in that
-            // method's contract.
+            // Same ownership rule as findAuxiliarySiblings.
             java.util.Map<String, List<File>> auxIndex =
                     (auxPrefixes.length > 0) ? buildAuxiliaryIndex(dir, auxPrefixes) : null;
+            if (auxIndex != null) auxPass.indexByDir.put(auxPass.key(category, dir), auxIndex);
             for (File f : files) {
-                if (!f.isFile()) continue;
                 String name = f.getName();
                 // Anchor gate. Use nameMatchesCategoryPrefix (primary OR auxiliary
                 // prefix), NOT a bare startsWith(namePrefix), so STANDALONE
@@ -7714,19 +9769,22 @@ public class StorageManager {
                 // keeps the reaper consistent with the size measurement.
                 if (namePrefix != null
                         && !nameMatchesCategoryPrefix(name, namePrefix, auxPrefixes)) continue;
+                long anchorLength = regularFileLength(f);
+                if (anchorLength < 0) continue;
                 if (!seenNames.add(name)) continue;
                 allFiles.add(f);
-                currentSize += f.length();
+                currentSize += anchorLength;
                 // Add sidecar bytes to the running total so we measure the
                 // same on-disk footprint we'd actually free by deleting the
                 // anchor + its sidecars below. Two sidecar shapes:
                 //   - same-stem siblings: <stem><sidecarExt>  (json/srt/jpg)
-                //   - aux-prefix siblings: <auxPrefix><stem>_*  (per-actor thumbs)
+                //   - aux-prefix siblings: <auxPrefix><stem>_a<id>*  (per-actor thumbs)
                 if (sidecarExts.length > 0 || auxPrefixes.length > 0) {
                     String stem = stemForName(name, primaryExt);
                     for (String ext : sidecarExts) {
                         File sidecar = new File(f.getParentFile(), stem + ext);
-                        if (sidecar.isFile()) currentSize += sidecar.length();
+                        long sidecarLength = regularFileLength(sidecar);
+                        if (sidecarLength >= 0) currentSize += sidecarLength;
                     }
                     if (auxPrefixes.length > 0) {
                         // Index lookup instead of a per-anchor directory listing.
@@ -7773,13 +9831,21 @@ public class StorageManager {
         // proximity clips are event evidence rather than routine loop footage, so they
         // sort AFTER every cam_/dvr_/replay_ anchor and are only reached once the loop
         // footage is exhausted. Oldest-first within each tier.
-        Comparator<File> reapOrder = Comparator.comparingLong(File::lastModified);
+        // Sort keys are read once per file, never inside the comparator.
+        final java.util.Map<File, Long> mtimeOf = new java.util.HashMap<>(allFiles.size() * 2);
+        for (File f : allFiles) mtimeOf.put(f, f.lastModified());
+        Comparator<File> reapOrder = Comparator.comparingLong(f -> mtimeOf.get(f));
         if ("recordings".equals(category)) {
             reapOrder = Comparator.<File>comparingInt(
                     f -> f.getName().startsWith("proximity_") ? 1 : 0)
-                .thenComparingLong(File::lastModified);
+                .thenComparingLong(f -> mtimeOf.get(f));
         }
         Collections.sort(allFiles, reapOrder);
+
+        // SafeKeep keeps locks, then fresh upload pins, each bounded by a share of this pass's target
+        // so it still converges. Empty (and free) when SafeKeep is off.
+        final java.util.Set<String> safeKeepRetained =
+                com.overdrive.app.safekeep.SafeKeep.retainedAmong(allFiles, targetSize);
 
         int deletedCount = 0;
         long deletedSize = 0;
@@ -7813,6 +9879,10 @@ public class StorageManager {
             if (protectedTripPath != null
                     && protectedTripPath.equals(file.getAbsolutePath())) {
                 logDebug("Skipping in-flight trip file: " + file.getName());
+                continue;
+            }
+
+            if (!safeKeepRetained.isEmpty() && safeKeepRetained.contains(file.getAbsolutePath())) {
                 continue;
             }
 
@@ -7882,12 +9952,11 @@ public class StorageManager {
                     }
                 }
 
-                // Aux-prefix siblings (per-actor thumbs `thumb_event_<base>_a*`).
-                // These don't share a stem suffix with the anchor — they share
-                // a prefix construction (auxPrefix + anchorStem + "_…").
+                // Aux-prefix siblings (per-actor thumbs `thumb_<stem>_a<id>*`).
                 if (auxPrefixes.length > 0) {
                     String stem = stemForName(file.getName(), primaryExt);
-                    for (File aux : findAuxiliarySiblings(file.getParentFile(), auxPrefixes, stem)) {
+                    for (File aux : auxSiblingsForPass(auxPass, category, file.getParentFile(),
+                            auxPrefixes, stem)) {
                         long auxSize = aux.length();
                         boolean auxDeleted = aux.delete();
                         if (!auxDeleted) auxDeleted = deleteFileViaShell(aux);
@@ -7962,7 +10031,6 @@ public class StorageManager {
                 if (files == null) files = listFilesViaShell(dir);
                 if (files == null) continue;
                 for (File f : files) {
-                    if (!f.isFile()) continue;
                     String name = f.getName();
                     // Sidecar candidates may match the primary prefix
                     // (event_xxx.json) OR an aux prefix (thumb_event_xxx_a17.jpg);
@@ -8016,7 +10084,8 @@ public class StorageManager {
                     if (stem == null) continue;
                     if (!seenSidecarPaths.add(f.getAbsolutePath())) continue;
                     if (liveStems.contains(stem)) continue;  // anchor still around
-                    long sz = f.length();
+                    long sz = regularFileLength(f);
+                    if (sz < 0) continue;
                     boolean ok = f.delete();
                     if (!ok) ok = deleteFileViaShell(f);
                     if (ok) {
@@ -8091,41 +10160,15 @@ public class StorageManager {
     }
 
     /**
-     * Find every aux-prefix sibling of an anchor stem within a directory.
-     * For surveillance, an anchor {@code event_<base>.mp4} in {@code dir}
-     * has aux siblings matching {@code thumb_event_<base>_*} — per-actor
-     * thumbnails written by {@code SurveillanceEngineGpu.dispatchSegmentMetadata}.
-     *
-     * <p>Returns an empty list when {@code auxPrefixes} is empty, the dir
-     * doesn't exist, or no matches are found.
+     * Owner stem of a per-actor file {@code <aux><stem>_a<id>[_<rel>].<ext>}, or null.
+     * Same parse as the orphan pass, so accounting, deletion and orphan reaping agree.
      */
-    /**
-     * Build a stem -> aux-sibling index for one directory in a SINGLE listing,
-     * so callers that need aux bytes for many anchors don't re-list the dir per
-     * anchor (the O(N^2) the size/reap walk used to pay).
-     *
-     * <p>Produces exactly the same grouping {@link #findAuxiliarySiblings} would
-     * return for each stem. That method's rule is
-     * {@code name.startsWith(auxPrefix + stem + "_")}; inverted, a file named
-     * {@code <auxPrefix><stem>_<rest>} contributes to key {@code <stem>}. We
-     * recover the stem by stripping the matched aux prefix and then cutting at
-     * the LAST {@code '_'}-delimited boundary that still leaves a non-empty
-     * stem — but because a stem may itself contain underscores
-     * (e.g. {@code event_20260106_184835}), we cannot simply cut at the first
-     * one. Instead we register the file under EVERY candidate stem prefix, so a
-     * lookup for the real anchor stem always hits. Extra keys are harmless:
-     * they can only be matched by an anchor whose stem is literally that
-     * prefix, which is the same file findAuxiliarySiblings would have matched.
-     *
-     * <p>Uses the SAME listing sequence as {@link #findAuxiliarySiblings}
-     * ({@code dir.listFiles()}, then the shell-ls fallback), so on a flaky
-     * FUSE-bridged volume this degrades exactly the way the per-anchor walk did:
-     * {@code listFilesViaShell} returns an empty array (never null) when the
-     * child fails or times out, which yields an empty index — the same
-     * "no aux siblings found" answer the old code produced for every anchor in
-     * that directory. Never returns null, so callers do not need a null branch;
-     * the caller keeps one only as belt-and-braces.
-     */
+    private static String auxOwnerStem(String name, String aux) {
+        int marker = lastIndexOfActorMarker(name, aux.length());
+        return marker > aux.length() ? name.substring(aux.length(), marker) : null;
+    }
+
+    /** Owner stem -> per-actor files for one directory, from a single listing. Never null. */
     private java.util.Map<String, List<File>> buildAuxiliaryIndex(File dir, String[] auxPrefixes) {
         if (dir == null || auxPrefixes == null || auxPrefixes.length == 0
                 || !dir.isDirectory()) {
@@ -8137,30 +10180,43 @@ public class StorageManager {
 
         java.util.Map<String, List<File>> index = new java.util.HashMap<>();
         for (File f : files) {
-            if (!f.isFile()) continue;
             String name = f.getName();
             for (String aux : auxPrefixes) {
                 if (!name.startsWith(aux)) continue;
-                String rest = name.substring(aux.length());
-                // rest == "<stem>_<suffix…>". Register under every prefix of
-                // `rest` that ends at an '_' boundary, mirroring the
-                // startsWith(aux + stem + "_") test for all possible stems.
-                for (int i = rest.indexOf('_'); i >= 0; i = rest.indexOf('_', i + 1)) {
-                    if (i == 0) continue;               // empty stem — cannot match
-                    String stem = rest.substring(0, i);
-                    List<File> hits = index.get(stem);
-                    if (hits == null) {
-                        hits = new ArrayList<>();
-                        index.put(stem, hits);
-                    }
-                    hits.add(f);
+                String owner = auxOwnerStem(name, aux);
+                if (owner != null && f.isFile()) {
+                    index.computeIfAbsent(owner, k -> new ArrayList<>()).add(f);
                 }
-                break;   // first matching aux prefix wins, as in findAuxiliarySiblings
+                break;   // first matching aux prefix wins
             }
         }
         return index;
     }
 
+    /** One reap pass's aux lookups: an index per category+directory, built once. */
+    private static final class AuxPass {
+        final java.util.Map<String, java.util.Map<String, List<File>>> indexByDir = new java.util.HashMap<>();
+
+        String key(String category, File dir) {
+            return category + "|" + dir.getAbsolutePath();
+        }
+    }
+
+    /** {@link #findAuxiliarySiblings} without re-listing {@code dir} for every anchor in the pass. */
+    private List<File> auxSiblingsForPass(AuxPass pass, String category, File dir,
+                                          String[] auxPrefixes, String stem) {
+        if (pass == null || dir == null) return findAuxiliarySiblings(dir, auxPrefixes, stem);
+        String key = pass.key(category, dir);
+        java.util.Map<String, List<File>> index = pass.indexByDir.get(key);
+        if (index == null) {
+            index = buildAuxiliaryIndex(dir, auxPrefixes);
+            pass.indexByDir.put(key, index);
+        }
+        List<File> hits = index.get(stem);
+        return hits != null ? hits : Collections.emptyList();
+    }
+
+    /** Per-actor files owned by exactly {@code stem}, never a {@code <stem>_N} segment's. */
     private List<File> findAuxiliarySiblings(File dir, String[] auxPrefixes, String stem) {
         if (dir == null || auxPrefixes == null || auxPrefixes.length == 0
                 || !dir.isDirectory()) {
@@ -8171,16 +10227,11 @@ public class StorageManager {
         if (files == null) files = listFilesViaShell(dir);
         if (files == null) return hits;
         for (File f : files) {
-            if (!f.isFile()) continue;
             String name = f.getName();
             for (String aux : auxPrefixes) {
-                // Match `<aux><stem>_…` so we don't accidentally swallow
-                // an unrelated stem that happens to share a prefix.
-                String wanted = aux + stem + "_";
-                if (name.startsWith(wanted)) {
-                    hits.add(f);
-                    break;
-                }
+                if (!name.startsWith(aux)) continue;
+                if (stem.equals(auxOwnerStem(name, aux)) && f.isFile()) hits.add(f);
+                break;   // first matching aux prefix wins
             }
         }
         return hits;
@@ -8277,7 +10328,7 @@ public class StorageManager {
      * IMPORTANT: Runs async to avoid blocking the video encoding thread.
      */
     public void onRecordingFileSaved() {
-        markStorageDirty();  // idle gate: a new clip can put the pool over cap
+        markStorageDirtyForPool("recordings");  // idle gate: a new clip can put the pool over cap
         // Fix directory permissions in case they were reset
         fixDirectoryPermissions(recordingsDir);
 
@@ -8332,7 +10383,7 @@ public class StorageManager {
      * IMPORTANT: Runs async to avoid blocking the video encoding thread.
      */
     public void onSurveillanceFileSaved() {
-        markStorageDirty();  // idle gate: a new clip can put the pool over cap
+        markStorageDirtyForPool("surveillance");  // idle gate: a new clip can put the pool over cap
         // Fix directory permissions in case they were reset
         fixDirectoryPermissions(surveillanceDir);
 
@@ -8383,7 +10434,7 @@ public class StorageManager {
      * IMPORTANT: Runs async to avoid blocking the video encoding thread.
      */
     public void onProximityFileSaved() {
-        markStorageDirty();  // idle gate: a new clip can put the pool over cap
+        markStorageDirtyForPool("proximity");  // idle gate: a new clip can put the pool over cap
         // Fix directory permissions in case they were reset
         fixDirectoryPermissions(proximityDir);
 
@@ -8432,7 +10483,7 @@ public class StorageManager {
      * IMPORTANT: Runs async to avoid blocking the telemetry recording thread.
      */
     public void onTripFileSaved() {
-        markStorageDirty();  // idle gate: a new trip file can put the pool over cap
+        markStorageDirtyForPool("trips");  // idle gate: a new trip file can put the pool over cap
         // Fix directory permissions in case they were reset
         fixDirectoryPermissions(tripsDir);
 
@@ -8556,17 +10607,12 @@ public class StorageManager {
             logWarn("onFileSaved: file is null or doesn't exist");
             return;
         }
-        
+        maybeTopUpFolder(file);
+
         logInfo("Processing saved file: " + file.getName() + " (" + formatSize(file.length()) + ")");
 
-        // Invalidate the reporting size/count TTL cache: a clip just landed, so
-        // the storage card must reflect it on the very next poll rather than up
-        // to CATEGORY_STAT_CACHE_MS later. Clearing all categories (null) keeps
-        // this correct without having to classify the file by prefix here —
-        // the cost is one extra walk per finalized clip (every ~2 min at the
-        // default segment duration), which is negligible next to the 10s UI poll
-        // this cache exists to coalesce.
-        invalidateCategorySizeCache(null);
+        // A clip just landed: only the pools that count it need re-measuring.
+        invalidateSizeCacheFor(file);
 
         // 1. Make file readable by all (chmod 666)
         makeFileReadable(file);
@@ -8596,6 +10642,12 @@ public class StorageManager {
             onProximityFileSaved();
         } else if (path.contains(TRIPS_SUBDIR)) {
             onTripFileSaved();
+        }
+
+        // SafeKeep (off by default): one volatile read when off; hands off to its own thread when on.
+        try {
+            com.overdrive.app.safekeep.SafeKeep.onFileSaved(file);
+        } catch (Throwable ignored) {
         }
     }
     
@@ -8646,6 +10698,7 @@ public class StorageManager {
         
         cleanupScheduler.scheduleAtFixedRate(() -> {
             try {
+                maybeRetestWriteFaults();  // two volatile reads unless a card is latched
                 // Don't run un-gated cleanup before the encoder probe is wired.
                 // Daemon-init ordering: startPeriodicCleanup() fires early
                 // (before pipeline.init), so the first scheduled tick at
@@ -9189,8 +11242,22 @@ public class StorageManager {
             return 0;
         }
 
-        // STRICT oldest-first, globally across categories.
-        Collections.sort(pool, (a, b) -> Long.compare(a.file.lastModified(), b.file.lastModified()));
+        // STRICT oldest-first, globally across categories. SafeKeep user locks sort last: they go only
+        // once every unlocked clip is gone, so a full card can never stop the recorder. Lock state is
+        // read once per candidate, so the order can't change mid-sort (empty when SafeKeep is off).
+        final java.util.Set<ReapCandidate> safeKeepLocked = new java.util.HashSet<>();
+        for (ReapCandidate c : pool) {
+            if (com.overdrive.app.safekeep.SafeKeep.isLockedForEmergency(c.file)) safeKeepLocked.add(c);
+        }
+        final java.util.Map<ReapCandidate, Long> mtimeOf = new java.util.HashMap<>(pool.size() * 2);
+        for (ReapCandidate c : pool) mtimeOf.put(c, c.file.lastModified());
+        Collections.sort(pool, (a, b) -> {
+            boolean la = !safeKeepLocked.isEmpty() && safeKeepLocked.contains(a);
+            boolean lb = !safeKeepLocked.isEmpty() && safeKeepLocked.contains(b);
+            if (la != lb) return la ? 1 : -1;
+            return Long.compare(mtimeOf.get(a), mtimeOf.get(b));
+        });
+        final AuxPass auxPass = new AuxPass();
 
         boolean budgeted = isEncoderWriting();
         long freedTotal = 0;
@@ -9259,7 +11326,7 @@ public class StorageManager {
                 continue;
             }
             attempted++;
-            long freed = deleteAnchorAndSidecars(c.file, c.category, reapDeadlineMs);
+            long freed = deleteAnchorAndSidecars(c.file, c.category, reapDeadlineMs, auxPass);
             if (freed > 0) {
                 freedTotal += freed;
                 deletedAnchors++;
@@ -9309,7 +11376,7 @@ public class StorageManager {
      * holding the category lock. Returns total bytes freed (anchor + companions).
      */
     private long deleteAnchorAndSidecars(File file, String category) {
-        return deleteAnchorAndSidecars(file, category, Long.MAX_VALUE);
+        return deleteAnchorAndSidecars(file, category, Long.MAX_VALUE, null);
     }
 
     /**
@@ -9326,8 +11393,12 @@ public class StorageManager {
      *  - hung-anchor signal: if the anchor itself only deleted via the shell fallback
      *    (its in-process {@code File.delete()} failed), the volume is in trouble, so
      *    its companions also skip the shell fallback this tick.
+     *
+     * <p>{@code auxPass} (nullable) shares aux lookups across the caller's pass;
+     * null re-lists the directory per anchor.
      */
-    private long deleteAnchorAndSidecars(File file, String category, long deadlineMs) {
+    private long deleteAnchorAndSidecars(File file, String category, long deadlineMs,
+                                         AuxPass auxPass) {
         final String primaryExt = primaryExtensionForCategory(category);
         final String[] sidecarExts = sidecarExtensionsForCategory(category);
         final String[] auxPrefixes = auxiliaryPrefixesForCategory(category);
@@ -9372,7 +11443,8 @@ public class StorageManager {
         }
         if (auxPrefixes.length > 0) {
             String stem = stemForName(file.getName(), primaryExt);
-            for (File aux : findAuxiliarySiblings(file.getParentFile(), auxPrefixes, stem)) {
+            for (File aux : auxSiblingsForPass(auxPass, category, file.getParentFile(),
+                    auxPrefixes, stem)) {
                 long sz = aux.length();
                 boolean ad = aux.delete();
                 if (!ad && !fastUnlinkFailed && System.currentTimeMillis() < deadlineMs) {
@@ -9422,12 +11494,14 @@ public class StorageManager {
                 if (files == null) files = listFilesByExt(dir, primaryExt);
                 if (files == null) continue;
                 for (File f : files) {
-                    if (f == null || !f.isFile()) continue;
+                    if (f == null) continue;
                     String name = f.getName();
                     if (namePrefix != null
                             && !nameMatchesCategoryPrefix(name, namePrefix, auxPrefixes)) continue;
+                    long length = regularFileLength(f);
+                    if (length < 0) continue;
                     if (!seenPaths.add(f.getAbsolutePath())) continue;
-                    total += f.length();
+                    total += length;
                 }
             }
         }
@@ -9466,9 +11540,14 @@ public class StorageManager {
         // archive is never auto-reaped — req 3), and the all-internal config stays a
         // no-op (req 10). The HashSet de-dups the common active==configured case.
         Set<StorageType> volumes = new HashSet<>();
-        volumes.add(normalizeStorageType(configuredTypeForCategory("recordings")));
-        volumes.add(normalizeStorageType(configuredTypeForCategory("surveillance")));
-        volumes.add(normalizeStorageType(configuredTypeForCategory("proximity")));
+        for (String category : new String[]{"recordings", "surveillance", "proximity"}) {
+            StorageType t = normalizeStorageType(configuredTypeForCategory(category));
+            // A card latched as refusing writes is backed by internal, like an unmounted one
+            // (and deletes on it would free nothing).
+            volumes.add(isWriteFaulted(t) ? StorageType.INTERNAL : t);
+        }
+        // A continuous sentry session stuck on internal writes there too, so watch internal as well.
+        if (isContinuousSurveillanceOnInternal()) volumes.add(StorageType.INTERNAL);
 
         boolean freedAny = false;
         for (StorageType volume : volumes) {
@@ -10446,7 +12525,7 @@ public class StorageManager {
         return null;
     }
 
-    private static final String TRIP_JOURNAL_DIR = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_trip_journal");
+    private static final String TRIP_JOURNAL_DIR = com.overdrive.app.util.ScratchRoot.path("overdrive_trip_journal");
 
     /**
      * Absolute path of the telemetry file for the trip CURRENTLY being recorded,

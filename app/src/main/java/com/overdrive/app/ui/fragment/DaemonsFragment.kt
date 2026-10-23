@@ -227,16 +227,49 @@ class DaemonsFragment : Fragment() {
     }
     
     private fun onDaemonToggled(type: DaemonType, enabled: Boolean) {
+        if (enabled) {
+            daemonsViewModel.activePublicTunnelSibling(type)?.let { running ->
+                showTunnelConflictDialog(type, running)
+                return
+            }
+        }
+        applyDaemonToggle(type, enabled)
+    }
+
+    private fun applyDaemonToggle(type: DaemonType, enabled: Boolean) {
         // Save preference for optional daemons (so they auto-start on next app launch if enabled)
         daemonsViewModel.daemonStartupManager?.onDaemonToggled(type, enabled)
-        
+
         if (enabled) {
             daemonsViewModel.startDaemon(type)
         } else {
             daemonsViewModel.stopDaemon(type)
         }
     }
-    
+
+    /** Starting a second public tunnel: switch to it, run both, or cancel (switch snaps back). */
+    private fun showTunnelConflictDialog(requested: DaemonType, running: DaemonType) {
+        val context = context ?: return
+        val requestedName = requested.localizedName(context)
+        val runningName = running.localizedName(context)
+        val revertSwitch = { daemonAdapter.refreshItem(requested) }
+
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(context, R.style.Theme_Overdrive_M3_Dialog)
+            .setIcon(R.drawable.ic_warning)
+            .setTitle(getString(R.string.dialog_tunnel_conflict_title))
+            .setMessage(getString(R.string.dialog_tunnel_conflict_message, runningName, requestedName))
+            .setPositiveButton(getString(R.string.dialog_tunnel_conflict_run_both)) { _, _ ->
+                applyDaemonToggle(requested, true)
+            }
+            .setNegativeButton(getString(R.string.dialog_tunnel_conflict_switch)) { _, _ ->
+                applyDaemonToggle(running, false)
+                applyDaemonToggle(requested, true)
+            }
+            .setNeutralButton(getString(R.string.action_cancel)) { _, _ -> revertSwitch() }
+            .setOnCancelListener { revertSwitch() }
+            .show()
+    }
+
     private fun onDaemonConfigureClicked(type: DaemonType) {
         when (type) {
             DaemonType.ZROK_TUNNEL -> showZrokTokenDialog()

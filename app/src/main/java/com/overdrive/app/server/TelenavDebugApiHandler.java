@@ -98,6 +98,8 @@ public final class TelenavDebugApiHandler {
             foregroundTelenav();
         }
 
+        // Every op below binds Telenav, which starts it if it isn't running.
+        com.overdrive.app.telenav.DeferredNavManager.noteTelenavUse();
         String resp = forwardToApp(req.toString(), 25_000);
         if (resp == null) {
             JSONObject err = new JSONObject();
@@ -137,9 +139,10 @@ public final class TelenavDebugApiHandler {
      * failure here still lets the navigate command through (it just won't be visible).
      */
     private static void foregroundTelenav() {
+        com.overdrive.app.telenav.DeferredNavManager.noteTelenavUse();
         try {
             Process pr = new ProcessBuilder("sh", "-c",
-                    "am start -n com.telenav.app.arp/com.telenav.arp.module.map.MainActivity")
+                    com.overdrive.app.util.ScratchRoot.remap("am start -n com.telenav.app.arp/com.telenav.arp.module.map.MainActivity"))
                     .redirectErrorStream(true)
                     .start();
             pr.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);

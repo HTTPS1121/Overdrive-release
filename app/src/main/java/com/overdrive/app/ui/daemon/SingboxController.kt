@@ -1,13 +1,17 @@
 package com.overdrive.app.ui.daemon
 
+import android.content.Context
+import com.overdrive.app.R
 import com.overdrive.app.launcher.AdbDaemonLauncher
 import com.overdrive.app.ui.model.DaemonStatus
 import com.overdrive.app.ui.model.DaemonType
+import com.overdrive.app.util.AppLocaleContext
 
 /**
  * Controller for the Sing-box Proxy.
  */
 class SingboxController(
+    private val context: Context,
     private val adbLauncher: AdbDaemonLauncher
 ) : DaemonController {
     
@@ -22,7 +26,7 @@ class SingboxController(
             }
             
             override fun onLaunched() {
-                callback.onStatusChanged(DaemonStatus.RUNNING, "Sing-box proxy running on port 8119")
+                callback.onStatusChanged(DaemonStatus.RUNNING, AppLocaleContext.of(context).getString(R.string.singbox_status_running))
             }
             
             override fun onError(error: String) {

@@ -52,10 +52,6 @@ public class AbrpTelemetryService {
     // Replace with your own key if you register at contact@iternio.com.
     private static final String PUBLIC_API_KEY = "42407443-7db2-4a3d-8950-0029ecb42a67";
 
-    // Adaptive intervals
-    private static final int DRIVING_INTERVAL_SECONDS = 5;
-    private static final int PARKED_INTERVAL_SECONDS = 30;
-
     // Backoff
     private static final int BACKOFF_BASE_SECONDS = 5;
     private static final int BACKOFF_CAP_SECONDS = 300;
@@ -94,6 +90,7 @@ public class AbrpTelemetryService {
     private OkHttpClient httpClient;
     private volatile boolean proxyChecked = false;
     private volatile long lastProxyCheckTime = 0;
+    private volatile Boolean lastProxyAvailable = null;
 
     // Scheduler
     private ScheduledExecutorService scheduler;
@@ -106,6 +103,12 @@ public class AbrpTelemetryService {
     private long totalUploads;
     private long failedUploads;
     private JSONObject lastTelemetrySnapshot;
+    // One "Upload OK" per second drowned every other tag in the exported log
+    // (10,153 of 15,383 lines on 2026-10-16). Successes now roll up; failures
+    // stay at full volume because they are the diagnostic signal.
+    private static final long OK_SUMMARY_INTERVAL_MS = 300_000;
+    private long okSinceSummary;
+    private long nextOkSummaryAt;
 
     // Weather temperature now comes from the shared WeatherTemperature helper
     // (one cache + network path for both ABRP ext_temp and the automation
@@ -139,9 +142,11 @@ public class AbrpTelemetryService {
         // Re-check proxy availability periodically (proxy may go up/down with ACC state)
         long now = System.currentTimeMillis();
         if (proxyChecked && (now - lastProxyCheckTime) < 60_000) return httpClient;
+        // !proxyChecked = first use or an upload error invalidated the client: always rebuild.
+        boolean invalidated = !proxyChecked;
         proxyChecked = true;
         lastProxyCheckTime = now;
-        
+
         boolean proxyAvailable = false;
         try {
             java.net.Socket probe = new java.net.Socket();
@@ -151,7 +156,13 @@ public class AbrpTelemetryService {
         } catch (Exception e) {
             // Proxy not available
         }
-        
+        // Unchanged route: keep the pooled connection instead of a fresh TLS handshake.
+        if (!invalidated && lastProxyAvailable != null
+                && lastProxyAvailable == proxyAvailable) {
+            return httpClient;
+        }
+        lastProxyAvailable = proxyAvailable;
+
         if (proxyAvailable) {
             httpClient = new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
@@ -355,7 +366,7 @@ public class AbrpTelemetryService {
             }
 
             // Canonical OEM-first value so ABRP agrees with every app surface.
-            double canonicalSoh = sohEstimator.getDisplaySoh();
+            double canonicalSoh = SohEstimator.getDisplaySohOrOem(sohEstimator);
             if (canonicalSoh > 0) payload.put("soh", canonicalSoh);
 
             // capacity payload uses the synthesized helper (UI-friendly), but
@@ -375,7 +386,8 @@ public class AbrpTelemetryService {
                 ? vd.highCellVoltage : Double.NaN;
             boolean isPhevForSoh = false;
             try { isPhevForSoh = vehicleDataMonitor.isPhev(); } catch (Throwable ignored) {}
-            if (!isPhevForSoh && rawRemainKwh > 0 && soc > 0 && sohEstimator.getNominalCapacityKwh() > 0) {
+            if (sohEstimator != null && !isPhevForSoh && rawRemainKwh > 0 && soc > 0
+                    && sohEstimator.getNominalCapacityKwh() > 0) {
                 double impliedCap = rawRemainKwh / (soc / 100.0);
                 double ratio = impliedCap / sohEstimator.getNominalCapacityKwh();
                 if (ratio >= 0.5 && ratio <= 1.12) {
@@ -509,9 +521,23 @@ public class AbrpTelemetryService {
                 String responseBody = response.body() != null ? response.body().string() : "";
 
                 if (response.isSuccessful()) {
+                    boolean recovered = consecutiveFailures > 0;
                     consecutiveFailures = 0;
                     lastUploadTime = System.currentTimeMillis();
-                    logger.info("Upload OK (HTTP " + response.code() + "): " + responseBody);
+                    okSinceSummary++;
+                    // Always log the first success and the one that ends a failure run;
+                    // otherwise roll the rest up every OK_SUMMARY_INTERVAL_MS.
+                    long now = android.os.SystemClock.elapsedRealtime();
+                    if (nextOkSummaryAt == 0 || recovered) {
+                        logger.info("Upload OK (HTTP " + response.code() + "): " + responseBody);
+                        okSinceSummary = 0;
+                        nextOkSummaryAt = now + OK_SUMMARY_INTERVAL_MS;
+                    } else if (now >= nextOkSummaryAt) {
+                        logger.info("Upload OK x" + okSinceSummary + " (HTTP " + response.code()
+                                + ") in the last " + (OK_SUMMARY_INTERVAL_MS / 1000) + "s");
+                        okSinceSummary = 0;
+                        nextOkSummaryAt = now + OK_SUMMARY_INTERVAL_MS;
+                    }
                     return true;
                 } else {
                     failedUploads++;
@@ -677,41 +703,6 @@ public class AbrpTelemetryService {
     }
 
     /**
-     * Get adaptive upload interval based on vehicle state.
-     * 5s when driving (not parked AND not charging), 30s when parked or charging.
-     */
-    int getAdaptiveInterval() {
-        boolean collectorAccOn = true;
-        BydVehicleData vd = null;
-        try {
-            BydDataCollector collector = BydDataCollector.getInstance();
-            collectorAccOn = collector.isAccOn();
-            vd = collector.getData();
-        } catch (Throwable ignored) {
-        }
-        Boolean parkedState =
-                resolveCurrentParkedState(vd, collectorAccOn);
-        // Unknown uses the lower-frequency parked cadence; it must never be
-        // interpreted as actively driving.
-        boolean isParked = !Boolean.FALSE.equals(parkedState);
-        boolean isCharging = false;
-
-        ChargingStateData chargingState = vehicleDataMonitor.getChargingState();
-        if (chargingState != null) {
-            // Include the taper: this picks the telemetry POLL INTERVAL, and dropping to the parked/
-            // driving cadence mid-taper would coarsen the tail of the charge exactly where ABRP wants
-            // resolution.
-            isCharging = (chargingState.status == ChargingStateData.ChargingStatus.CHARGING
-                    || chargingState.isTaperCharging);
-        }
-
-        if (!isParked && !isCharging) {
-            return DRIVING_INTERVAL_SECONDS;
-        }
-        return PARKED_INTERVAL_SECONDS;
-    }
-
-    /**
      * Calculate exponential backoff delay: min(5 * 2^(N-1), 300) seconds.
      */
     static long calculateBackoff(int consecutiveFailures) {
@@ -735,7 +726,7 @@ public class AbrpTelemetryService {
             status.put("failedUploads", failedUploads);
             status.put("lastUploadTime", lastUploadTime);
             status.put("consecutiveFailures", consecutiveFailures);
-            status.put("currentInterval", getAdaptiveInterval());
+            status.put("currentInterval", getMinInterval());
             status.put("changeOnly", config.isChangeOnly());
             status.put("minInterval", getMinInterval());
             status.put("maxInterval", getMaxInterval());

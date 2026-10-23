@@ -1,6 +1,6 @@
 package com.overdrive.app.wireguard;
 
-import com.overdrive.app.util.DaemonStorage;
+import com.overdrive.app.util.ScratchRoot;
 
 /**
  * File locations and constants shared by the WireGuard launcher, controller and
@@ -12,7 +12,7 @@ import com.overdrive.app.util.DaemonStorage;
 public final class WireGuardPaths {
     private WireGuardPaths() {}
 
-    public static final String HOME = DaemonStorage.rebase("/data/local/tmp/.wireguard");
+    public static final String HOME = ScratchRoot.path(".wireguard");
     public static final String CONFIG = HOME + "/wg0.conf";
     public static final String STATUS = HOME + "/status.json";
     public static final String LOG = HOME + "/wireguard.log";

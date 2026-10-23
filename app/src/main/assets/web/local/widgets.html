@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title data-i18n="app.widgets_title">Widgets - OverDrive</title>
+    <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
+    <style>
+        /* spacing by margins, never flex gap: the head unit's WebView (Chrome 74) has no flex gap */
+        .gw-list { display: flex; flex-direction: column; }
+        .gw-item { display: flex; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border-color, rgba(255,255,255,.08)); }
+        .gw-item > * + * { margin-left: 12px; }
+        [dir="rtl"] .gw-item > * + * { margin-left: 0; margin-right: 12px; }
+        .gw-item:last-child { border-bottom: none; }
+        .gw-item .setting-info { flex: 1; min-width: 0; }
+        .gw-order { display: flex; flex: none; }
+        .gw-order button + button { margin-left: 6px; }
+        [dir="rtl"] .gw-order button + button { margin-left: 0; margin-right: 6px; }
+        .gw-order button {
+            width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--border-color, rgba(255,255,255,.12));
+            background: transparent; color: inherit; font-size: 18px; cursor: pointer;
+        }
+        .gw-order button:disabled { opacity: .3; cursor: default; }
+        .gw-note { font-size: 13px; opacity: .7; margin-top: 12px; line-height: 1.4; }
+        /* the pills keep 8px apart, wrapped or not */
+        .gw-seg { display: flex; flex-wrap: wrap; margin: -4px; }
+        .gw-seg label {
+            display: inline-flex; align-items: center; margin: 4px; padding: 10px 16px 10px 14px; min-height: 44px; box-sizing: border-box;
+            border-radius: 10px; cursor: pointer; line-height: 1.2; border: 1px solid var(--border-color, rgba(255,255,255,.12));
+        }
+        .gw-seg input { accent-color: var(--accent-color, #5DDBB6); flex: none; width: 18px; height: 18px; margin: 0 10px 0 0; }
+        [dir="rtl"] .gw-seg input { margin: 0 0 0 10px; }
+        /* one rhythm in every card: the card's padding sets the space to its first and last row */
+        .card-body > .setting-row:first-child, .card-body > .gw-list > .gw-item:first-child { padding-top: 0; }
+        .card-body > .setting-row:last-child { padding-bottom: 0; }
+        .setting-control { display: flex; align-items: center; }
+        .setting-control > * + * { margin-left: 12px; }
+        [dir="rtl"] .setting-control > * + * { margin-left: 0; margin-right: 12px; }
+    </style>
+</head>
+<body class="r-settings">
+    <div class="app-layout">
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
+        <div id="app-shell-mount"></div>
+        <!-- Main Content -->
+        <main class="main-content" aria-busy="true" inert style="pointer-events:none">
+            <div class="mobile-header">
+                <button class="menu-toggle" onclick="toggleSidebar()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>
+                    </svg>
+                </button>
+                <span style="font-weight:600;" data-i18n="nav.widgets">Widgets</span>
+                <div style="width:40px;"></div>
+            </div>
+
+            <header class="page-header">
+                <h1 class="page-title" data-i18n="widgets.page_title">Widgets</h1>
+            </header>
+
+            <div class="page-body">
+                <!-- Master opt-in -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="18" height="8" rx="2"/></svg>
+                            <span data-i18n="widgets.master_title">Glass widgets</span>
+                        </div>
+                        <span class="status-badge inactive" id="gwStatusBadge">OFF</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row" style="border-bottom:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.master_enable">Show widgets on screen</div>
+                                <div class="setting-desc" data-i18n="widgets.master_enable_desc">Floats the widgets you pick below over the head unit screen. Off by default; nothing is shown until you turn this on.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="gwEnabled" onchange="WidgetsSettings.setEnabled(this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Where to show -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 18v3"/></svg>
+                            <span data-i18n="widgets.where_title">Where to show</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="gw-seg" role="radiogroup">
+                            <label><input type="radio" name="gwMode" value="home" onchange="WidgetsSettings.set('mode', 'home')"><span data-i18n="widgets.mode_home">Home screen only</span></label>
+                            <label><input type="radio" name="gwMode" value="global" onchange="WidgetsSettings.set('mode', 'global')"><span data-i18n="widgets.mode_global">Over every app</span></label>
+                        </div>
+                        <div class="gw-note" data-i18n="widgets.mode_note">Widgets always hide while reversing. "Home screen only" hides them as soon as another app opens.</div>
+                    </div>
+                </div>
+
+                <!-- Which widgets -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                            <span data-i18n="widgets.list_title">Widgets to show</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="gw-list" id="gwList"></div>
+                        <div class="gw-note" data-i18n="widgets.list_note">Use the arrows to change the order they appear in.</div>
+                    </div>
+                </div>
+
+                <!-- Floating shortcuts button -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5c.5 2.6 1.4 3.5 4 4-2.6.5-3.5 1.4-4 4-.5-2.6-1.4-3.5-4-4 2.6-.5 3.5-1.4 4-4z"/></svg>
+                            <span data-i18n="widgets.floating_title">Floating shortcuts</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.floating">Floating shortcuts button</div>
+                                <div class="setting-desc" data-i18n="widgets.floating_desc">A small button that floats over every app, like the trip and recording pill. Tap it for your three automation shortcuts, hold a shortcut to change it, and drag the button anywhere. It uses the same automations as the Automation shortcuts widget.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="gwFloating" onchange="WidgetsSettings.set('floatingShortcuts', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Placement and look -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>
+                            <span data-i18n="widgets.placement_title">Placement and look</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.arrange">Arrange on screen</div>
+                                <div class="setting-desc" data-i18n="widgets.arrange_desc">Drag each widget anywhere on the screen. You can also long-press any widget to start.</div>
+                                <div class="setting-desc" id="gwArrangedNote" style="display:none" data-i18n="widgets.arranged_note">Arranged on screen: the position and distances below apply after a reset.</div>
+                            </div>
+                            <div class="setting-control">
+                                <button class="btn btn-secondary" type="button" id="gwResetArrange" style="display:none" onclick="WidgetsSettings.resetArrangement()" data-i18n="widgets.arrange_reset">Reset</button>
+                                <button class="btn btn-secondary" type="button" onclick="WidgetsSettings.arrange()" data-i18n="widgets.arrange_open">Arrange</button>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.position">Position</div>
+                                <div class="setting-desc" data-i18n="widgets.position_desc">Corners and bottom show the widgets in a row; left and right stack them in a column.</div>
+                            </div>
+                            <div class="setting-control">
+                                <select id="gwPosition" class="text-input" onchange="WidgetsSettings.set('position', this.value)">
+                                    <option value="bottom-left" data-i18n="widgets.pos_bottom_left">Bottom left</option>
+                                    <option value="bottom-center" data-i18n="widgets.pos_bottom_center">Bottom centre</option>
+                                    <option value="bottom-right" data-i18n="widgets.pos_bottom_right">Bottom right</option>
+                                    <option value="top-left" data-i18n="widgets.pos_top_left">Top left</option>
+                                    <option value="top-right" data-i18n="widgets.pos_top_right">Top right</option>
+                                    <option value="left" data-i18n="widgets.pos_left">Left edge</option>
+                                    <option value="right" data-i18n="widgets.pos_right">Right edge</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.offset_x">Distance from the side</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="gwOffsetXValue">24</span>
+                                    <input type="range" class="slider" id="gwOffsetX" min="0" max="600" step="4" value="24" oninput="WidgetsSettings.slide('offsetX', +this.value)">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.offset_y">Distance from the top or bottom</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="gwOffsetYValue">24</span>
+                                    <input type="range" class="slider" id="gwOffsetY" min="0" max="600" step="4" value="24" oninput="WidgetsSettings.slide('offsetY', +this.value)">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.size">Size</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="gwScaleValue">100%</span>
+                                    <input type="range" class="slider" id="gwScale" min="60" max="130" step="5" value="100" oninput="WidgetsSettings.slide('scale', this.value / 100)">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.theme">Day / night look</div>
+                                <div class="setting-desc" data-i18n="widgets.theme_desc">Auto follows the head unit's day and night mode.</div>
+                            </div>
+                            <div class="setting-control">
+                                <select id="gwTheme" class="text-input" onchange="WidgetsSettings.set('theme', this.value)">
+                                    <option value="auto" data-i18n="widgets.theme_auto">Auto</option>
+                                    <option value="night" data-i18n="widgets.theme_night">Always night</option>
+                                    <option value="day" data-i18n="widgets.theme_day">Always day</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.tint">Glass tint</div>
+                                <div class="setting-desc" data-i18n="widgets.tint_desc">How much of the screen behind shows through. Text stays readable down to 70%.</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="slider-control">
+                                    <span class="slider-value" id="gwTintValue">82%</span>
+                                    <input type="range" class="slider" id="gwTint" min="70" max="95" step="1" value="82" oninput="WidgetsSettings.slide('tint', this.value / 100)">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="border-bottom:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.reduce_motion">Reduce motion</div>
+                                <div class="setting-desc" data-i18n="widgets.reduce_motion_desc">Turns off animation except hazard warnings.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="gwReduce" onchange="WidgetsSettings.set('reduceMotion', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Vehicle details -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="17" r="2.5"/><path d="M3.5 17V12l2.5-5h12l2.5 5v5"/><path d="M8.5 17h7"/></svg>
+                            <span data-i18n="widgets.vehicle_title">Vehicle</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.motors">Motors</div>
+                                <div class="setting-desc" data-i18n="widgets.motors_desc">For the power widget. Auto learns it from the car while you drive.</div>
+                            </div>
+                            <div class="setting-control">
+                                <select id="gwMotors" class="text-input" onchange="WidgetsSettings.set('motors', this.value)">
+                                    <option value="auto" data-i18n="widgets.motors_auto">Auto</option>
+                                    <option value="fwd" data-i18n="widgets.motors_front">Front motor</option>
+                                    <option value="rwd" data-i18n="widgets.motors_rear">Rear motor</option>
+                                    <option value="awd" data-i18n="widgets.motors_dual">Dual motor</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.units">Tyre pressure units</div>
+                                <div class="setting-desc" data-i18n="widgets.units_desc">Uses the display unit set with the tyre pressure limits in Notifications, like the rest of the app.</div>
+                            </div>
+                            <div class="setting-control">
+                                <span class="slider-value" id="gwUnitNow"></span>
+                                <button class="btn btn-secondary" type="button" onclick="window.location.href='/notifications#tyreLimitsSection'" data-i18n="widgets.units_change">Change</button>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.charging_auto">Show charging only while charging</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="gwChargingAuto" onchange="WidgetsSettings.set('chargingOnlyWhenActive', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.blind_spot">Show blind-spot detections</div>
+                                <div class="setting-desc" data-i18n="widgets.blind_spot_desc">The power widget lights the side where the car's radar sees a vehicle. Needs a car that reports blind-spot alerts.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="gwBlindSpot" onchange="WidgetsSettings.set('showBlindSpot', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="border-bottom:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="widgets.terrain">Altitude and slope on RoadSense</div>
+                                <div class="setting-desc" data-i18n="widgets.terrain_desc">While you drive on a clear road, RoadSense shows your altitude, the slope you're on and the last 2 km of climb behind you, from GPS.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="gwTerrain" onchange="WidgetsSettings.set('terrain', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="../shared/auth.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/settings-hydration.js?v=1"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/widgets-settings.js?v=21"></script>
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('sidebarOverlay').classList.toggle('show');
+        }
+        BYD.i18n.init().then(function () {
+            BYD.core.init();
+            WidgetsSettings.init();
+        });
+    </script>
+</body>
+</html>

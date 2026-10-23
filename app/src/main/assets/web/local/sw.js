@@ -48,7 +48,10 @@
 // cache bump, existing installs keep the brightness-only detector and
 // Dolphin paint changes continue targeting its wheel accent instead of
 // the body shell.
-const CACHE_VERSION = 'overdrive-3d-v4';
+//
+// v5: ev-card-3d.js side-view auto-fit accounts for perspective, so wide
+// cards (phone drawer) no longer crop the bumpers; sprite cache v5 too.
+const CACHE_VERSION = 'overdrive-3d-v5';
 
 // Static, APK-bundled assets that the EV card needs on every page.
 // Same-origin only — the daemon serves these with public, max-age=86400,

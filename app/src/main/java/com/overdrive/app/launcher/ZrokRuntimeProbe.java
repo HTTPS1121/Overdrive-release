@@ -334,7 +334,7 @@ public final class ZrokRuntimeProbe {
 
     private static boolean isZrokProcess(int pid) {
         String cmdline = readCmdline(new File("/proc/" + pid + "/cmdline"));
-        return cmdline.contains(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok")) && cmdline.contains("share");
+        return cmdline.contains(com.overdrive.app.util.ScratchRoot.path("zrok")) && cmdline.contains("share");
     }
 
 
@@ -405,7 +405,9 @@ public final class ZrokRuntimeProbe {
         try {
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.redirectErrorStream(true);
-            builder.environment().put("HOME", com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp"));
+            // zrok keeps its environment under $HOME/.zrok: the scratch root.
+            builder.environment().put("HOME", com.overdrive.app.util.ScratchRoot.dir());
+            com.overdrive.app.util.ScratchRoot.applyEnv(builder);
             Process process = builder.start();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             Thread reader = new Thread(() -> copyOutput(process.getInputStream(), output), "zrok-version-reader");

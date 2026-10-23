@@ -34,6 +34,7 @@ public class ProximityGuardConfig {
     private final int monitorBitrate;
     private final int eventBitrate;
     private final boolean lowPowerMonitor;  // master enable for the idle profile
+    private final boolean blindSpotTrigger;  // also record on the car's blind-spot radar warning
 
     // Validation constants
     private static final int MIN_PRE_RECORD_SECONDS = 2;
@@ -67,6 +68,7 @@ public class ProximityGuardConfig {
         this.monitorBitrate = validateBitrate(builder.monitorBitrate, DEFAULT_MONITOR_BITRATE);
         this.eventBitrate = validateBitrate(builder.eventBitrate, DEFAULT_EVENT_BITRATE);
         this.lowPowerMonitor = builder.lowPowerMonitor;
+        this.blindSpotTrigger = builder.blindSpotTrigger;
     }
     
     // ==================== GETTERS ====================
@@ -101,6 +103,10 @@ public class ProximityGuardConfig {
 
     public boolean isLowPowerMonitor() {
         return lowPowerMonitor;
+    }
+
+    public boolean isBlindSpotTrigger() {
+        return blindSpotTrigger;
     }
 
     // ==================== VALIDATION ====================
@@ -167,6 +173,7 @@ public class ProximityGuardConfig {
         private int monitorBitrate = DEFAULT_MONITOR_BITRATE;
         private int eventBitrate = DEFAULT_EVENT_BITRATE;
         private boolean lowPowerMonitor = true;  // idle profile on by default
+        private boolean blindSpotTrigger = false;
 
         public Builder enabled(boolean enabled) {
             this.enabled = enabled;
@@ -215,6 +222,11 @@ public class ProximityGuardConfig {
 
         public Builder lowPowerMonitor(boolean lowPowerMonitor) {
             this.lowPowerMonitor = lowPowerMonitor;
+            return this;
+        }
+
+        public Builder blindSpotTrigger(boolean blindSpotTrigger) {
+            this.blindSpotTrigger = blindSpotTrigger;
             return this;
         }
 
@@ -270,6 +282,10 @@ public class ProximityGuardConfig {
             builder.lowPowerMonitor(config.optBoolean("lowPowerMonitor", true));
         }
 
+        if (config.has("blindSpotTrigger")) {
+            builder.blindSpotTrigger(config.optBoolean("blindSpotTrigger", false));
+        }
+
         return builder.build();
     }
 
@@ -286,6 +302,7 @@ public class ProximityGuardConfig {
                 ", monitorFps=" + monitorFps +
                 ", monitorBitrate=" + (monitorBitrate / 1_000_000.0) + "Mbps" +
                 ", eventBitrate=" + (eventBitrate / 1_000_000.0) + "Mbps" +
+                ", blindSpotTrigger=" + blindSpotTrigger +
                 '}';
     }
     

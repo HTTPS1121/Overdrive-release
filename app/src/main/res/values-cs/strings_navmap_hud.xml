@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Pokračujte</item>
+        <item>Vyjeďte</item>
+        <item>Příjezd do cíle</item>
+        <item>Cíl vpravo</item>
+        <item>Cíl vlevo</item>
+        <item>Mírně vpravo</item>
+        <item>Odbočte vpravo</item>
+        <item>Ostře vpravo</item>
+        <item>Otočte se</item>
+        <item>Ostře vlevo</item>
+        <item>Odbočte vlevo</item>
+        <item>Mírně vlevo</item>
+        <item>Najeďte na rampu</item>
+        <item>Sjeďte</item>
+        <item>Pokračujte rovně</item>
+        <item>Držte se vpravo</item>
+        <item>Držte se vlevo</item>
+        <item>Připojte se</item>
+        <item>Připojte se vpravo</item>
+        <item>Připojte se vlevo</item>
+        <item>Vjeďte na kruhový objezd</item>
+        <item>Opusťte kruhový objezd</item>
+        <item>Najeďte na trajekt</item>
+        <item>Sjeďte z trajektu</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Pokračujte po</item>
+        <item>Vyjeďte po</item>
+        <item>Cíl:</item>
+        <item>Cíl vpravo:</item>
+        <item>Cíl vlevo:</item>
+        <item>Mírně vpravo na</item>
+        <item>Odbočte vpravo na</item>
+        <item>Ostře vpravo na</item>
+        <item>Otočte se na</item>
+        <item>Ostře vlevo na</item>
+        <item>Odbočte vlevo na</item>
+        <item>Mírně vlevo na</item>
+        <item>Rampou na</item>
+        <item>Sjeďte na</item>
+        <item>Pokračujte rovně po</item>
+        <item>Držte se vpravo na</item>
+        <item>Držte se vlevo na</item>
+        <item>Připojte se na</item>
+        <item>Připojte se vpravo na</item>
+        <item>Připojte se vlevo na</item>
+        <item>Kruhovým objezdem na</item>
+        <item>Opusťte kruhový objezd na</item>
+        <item>Najeďte na trajekt:</item>
+        <item>Sjeďte z trajektu na</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1.</item>
+        <item>2.</item>
+        <item>3.</item>
+        <item>4.</item>
+        <item>5.</item>
+        <item>6.</item>
+        <item>7.</item>
+        <item>8.</item>
+        <item>9.</item>
+        <item>10.</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Vyjeďte %1$s výjezdem</string>
+    <string name="nav_hud_roundabout_exit_onto">Vyjeďte %1$s výjezdem na</string>
+    <string name="nav_hud_towards">Směr</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Exit %1$s</string>
+    <string name="nav_hud_then">Pak</string>
+    <string name="nav_hud_arrive">Příjezd</string>
+    <string name="nav_hud_recenter">Vycentrovat</string>
+    <string name="nav_hud_end">Ukončit</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Ztlumit hlasové pokyny</string>
+    <string name="nav_hud_cd_unmute">Zapnout hlasové pokyny</string>
+    <string name="nav_hud_cd_overview">Zobrazit celou trasu</string>
+    <string name="nav_hud_cd_overview_exit">Zpět do zobrazení jízdy</string>
+    <string name="nav_hud_cd_end">Ukončit navigaci</string>
+    <string name="nav_hud_cd_recenter">Vycentrovat na auto</string>
+    <string name="nav_hud_cd_compass_heading_up">Kompas: směr jízdy nahoře. Klepnutím přepnete na sever nahoře</string>
+    <string name="nav_hud_cd_compass_north_up">Kompas: sever nahoře. Klepnutím přepnete na směr jízdy nahoře</string>
+    <string name="nav_hud_cd_back">Opustit mapu</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Pak za %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Příjezd v %1$s, zbývá %2$s a %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">Zdržení v dopravě %1$s</string>
+</resources>

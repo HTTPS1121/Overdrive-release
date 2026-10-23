@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "name": "Trip efficiency",
+  "size": "wide",
+  "about": "This trip's consumption with a verdict, and a two-minute power trace (below the line is regen).",
+  "layers": [
+    { "type": "text", "name": "Label", "x": 26, "y": 50, "size": 15, "weight": 500, "text": "This trip", "color": "text2" },
+    { "type": "text", "name": "Consumption", "x": 26, "y": 100, "size": 40, "weight": 600, "text": "{consumption(trip_wh_per_km):1}", "unit": "=consumption_unit", "color": "text", "motion": "number" },
+    { "type": "text", "name": "Verdict", "x": 26, "y": 130, "size": 15, "weight": 600,
+      "text": "=!known(trip_wh_per_km) ? 'No reading yet' : (trip_wh_per_km < 140 ? 'Efficient' : trip_wh_per_km < 190 ? 'Average' : 'Heavy') + ' · ' + fmt(dist(trip_km), 1) + ' ' + dist_unit",
+      "color": "=!known(trip_wh_per_km) ? text2 : trip_wh_per_km < 140 ? good : trip_wh_per_km < 190 ? warn : danger" },
+    { "type": "spark", "name": "Power trace", "x": 262, "y": 34, "w": 232, "h": 98, "value": "=power", "window": 120,
+      "color": "=ramp(trip_wh_per_km, 130, glowGood, 180, glowWarn, 240, glowDanger)", "fill": 0.22 },
+    { "type": "text", "name": "Trace caption", "x": 494, "y": 160, "size": 13, "weight": 500, "align": "right", "text": "Power · last 2 min", "color": "text3" }
+  ]
+}

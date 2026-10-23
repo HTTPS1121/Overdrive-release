@@ -57,6 +57,7 @@
         _suspendForHidden() {
             this.running = false;
             this._clearFrameWatchdog();
+            this._clearStallWatchdog();
             if (this.ws) { try { this.ws.close(); } catch (e) {} this.ws = null; }
             if (this.decoder) { try { this.decoder.close(); } catch (e) {} this.decoder = null; }
             if (this.onDisconnected) this.onDisconnected();
@@ -108,16 +109,24 @@
 
             this.ws.onopen = () => {
                 this.reconnectAttempts = 0;  // healthy link — reset backoff
+                // Never carry a decoder across connections. WebCodecs closes
+                // the VideoDecoder BEFORE it invokes the error callback, so a
+                // decoder that errored on the previous socket is already dead
+                // and every decode() on it throws. Rebuild from scratch; the
+                // first SPS of the new session reconfigures it.
+                if (this.decoder) { try { this.decoder.close(); } catch (e) {} this.decoder = null; }
                 this.initDecoder();
                 this._armFrameWatchdog();
+                this._armStallWatchdog();
                 if (this.onConnected) this.onConnected();
             };
             this.ws.onmessage = (e) => this.ingest(new Uint8Array(e.data));
             this.ws.onclose = () => {
-                // Retire the watchdog for this connection: a closed socket is a
+                // Retire the watchdogs for this connection: a closed socket is a
                 // link event, not a decode failure, and the next onopen re-arms
-                // it. Leaving it armed could misfire during the reconnect gap.
+                // them. Leaving them armed could misfire during the reconnect gap.
                 this._clearFrameWatchdog();
+                this._clearStallWatchdog();
                 if (this.onDisconnected) this.onDisconnected();
                 // Auto-reconnect with capped exponential backoff (2s → 30s) so a
                 // dead tunnel link doesn't reconnect every 2s forever over
@@ -140,7 +149,13 @@
             this.ws.onerror = () => { /* close event follows; onclose owns reconnect */ };
         }
 
-        initDecoder() {
+        /**
+         * Create and configure a fresh VideoDecoder. `codec` is optional: a
+         * rebuild after a decode error passes the codec string derived from
+         * the SPS already in hand so the next IDR decodes without waiting for
+         * another SPS.
+         */
+        initDecoder(codec) {
             if (this.decoder) return;
             this.decoder = new VideoDecoder({
                 output: this.handleFrame,
@@ -149,7 +164,7 @@
             // The server REQUESTS Baseline/3.1, but KEY_PROFILE is only a hint —
             // plenty of encoders ignore it and emit Main/High. So this initial
             // config is provisional; processNAL reconfigures from the real SPS.
-            this._configure("avc1.42C01F");
+            this._configure(codec || "avc1.42C01F");
         }
 
         /**
@@ -206,6 +221,54 @@
                 clearTimeout(this._frameWatchdog);
                 this._frameWatchdog = null;
             }
+        }
+
+        /**
+         * Running-stream stall watchdog. The first-frame watchdog above only
+         * covers the window before the first paint; once frames have flowed,
+         * nothing else notices when they stop. That happens when the server
+         * retires the stream encoder (quality change from another viewer,
+         * idle shutdown) or when a tunnel link dies without a TCP reset: the
+         * socket stays "open" and the player shows a frozen "Live" picture
+         * for as long as the server keeps the socket (60 s).
+         *
+         * If frames have been painted on this player (frameCount > 0) and no
+         * frame has arrived for STALL_TIMEOUT_MS while the socket is OPEN,
+         * close the socket. onclose owns the capped-backoff reconnect, and
+         * the fresh attach requests a new IDR from the server. Armed per
+         * connection in onopen and cleared in onclose/stop/suspend so it can
+         * never fire across the reconnect gap. Checked every 2 s, so a
+         * healthy stream (frames every <=1 s at 1 fps) never trips it.
+         */
+        _armStallWatchdog() {
+            this._clearStallWatchdog();
+            // Treat the open itself as activity: on a reconnect frameCount is
+            // still >0 from the previous socket, and the stale timestamp from
+            // that socket must not count against this one.
+            this._lastFrameAt = SotaPlayer._now();
+            this._stallWatchdog = setInterval(() => {
+                if (!this.running || this._failed || !this.ws) return;
+                if (this.ws.readyState !== WebSocket.OPEN) return;
+                if (this.frameCount === 0) return;       // first-frame watchdog owns this window
+                const idleMs = SotaPlayer._now() - this._lastFrameAt;
+                if (idleMs < SotaPlayer.STALL_TIMEOUT_MS) return;
+                console.warn('[SotaPlayer] No frame for ' + Math.round(idleMs)
+                    + 'ms on an open socket — reconnecting');
+                // onclose follows and runs the capped-backoff reconnect.
+                try { this.ws.close(); } catch (e) {}
+            }, 2000);
+        }
+
+        _clearStallWatchdog() {
+            if (this._stallWatchdog) {
+                clearInterval(this._stallWatchdog);
+                this._stallWatchdog = null;
+            }
+        }
+
+        static _now() {
+            return (typeof performance !== 'undefined' && performance.now)
+                ? performance.now() : Date.now();
         }
 
         /**
@@ -360,6 +423,7 @@
             // and the error tally so later transient errors get a full allowance.
             if (this._frameWatchdog) this._clearFrameWatchdog();
             this.decodeErrors = 0;
+            this._lastFrameAt = SotaPlayer._now();   // feeds the stall watchdog
 
             if (this.canvas.width !== frame.displayWidth || this.canvas.height !== frame.displayHeight) {
                 this.canvas.width = frame.displayWidth;
@@ -373,24 +437,35 @@
         }
 
         handleError(e) {
+            // Per the WebCodecs spec a decode error runs "Close VideoDecoder"
+            // (state -> "closed") BEFORE the error callback is invoked, and
+            // decode()/reset()/configure() on a closed decoder all throw
+            // InvalidStateError. The old recovery called reset()+configure()
+            // on exactly that closed instance, so nothing was ever rebuilt:
+            // every later decode() threw, re-entered here, and the 6th error
+            // retired WebCodecs entirely. Drop the faulted instance and build
+            // a fresh one so the next IDR decodes.
+            const faulted = this.decoder;
+            this.decoder = null;
+            if (faulted) { try { faulted.close(); } catch (err) {} }
+            if (!this.running || this._failed) return;
+
             // Bound the recovery attempts. A decoder that can't handle this
-            // stream errors on EVERY chunk, and resetting forever kept the canvas
-            // black with no signal to the caller — the reported "camera doesn't
-            // work on my phone" symptom. After a few tries, give up and report so
-            // a working decoder can take over.
+            // stream errors on EVERY chunk, and rebuilding forever kept the
+            // canvas black with no signal to the caller — the reported "camera
+            // doesn't work on my phone" symptom. After a few tries, give up
+            // and report so a working decoder can take over.
             this.decodeErrors = (this.decodeErrors || 0) + 1;
             if (this.decodeErrors > 5) {
                 this._fail('decoder errored ' + this.decodeErrors + 'x: '
                     + (e && e.message ? e.message : e));
                 return;
             }
-            if (this.decoder) {
-                try {
-                    this.decoder.reset();
-                    this._configure(this.sps ? this.extractCodecFromSPS(this.sps) : "avc1.42C01F");
-                } catch (err) {}
-            }
+            // Wait for the next IDR before feeding the new decoder: a P-frame
+            // would reference a picture it never saw. Reuse the SPS already in
+            // hand so the rebuilt decoder is configured for the real profile.
             this.hasReceivedKeyframe = false;
+            this.initDecoder(this.sps ? this.extractCodecFromSPS(this.sps) : "avc1.42C01F");
         }
 
         stop() {
@@ -400,6 +475,7 @@
             this.reconnectAttempts = 0;
             this.running = false;
             this._clearFrameWatchdog();
+            this._clearStallWatchdog();
             if (this.ws) { this.ws.close(); this.ws = null; }
             if (this.decoder) { try { this.decoder.close(); } catch(e) {} this.decoder = null; }
             this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -453,6 +529,11 @@
             return "avc1.42C01F";  // Fallback: Baseline Profile Level 3.1
         }
     }
+
+    // Assigned after the class body: static class fields are ES2022 and this
+    // file must still PARSE on the in-car Chrome 58 WebView (it is loaded by
+    // live-view.html there even though never instantiated).
+    SotaPlayer.STALL_TIMEOUT_MS = 8000;
 
     if (typeof module !== 'undefined' && module.exports) module.exports = SotaPlayer;
     else global.SotaPlayer = SotaPlayer;

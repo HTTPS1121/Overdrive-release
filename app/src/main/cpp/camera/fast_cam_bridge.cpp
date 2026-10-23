@@ -337,7 +337,10 @@ bool fast_cam_client_connect(
     }
     fast_cam_client_disconnect(context);
 
-    context->sock_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    // Non-blocking only for connect(): fast_cam_capture accepts one client, so
+    // retries fill its backlog and a blocking connect() would never return.
+    context->sock_fd = socket(
+            AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (context->sock_fd < 0) return false;
 
     struct sockaddr_un address = {};
@@ -354,6 +357,12 @@ bool fast_cam_client_connect(
                 context->sock_fd,
                 reinterpret_cast<struct sockaddr*>(&address),
                 address_length) != 0) {
+        fast_cam_client_disconnect(context);
+        return false;
+    }
+    int flags = fcntl(context->sock_fd, F_GETFL);
+    if (flags < 0
+            || fcntl(context->sock_fd, F_SETFL, flags & ~O_NONBLOCK) != 0) {
         fast_cam_client_disconnect(context);
         return false;
     }

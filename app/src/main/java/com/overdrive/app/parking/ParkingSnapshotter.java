@@ -41,8 +41,20 @@ public final class ParkingSnapshotter {
     }
 
     /**
+     * Extra passes over the quadrants that came back empty or black. The first
+     * sample of a capture pays the sampler's cold start (shared-EGL thread,
+     * FBO + shader allocation, first GPU sync against a busy encoder) and can
+     * exceed the sampler's 1.5 s reply window — the front tile, always sampled
+     * first, is the one that used to come out black. By the retry the sampler
+     * is warm and the same call takes ~150 ms.
+     */
+    static final int RETRY_PASSES = 2;
+    static final long RETRY_PAUSE_MS = 400L;
+
+    /**
      * Capture all four quadrants into {@code sessionDir}. Never throws; a
-     * quadrant that fails to sample is simply absent from the composite.
+     * quadrant that still fails after the retries is absent from the composite
+     * (drawn as a marked placeholder tile, see the daemon's composer).
      */
     public Result capture(File sessionDir, String prefix) {
         if (sessionDir == null) return new Result(0, null);
@@ -50,23 +62,57 @@ public final class ParkingSnapshotter {
             env.log("Parking snapshot: cannot create " + sessionDir);
             return new Result(0, null);
         }
+        ParkingEnvironment.ImageOps ops = env.imageOps();
         byte[][] tiles = new byte[4][];
-        int ok = 0;
-        for (int q = 0; q < 4; q++) {
-            byte[] jpeg = null;
-            try {
-                jpeg = env.captureQuadrantJpeg(q);
-            } catch (Throwable t) {
-                env.log("Parking snapshot q" + q + " failed: " + t.getMessage());
+        for (int pass = 0; pass <= RETRY_PASSES; pass++) {
+            boolean missing = false;
+            for (int q = 0; q < 4; q++) {
+                if (tiles[q] != null) continue;
+                byte[] jpeg = null;
+                try {
+                    jpeg = env.captureQuadrantJpeg(q);
+                } catch (Throwable t) {
+                    env.log("Parking snapshot q" + q + " failed: " + t.getMessage());
+                }
+                if (jpeg == null || jpeg.length == 0) {
+                    missing = true;
+                    continue;
+                }
+                boolean blank = false;
+                try { blank = ops != null && ops.isBlank(jpeg); } catch (Throwable ignored) {}
+                if (blank) {
+                    // Rendered before the texture was valid: a flat black plane,
+                    // not a dark scene. Treat like a miss and sample again.
+                    env.log("Parking snapshot q" + q + " blank on pass " + pass + " — retrying");
+                    missing = true;
+                    continue;
+                }
+                tiles[q] = jpeg;
             }
-            if (jpeg == null || jpeg.length == 0) continue;
-            tiles[q] = jpeg;
+            if (!missing) break;
+            if (pass < RETRY_PASSES) {
+                try { Thread.sleep(RETRY_PAUSE_MS); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        int ok = 0;
+        StringBuilder lost = new StringBuilder();
+        for (int q = 0; q < 4; q++) {
+            if (tiles[q] == null) {
+                lost.append(lost.length() == 0 ? "" : ",").append(ParkingNeighbour.sideName(q));
+                continue;
+            }
             File f = new File(sessionDir, prefix + "_" + ParkingNeighbour.sideName(q) + ".jpg");
-            if (writeAtomic(f, jpeg)) ok++;
+            if (writeAtomic(f, tiles[q])) ok++;
+        }
+        if (lost.length() > 0) {
+            env.log("Parking snapshot " + prefix + ": no frame for " + lost + " after "
+                    + (RETRY_PASSES + 1) + " attempts (camera pipeline busy or tile unavailable)");
         }
         File composite = null;
         if (ok > 0) {
-            ParkingEnvironment.ImageOps ops = env.imageOps();
             if (ops != null) {
                 try {
                     byte[] mosaic = ops.composeMosaic(tiles, COMPOSITE_TILE_W, COMPOSITE_TILE_H, JPEG_QUALITY);
@@ -79,9 +125,12 @@ public final class ParkingSnapshotter {
                 }
             }
             if (composite == null) {
-                // No composite: fall back to the front tile as the banner image.
-                File front = new File(sessionDir, prefix + "_front.jpg");
-                if (front.isFile()) composite = front;
+                // No composite: fall back to any tile we did get as the banner image.
+                for (int q = 0; q < 4 && composite == null; q++) {
+                    if (tiles[q] == null) continue;
+                    File f = new File(sessionDir, prefix + "_" + ParkingNeighbour.sideName(q) + ".jpg");
+                    if (f.isFile()) composite = f;
+                }
             }
         }
         return new Result(ok, composite);

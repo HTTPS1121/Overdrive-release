@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">Camadas do mapa</string>
+    <string name="navmap_google_type_default">Mapa do Google</string>
+    <string name="navmap_google_type_satellite">Satélite</string>
+    <string name="navmap_google_type_hybrid">Híbrido</string>
+    <string name="navmap_google_type_terrain">Relevo</string>
+    <string name="navmap_google_type_overdrive">Mapa do OverDrive</string>
+    <string name="navmap_google_traffic">Trânsito em tempo real</string>
+    <string name="navmap_google_traffic_on">Trânsito em tempo real ativado</string>
+    <string name="navmap_google_traffic_off">Trânsito em tempo real desativado</string>
+    <string name="navmap_google_traffic_paused">Trânsito em tempo real pausado até %1$s (limite diário gratuito)</string>
+    <string name="navmap_google_map_paused">Mapa do Google pausado até %1$s (limite diário gratuito)</string>
+    <string name="navmap_google_map_unavailable">Mapa do Google indisponível; exibindo o mapa do OverDrive</string>
+    <string name="navmap_google_key_problem">Problema na chave do Google Maps. Verifique as configurações do RoadSense.</string>
+    <string name="navmap_google_route_key_problem">O roteamento do Google recusou a chave. Verifique as configurações do RoadSense.</string>
+    <string name="navmap_google_route_limit">Limite de roteamento do Google atingido por hoje</string>
+    <string name="navmap_google_arrived">Você chegou ao seu destino</string>
+    <string name="navmap_google_traffic_delay">+%1$s de trânsito</string>
+    <string name="navmap_google_no_delays">Sem atrasos no trânsito</string>
+    <string name="navmap_google_faster_route">Rota mais rápida encontrada: economia de %1$s</string>
+    <string name="navmap_google_faster_route_switch">Trocar</string>
+    <string name="navmap_google_routes_by_google">Rotas do Google</string>
+    <string name="navmap_google_routing_provided_by">Roteamento fornecido por %1$s</string>
+    <string name="navmap_google_place_failed">Não foi possível abrir esse local</string>
+    <string name="navmap_google_finding_place">Buscando o local…</string>
+</resources>

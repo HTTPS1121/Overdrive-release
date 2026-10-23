@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title data-i18n="widgetBuilder.page_title">Widget Builder - OverDrive</title>
+    <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=19"></script>
+    <script>
+        // Design · My widgets · Community as the shared section tabs; the car app gets no tabs (the page shows its notice there).
+        if (typeof window.AndroidBridge === 'undefined' && document.documentElement.getAttribute('data-android-embed') !== '1') {
+            window.OT_TABS = [
+                { id: 'design', label: 'Design', i18n: 'widgetBuilder.mode_design', svg: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', readOnly: true },
+                { id: 'mine', label: 'My widgets', i18n: 'widgetBuilder.tab_mine', svg: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/>', readOnly: true },
+                { id: 'community', label: 'Community', i18n: 'widgetBuilder.mode_community', svg: '<path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/>', readOnly: true }
+            ];
+        }
+    </script>
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
+    <link rel="stylesheet" href="../shared/widget-builder/builder.css?v=4">
+</head>
+<body class="wb-page">
+    <div class="app-layout">
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <div id="app-shell-mount"></div>
+        <main class="main-content">
+            <div class="mobile-header">
+                <button class="menu-toggle" type="button" onclick="toggleSidebar()" aria-label="Open menu" data-i18n-attr="aria-label:widgetBuilder.open_menu">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+                </button>
+                <span style="font-weight:600;" data-i18n="widgetBuilder.title">Widget Builder</span>
+                <div style="width:40px;"></div>
+            </div>
+
+            <header class="page-header">
+                <h1 class="page-title" data-i18n="widgetBuilder.title">Widget Builder</h1>
+            </header>
+
+            <div class="page-body">
+                <div class="wb" id="wb" data-mode="design" data-panel="layers">
+                    <section class="wb-design" id="wbDesign" data-tab="design">
+                        <div class="wb-col wb-left" id="wbLeft" aria-label="Templates, layers and saved widgets" data-i18n-attr="aria-label:widgetBuilder.left_aria">
+                            <div class="card wb-card-tpls">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
+                                        <span data-i18n="widgetBuilder.start_from">Start from</span>
+                                    </div>
+                                </div>
+                                <div class="card-body"><div class="wb-tpls" id="wbTpls"></div></div>
+                            </div>
+                            <div class="card wb-card-layers">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>
+                                        <span data-i18n="widgetBuilder.layers">Layers</span>
+                                    </div>
+                                    <span class="wb-addmenu" id="wbAddMenu">
+                                        <button type="button" class="btn btn-secondary wb-addbtn" id="wbAddBtn" aria-haspopup="true" aria-expanded="false" aria-controls="wbAddList">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                            <span data-i18n="widgetBuilder.add">Add</span>
+                                        </button>
+                                        <span class="wb-menu" id="wbAddList" role="menu"></span>
+                                    </span>
+                                </div>
+                                <div class="card-body"><div class="wb-layers" id="wbLayers"></div></div>
+                            </div>
+                        </div>
+
+                        <div class="wb-col wb-center" id="wbCenter">
+                            <div class="card wb-preview" id="wbPreview">
+                                <div class="card-header wb-stagehead">
+                                    <div class="card-title wb-st-title">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 18v3"/></svg>
+                                        <span data-i18n="widgetBuilder.preview_title">Preview</span>
+                                    </div>
+                                    <div class="wb-st-acts">
+                                        <button type="button" class="btn btn-icon wb-share" id="wbShare" disabled title="Share in the community" aria-label="Share in the community" data-i18n-attr="title:widgetBuilder.share_title;aria-label:widgetBuilder.share_title">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        </button>
+                                        <button type="button" class="btn btn-secondary wb-save" id="wbSave" disabled>
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                            <span class="wb-save-long" data-i18n="widgetBuilder.save">Save to car</span>
+                                            <span class="wb-save-short" data-i18n="widgetBuilder.save_short">Save</span>
+                                        </button>
+                                    </div>
+                                    <div class="wb-st-ctl">
+                                        <div class="filter-tabs" id="wbTheme" role="group" aria-label="Day or night look" data-i18n-attr="aria-label:widgetBuilder.theme_aria">
+                                            <button type="button" class="filter-tab" data-v="night" data-i18n="widgetBuilder.theme_night">Night</button>
+                                            <button type="button" class="filter-tab" data-v="day" data-i18n="widgetBuilder.theme_day">Day</button>
+                                        </div>
+                                        <div class="filter-tabs wb-zoom" id="wbZoom" role="group" aria-label="Zoom" data-i18n-attr="aria-label:widgetBuilder.zoom_aria">
+                                            <button type="button" class="filter-tab active" data-v="1" aria-pressed="true">1×</button>
+                                            <button type="button" class="filter-tab" data-v="1.32" aria-pressed="false">1.3×</button>
+                                        </div>
+                                        <span class="status-badge inactive wb-docstate" id="wbDocState" role="status"></span>
+                                    </div>
+                                    <div class="wb-meter" id="wbMeter" aria-hidden="true"></div>
+                                </div>
+                                <div class="wb-stage" id="wbStage" data-look="night">
+                                    <svg class="wb-map" viewBox="0 0 800 372" preserveAspectRatio="none" aria-hidden="true">
+                                        <g fill="none" stroke="currentColor">
+                                            <path d="M-20 300 C 140 250, 220 300, 360 220 S 620 120, 820 150" stroke-width="16"/>
+                                            <path d="M120 -10 C 160 90, 150 180, 260 260 S 420 360, 470 400" stroke-width="9"/>
+                                            <path d="M520 -10 C 500 80, 560 140, 640 200 S 760 260, 820 250" stroke-width="7"/>
+                                            <path d="M-10 120 C 120 140, 260 90, 420 110 S 640 60, 820 70" stroke-width="5"/>
+                                            <path d="M300 -10 L 340 380" stroke-width="4"/>
+                                            <path d="M620 380 C 600 300, 660 260, 820 300" stroke-width="5"/>
+                                        </g>
+                                        <path class="wb-route" d="M-20 300 C 140 250, 220 300, 360 220 S 620 120, 820 150" fill="none" stroke-width="4"/>
+                                        <circle class="wb-pos" cx="360" cy="220" r="7"/><circle class="wb-pos-halo" cx="360" cy="220" r="16"/>
+                                    </svg>
+                                    <div class="wb-status"><div class="wb-clock" id="wbClock"></div><div class="wb-date" id="wbDate"></div><div class="wb-icons"><i></i><i></i><i></i></div></div>
+                                    <div class="wb-slot" id="wbSlot"></div>
+                                    <div class="wb-dock" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i><i></i><i></i></div>
+                                </div>
+                                <div class="wb-mtabs-row">
+                                    <div class="filter-tabs wb-mtabs" id="wbMtabs" role="tablist" aria-label="Builder sections" data-i18n-attr="aria-label:widgetBuilder.sections_aria">
+                                        <button type="button" role="tab" class="filter-tab active" data-p="layers" aria-selected="true" data-i18n="widgetBuilder.tab_layers">Layers</button>
+                                        <button type="button" role="tab" class="filter-tab" data-p="edit" aria-selected="false" data-i18n="widgetBuilder.tab_edit">Edit</button>
+                                        <button type="button" role="tab" class="filter-tab" data-p="data" aria-selected="false" data-i18n="widgetBuilder.tab_data">Car data</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="card wb-sim" id="wbSim">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+                                        <span data-i18n="widgetBuilder.tab_data">Car data</span>
+                                    </div>
+                                    <span class="status-badge inactive wb-simstate" id="wbSimState"></span>
+                                </div>
+                                <div class="card-body">
+                                    <div class="wb-live" id="wbLive" hidden>
+                                        <span class="wb-note" data-i18n="widgetBuilder.live_paused">Trying a situation with made-up readings.</span>
+                                        <button type="button" class="btn btn-secondary" id="wbBackLive" data-i18n="widgetBuilder.back_to_live">Back to live</button>
+                                    </div>
+                                    <h4 class="wb-section-title wb-try" data-i18n="widgetBuilder.try_situation">Try a situation</h4>
+                                    <div class="checkbox-row wb-chips wb-scen" id="wbScen"></div>
+                                    <div class="wb-simonly" id="wbSimOnly">
+                                    <div class="wb-units" id="wbUnits"></div>
+                                    <div class="setting-row setting-row--inline wb-simtoggle">
+                                        <div class="setting-info"><div class="setting-name" data-i18n="widgetBuilder.sim_stale">No fresh data</div></div>
+                                        <div class="setting-control">
+                                            <label class="toggle-switch"><input type="checkbox" id="wbStale" aria-label="No fresh data" data-i18n-attr="aria-label:widgetBuilder.sim_stale"><span class="toggle-slider"></span></label>
+                                        </div>
+                                    </div>
+                                    <div class="setting-row setting-row--inline wb-simtoggle">
+                                        <div class="setting-info"><div class="setting-name" data-i18n="widgetBuilder.sim_reduce_motion">Reduce motion</div></div>
+                                        <div class="setting-control">
+                                            <label class="toggle-switch"><input type="checkbox" id="wbMotion" aria-label="Reduce motion" data-i18n-attr="aria-label:widgetBuilder.sim_reduce_motion"><span class="toggle-slider"></span></label>
+                                        </div>
+                                    </div>
+                                    </div>
+                                    <div class="wb-sigs" id="wbSigs"></div>
+                                    <div class="wb-note wb-simnote" id="wbSimNote"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="wb-col wb-right">
+                            <div class="card wb-edit" id="wbRight" aria-label="Edit" data-i18n-attr="aria-label:widgetBuilder.tab_edit">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                                        <span data-i18n="widgetBuilder.tab_edit">Edit</span>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="filter-tabs wb-tabs" id="wbTabs" role="tablist">
+                                        <button type="button" role="tab" class="filter-tab active" data-v="props" aria-selected="true" data-i18n="widgetBuilder.tab_props">Properties</button>
+                                        <button type="button" role="tab" class="filter-tab" data-v="file" aria-selected="false" data-i18n="widgetBuilder.tab_file">Widget file</button>
+                                        <button type="button" role="tab" class="filter-tab" data-v="checks" aria-selected="false"><span data-i18n="widgetBuilder.tab_checks">Checks</span><span class="status-badge active wb-n ok" id="wbCheckN">✓</span></button>
+                                    </div>
+                                    <div class="wb-pane on" id="wbPaneProps" role="tabpanel"></div>
+                                    <div class="wb-pane" id="wbPaneFile" role="tabpanel"></div>
+                                    <div class="wb-pane" id="wbPaneChecks" role="tabpanel"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="wb-minetab" id="wbMineTab" data-tab="mine" aria-label="My widgets" data-i18n-attr="aria-label:widgetBuilder.tab_mine">
+                        <div class="wb-section-head">
+                            <h2 class="wb-section-title" data-i18n="widgetBuilder.mine">My widgets on the car</h2>
+                            <span class="status-badge inactive wb-count" id="wbMineCount"></span>
+                            <button type="button" class="btn btn-secondary wb-mine-new" id="wbMineNew">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                <span data-i18n="widgetBuilder.mine_design">Design a widget</span>
+                            </button>
+                        </div>
+                        <div class="wb-mine" id="wbMine"></div>
+                    </section>
+                    <section class="wb-community" id="wbCommunity" data-tab="community" aria-label="Community" data-i18n-attr="aria-label:widgetBuilder.mode_community"></section>
+                    <div class="wb-loading" id="wbLoading" data-i18n="widgetBuilder.loading">Loading…</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="../shared/auth.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/widget-builder/engine.js?v=3"></script>
+    <script src="../shared/widget-builder/builder.js?v=4"></script>
+    <script src="../shared/widget-builder/community.js?v=4"></script>
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('sidebarOverlay').classList.toggle('show');
+        }
+        BYD.i18n.init().then(function () {
+            BYD.core.init();
+            WidgetBuilder.init();
+        });
+    </script>
+</body>
+</html>

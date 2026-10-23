@@ -74,6 +74,14 @@ object DaemonHttpClient {
         conn.setRequestProperty("Cookie", "byd_session=$jwt")
     }
 
+    /** Session cookie header value for clients that are not HttpURLConnection (OkHttp WebSocket). */
+    @JvmStatic
+    fun sessionCookie(): String? = currentJwt()?.let { "byd_session=$it" }
+
+    /** Loopback WebSocket URL for a daemon path starting with "/". */
+    @JvmStatic
+    fun webSocketUrl(path: String): String = "ws://127.0.0.1:${CameraDaemon.HTTP_PORT}$path"
+
     /** Force a refresh on next call (e.g. after token regeneration). */
     @JvmStatic
     fun invalidate() {

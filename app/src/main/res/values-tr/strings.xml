@@ -435,7 +435,8 @@
     <string name="toast_soh_reset_failed_with_message">Sıfırlanamadı: %1$s</string>
     <string name="toast_select_at_least_one_category">En az bir kategori seçin</string>
     <string name="toast_reset_failed_with_error">Sıfırlanamadı: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s trafik monitörü...</string>
+    <string name="toast_traffic_monitor_enabling">Traffic Monitor etkinleştiriliyor…</string>
+    <string name="toast_traffic_monitor_disabling">Traffic Monitor devre dışı bırakılıyor…</string>
     <string name="dialog_close">Kapat</string>
     <string name="dialog_reset">Sıfırla</string>
     <string name="dialog_delete">Sil</string>
@@ -454,13 +455,14 @@
     <string name="dialog_traffic_cannot_check_title">Durum denetlenemiyor</string>
     <string name="dialog_traffic_cannot_check_message">ADB bağlantısı henüz hazır değil.\n\nUygulamanın sistem paketlerini yönetebilmesi için ADB erişimi gerekiyor. Lütfen şunlardan emin olun:\n\n• Geliştirici seçeneklerinde USB hata ayıklama etkin\n• ADB yetkilendirme isteği kabul edildi\n\nBağlantı kurulduğunda durum otomatik olarak güncellenir.</string>
     <string name="dialog_traffic_disable_title">BYD Traffic Monitor devre dışı bırakılsın mı?</string>
-    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor), arka planda yol trafiği durumunu sürekli izleyen yerleşik bir sistem uygulamasıdır.\n\nNeden devre dışı bırakmalı?\n\n• Mobil veri tüketir (park hâlindeyken bile)\n• Arka planda CPU ve batarya kullanır\n• Ayrı bir navigasyon uygulaması kullanıyorsanız gerekmez\n• Dashcam\'in ağ kullanımını engelleyebilir\n\nDevre dışı bırakmak güvenlidir — yalnızca haritadaki yerleşik trafik katmanını etkiler. Navigasyon, Bluetooth ve diğer tüm araç işlevleri etkilenmez.\n\nDevre dışı bıraktıktan sonra zorla yeniden başlatma gerekir (orta konsol düğmesini 5 saniye basılı tutun).</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor), hangi uygulamaların mobil veri kullanabileceğini denetleyen yerleşik bir sistem uygulamasıdır. OverDrive dahil üçüncü taraf uygulamaların aracın yerleşik SIM\'ini kullanmasını engeller.\n\nNeden devre dışı bırakmalı?\n\n• OverDrive ve yüklediğiniz diğer uygulamaların BYD SIM üzerinden internet kullanmasını sağlar\n• Aracınıza BYD SIM üzerinden uzaktan erişmek için gereklidir\n\nNavigasyon, Bluetooth ve diğer tüm araç işlevleri etkilenmez.\n\nDevre dışı bıraktıktan sonra zorla yeniden başlatma gerekir (orta konsol düğmesini 5 saniye basılı tutun).</string>
     <string name="dialog_traffic_enable_title">BYD Traffic Monitor yeniden etkinleştirilsin mi?</string>
-    <string name="dialog_traffic_enable_message">BYD Traffic Monitor şu anda devre dışı.\n\nYeniden etkinleştirmek, navigasyon haritasındaki yerleşik trafik katmanını geri getirir. Arka planda çalışacağını ve mobil veri tüketeceğini unutmayın.\n\nEtkinleştirdikten sonra zorla yeniden başlatma gerekir (orta konsol düğmesini 5 saniye basılı tutun).</string>
-    <string name="dialog_traffic_status_title">Trafik İzleyicisi %1$s</string>
+    <string name="dialog_traffic_enable_message">BYD Traffic Monitor şu anda devre dışı.\n\nYeniden etkinleştirirseniz OverDrive ve diğer üçüncü taraf uygulamaların aracın yerleşik SIM\'ini kullanması tekrar engellenir, bu yüzden BYD SIM üzerinden uzaktan erişim artık çalışmaz.\n\nEtkinleştirdikten sonra zorla yeniden başlatma gerekir (orta konsol düğmesini 5 saniye basılı tutun).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor etkin</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor devre dışı</string>
     <string name="dialog_traffic_reboot_message">Değişiklik uygulandı.\n\nLütfen şimdi zorla yeniden başlatma yapın:\nOrta konsol düğmesini 5 saniye basılı tutun.</string>
     <string name="traffic_monitor_loading">Trafik monitörü: Denetleniyor…</string>
-    <string name="traffic_monitor_tap_to_check">Trafik monitörü (kontrol etmek için dokun)</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (kontrol etmek için dokun)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">Yolculuklar</string>
     <string name="reset_label_soc_history">SoC + 12V geçmişi</string>
@@ -516,6 +518,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Bu ayar MQTT trafiğini Tailscale üzerinden yönlendirir; böylece port yönlendirme yapmadan tailnet\'inizdeki özel bir broker\'a ulaşabilirsiniz.\n\nEtkinken:\n• Tailnet\'teki bir broker\'a MQTT bağlantısı çalışır (ör. tailnet\'inizdeki bir cihazda Mosquitto)\n• Herkese açık broker\'lara (HiveMQ, AWS IoT vb.) MQTT bağlantısı başarısız olur — Tailscale yalnızca tailnet\'inize yönlendirir\n• Değişikliğin uygulanması için Tailscale daemon\'u yeniden başlatılır\n• Diğer uygulama trafiği ve cihazın geri kalanı etkilenmez\n\nBunu istediğiniz zaman kapatabilirsiniz.</string>
     <string name="dialog_zrok_reset_title">Zrok ortamını sıfırla</string>
     <string name="dialog_zrok_reset_message">Bu işlem:\n• Çalışıyorsa Zrok tünelini durdurur\n• Zrok ortamını bu cihazdan kaldırır\n• Kayıtlı token\'ı siler\n\nToken\'ınızı yeniden girip yeniden etkinleştirmeniz gerekir. Bu işlem zrok.io\'daki 5 cihaz yuvanızdan birini kullanır.\n\nEmin misiniz?</string>
+    <string name="dialog_tunnel_conflict_title">Başka bir tünel çalışıyor</string>
+    <string name="dialog_tunnel_conflict_message">%1$s zaten çalışıyor. Geçiş yapılsın mı (%1$s durdurulur ve %2$s başlatılır), yoksa iki tünel birlikte mi çalışsın?\n\nİkisi birlikte çalışırken:\n• Kontrol paneline iki herkese açık bağlantıdan erişilebilir\n• Boştayken mobil veri kullanımı biraz artar\n• Yeniden başlatmanın ardından ikisi de otomatik olarak başlar</string>
+    <string name="dialog_tunnel_conflict_switch">Geçiş yap</string>
+    <string name="dialog_tunnel_conflict_run_both">İkisini de çalıştır</string>
     <string name="toast_resetting_zrok">Zrok ortamı sıfırlanıyor…</string>
     <string name="toast_zrok_reset_success">Zrok ortamı sıfırlandı. Yeniden kurmak için yeni bir token girin.</string>
     <string name="toast_zrok_reset_partial">Ortam sıfırlandı (token dosyasının elle temizlenmesi gerekebilir)</string>
@@ -662,6 +668,8 @@
     <string name="settings_about_support_share_value">Paylaşılan her bağlantı başka bir BYD sahibinin Overdrive\'ı keşfetmesine yardımcı olur.</string>
     <string name="settings_about_support_share_message">Overdrive\'a göz atın — BYD için açık kaynaklı gözetim &amp; dashcam uygulaması: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Overdrive\'ı Paylaş</string>
+    <string name="settings_about_youtube_title">YouTube\'da abone ol</string>
+    <string name="settings_about_youtube_value">Beğen, abone ol ve paylaş — her izlenme Overdrive\'ın büyümesine yardım eder.</string>
     <string name="settings_about_open_link_failed">Bağlantı açılamadı.</string>
     <string name="settings_about_open_link_copied">Tarayıcı bulunamadı. URL kopyalandı: %1$s</string>
     <string name="settings_about_support_kofi_title">Sonraki sürüme destek olun</string>
@@ -700,7 +708,7 @@
     <string name="recordings_preview_placeholder_body">Oynatmak için soldaki bir öğeye dokunun.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">ADB Konsolu</string>
-    <string name="diagnostics_section_traffic">Trafik monitörü</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Kamera sondası</string>
     <string name="diagnostics_section_battery">Batarya sağlığı</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -816,6 +824,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Ön/son tamponlar, kodek, depolama sınırları.</string>
     <string name="settings_section_surveillance_subtitle">Algılama bölgeleri, zamanlama, hareket hassasiyeti.</string>
+    <string name="settings_section_storage_subtitle">Kayıtların kaydedildiği yer, alan sınırları, BYD araç kamerası temizliği.</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT çalıştırıcıları.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">OverDrive hakkında</string>
@@ -1194,7 +1203,7 @@
     <string name="onboarding_later">Bunu sonra yap</string>
     <string name="onboarding_camera_pano_body">Birleştirilmiş 4\'lü görüntüyü bulmak için okları kullanın. ALTTAN okuyun: sol alt ARKA, sağ alt SOL taraftır.</string>
     <string name="onboarding_expert_roadsense_body">RoadSense, yol tehlikelerini — tümsekler, çukurlar, kasisler — algılamak için aracın hareket sensörlerini ve GPS\'i kullanır ve bilinen tehlikelere yaklaşırken sizi önceden uyarır. Sekmeleri algılama, tehlike haritası, uyarı sesleri ve Kör Nokta\'yı kapsar. Herhangi birini kullanmak için ana anahtarı açın.</string>
-    <string name="onboarding_expert_traffic_title">Trafik monitörü — uzaktan erişim için gerekli</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — uzaktan erişim için gerekli</string>
     <string name="onboarding_expert_daemons_body">Bu anahtarlar arka plan hizmetlerini başlatır ve durdurur. Kamera, Gözetim veya ACC Sentry\'yi KAPATMAK kaydı durdurur ve siz tekrar açana kadar — yeniden başlatmadan sonra bile — kapalı tutar.</string>
     <string name="onboarding_camera_verify_repick">Yeniden seç</string>
     <string name="onboarding_dash_chips_body">Üstteki çipler kayıt, hizmetler ve uzaktan bağlantınızı gösterir. Kendi kendilerine güncellenir — düğme değildirler.</string>
@@ -1338,6 +1347,10 @@
     <string name="projection_autostart_conflict_confirm">Bu uygulamayı kullan</string>
     <string name="projection_app_uninstalled">O uygulama artık yüklü değil.</string>
     <string name="projection_status_service_down">Ayna hizmeti hazır değil — uygulamayı (veya kamera daemon\'ını) yeniden başlatıp tekrar deneyin.</string>
+    <string name="projection_status_connecting">Gösterge paneline bağlanılıyor…</string>
+    <string name="projection_status_mirror_unavailable">Yansıma kullanılamıyor</string>
+    <string name="projection_fullscreen_enter">Tam ekran</string>
+    <string name="projection_fullscreen_exit">Tam ekrandan çık</string>
     <string name="dashboard_modern_vehicle_status">Araç durumu</string>
     <string name="vehicle_dialog_detection">Algılama: %1$s</string>
     <string name="vehicle_dialog_detection_auto">Otomatik</string>
@@ -1678,4 +1691,17 @@
     <string name="toast_share_failed">Paylaşılamadı</string>
     <string name="vehicle_dialog_value_pending">—</string>
     <string name="roi_tap_to_add_points">Nokta eklemek için dokunun (%1$d-%2$d)</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Dinliyorum…</string>
+    <string name="voice_overlay_thinking">Düşünüyorum…</string>
+    <string name="voice_overlay_speaking">Konuşuyorum…</string>
+    <string name="voice_overlay_done">Tamam</string>
+    <string name="voice_overlay_cancelled">İptal edildi</string>
+    <string name="voice_overlay_not_understood">Üzgünüm, anlayamadım</string>
+    <string name="voice_overlay_offline">Yapay zekâ asistanı kullanılamıyor</string>
+    <string name="voice_overlay_busy">Asistan zaten kullanımda</string>
+    <string name="voice_overlay_blocked_moving">Sürüş sırasında kullanılamaz</string>
+    <string name="voice_overlay_refused">Bu sesle yapılamaz</string>
+    <string name="voice_overlay_failed">Bu tamamlanamadı</string>
 </resources>

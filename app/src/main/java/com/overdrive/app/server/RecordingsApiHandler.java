@@ -387,6 +387,14 @@ public class RecordingsApiHandler {
             return;
         }
 
+        // A thumbnail rendered from a recording that is still being written
+        // (<name>.mp4.tmp) is provisional: the hero JPEG and the cached frame
+        // can both change once the clip is finalized. Tell every cache (the
+        // browser's and any CDN in front of a tunnel) not to keep it.
+        String thumbCacheControl = isInFlightSource(videoFile)
+                ? HttpResponse.NO_STORE
+                : HttpResponse.IMAGE_CACHE_CONTROL;
+
         // SOTA: if a v3 hero JPEG exists alongside the MP4, prefer it.
         // It's the peak-severity moment captured during the recording rather
         // than a generic frame at +1s. Backwards-compat: legacy clips without
@@ -396,13 +404,13 @@ public class RecordingsApiHandler {
                 ? exactHero
                 : (requestedPath == null ? findSiblingJpeg(thumbName) : null);
         if (heroSibling != null && heroSibling.exists() && heroSibling.length() > 0) {
-            HttpResponse.sendImage(out, heroSibling, "image/jpeg");
+            HttpResponse.sendImage(out, heroSibling, "image/jpeg", thumbCacheControl);
             return;
         }
 
         // If cached thumbnail exists and is valid, serve it immediately
         if (thumbFile.exists() && thumbFile.length() > 0) {
-            HttpResponse.sendImage(out, thumbFile, "image/jpeg");
+            HttpResponse.sendImage(out, thumbFile, "image/jpeg", thumbCacheControl);
             return;
         }
 
@@ -493,9 +501,20 @@ public class RecordingsApiHandler {
         sendThumbnailGenerating(out);
     }
 
-    private static void sendThumbnailGenerating(OutputStream out) throws Exception {
+    /** True when the thumbnail source is a recording still being written. */
+    static boolean isInFlightSource(File videoFile) {
+        return videoFile != null && videoFile.getName().endsWith(".tmp");
+    }
+
+    /**
+     * 202 placeholder while the thumbnail is generated in the background.
+     * {@code no-store}: a 202 for a URL that will shortly return the real
+     * image must never be kept by the browser or a CDN.
+     */
+    static void sendThumbnailGenerating(OutputStream out) throws Exception {
         String headers = "HTTP/1.1 202 Accepted\r\n"
                 + "Content-Type: application/json\r\n"
+                + "Cache-Control: " + HttpResponse.NO_STORE + "\r\n"
                 + "Retry-After: 1\r\n"
                 + "Connection: close\r\n\r\n";
         out.write(headers.getBytes());

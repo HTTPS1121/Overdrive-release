@@ -286,7 +286,7 @@ public final class LocationSidecarWriter {
             // so without this bump their bytes stay invisible to the parked-tick
             // skip until the hourly backstop. Best-effort.
             try {
-                com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+                com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(jsonFile);
             } catch (Throwable ignored) {}
         } catch (Throwable t) {
             logger.warn("writeJsonAtomic failed for " + mp4File.getName()
@@ -307,7 +307,7 @@ public final class LocationSidecarWriter {
         srt.write(mp4File);
         // Same rationale as writeJsonAtomic's bump: post-finalization bytes.
         try {
-            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(mp4File);
         } catch (Throwable ignored) {}
     }
 

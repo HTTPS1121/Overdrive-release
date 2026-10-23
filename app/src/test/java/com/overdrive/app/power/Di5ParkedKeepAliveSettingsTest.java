@@ -15,11 +15,13 @@ public class Di5ParkedKeepAliveSettingsTest {
                 Di5ParkedKeepAliveSettings.fromSurveillance(new JSONObject(), false);
         assertFalse(s.isEnabled());
         assertFalse(s.hasAnyEffectiveLever());
+        assertFalse(s.isParkedLinkEffective());
         assertFalse(s.isMcuHoldEffective());
         assertFalse(s.isMcuPowerHoldEffective());
         assertFalse(s.isCameraHeartbeatEffective());
         assertFalse(s.isApHoldEffective());
         // Lever defaults exist but are only effective under the master switch.
+        assertTrue(s.parkedLinkInConfig);
         assertTrue(s.mcuHoldInConfig);
         assertTrue(s.mcuPowerHoldInConfig);
         assertFalse(s.cameraHeartbeatInConfig);
@@ -39,10 +41,11 @@ public class Di5ParkedKeepAliveSettingsTest {
     }
 
     @Test
-    public void masterSwitchEnablesOnlyMcuHoldByDefault() throws Exception {
+    public void masterSwitchEnablesQnxAndMcuHoldsByDefault() throws Exception {
         JSONObject surv = new JSONObject().put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true);
         Di5ParkedKeepAliveSettings s = Di5ParkedKeepAliveSettings.fromSurveillance(surv, false);
         assertTrue(s.isEnabled());
+        assertTrue(s.isParkedLinkEffective());
         assertTrue(s.isMcuHoldEffective());
         // OEM-parity power hold rides the MCU hold by default.
         assertTrue(s.isMcuPowerHoldEffective());
@@ -74,6 +77,7 @@ public class Di5ParkedKeepAliveSettingsTest {
         // Kill switch beats everything.
         Di5ParkedKeepAliveSettings s3 = Di5ParkedKeepAliveSettings.fromSurveillance(
                 new JSONObject().put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true), true);
+        assertFalse(s3.isParkedLinkEffective());
         assertFalse(s3.isMcuPowerHoldEffective());
     }
 
@@ -132,12 +136,53 @@ public class Di5ParkedKeepAliveSettingsTest {
     }
 
     @Test
+    public void oldTransportOptOutSurvivesParsingAndDefaultSeeding() throws Exception {
+        JSONObject surveillance = new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(ParkedLinkContract.LEGACY_CONFIG_KEY, false);
+        assertFalse(Di5ParkedKeepAliveSettings.fromSurveillance(surveillance, false)
+                .isParkedLinkEffective());
+        Di5ParkedKeepAliveSettings.ensureLinkConfig(surveillance);
+        assertFalse(surveillance.getBoolean(Di5ParkedKeepAliveSettings.KEY_PARKED_LINK));
+        assertFalse(Di5ParkedKeepAliveSettings.fromSurveillance(surveillance, false)
+                .isParkedLinkEffective());
+    }
+
+    @Test
+    public void explicitNewPreferenceWinsOverLegacyValue() throws Exception {
+        JSONObject surveillance = new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(ParkedLinkContract.LEGACY_CONFIG_KEY, false)
+                .put(Di5ParkedKeepAliveSettings.KEY_PARKED_LINK, true);
+        Di5ParkedKeepAliveSettings.ensureLinkConfig(surveillance);
+        assertTrue(Di5ParkedKeepAliveSettings.fromSurveillance(surveillance, false)
+                .isParkedLinkEffective());
+        surveillance.put(Di5ParkedKeepAliveSettings.KEY_PARKED_LINK, false);
+        Di5ParkedKeepAliveSettings.ensureLinkConfig(surveillance);
+        assertFalse(Di5ParkedKeepAliveSettings.fromSurveillance(surveillance, false)
+                .isParkedLinkEffective());
+    }
+
+    @Test
+    public void diagnosticCompatibilityAliasHasTheSameEffectiveValue() throws Exception {
+        JSONObject surveillance = new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true);
+        for (boolean killSwitch : new boolean[]{false, true}) {
+            JSONObject status = Di5ParkedKeepAliveSettings
+                    .fromSurveillance(surveillance, killSwitch).toJson();
+            assertEquals(status.getBoolean("parkedLink"),
+                    status.getBoolean(ParkedLinkContract.LEGACY_SETTINGS_STATUS_KEY));
+        }
+    }
+
+    @Test
     public void toJsonReportsEffectiveValues() throws Exception {
         JSONObject surv = new JSONObject()
                 .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
                 .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false);
         JSONObject j = Di5ParkedKeepAliveSettings.fromSurveillance(surv, false).toJson();
         assertTrue(j.getBoolean("enabled"));
+        assertTrue(j.getBoolean("parkedLink"));
         assertFalse(j.getBoolean("mcuHold"));
         assertFalse(j.getBoolean("cameraHeartbeat"));
         assertFalse(j.getBoolean("apHold"));

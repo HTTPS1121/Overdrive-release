@@ -1,0 +1,256 @@
+d ǎ k āi l ěng q ì #0.25 @打開冷氣
+k āi l ěng q ì #0.25 @開冷氣
+k āi q ǐ l ěng q ì #0.25 @開啟冷氣
+d ǎ k āi k ōng t iáo #0.25 @打開空調
+k āi k ōng t iáo #0.25 @開空調
+g uān b ì l ěng q ì #0.25 @關閉冷氣
+g uān l ěng q ì #0.25 @關冷氣
+g uān d iào l ěng q ì #0.25 @關掉冷氣
+g uān b ì k ōng t iáo #0.25 @關閉空調
+g uān k ōng t iáo #0.25 @關空調
+w ēn d ù t iáo d ào sh í l iù d ù #0.20 @溫度調到十六度
+l ěng q ì t iáo d ào sh í l iù d ù #0.20 @冷氣調到十六度
+t iáo d ào sh í l iù d ù #0.20 @調到十六度
+w ēn d ù sh í l iù d ù #0.20 @溫度十六度
+l ěng q ì sh í l iù d ù #0.20 @冷氣十六度
+w ēn d ù t iáo d ào sh í q ī d ù #0.20 @溫度調到十七度
+l ěng q ì t iáo d ào sh í q ī d ù #0.20 @冷氣調到十七度
+t iáo d ào sh í q ī d ù #0.20 @調到十七度
+w ēn d ù sh í q ī d ù #0.20 @溫度十七度
+l ěng q ì sh í q ī d ù #0.20 @冷氣十七度
+w ēn d ù t iáo d ào sh í b ā d ù #0.20 @溫度調到十八度
+l ěng q ì t iáo d ào sh í b ā d ù #0.20 @冷氣調到十八度
+t iáo d ào sh í b ā d ù #0.20 @調到十八度
+w ēn d ù sh í b ā d ù #0.20 @溫度十八度
+l ěng q ì sh í b ā d ù #0.20 @冷氣十八度
+w ēn d ù t iáo d ào sh í j iǔ d ù #0.20 @溫度調到十九度
+l ěng q ì t iáo d ào sh í j iǔ d ù #0.20 @冷氣調到十九度
+t iáo d ào sh í j iǔ d ù #0.20 @調到十九度
+w ēn d ù sh í j iǔ d ù #0.20 @溫度十九度
+l ěng q ì sh í j iǔ d ù #0.20 @冷氣十九度
+èr sh í d ù #0.30 @二十度
+w ēn d ù t iáo d ào èr sh í d ù #0.20 @溫度調到二十度
+l ěng q ì t iáo d ào èr sh í d ù #0.20 @冷氣調到二十度
+t iáo d ào èr sh í d ù #0.25 @調到二十度
+w ēn d ù èr sh í d ù #0.25 @溫度二十度
+l ěng q ì èr sh í d ù #0.25 @冷氣二十度
+èr sh í y í d ù #0.25 @二十一度
+èr sh í y ī d ù #0.25 @二十一度
+w ēn d ù t iáo d ào èr sh í y í d ù #0.20 @溫度調到二十一度
+w ēn d ù t iáo d ào èr sh í y ī d ù #0.20 @溫度調到二十一度
+l ěng q ì t iáo d ào èr sh í y í d ù #0.20 @冷氣調到二十一度
+l ěng q ì t iáo d ào èr sh í y ī d ù #0.20 @冷氣調到二十一度
+t iáo d ào èr sh í y í d ù #0.20 @調到二十一度
+t iáo d ào èr sh í y ī d ù #0.20 @調到二十一度
+w ēn d ù èr sh í y í d ù #0.20 @溫度二十一度
+w ēn d ù èr sh í y ī d ù #0.20 @溫度二十一度
+l ěng q ì èr sh í y í d ù #0.20 @冷氣二十一度
+l ěng q ì èr sh í y ī d ù #0.20 @冷氣二十一度
+èr sh í èr d ù #0.25 @二十二度
+w ēn d ù t iáo d ào èr sh í èr d ù #0.20 @溫度調到二十二度
+l ěng q ì t iáo d ào èr sh í èr d ù #0.20 @冷氣調到二十二度
+t iáo d ào èr sh í èr d ù #0.20 @調到二十二度
+w ēn d ù èr sh í èr d ù #0.20 @溫度二十二度
+l ěng q ì èr sh í èr d ù #0.20 @冷氣二十二度
+èr sh í s ān d ù #0.25 @二十三度
+w ēn d ù t iáo d ào èr sh í s ān d ù #0.20 @溫度調到二十三度
+l ěng q ì t iáo d ào èr sh í s ān d ù #0.20 @冷氣調到二十三度
+t iáo d ào èr sh í s ān d ù #0.20 @調到二十三度
+w ēn d ù èr sh í s ān d ù #0.20 @溫度二十三度
+l ěng q ì èr sh í s ān d ù #0.20 @冷氣二十三度
+èr sh í s ì d ù #0.25 @二十四度
+w ēn d ù t iáo d ào èr sh í s ì d ù #0.20 @溫度調到二十四度
+l ěng q ì t iáo d ào èr sh í s ì d ù #0.20 @冷氣調到二十四度
+t iáo d ào èr sh í s ì d ù #0.20 @調到二十四度
+w ēn d ù èr sh í s ì d ù #0.20 @溫度二十四度
+l ěng q ì èr sh í s ì d ù #0.20 @冷氣二十四度
+èr sh í w ǔ d ù #0.25 @二十五度
+w ēn d ù t iáo d ào èr sh í w ǔ d ù #0.20 @溫度調到二十五度
+l ěng q ì t iáo d ào èr sh í w ǔ d ù #0.20 @冷氣調到二十五度
+t iáo d ào èr sh í w ǔ d ù #0.20 @調到二十五度
+w ēn d ù èr sh í w ǔ d ù #0.20 @溫度二十五度
+l ěng q ì èr sh í w ǔ d ù #0.20 @冷氣二十五度
+èr sh í l iù d ù #0.25 @二十六度
+w ēn d ù t iáo d ào èr sh í l iù d ù #0.20 @溫度調到二十六度
+l ěng q ì t iáo d ào èr sh í l iù d ù #0.20 @冷氣調到二十六度
+t iáo d ào èr sh í l iù d ù #0.20 @調到二十六度
+w ēn d ù èr sh í l iù d ù #0.20 @溫度二十六度
+l ěng q ì èr sh í l iù d ù #0.20 @冷氣二十六度
+èr sh í q ī d ù #0.25 @二十七度
+w ēn d ù t iáo d ào èr sh í q ī d ù #0.20 @溫度調到二十七度
+l ěng q ì t iáo d ào èr sh í q ī d ù #0.20 @冷氣調到二十七度
+t iáo d ào èr sh í q ī d ù #0.20 @調到二十七度
+w ēn d ù èr sh í q ī d ù #0.20 @溫度二十七度
+l ěng q ì èr sh í q ī d ù #0.20 @冷氣二十七度
+èr sh í b ā d ù #0.25 @二十八度
+w ēn d ù t iáo d ào èr sh í b ā d ù #0.20 @溫度調到二十八度
+l ěng q ì t iáo d ào èr sh í b ā d ù #0.20 @冷氣調到二十八度
+t iáo d ào èr sh í b ā d ù #0.20 @調到二十八度
+w ēn d ù èr sh í b ā d ù #0.20 @溫度二十八度
+l ěng q ì èr sh í b ā d ù #0.20 @冷氣二十八度
+èr sh í j iǔ d ù #0.25 @二十九度
+w ēn d ù t iáo d ào èr sh í j iǔ d ù #0.20 @溫度調到二十九度
+l ěng q ì t iáo d ào èr sh í j iǔ d ù #0.20 @冷氣調到二十九度
+t iáo d ào èr sh í j iǔ d ù #0.20 @調到二十九度
+w ēn d ù èr sh í j iǔ d ù #0.20 @溫度二十九度
+l ěng q ì èr sh í j iǔ d ù #0.20 @冷氣二十九度
+s ān sh í d ù #0.25 @三十度
+w ēn d ù t iáo d ào s ān sh í d ù #0.20 @溫度調到三十度
+l ěng q ì t iáo d ào s ān sh í d ù #0.20 @冷氣調到三十度
+t iáo d ào s ān sh í d ù #0.20 @調到三十度
+w ēn d ù s ān sh í d ù #0.20 @溫度三十度
+l ěng q ì s ān sh í d ù #0.20 @冷氣三十度
+w ēn d ù g āo y ì d iǎn #0.20 @溫度高一點
+w ēn d ù g āo y ī d iǎn #0.20 @溫度高一點
+w ēn d ù t iáo g āo y ì d iǎn #0.20 @溫度調高一點
+w ēn d ù t iáo g āo y ī d iǎn #0.20 @溫度調高一點
+t iáo g āo w ēn d ù #0.25 @調高溫度
+sh ēng g āo w ēn d ù #0.25 @升高溫度
+n uǎn y ì d iǎn #0.25 @暖一點
+n uǎn y ī d iǎn #0.25 @暖一點
+w ēn d ù d ī y ì d iǎn #0.20 @溫度低一點
+w ēn d ù d ī y ī d iǎn #0.20 @溫度低一點
+w ēn d ù t iáo d ī y ì d iǎn #0.20 @溫度調低一點
+w ēn d ù t iáo d ī y ī d iǎn #0.20 @溫度調低一點
+t iáo d ī w ēn d ù #0.25 @調低溫度
+j iàng d ī w ēn d ù #0.25 @降低溫度
+l iáng y ì d iǎn #0.25 @涼一點
+l iáng y ī d iǎn #0.25 @涼一點
+t ài l ěng l e #0.25 @太冷了
+h ǎo l ěng #0.30 @好冷
+t ài r è l e #0.25 @太熱了
+h ǎo r è #0.30 @好熱
+f ēng l iàng y í d uàn #0.25 @風量一段
+f ēng l iàng y ī d uàn #0.25 @風量一段
+f ēng l iàng y í d àng #0.25 @風量一檔
+f ēng l iàng y ī d àng #0.25 @風量一檔
+f ēng l iàng t iáo d ào y í d uàn #0.20 @風量調到一段
+f ēng l iàng t iáo d ào y ī d uàn #0.20 @風量調到一段
+f ēng l iàng èr d uàn #0.25 @風量二段
+f ēng l iàng èr d àng #0.25 @風量二檔
+f ēng l iàng t iáo d ào èr d uàn #0.20 @風量調到二段
+f ēng l iàng s ān d uàn #0.25 @風量三段
+f ēng l iàng s ān d àng #0.25 @風量三檔
+f ēng l iàng t iáo d ào s ān d uàn #0.20 @風量調到三段
+f ēng l iàng s ì d uàn #0.25 @風量四段
+f ēng l iàng s ì d àng #0.25 @風量四檔
+f ēng l iàng t iáo d ào s ì d uàn #0.20 @風量調到四段
+f ēng l iàng w ǔ d uàn #0.25 @風量五段
+f ēng l iàng w ǔ d àng #0.25 @風量五檔
+f ēng l iàng t iáo d ào w ǔ d uàn #0.20 @風量調到五段
+f ēng l iàng l iù d uàn #0.25 @風量六段
+f ēng l iàng l iù d àng #0.25 @風量六檔
+f ēng l iàng t iáo d ào l iù d uàn #0.20 @風量調到六段
+f ēng l iàng q ī d uàn #0.25 @風量七段
+f ēng l iàng q ī d àng #0.25 @風量七檔
+f ēng l iàng t iáo d ào q ī d uàn #0.20 @風量調到七段
+f ēng l iàng z uì d à #0.25 @風量最大
+z uì d à f ēng l iàng #0.25 @最大風量
+f ēng l iàng t iáo d ào z uì d à #0.20 @風量調到最大
+f ēng l iàng z uì x iǎo #0.25 @風量最小
+z uì x iǎo f ēng l iàng #0.25 @最小風量
+f ēng l iàng t iáo d ào z uì x iǎo #0.20 @風量調到最小
+f ēng l iàng d à y ì d iǎn #0.20 @風量大一點
+f ēng l iàng d à y ī d iǎn #0.20 @風量大一點
+f ēng d à y ì d iǎn #0.25 @風大一點
+f ēng d à y ī d iǎn #0.25 @風大一點
+j iā d à f ēng l iàng #0.25 @加大風量
+f ēng l iàng t iáo d à #0.25 @風量調大
+f ēng l iàng x iǎo y ì d iǎn #0.20 @風量小一點
+f ēng l iàng x iǎo y ī d iǎn #0.20 @風量小一點
+f ēng x iǎo y ì d iǎn #0.25 @風小一點
+f ēng x iǎo y ī d iǎn #0.25 @風小一點
+j iǎn x iǎo f ēng l iàng #0.25 @減小風量
+f ēng l iàng t iáo x iǎo #0.25 @風量調小
+n èi x ún h uán #0.25 @內循環
+d ǎ k āi n èi x ún h uán #0.20 @打開內循環
+q iè h uàn n èi x ún h uán #0.20 @切換內循環
+g uān b ì w ài x ún h uán #0.20 @關閉外循環
+w ài x ún h uán #0.25 @外循環
+d ǎ k āi w ài x ún h uán #0.20 @打開外循環
+q iè h uàn w ài x ún h uán #0.20 @切換外循環
+g uān b ì n èi x ún h uán #0.20 @關閉內循環
+z uì d à zh ì l ěng #0.25 @最大製冷
+d ǎ k āi z uì d à zh ì l ěng #0.20 @打開最大製冷
+g uān b ì z uì d à zh ì l ěng #0.20 @關閉最大製冷
+z ì d òng k ōng t iáo #0.25 @自動空調
+d ǎ k āi z ì d òng k ōng t iáo #0.20 @打開自動空調
+d ǎ k āi z ì d òng m ó sh ì #0.20 @打開自動模式
+g uān b ì z ì d òng k ōng t iáo #0.20 @關閉自動空調
+g uān b ì z ì d òng m ó sh ì #0.20 @關閉自動模式
+q ián ch ú sh uāng #0.25 @前除霜
+d ǎ k āi q ián ch ú sh uāng #0.20 @打開前除霜
+g uān b ì q ián ch ú sh uāng #0.20 @關閉前除霜
+h òu ch ú sh uāng #0.25 @後除霜
+d ǎ k āi h òu ch ú sh uāng #0.20 @打開後除霜
+g uān b ì h òu ch ú sh uāng #0.20 @關閉後除霜
+ch ē n èi j iàng w ēn #0.25 @車內降溫
+b āng w ǒ j iàng w ēn #0.25 @幫我降溫
+ch ē n èi sh ēng w ēn #0.25 @車內升溫
+n uǎn ch ē #0.30 @暖車
+b āng w ǒ sh ēng w ēn #0.25 @幫我升溫
+ch ú w ù #0.30 @除霧
+q ián d ǎng ch ú w ù #0.25 @前擋除霧
+b ō l í ch ú w ù #0.25 @玻璃除霧
+ch ē ch uāng ch ú w ù #0.25 @車窗除霧
+h uàn h uàn k ōng q ì #0.25 @換換空氣
+t ōng t ōng f ēng #0.25 @通通風
+ch ē l ǐ h ǎo m èn #0.25 @車裡好悶
+d ǎ k āi z uò y ǐ j iā r è #0.20 @打開座椅加熱
+d ǎ k āi zh ǔ j ià z uò y ǐ j iā r è #0.20 @打開主駕座椅加熱
+z uò y ǐ j iā r è èr d àng #0.20 @座椅加熱二檔
+zh ǔ j ià z uò y ǐ j iā r è èr d àng #0.20 @主駕座椅加熱二檔
+z uò y ǐ j iā r è y í d àng #0.20 @座椅加熱一檔
+z uò y ǐ j iā r è y ī d àng #0.20 @座椅加熱一檔
+zh ǔ j ià z uò y ǐ j iā r è y í d àng #0.20 @主駕座椅加熱一檔
+zh ǔ j ià z uò y ǐ j iā r è y ī d àng #0.20 @主駕座椅加熱一檔
+g uān b ì z uò y ǐ j iā r è #0.20 @關閉座椅加熱
+g uān b ì zh ǔ j ià z uò y ǐ j iā r è #0.20 @關閉主駕座椅加熱
+d ǎ k āi f ù j ià z uò y ǐ j iā r è #0.20 @打開副駕座椅加熱
+f ù j ià z uò y ǐ j iā r è èr d àng #0.20 @副駕座椅加熱二檔
+f ù j ià z uò y ǐ j iā r è y í d àng #0.20 @副駕座椅加熱一檔
+f ù j ià z uò y ǐ j iā r è y ī d àng #0.20 @副駕座椅加熱一檔
+g uān b ì f ù j ià z uò y ǐ j iā r è #0.20 @關閉副駕座椅加熱
+d ǎ k āi z uò y ǐ t ōng f ēng #0.20 @打開座椅通風
+d ǎ k āi zh ǔ j ià z uò y ǐ t ōng f ēng #0.20 @打開主駕座椅通風
+z uò y ǐ t ōng f ēng èr d àng #0.20 @座椅通風二檔
+zh ǔ j ià z uò y ǐ t ōng f ēng èr d àng #0.20 @主駕座椅通風二檔
+z uò y ǐ t ōng f ēng y í d àng #0.20 @座椅通風一檔
+z uò y ǐ t ōng f ēng y ī d àng #0.20 @座椅通風一檔
+zh ǔ j ià z uò y ǐ t ōng f ēng y í d àng #0.20 @主駕座椅通風一檔
+zh ǔ j ià z uò y ǐ t ōng f ēng y ī d àng #0.20 @主駕座椅通風一檔
+g uān b ì z uò y ǐ t ōng f ēng #0.20 @關閉座椅通風
+g uān b ì zh ǔ j ià z uò y ǐ t ōng f ēng #0.20 @關閉主駕座椅通風
+d ǎ k āi f ù j ià z uò y ǐ t ōng f ēng #0.20 @打開副駕座椅通風
+f ù j ià z uò y ǐ t ōng f ēng èr d àng #0.20 @副駕座椅通風二檔
+f ù j ià z uò y ǐ t ōng f ēng y í d àng #0.20 @副駕座椅通風一檔
+f ù j ià z uò y ǐ t ōng f ēng y ī d àng #0.20 @副駕座椅通風一檔
+g uān b ì f ù j ià z uò y ǐ t ōng f ēng #0.20 @關閉副駕座椅通風
+f āng x iàng p án j iā r è #0.20 @方向盤加熱
+d ǎ k āi f āng x iàng p án j iā r è #0.20 @打開方向盤加熱
+g uān b ì f āng x iàng p án j iā r è #0.20 @關閉方向盤加熱
+g uān d iào f āng x iàng p án j iā r è #0.20 @關掉方向盤加熱
+d ǎ k āi zh ē y áng l ián #0.20 @打開遮陽簾
+zh ē y áng l ián d ǎ k āi #0.20 @遮陽簾打開
+g uān b ì zh ē y áng l ián #0.20 @關閉遮陽簾
+zh ē y áng l ián g uān b ì #0.20 @遮陽簾關閉
+g uān b ì s uǒ y ǒu ch ē ch uāng #0.20 @關閉所有車窗
+g uān b ì ch ē ch uāng #0.25 @關閉車窗
+g uān ch uāng #0.30 @關窗
+b ǎ ch ē ch uāng g uān sh àng #0.20 @把車窗關上
+ch ē ch uāng t òu q ì #0.25 @車窗透氣
+k āi ch uāng t òu q ì #0.25 @開窗透氣
+d ǎ k āi ch ē ch uāng t òu q ì #0.20 @打開車窗透氣
+d ǎ k āi f ēn w éi d ēng #0.20 @打開氛圍燈
+f ēn w éi d ēng d ǎ k āi #0.20 @氛圍燈打開
+g uān b ì f ēn w éi d ēng #0.20 @關閉氛圍燈
+f ēn w éi d ēng g uān b ì #0.20 @氛圍燈關閉
+ch ǔ c ún y ǐng p iàn #0.25 @儲存影片
+b ǎo c ún y ǐng p iàn #0.25 @保存影片
+ch ǔ c ún l ù y ǐng #0.25 @儲存錄影
+j ì l ù y í x ià #0.25 @記錄一下
+j ì l ù y ī x ià #0.25 @記錄一下
+q ǔ x iāo #0.30 @取消
+s uàn l e #0.30 @算了
+b ù y òng l e #0.25 @不用了
+b ú y òng l e #0.25 @不用了

@@ -67,9 +67,21 @@ public final class BydCloudDeterrent {
      * This method returns immediately — all work happens on a background thread.
      */
     public void onMotionDetected() {
+        onMotionDetected(false, false);
+    }
+
+    /**
+     * As {@link #onMotionDetected()}, with this event's confirmed classes so the user's
+     * {@code deterrentTrigger} choice can hold the lights/horn back for motion alone.
+     * The default {@code any} ignores both flags, which is the original behaviour.
+     */
+    public void onMotionDetected(boolean sawPerson, boolean sawMovingObject) {
         // Quick checks on the calling thread (no I/O)
         String action = getDeterrentAction();
         if ("silent".equals(action)) {
+            return;
+        }
+        if (!triggerAllows(getDeterrentTrigger(), sawPerson, sawMovingObject)) {
             return;
         }
 
@@ -137,6 +149,18 @@ public final class BydCloudDeterrent {
     private static String getDeterrentAction() {
         JSONObject surveillance = UnifiedConfigManager.getSurveillance();
         return surveillance.optString("deterrentAction", "silent");
+    }
+
+    /** {@code any} (default) | {@code person} | {@code person_or_vehicle}. */
+    static boolean triggerAllows(String trigger, boolean sawPerson, boolean sawMovingObject) {
+        if ("person".equals(trigger)) return sawPerson;
+        if ("person_or_vehicle".equals(trigger)) return sawPerson || sawMovingObject;
+        return true;
+    }
+
+    private static String getDeterrentTrigger() {
+        JSONObject surveillance = UnifiedConfigManager.getSurveillance();
+        return surveillance.optString("deterrentTrigger", "any");
     }
 
     private static long getCooldownMs() {

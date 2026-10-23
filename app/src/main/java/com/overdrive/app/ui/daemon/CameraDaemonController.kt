@@ -42,7 +42,7 @@ class CameraDaemonController(
     override fun start(callback: DaemonCallback) {
         callback.onStatusChanged(DaemonStatus.STARTING, "Starting camera daemon...")
         
-        val outputDir = context.getExternalFilesDir(null)?.absolutePath ?: com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive")
+        val outputDir = context.getExternalFilesDir(null)?.absolutePath ?: com.overdrive.app.util.ScratchRoot.path("overdrive")
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         
         adbLauncher.launchDaemon(
@@ -96,6 +96,9 @@ class CameraDaemonController(
                 append("rm -f /data/local/tmp/start_cam_daemon.sh /data/local/tmp/cam_watchdog.pid 2>/dev/null\n")
                 append(gracefulExitWait)
                 append(com.overdrive.app.launcher.DaemonLauncher.psAwkKillLine("cam_daemon"))
+                if (diLink5Selected) {
+                    append(com.overdrive.app.camera.dilink5.DiLink5CaptureStop.gracefulStopScript())
+                }
                 relatedProcesses(diLink5Selected).forEach { proc ->
                     append(com.overdrive.app.launcher.DaemonLauncher.psAwkKillLine(proc))
                     append("killall -9 $proc 2>/dev/null\n")
@@ -182,6 +185,9 @@ class CameraDaemonController(
             append("rm -f /data/local/tmp/start_cam_daemon.sh /data/local/tmp/cam_watchdog.pid 2>/dev/null\n")
             append(gracefulExitWait)
             append(com.overdrive.app.launcher.DaemonLauncher.psAwkKillLine("cam_daemon"))
+            if (diLink5Selected) {
+                append(com.overdrive.app.camera.dilink5.DiLink5CaptureStop.gracefulStopScript())
+            }
             relatedProcesses(diLink5Selected).forEach { proc ->
                 append(com.overdrive.app.launcher.DaemonLauncher.psAwkKillLine(proc))
                 append("killall -9 $proc 2>/dev/null\n")

@@ -27,8 +27,6 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -49,13 +47,19 @@ import java.util.concurrent.TimeUnit;
  */
 public class HttpServer {
 
-    private static final String WEB_ROOT = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/web");
+    private static final String WEB_ROOT = com.overdrive.app.util.ScratchRoot.path("web");
     private final int port;
     private ServerSocket serverSocket;
     private volatile boolean running = true;
 
+    /** Consecutive bind failures, reset on a successful bind. */
+    private int bindFailures;
+
     // Thread Pool to prevent server clogging (max 32 concurrent connections)
     private final ExecutorService threadPool = Executors.newFixedThreadPool(32);
+
+    /** Pending-connection backlog for the listening socket (see run loop). */
+    static final int LISTEN_BACKLOG = 128;
 
     public HttpServer(int port) {
         this.port = port;
@@ -94,7 +98,7 @@ public class HttpServer {
             extractAssetDir(assetManager, "server-i18n", new File(WEB_ROOT, "server-i18n"));
 
             // Extract overlay icons for telemetry overlay
-            extractAssetDir(assetManager, "overlay", new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overlay")));
+            extractAssetDir(assetManager, "overlay", new File(com.overdrive.app.util.ScratchRoot.path("overlay")));
             
             // Extract BYD cloud crypto tables — re-extract whenever the cache
             // is missing or fails magic/size validation, so a stale or
@@ -192,8 +196,15 @@ public class HttpServer {
                     try { serverSocket.close(); } catch (Exception e) {}
                 }
                 
-                serverSocket = new ServerSocket(port, 10, InetAddress.getByName("0.0.0.0"));
+                // Listen backlog 128 (was 10). Every response is Connection:
+                // close, so a recordings page fetching its thumbnails as a
+                // parallel burst through a tunnel agent (HTTP/2 from the
+                // browser demultiplexed into N loopback connections) easily
+                // exceeds 10 pending connects and the kernel drops the SYNs.
+                // The kernel caps this at somaxconn.
+                serverSocket = new ServerSocket(port, LISTEN_BACKLOG, InetAddress.getByName("0.0.0.0"));
                 serverSocket.setReuseAddress(true);
+                bindFailures = 0;
                 CameraDaemon.log("HTTP server listening on 0.0.0.0:" + port);
 
                 while (running && CameraDaemon.isRunning() && !serverSocket.isClosed()) {
@@ -220,6 +231,11 @@ public class HttpServer {
                 
             } catch (java.net.BindException e) {
                 CameraDaemon.log("ERROR: HTTP port " + port + " in use, retrying...");
+                // A second failure is not TIME_WAIT — name the holder once per episode.
+                if (++bindFailures == 2) {
+                    CameraDaemon.log("ERROR: HTTP port " + port + " held by "
+                            + PortOwner.describe(port));
+                }
                 try { Thread.sleep(5000); } catch (InterruptedException ie) {}
             } catch (Exception e) {
                 CameraDaemon.log("ERROR: HTTP server error: " + e.getMessage());
@@ -244,11 +260,18 @@ public class HttpServer {
     }
 
     static String redactQueryToken(String requestLine) {
-        if (requestLine == null || requestLine.indexOf("token=") < 0) {
-            return requestLine;
+        if (requestLine == null) return null;
+        String out = requestLine;
+        if (out.indexOf("token=") >= 0) {
+            out = out.replaceAll("([?&]token=)[^& ]*", "$1<redacted>");
         }
-        return requestLine.replaceAll(
-                "([?&]token=)[^& ]*", "$1<redacted>");
+        // Signed thumb/parking-asset tokens ride as ?t=<jws>. They are HMACs over the
+        // device secret, so logging one hands over crackable key material. Length-bounded
+        // so an ordinary short `t=` param (a cache-buster, a timestamp) is left readable.
+        if (out.indexOf("t=") >= 0) {
+            out = out.replaceAll("([?&]t=)[A-Za-z0-9._~-]{20,}", "$1<redacted>");
+        }
+        return out;
     }
 
     static int maxBodyBytesForRequestLine(String requestLine) {
@@ -261,6 +284,11 @@ public class HttpServer {
 
         // A WireGuard config is at most 16 KB; leave room for the JSON wrapper.
         if (requestLine.startsWith("POST /api/wireguard/")) return 64 * 1024;
+
+        // A widget file is at most 16 KB too; matched on the target after the method, any method.
+        final int target = requestLine.indexOf(' ') + 1;
+        if (target > 0 && (requestLine.startsWith("/api/widgets/custom", target)
+                || requestLine.startsWith("/api/community/widgets/", target))) return 64 * 1024;
 
         final boolean isBackupImport =
                 requestLine.startsWith("POST /api/backup/import ")
@@ -384,12 +412,20 @@ public class HttpServer {
             
             // Skip logging high-frequency polling endpoints to keep the daemon log
             // readable: the blind-spot overlay polls /api/stream/turn every 250ms
-            // (safety turn-indicator read) and /api/bs/status during warm, and the
+            // (safety turn-indicator read) and /api/bs/status during warm, the blind-spot
+            // preview streams /api/bs/live while a slider is dragged, and the
             // UI polls /status — at ~4-8 req/s these drown out everything else.
-            // All other requests still log.
+            // The glass widgets poll /api/widgets/live (1 Hz while driving) and
+            // /api/widgets/foreground (home-screen check). The voice assistant polls its media
+            // state as /api/vehicle/media?poll=… (1 Hz while armed); its pause/resume calls use
+            // the plain path and still log. All other requests still log.
             if (!(requestLine.contains("/api/stream/turn")
                     || requestLine.contains("/api/bs/status")
-                    || requestLine.startsWith("GET /status"))) {
+                    || requestLine.contains("/api/bs/live")
+                    || requestLine.startsWith("GET /status")
+                    || requestLine.startsWith("GET /api/widgets/live")
+                    || requestLine.startsWith("GET /api/widgets/foreground")
+                    || requestLine.startsWith("POST /api/vehicle/media?poll="))) {
                 CameraDaemon.log("HTTP: " + redactQueryToken(requestLine));
             }
 
@@ -608,7 +644,8 @@ public class HttpServer {
                 } else if (wsPathOnly.equals(GenAiVoiceWebSocket.PATH)) {
                     GenAiVoiceWebSocket.handle(
                             client, websocketKey,
-                            GenAiApiHandler.queryParam(path, "lang"));
+                            GenAiApiHandler.queryParam(path, "lang"),
+                            GenAiApiHandler.queryParam(path, "mic"));
                 } else if (wsPathOnly.equals(GenAiChatWebSocket.PATH)) {
                     GenAiChatWebSocket.handle(client, websocketKey);
                 } else {
@@ -616,23 +653,37 @@ public class HttpServer {
                             client,
                             websocketKey,
                             "broadway".equalsIgnoreCase(
-                                    GenAiApiHandler.queryParam(path, "decoder")));
+                                    GenAiApiHandler.queryParam(path, "decoder")),
+                            hasTunnelHeaders);
                 }
                 return;
             }
 
-            // Route auth endpoints (all public). The /auth/token endpoint is
-            // rate-limited by client identity (real IP via X-Forwarded-For if
-            // present, else socket) to slow brute-force attempts via tunnels.
+            // Route auth endpoints (all public). /auth/token is rate-limited against TWO
+            // identities, both of which must pass: the per-client bucket (unchanged from the
+            // original) and a coarse shared ceiling on the peer IP (the one addition, which
+            // bounds a caller that rotates X-Forwarded-For to mint a fresh client bucket per
+            // request). See AuthApiHandler's class doc for the full contract.
             if (path.startsWith("/auth/")) {
-                String identity;
+                // Per-client identity: UNCHANGED from the original — leftmost X-Forwarded-For
+                // when present, else the full socket address (which includes the ephemeral
+                // port). Keep the port: every response is Connection: close, so it makes a
+                // non-forwarded identity per-connection and such callers stay unthrottled.
+                // Using the bare IP turned 127.0.0.1 into one shared budget for the on-screen
+                // login, adb, and any remote client behind a header-less forward.
+                String clientIdentity;
                 if (forwardedFor != null && !forwardedFor.isEmpty()) {
                     int comma = forwardedFor.indexOf(',');
-                    identity = (comma > 0 ? forwardedFor.substring(0, comma) : forwardedFor).trim();
+                    clientIdentity =
+                            (comma > 0 ? forwardedFor.substring(0, comma) : forwardedFor).trim();
                 } else {
-                    identity = String.valueOf(client.getRemoteSocketAddress());
+                    clientIdentity = String.valueOf(client.getRemoteSocketAddress());
                 }
-                AuthApiHandler.handle(method, path, body, out, identity);
+                // Port-less peer IP for the shared ceiling, which is the one new constraint:
+                // it bounds a caller that rotates X-Forwarded-For to escape the bucket above.
+                String socketIp = client.getInetAddress() == null
+                        ? "unknown" : client.getInetAddress().getHostAddress();
+                AuthApiHandler.handle(method, path, body, out, clientIdentity, socketIp);
                 client.close();
                 return;
             }
@@ -678,7 +729,21 @@ public class HttpServer {
                     || pathOnly.equals("/wireguard.html")
                     || pathOnly.equals("/api/wireguard")
                     || pathOnly.startsWith("/api/wireguard/");
-            boolean authenticated = remoteDevRequest || genAiRequest || wireGuardRequest
+            boolean remoteAccessRequest = pathOnly.equals("/remote-access")
+                    || pathOnly.equals("/remote-access.html")
+                    || pathOnly.startsWith("/api/remote-access/");
+            if (pathOnly.equals("/api/remote-access/relay")
+                    && (!client.getInetAddress().isLoopbackAddress() || hasTunnelHeaders)) {
+                HttpResponse.sendError(out, 403, "Signal relay is local only");
+                client.close();
+                return;
+            }
+            // Saving, deleting and sharing widget files need a session. Which widgets show also follows
+            // the glassWidgets settings, like the built-ins: the car's own arrange mode writes those over loopback.
+            boolean widgetWriteRequest = !method.equals("GET")
+                    && (isCustomWidgetsPath(pathOnly) || isCommunityWidgetsPath(pathOnly));
+            boolean authenticated = remoteDevRequest || genAiRequest || wireGuardRequest || remoteAccessRequest
+                    || widgetWriteRequest
                 ? AuthMiddleware.checkJwtOnly(path, cookieHeader, authHeader, out)
                 : AuthMiddleware.checkAuth(path, cookieHeader, authHeader, out,
                     client.getRemoteSocketAddress(), hasTunnelHeaders);
@@ -686,6 +751,10 @@ public class HttpServer {
                 client.close();
                 return;
             }
+
+            // Record who this is for canGrantShellAccess(). Set for every network
+            // request so a socket caller can never inherit the in-process default.
+            CALLER.set(new CallerContext(hasTunnelHeaders, cookieHeader, authHeader));
 
             // Route to modular handlers first
             if (routeToHandlers(method, path, body, rangeHeader, ifNoneMatchHeader, out)) {
@@ -719,6 +788,10 @@ public class HttpServer {
             } else if (path.equals("/recording.html") || path.equals("/recording")) {
                 if (!serveStaticFile(out, "local/recording.html")) {
                     HttpResponse.sendError(out, 404, "recording.html not found");
+                }
+            } else if (path.equals("/storage.html") || path.equals("/storage")) {
+                if (!serveStaticFile(out, "local/storage.html")) {
+                    HttpResponse.sendError(out, 404, "storage.html not found");
                 }
             } else if (path.equals("/parking.html") || path.equals("/parking")) {
                 if (!serveStaticFile(out, "local/parking.html")) {
@@ -769,9 +842,17 @@ public class HttpServer {
                 if (!serveStaticFile(out, "local/vehicle-control.html")) {
                     HttpResponse.sendError(out, 404, "vehicle-control.html not found");
                 }
+            } else if (path.equals("/remote-access.html") || path.equals("/remote-access")) {
+                if (!serveStaticFile(out, "local/remote-access.html")) {
+                    HttpResponse.sendError(out, 404, "remote-access.html not found");
+                }
             } else if (path.equals("/telegram.html") || path.equals("/telegram")) {
                 if (!serveStaticFile(out, "local/telegram.html")) {
                     HttpResponse.sendError(out, 404, "telegram.html not found");
+                }
+            } else if (path.equals("/safekeep.html") || path.equals("/safekeep")) {
+                if (!serveStaticFile(out, "local/safekeep.html")) {
+                    HttpResponse.sendError(out, 404, "safekeep.html not found");
                 }
             } else if (path.equals("/byd-cloud.html") || path.equals("/byd-cloud")) {
                 if (!serveStaticFile(out, "local/byd-cloud.html")) {
@@ -780,6 +861,14 @@ public class HttpServer {
             } else if (path.equals("/road-sense.html") || path.equals("/road-sense")) {
                 if (!serveStaticFile(out, "local/road-sense.html")) {
                     HttpResponse.sendError(out, 404, "road-sense.html not found");
+                }
+            } else if (path.equals("/widgets.html") || path.equals("/widgets")) {
+                if (!serveStaticFile(out, "local/widgets.html")) {
+                    HttpResponse.sendError(out, 404, "widgets.html not found");
+                }
+            } else if (pathOnly.equals("/widget-builder.html") || pathOnly.equals("/widget-builder")) {
+                if (!serveStaticFile(out, "local/widget-builder.html")) {
+                    HttpResponse.sendError(out, 404, "widget-builder.html not found");
                 }
             } else if (path.equals("/network.html") || path.equals("/network")) {
                 if (!serveStaticFile(out, "local/network.html")) {
@@ -843,6 +932,8 @@ public class HttpServer {
                 if (q >= 0) filePath = filePath.substring(0, q);
                 int h = filePath.indexOf('#');
                 if (h >= 0) filePath = filePath.substring(0, h);
+                // web/local/shared was a second packaged copy of web/shared; old links still resolve.
+                if (filePath.startsWith("local/shared/")) filePath = filePath.substring("local/".length());
                 if (!serveStaticFile(out, filePath, ifNoneMatchHeader)) {
                     HttpResponse.sendError(out, 404, "Not Found: " + path);
                 }
@@ -861,6 +952,7 @@ public class HttpServer {
         } catch (Exception e) {
             CameraDaemon.log("HTTP error: " + e.getMessage());
         } finally {
+            CALLER.remove();
             try { client.close(); } catch (Exception e) {}
         }
     }
@@ -892,6 +984,52 @@ public class HttpServer {
 
     static boolean isAutomationRequest() {
         return AUTOMATION_REQUEST_DEPTH.get() > 0;
+    }
+
+    /**
+     * Per-request caller facts for the endpoints that can ESCALATE a privilege — the two
+     * shell gates (keymap {@code allowAdvanced}, automation {@code allowShell}) and the two
+     * bulk-write paths that could set them indirectly ({@code /api/settings/unified} and
+     * backup import). Holds the raw
+     * headers rather than a verdict so the JWT check costs an HMAC only when one of
+     * those handlers actually asks — every other request keeps its single auth pass.
+     */
+    private static final class CallerContext {
+        final boolean tunnelRelayed;
+        final String cookieHeader;
+        final String authHeader;
+
+        CallerContext(boolean tunnelRelayed, String cookieHeader, String authHeader) {
+            this.tunnelRelayed = tunnelRelayed;
+            this.cookieHeader = cookieHeader;
+            this.authHeader = authHeader;
+        }
+    }
+
+    // Cleared in handleClient's finally so a pooled thread cannot leak one request's
+    // caller identity into the next, same reason Messages.withLocale clears its own.
+    private static final ThreadLocal<CallerContext> CALLER = new ThreadLocal<>();
+
+    /**
+     * Whether this caller may turn a shell-execution gate ON.
+     *
+     * <p>An HTTP caller must hold a valid JWT AND not
+     * be tunnel-relayed: {@link AuthMiddleware}'s loopback safety net is enough to USE the
+     * API but deliberately not enough to arm arbitrary shell, since every local app shares
+     * that address. Turning a gate off is never routed through here.
+     */
+    static boolean canGrantShellAccess() {
+        CallerContext c = CALLER.get();
+        // FAIL CLOSED on an unset context. Nothing in-process consults this today (the
+        // gated handlers are reachable only via routeToHandlers, whose callers are
+        // handleClient — which always sets the context — and automationApiRequest, which
+        // must NOT be able to arm shell). Defaulting to "trusted" would make the control
+        // depend on an unenforced invariant: adding /api/backup/ or /api/automations to
+        // AUTOMATION_ALLOWED_PREFIXES would then silently grant remote shell with no
+        // change visible at the gate itself.
+        if (c == null) return false;
+        if (c.tunnelRelayed) return false;
+        return AuthMiddleware.hasValidJwt(c.cookieHeader, c.authHeader);
     }
 
     /** Whether an automation-originated request path is inside the allowlist above. */
@@ -944,12 +1082,60 @@ public class HttpServer {
         return out.toString();
     }
 
+    private static void logProximitySaveFailure(String method, String path, int status, Exception failure) {
+        if (!"POST".equals(method) || !"/api/remote-access/config".equals(path.split("\\?", 2)[0])) return;
+        String reason = status == 403 ? "authorization_refused"
+                : status == 400 ? "invalid_settings" : "save_unavailable";
+        if ("Every enabled trusted phone must be paired with the car".equals(failure.getMessage()))
+            reason = "phone_not_paired";
+        else if ("Open the car app before enabling monitoring".equals(failure.getMessage()))
+            reason = "phone_inventory_unavailable";
+        else if ("Settings could not be saved".equals(failure.getMessage()))
+            reason = "storage_unavailable";
+        CameraDaemon.log("Proximity: settings result=rejected status=" + status + " reason=" + reason);
+    }
+
+    /** CustomWidgetsApiHandler's routes; the JWT-only check and the router must agree, so both use this. */
+    private static boolean isCustomWidgetsPath(String path) {
+        String p = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
+        return p.equals("/api/widgets/signals") || p.equals("/api/widgets/values")
+                || p.equals("/api/widgets/custom") || p.startsWith("/api/widgets/custom/");
+    }
+
+    /** CommunityWidgetsApiHandler's routes; shared by the JWT-only check and the router. */
+    private static boolean isCommunityWidgetsPath(String path) {
+        String p = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
+        return p.startsWith("/api/community/widgets/");
+    }
+
     /**
      * Routes requests to modular API handlers.
      * @return true if handled by a handler
      */
     private boolean routeToHandlers(String method, String path, String body, String rangeHeader,
                                      String ifNoneMatchHeader, OutputStream out) throws Exception {
+        if (path.startsWith("/api/remote-access/")) {
+            try {
+                if (path.equals("/api/remote-access/relay") && method.equals("POST")) {
+                    RemoteAccessApiHandler.relay(body, out);
+                    return true;
+                }
+                if (RemoteAccessApiHandler.handle(method, path, body, out)) return true;
+                HttpResponse.sendJson(out, 404, "{\"success\":false,\"error\":\"Unknown remote-access route\"}");
+            } catch (SecurityException refused) {
+                logProximitySaveFailure(method, path, 403, refused);
+                HttpResponse.sendJson(out, 403, "{\"success\":false,\"error\":\"Signal authentication refused\"}");
+            } catch (IllegalArgumentException | org.json.JSONException invalid) {
+                logProximitySaveFailure(method, path, 400, invalid);
+                HttpResponse.sendJson(out, 400, new org.json.JSONObject()
+                        .put("success", false).put("error", invalid.getMessage()).toString());
+            } catch (Exception unavailable) {
+                logProximitySaveFailure(method, path, 503, unavailable);
+                HttpResponse.sendJson(out, 503, new org.json.JSONObject()
+                        .put("success", false).put("error", "Remote access is temporarily unavailable").toString());
+            }
+            return true;
+        }
         // Core camera APIs (kept inline for simplicity)
         if (path.startsWith("/snapshot/")) {
             int camId = Integer.parseInt(path.substring(10));
@@ -960,11 +1146,19 @@ public class HttpServer {
             return true;
         } else if (path.startsWith("/api/start/")) {
             int camId = Integer.parseInt(path.substring(11));
+            if (!isLegacyCameraView(camId)) {
+                sendInvalidCameraView(out, "start", camId);
+                return true;
+            }
             CameraDaemon.startCamera(camId, true, false);
             HttpResponse.sendJson(out, "{\"status\":\"ok\",\"action\":\"start\",\"camera\":" + camId + "}");
             return true;
         } else if (path.startsWith("/api/view/")) {
             int camId = Integer.parseInt(path.substring(10));
+            if (!isLegacyCameraView(camId)) {
+                sendInvalidCameraView(out, "view", camId);
+                return true;
+            }
             CameraDaemon.startCamera(camId, true, true);
             HttpResponse.sendJson(out, "{\"status\":\"ok\",\"action\":\"view\",\"camera\":" + camId + "}");
             return true;
@@ -1101,6 +1295,15 @@ public class HttpServer {
             return GenAiApiHandler.handle(method, path, body, out);
         }
 
+        if (path.startsWith("/api/voice/")) {
+            return VoiceAssistantApiHandler.handle(method, path, body, out);
+        }
+
+        // Community glass widgets (browse / publish / import); must precede the automations branch
+        if (isCommunityWidgetsPath(path)) {
+            return com.overdrive.app.community.CommunityWidgetsApiHandler.handle(method, path, body, out);
+        }
+
         // Community Automations API (browse / publish / import shared automations)
         if (path.startsWith("/api/community/")) {
             return com.overdrive.app.community.CommunityApiHandler.handle(method, path, body, out);
@@ -1109,6 +1312,16 @@ public class HttpServer {
         // RoadSense API (delete-local / delete-cloud data actions)
         if (path.startsWith("/api/roadsense/")) {
             return RoadSenseApiHandler.handle(method, path, body, out);
+        }
+
+        // Widget builder: signal catalog + custom widget store; must precede the overlay branch
+        if (isCustomWidgetsPath(path)) {
+            return CustomWidgetsApiHandler.handle(method, path, body, out);
+        }
+
+        // Glass widgets overlay: lifecycle sync + foreground probe for home-screen-only mode
+        if (path.startsWith("/api/widgets/")) {
+            return GlassWidgetsApiHandler.handle(method, path, body, out);
         }
 
         // RoadSense Map routing (BYOK) config API
@@ -1122,6 +1335,11 @@ public class HttpServer {
         // shell. The HTTP daemon runs as UID shell so direct writes work.
         if (path.startsWith("/api/telegram/")) {
             return TelegramApiHandler.handle(method, path, body, out);
+        }
+
+        // SafeKeep (bring-your-own cloud/NAS backup) API.
+        if (path.startsWith("/api/safekeep/")) {
+            return com.overdrive.app.safekeep.SafeKeepApi.handle(method, path, body, out);
         }
         
         // Trip Analytics API
@@ -1238,6 +1456,14 @@ public class HttpServer {
         // a shell can't write the interface token and always returns INVALID.
         if (path.startsWith("/api/debug/autoservice")) {
             return AutoServiceDebugApiHandler.handle(method, path, body, out);
+        }
+
+        // Remote-key diagnostics — experimental command-format selector (fixed 26-byte vs the
+        // dynamic 73-byte frame) and the MCU readiness-gate toggle, plus a read-only status
+        // snapshot. Two vehicle-section settings; no actuation happens here. Inherits this
+        // method's AuthMiddleware.checkAuth gate like every other /api/* settings route.
+        if (path.startsWith("/api/debug/remote-key")) {
+            return RemoteKeyDiagnosticsApiHandler.handle(method, path, body, out);
         }
 
         // CarPropertyBridge debug — read/write DiCarServer's
@@ -1357,7 +1583,20 @@ public class HttpServer {
 
         return false;
     }
-    
+
+    /** Same range CameraDaemon.startCamera accepts; anything else is ignored there. */
+    private static boolean isLegacyCameraView(int camId) {
+        return camId >= 1 && camId <= 4;
+    }
+
+    private static void sendInvalidCameraView(OutputStream out, String action, int camId)
+            throws Exception {
+        CameraDaemon.log("ERROR: Invalid view ID: " + camId + " (/api/" + action + "/)");
+        HttpResponse.sendJson(out, 400,
+                "{\"status\":\"error\",\"action\":\"" + action + "\",\"camera\":" + camId
+                        + ",\"message\":\"camera view must be 1-4\"}");
+    }
+
     private void sendSnapshot(OutputStream out, int viewId) throws Exception {
         com.overdrive.app.surveillance.GpuSurveillancePipeline gpuPipeline = CameraDaemon.getGpuPipeline();
         if (gpuPipeline == null || gpuPipeline.getCamera() == null) {
@@ -1533,11 +1772,13 @@ public class HttpServer {
             
             com.overdrive.app.monitor.SocHistoryDatabase socDb = com.overdrive.app.monitor.SocHistoryDatabase.getInstance();
             com.overdrive.app.abrp.SohEstimator sohEst = socDb != null ? socDb.getSohEstimator() : null;
-            double canonicalSoh = sohEst != null ? sohEst.getDisplaySoh() : -1;
+            double canonicalSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(sohEst);
             if (canonicalSoh > 0) {
                 soh.put("percent", Math.round(canonicalSoh * 10) / 10.0);
-                soh.put("estimatedCapacityKwh", Math.round(sohEst.getEstimatedCapacityKwh() * 10) / 10.0);
-                soh.put("nominalCapacityKwh", sohEst.getNominalCapacityKwh());
+                if (sohEst != null) {
+                    soh.put("estimatedCapacityKwh", Math.round(sohEst.getEstimatedCapacityKwh() * 10) / 10.0);
+                    soh.put("nominalCapacityKwh", sohEst.getNominalCapacityKwh());
+                }
                 hasSoh = true;
             }
             
@@ -1683,6 +1924,7 @@ public class HttpServer {
         
         // Network info (WiFi SSID + IP or Mobile Data)
         status.put("network", com.overdrive.app.monitor.NetworkMonitor.getNetworkInfo());
+        status.put("bluetooth", BluetoothRadioStatusReader.current());
 
         // Pre-record buffer health — exposes byte-ring stats so the UI can
         // detect a degraded session (post-OOM "no pre-record" mode, key
@@ -2048,9 +2290,14 @@ public class HttpServer {
     
     /**
      * Handles WebSocket upgrade on /ws path for single-port streaming.
+     *
+     * @param tunnelRelayed the request carried reverse-proxy fingerprints
+     *        (X-Forwarded-*, Cf-*, Tailscale-*, PROXY protocol): the viewer is
+     *        behind a tunnel agent, so the sender uses smaller socket buffers
      */
     private void handleWebSocketUpgrade(
-            Socket client, String websocketKey, boolean broadwayDecoder) {
+            Socket client, String websocketKey, boolean broadwayDecoder,
+            boolean tunnelRelayed) {
         try {
             CameraDaemon.log("WebSocket upgrade requested");
             
@@ -2064,8 +2311,9 @@ public class HttpServer {
             out.write(response.getBytes());
             out.flush();
             
-            CameraDaemon.log("WebSocket handshake complete");
-            streamH264ToWebSocket(client, broadwayDecoder);
+            CameraDaemon.log("WebSocket handshake complete"
+                    + (tunnelRelayed ? " (tunnel-relayed viewer)" : ""));
+            streamH264ToWebSocket(client, broadwayDecoder, tunnelRelayed);
             
         } catch (Exception e) {
             CameraDaemon.log("WebSocket upgrade error: " + e.getMessage());
@@ -2091,20 +2339,35 @@ public class HttpServer {
      *
      * This gives instant stream start with no encoder restart, no frame corruption,
      * and no broken pipe from the client timing out during restart.
+     *
+     * Congestion: frames go through {@link StreamFrameDropPolicy}, which never
+     * drops an IDR on its own and, once the viewer falls behind, discards
+     * whole GOPs until the next keyframe instead of leaving reference-broken
+     * P-frames in the stream. Encoder restarts (quality change from another
+     * viewer) are survived on the same socket: the retiring encoder posts a
+     * sentinel through {@code StreamCallback.onStreamRetired()} and the loop
+     * re-attaches to the replacement encoder (see {@link #reattachAfterRetire}).
      */
-    private void streamH264ToWebSocket(Socket client, boolean broadwayDecoder) {
+    private void streamH264ToWebSocket(Socket client, boolean broadwayDecoder,
+                                       boolean tunnelRelayed) {
         CameraDaemon.log("Starting H.264 WebSocket stream");
         final long cameraStartEpoch = CameraDaemon.captureCameraStartEpoch();
         
-        final BlockingQueue<byte[]> frameQueue = new ArrayBlockingQueue<>(60);
+        final StreamFrameDropPolicy frameQueue = new StreamFrameDropPolicy();
         final boolean[] running = {true};
         
         try {
             client.setSoTimeout(0);
             client.setTcpNoDelay(true);
-            client.setSendBufferSize(256 * 1024);
+            // Tunnel-relayed viewers get smaller buffers: bytes parked in the
+            // kernel send buffer and the BufferedOutputStream are invisible to
+            // the drop policy (it only sees the queue), so a large local
+            // backlog turns into extra end-to-end latency the policy cannot
+            // trim. The loopback agent (cloudflared/zrok/tailscaled) buffers
+            // beyond this anyway. LAN/in-car sockets keep the original sizes.
+            client.setSendBufferSize(tunnelRelayed ? 64 * 1024 : 256 * 1024);
             final OutputStream out = new java.io.BufferedOutputStream(
-                client.getOutputStream(), 128 * 1024);
+                client.getOutputStream(), tunnelRelayed ? 32 * 1024 : 128 * 1024);
             
             com.overdrive.app.surveillance.GpuSurveillancePipeline pipeline = CameraDaemon.getGpuPipeline();
             if (pipeline == null) {
@@ -2256,6 +2519,10 @@ public class HttpServer {
                 new java.util.concurrent.atomic.AtomicBoolean(false);
             final java.util.concurrent.atomic.AtomicBoolean gotKeyframe =
                 new java.util.concurrent.atomic.AtomicBoolean(false);
+            // The encoder this viewer is attached to; replaced on re-attach.
+            // Read from the drain thread when a skip wants a sync frame.
+            final java.util.concurrent.atomic.AtomicReference<HardwareEventRecorderGpu>
+                attachedEncoder = new java.util.concurrent.atomic.AtomicReference<>();
             HardwareEventRecorderGpu.StreamCallback callback = new HardwareEventRecorderGpu.StreamCallback() {
                 @Override
                 public void onSpsPps(ByteBuffer sps, ByteBuffer pps) {
@@ -2264,7 +2531,9 @@ public class HttpServer {
                     byte[] combined = new byte[spsSize + ppsSize];
                     sps.get(combined, 0, spsSize);
                     pps.get(combined, spsSize, ppsSize);
-                    frameQueue.offer(combined);
+                    // Never lost: if the queue is full right now the policy
+                    // re-sends it before the IDR that resumes delivery.
+                    frameQueue.offerConfig(combined);
                     gotKeyframe.set(false);
                     headersReceived.set(true);
                     CameraDaemon.log("WS: Queued SPS/PPS (" + combined.length + " bytes)");
@@ -2272,23 +2541,40 @@ public class HttpServer {
                 
                 @Override
                 public void onH264Packet(ByteBuffer data, android.media.MediaCodec.BufferInfo info) {
+                    boolean isKeyframe = (info.flags & android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
                     // Do not open the packet gate on SPS/PPS alone. A
                     // late-joining client must receive headers followed by a
                     // real IDR; otherwise the first P-frame references a
                     // picture it never decoded.
                     if (!headersReceived.get() || !gotKeyframe.get()) {
-                        boolean isKeyframe = (info.flags & android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
                         if (!headersReceived.get() || !isKeyframe) return;
                         gotKeyframe.set(true);
                     }
                     
-                    if (frameQueue.remainingCapacity() > 0) {
-                        byte[] frame = new byte[info.size];
-                        data.position(info.offset);
-                        data.get(frame);
-                        frameQueue.offer(frame);
+                    // Runs on the encoder drain thread: everything here is
+                    // non-blocking. Skip the copy for frames the policy is
+                    // discarding anyway while it waits for the next IDR.
+                    if (frameQueue.discardsWhileSkipping(isKeyframe)) return;
+                    byte[] frame = new byte[info.size];
+                    data.position(info.offset);
+                    data.get(frame);
+                    if (!frameQueue.offerVideo(frame, isKeyframe, info.presentationTimeUs)
+                            && frameQueue.consumeSyncFrameRequest()) {
+                        // Entered skip: ask for an IDR so the gap ends at the
+                        // next possible frame rather than the next natural GOP.
+                        // Rate-limited per encoder — other congested viewers
+                        // asking at the same time share one keyframe.
+                        HardwareEventRecorderGpu enc = attachedEncoder.get();
+                        if (enc != null) enc.requestSyncFrameRateLimited();
                     }
-                    // If queue is full, drop frame (congestion control)
+                }
+
+                @Override
+                public void onStreamRetired() {
+                    // Called under the encoder's callback lock by the thread
+                    // disabling streaming: only hand the notice to our own
+                    // send loop, which does the (slow) re-attach.
+                    frameQueue.offerRetired();
                 }
             };
 
@@ -2301,17 +2587,45 @@ public class HttpServer {
                 return;
             }
             HardwareEventRecorderGpu encoder = subscription.getEncoder();
-            encoder.requestSyncFrame();
-            CameraDaemon.log("WS: Stream callback registered; IDR keyframe requested");
+            attachedEncoder.set(encoder);
+            boolean idrRequested = encoder.requestSyncFrameRateLimited();
+            CameraDaemon.log("WS: Stream callback registered; IDR keyframe "
+                    + (idrRequested ? "requested" : "coalesced with one already forced"));
             
             long lastFrameTime = System.currentTimeMillis();
             int frameCount = 0;
             
             try {
                 while (running[0] && !client.isClosed()) {
-                    byte[] frame = frameQueue.poll(5, TimeUnit.SECONDS);
+                    StreamFrameDropPolicy.Frame queued = frameQueue.poll(5, TimeUnit.SECONDS);
                     
-                    if (frame != null) {
+                    if (queued != null && queued.isRetired()) {
+                        // The encoder we were attached to is gone (quality
+                        // change from another viewer, idle shutdown, stop).
+                        // Previously this loop sat on an empty queue until the
+                        // 60 s idle exit while the viewer showed a frozen
+                        // "Live" picture. Re-attach to the replacement encoder
+                        // on the same socket; its SPS/PPS arrive on attach and
+                        // the client's SPS-change path reconfigures.
+                        CameraDaemon.log("WS: Stream encoder retired — re-attaching on the same socket");
+                        com.overdrive.app.surveillance.GpuSurveillancePipeline
+                                .ExternalStreamClientSubscription next =
+                            reattachAfterRetire(pipeline, callback, headersReceived, gotKeyframe,
+                                    frameQueue, attachedEncoder);
+                        if (next == null) {
+                            CameraDaemon.log("WS: No stream encoder came back within "
+                                    + REATTACH_TIMEOUT_MS + "ms — closing (1012) so the client reconnects");
+                            sendWebSocketClose(out, 1012, "Stream restarting");
+                            break;
+                        }
+                        subscription = next;
+                        lastFrameTime = System.currentTimeMillis();
+                        CameraDaemon.log("WS: Re-attached to the new stream encoder");
+                        continue;
+                    }
+                    
+                    if (queued != null) {
+                        byte[] frame = queued.bytes;
                         try {
                             // Log first few frames for debugging
                             if (frameCount < 5) {
@@ -2324,6 +2638,10 @@ public class HttpServer {
                             if (frameCount % 300 == 0) {
                                 CameraDaemon.log("WS: Sent " + frameCount + " frames");
                             }
+                            // Congestion counters, rate-limited (first skip
+                            // immediately, then at most every 10 s).
+                            String dropSummary = frameQueue.drainSummary();
+                            if (dropSummary != null) CameraDaemon.log(dropSummary);
                         } catch (java.net.SocketException e) {
                             CameraDaemon.log("WS: Client disconnected (" + e.getMessage() + ")");
                             break;
@@ -2356,6 +2674,56 @@ public class HttpServer {
             CameraDaemon.log("WS stream error: " + e.getMessage());
         } finally {
             try { client.close(); } catch (Exception e) {}
+        }
+    }
+
+    /** Poll interval while waiting for the replacement stream encoder. */
+    static final long REATTACH_RETRY_MS = 250L;
+    /**
+     * Give-up horizon for re-attach. A quality-change restart brings the new
+     * encoder up ~700 ms after the old one is retired (200 ms settle + 500 ms
+     * enable wait in this file); 3 s covers a slow restart while still turning
+     * a pipeline stop into a prompt 1012 close instead of a 60 s freeze.
+     */
+    static final long REATTACH_TIMEOUT_MS = 3_000L;
+
+    /**
+     * After the attached encoder was retired, bind the same callback to its
+     * replacement. Retries every {@link #REATTACH_RETRY_MS} for up to
+     * {@link #REATTACH_TIMEOUT_MS}.
+     *
+     * <p>Gates are reset BEFORE registering: {@code registerExternalStreamClient}
+     * synchronously delivers the new encoder's SPS/PPS through
+     * {@code onSpsPps} if its format is already known, which must land on a
+     * closed gate so the following IDR (requested here, rate-limited) is the
+     * first picture the client sees from the new encoder.
+     *
+     * @return the new subscription, or {@code null} if no encoder came back
+     */
+    private static com.overdrive.app.surveillance.GpuSurveillancePipeline.ExternalStreamClientSubscription
+            reattachAfterRetire(
+                    com.overdrive.app.surveillance.GpuSurveillancePipeline pipeline,
+                    HardwareEventRecorderGpu.StreamCallback callback,
+                    java.util.concurrent.atomic.AtomicBoolean headersReceived,
+                    java.util.concurrent.atomic.AtomicBoolean gotKeyframe,
+                    StreamFrameDropPolicy frameQueue,
+                    java.util.concurrent.atomic.AtomicReference<HardwareEventRecorderGpu> attachedEncoder)
+            throws InterruptedException {
+        attachedEncoder.set(null);   // the retired encoder must not get IDR requests
+        headersReceived.set(false);
+        gotKeyframe.set(false);
+        frameQueue.resetForReattach();
+        final long deadlineNs = System.nanoTime() + REATTACH_TIMEOUT_MS * 1_000_000L;
+        while (true) {
+            com.overdrive.app.surveillance.GpuSurveillancePipeline.ExternalStreamClientSubscription next =
+                pipeline.registerExternalStreamClient(callback);
+            if (next != null) {
+                attachedEncoder.set(next.getEncoder());
+                next.getEncoder().requestSyncFrameRateLimited();
+                return next;
+            }
+            if (System.nanoTime() - deadlineNs >= 0) return null;
+            Thread.sleep(REATTACH_RETRY_MS);
         }
     }
 

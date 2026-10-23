@@ -59,7 +59,7 @@ public class AppUpdater {
     // the same failure; a NEW failure carries a different `ts` and re-arms.
     private static final String PREF_LAST_CONSUMED_FAILURE_TS = "last_consumed_failure_ts";
     // Also persist to filesystem (survives app reinstall, unlike SharedPreferences)
-    private static final String UPDATE_TIMESTAMP_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update_timestamp");
+    private static final String UPDATE_TIMESTAMP_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_update_timestamp");
 
     /** Per-channel SharedPreferences baseline key. */
     private static String prefKeyForChannel(String channel) {
@@ -142,7 +142,7 @@ public class AppUpdater {
         installInFlight = false;
     }
     // Version file readable by daemon process (SharedPreferences are per-process)
-    public static final String VERSION_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_version");
+    public static final String VERSION_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_version");
     // Sentinels for the post-update handshake (see UpdateLifecycle).
     private static final String UPDATE_IN_PROGRESS_FILE = UpdateLifecycle.UPDATE_IN_PROGRESS_FILE;
 
@@ -174,7 +174,8 @@ public class AppUpdater {
 
     private static String diLink5CaptureKillScript() {
         if (!isDiLink5ModeSelected()) return "";
-        return psAwkKillLine("fast_cam_capture")
+        return com.overdrive.app.camera.dilink5.DiLink5CaptureStop.gracefulStopScript()
+                + psAwkKillLine("fast_cam_capture")
                 + psAwkKillLine("qcarcam_test")
                 + "killall -9 fast_cam_capture 2>/dev/null\n"
                 + "killall -9 qcarcam_test 2>/dev/null\n";
@@ -242,7 +243,7 @@ public class AppUpdater {
     private static boolean canWriteLocalTmp() {
         Boolean cached = canWriteTmpCached;
         if (cached != null) return cached;
-        File probe = new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.overdrive_updater_probe"));
+        File probe = new File(com.overdrive.app.util.ScratchRoot.path(".overdrive_updater_probe"));
         boolean ok;
         try {
             try (FileOutputStream fos = new FileOutputStream(probe)) {
@@ -348,8 +349,9 @@ public class AppUpdater {
 
     public AppUpdater(Context context) {
         this.context = context;
-        // Cleanup runs without ADB — just deletes from app's own external files dir
-        cleanupLeftoverApk();
+        // Stale-only: any check (app, web, IPC) constructs an updater, and must not
+        // delete the APK an in-flight install has staged but pm install hasn't read.
+        cleanupLeftoverApk(true);
     }
 
     private AdbShellExecutor getAdb() {
@@ -531,11 +533,11 @@ public class AppUpdater {
         try {
             String execCommand = command;
             if (deadlineMs > 0) {
-                pidFile = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.appupdater_pid_") + System.nanoTime();
+                pidFile = com.overdrive.app.util.ScratchRoot.path(".appupdater_pid_") + System.nanoTime();
                 execCommand = "echo $$ > " + pidFile + "; " + command;
             }
             final String pidFileForReaper = pidFile;
-            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", execCommand});
+            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(execCommand)});
             Thread reaper = null;
             if (deadlineMs > 0) {
                 reaper = new Thread(() -> {
@@ -602,7 +604,7 @@ public class AppUpdater {
     private static void killProcessTree(String pidFile) {
         try {
             Process killer = Runtime.getRuntime().exec(
-                    new String[]{"sh", "-c", buildTreeKillScript(pidFile)});
+                    new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(buildTreeKillScript(pidFile))});
             if (!killer.waitFor(10, TimeUnit.SECONDS)) {
                 killer.destroyForcibly();
             }
@@ -648,7 +650,7 @@ public class AppUpdater {
         // Direct path — write the script to a tmp file ourselves and exec it.
         // Same self-match defense as the ADB path: the running shell's argv
         // is just `sh <path>`, no daemon pattern visible to pkill.
-        String scriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.appupdater_script_") + System.nanoTime() + ".sh";
+        String scriptPath = com.overdrive.app.util.ScratchRoot.path(".appupdater_script_") + System.nanoTime() + ".sh";
         try {
             java.io.File scriptFile = new java.io.File(scriptPath);
             try (java.io.FileWriter fw = new java.io.FileWriter(scriptFile)) {
@@ -702,7 +704,7 @@ public class AppUpdater {
         }
     }
 
-    private static final String APK_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update.apk");
+    private static final String APK_PATH = com.overdrive.app.util.ScratchRoot.path("overdrive_update.apk");
     private static final long MIB = 1024L * 1024L;
     private static final long MIN_UPDATE_FREE_BYTES = 350L * MIB;
     private static final long UPDATE_INSTALL_HEADROOM_BYTES = 128L * MIB;
@@ -713,13 +715,16 @@ public class AppUpdater {
         return APK_PATH;
     }
 
-    private void cleanupLeftoverApk() {
+    private void cleanupLeftoverApk(boolean staleOnly) {
         try {
             // Also age out a stale Telegram post-update hint older than 24h —
             // if Telegram never came back online to consume it, the user has
             // already noticed the URL change through other means and a "you
             // were just updated" message would be confusing days later.
-            String cmd = "rm -f " + APK_PATH + "; " +
+            String apkRemoval = staleOnly
+                    ? "find " + APK_PATH + " -mmin +30 -delete 2>/dev/null"
+                    : "rm -f " + APK_PATH;
+            String cmd = apkRemoval + "; " +
                     "find " + UpdateLifecycle.TELEGRAM_POST_UPDATE_HINT_FILE +
                     " -mmin +1440 -delete 2>/dev/null; echo done";
             runShell(cmd, new com.overdrive.app.launcher.AdbDaemonLauncher.LaunchCallback() {
@@ -776,7 +781,7 @@ public class AppUpdater {
                 Log.w(TAG, "Could not delete stale update APK before storage check");
             }
 
-            long available = new StatFs(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp")).getAvailableBytes();
+            long available = new StatFs(com.overdrive.app.util.ScratchRoot.dir()).getAvailableBytes();
             long required = requiredUpdateFreeBytes(latestApkSizeBytes);
             if (available >= required) return null;
 
@@ -1067,6 +1072,7 @@ public class AppUpdater {
         cancelled = false;
         executor.execute(() -> {
             boolean rollbackMetadataOnException = false;
+            boolean abortCameraOnException = false;
             String preparedChannel = null;
             String preparedPriorTimestamp = null;
             String preparedPriorDisplayVersion = null;
@@ -1082,7 +1088,7 @@ public class AppUpdater {
                 // download attempts (cancel + retry), and a static executor
                 // means the previous attempt's partial APK could still be
                 // on disk. Re-running cleanup here is the cheap safe call.
-                cleanupLeftoverApk();
+                cleanupLeftoverApk(false);
 
                 String storageError = getUpdateStorageError();
                 if (storageError != null) {
@@ -1212,6 +1218,12 @@ public class AppUpdater {
                 // authoritative handoff: they stop daemon families best-effort
                 // and installation continues even when graceful camera teardown
                 // or post-kill verification cannot be confirmed.
+                // DiLink 5 has no HAL 1002 race, so it alone gets a best-effort
+                // clean camera release first. It runs before the metadata writes
+                // and the terminal-phase message, so a daemon death here leaves
+                // the update retryable and never reads as "install underway".
+                boolean cameraPrepareAttempted = prepareDiLink5CameraForInstall();
+                abortCameraOnException = cameraPrepareAttempted;
 
                 // Step 3: Save update info BEFORE we touch any daemon (the daemon
                 // process — if we're running inside it — is about to die, and the
@@ -1287,10 +1299,12 @@ public class AppUpdater {
                             callback, channel, priorUpdateTimestamp,
                             priorDisplayVersion);
                     if (!detachedStarted) {
+                        if (abortCameraOnException) abortPreparedCameraRestart();
                         rollbackPreparedUpdateMetadata(
                                 channel, priorUpdateTimestamp,
                                 priorDisplayVersion);
                     }
+                    abortCameraOnException = false;
                     // On success the detached script owns the imminent kill. On
                     // failure metadata was rolled back above.
                     rollbackMetadataOnException = false;
@@ -1407,6 +1421,9 @@ public class AppUpdater {
                                 @Override public void onLaunched() {}
                                 @Override public void onError(String e) {}
                             });
+                    // A daemon that survived the stop sweep must not stay start-latched.
+                    if (cameraPrepareAttempted) abortPreparedCameraRestart();
+                    abortCameraOnException = false;
                     postInstallError(callback, "Install failed: " + output);
                 } else {
                     // Install succeeded — NOW advance the persisted display label
@@ -1419,6 +1436,7 @@ public class AppUpdater {
                     runCallback(callback::onSuccess);
                 }
             } catch (Exception e) {
+                if (abortCameraOnException) abortPreparedCameraRestart();
                 if (rollbackMetadataOnException && preparedChannel != null) {
                     rollbackPreparedUpdateMetadata(
                             preparedChannel,
@@ -1451,7 +1469,7 @@ public class AppUpdater {
     // methods ({@link #downloadAndInstall} / {@link #runDetachedInstall}) are
     // left BYTE-IDENTICAL by this addition.
     private static final String COMPANION_APK_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_companion.apk");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_companion.apk");
 
     /** No-op shell callback for fire-and-forget cleanup commands. */
     private static final com.overdrive.app.launcher.AdbDaemonLauncher.LaunchCallback NOOP_SHELL =
@@ -1804,6 +1822,26 @@ public class AppUpdater {
     private static final int CAMERA_PREPARE_MAX_ATTEMPTS = 6;
     /** Matches the daemon's 1s pending-persistence drain cadence. */
     private static final long CAMERA_PREPARE_RETRY_DELAY_MS = 1000;
+    /** Outlasts the daemon's worst-case teardown: pipeline confirm 20s + DI5 capture retirement 12s. */
+    private static final int CAMERA_PREPARE_READ_TIMEOUT_MS = 35_000;
+
+    /**
+     * DiLink 5 only: let the daemon release QCarCam in its own safe order before
+     * the installer's hard stop. Best-effort; the result never gates the install.
+     *
+     * @return true when a release was requested, so a failed handoff can resume the camera
+     */
+    private boolean prepareDiLink5CameraForInstall() {
+        if (!isDiLink5ModeSelected()) return false;
+        String failure = prepareCameraDaemonForUpdate();
+        if (failure == null) {
+            Log.i(TAG, "DiLink 5 camera released before install");
+        } else {
+            Log.w(TAG, "DiLink 5 camera release before install failed ("
+                    + failure + "); installing anyway");
+        }
+        return true;
+    }
 
     /**
      * Ask the daemon to prepare for the kill, retrying while it reports a
@@ -1866,12 +1904,14 @@ public class AppUpdater {
                     "/api/surveillance/prepare-restart",
                     "POST",
                     3000,
-                    10000);
+                    CAMERA_PREPARE_READ_TIMEOUT_MS);
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/json");
             try (java.io.OutputStream body = connection.getOutputStream()) {
                 body.write(new JSONObject()
                         .put("reason", "app_update")
+                        // The update kills the daemon regardless of the trip flush.
+                        .put("allowUncheckpointedTrip", true)
                         .toString()
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }
@@ -2042,10 +2082,10 @@ public class AppUpdater {
             }
             cleanup(UPDATE_IN_PROGRESS_FILE + " " + POST_UPDATE_FILE + " "
                     + APK_PATH + " /data/local/tmp/overdrive_install.sh "
-                    + com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_install.sh.tmp"));
+                    + com.overdrive.app.util.ScratchRoot.path("overdrive_install.sh.tmp"));
             runShell(
                     "for S in /data/local/tmp/camera_daemon.disabled "
-                            + com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.disabled; do ")
+                            + com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.disabled;") + " do "
                             + "R=$(head -1 \"$S\" 2>/dev/null); "
                             + "case \"$R\" in 'disabled for update'*|"
                             + "'disabled by stopAllDaemons sweep'*|"
@@ -2083,8 +2123,8 @@ public class AppUpdater {
     private boolean runDetachedInstall(InstallCallback callback, String channel,
                                        String priorUpdateTimestamp,
                                        String priorDisplayVersion) {
-        String scriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_install.sh");
-        String logPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_install.log");
+        String scriptPath = com.overdrive.app.util.ScratchRoot.path("overdrive_install.sh");
+        String logPath = com.overdrive.app.util.ScratchRoot.path("overdrive_install.log");
         String diLink5CaptureCleanup = diLink5CaptureKillScript();
 
         StringBuilder script = new StringBuilder();
@@ -2092,6 +2132,9 @@ public class AppUpdater {
         script.append("set +e\n");
         script.append("exec >").append(logPath).append(" 2>&1\n");
         script.append("echo \"[install] starting at $(date)\"\n");
+        // Keep the daemon serving its terminal phase for two 1.5s poll ticks;
+        // otherwise app/web pollers miss it and report a lost head unit.
+        script.append("sleep 3\n");
         // Step 1: plant sentinels so the new MainActivity recovers correctly.
         script.append("echo 'update at '$(date) > ").append(UPDATE_IN_PROGRESS_FILE).append("\n");
         script.append("echo 'update at '$(date) > ").append(POST_UPDATE_FILE).append("\n");
@@ -2139,10 +2182,10 @@ public class AppUpdater {
         script.append(psAwkKillLine("wgproxy"));
         script.append("killall -9 wgproxy 2>/dev/null\n");
         script.append("rm -f /data/local/tmp/start_cam_daemon.sh "
-                + "/data/local/tmp/cam_watchdog.pid 2>/dev/null\n");
+                + com.overdrive.app.util.ScratchRoot.path("cam_watchdog.pid") + " 2>/dev/null\n");
         script.append("rm -rf /data/local/tmp/cam_watchdog.lock 2>/dev/null\n");
         script.append("rm -f /data/local/tmp/start_acc_sentry.sh "
-                + "/data/local/tmp/acc_sentry_daemon.lock 2>/dev/null\n");
+                + com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.lock") + " 2>/dev/null\n");
         script.append("rm -rf /data/local/tmp/acc_sentry_watchdog.lock 2>/dev/null\n");
         script.append("rm -f /data/local/tmp/start_zrok.sh 2>/dev/null\n");
         script.append("rm -f /data/local/tmp/start_telegram.sh 2>/dev/null\n");
@@ -2161,13 +2204,13 @@ public class AppUpdater {
         // its .bak, or .bad — those are the recovery copies. Explicit suffixes,
         // never a broad overdrive_config* / *.json glob.
         script.append("rm -f /data/local/tmp/overdrive_config.json.tmp.* "
-                + "/data/local/tmp/overdrive_config.json.bak.tmp 2>/dev/null\n");
+                + com.overdrive.app.util.ScratchRoot.path("overdrive_config.json.bak.tmp") + " 2>/dev/null\n");
         // Clear only machine-written CORE markers. Pre-existing UI/Telegram
         // markers are durable manual stop intent and survive the update.
         // POST_UPDATE_FILE / UPDATE_IN_PROGRESS_FILE stay in place; the new
         // process consumes them via UpdateLifecycle.
         script.append("for S in /data/local/tmp/camera_daemon.disabled "
-                + "/data/local/tmp/acc_sentry_daemon.disabled; do\n");
+                + com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.disabled;") + " do\n");
         script.append("  R=$(head -1 \"$S\" 2>/dev/null)\n");
         script.append("  case \"$R\" in 'disabled for update'*|"
                 + "'disabled by stopAllDaemons sweep'*|'disabled by killDaemon'*) "
@@ -2384,7 +2427,8 @@ public class AppUpdater {
             // closes stdin so nothing keeps the parent waiting.
             ProcessBuilder pb = new ProcessBuilder(
                     "sh", "-c",
-                    "(sh " + scriptPath + " </dev/null >/dev/null 2>&1 &)");
+                    com.overdrive.app.util.ScratchRoot.remap("(sh " + scriptPath + " </dev/null >/dev/null 2>&1 &)"));
+            com.overdrive.app.util.ScratchRoot.applyEnv(pb);
             pb.redirectErrorStream(true);
             pb.start();
 
@@ -3056,7 +3100,7 @@ public class AppUpdater {
         String priorDisplayVersion = null;
         long recordTs = 0;
         try {
-            java.io.File f = new java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update_progress.json"));
+            java.io.File f = new java.io.File(com.overdrive.app.util.ScratchRoot.path("overdrive_update_progress.json"));
             StringBuilder sb = new StringBuilder();
             try (java.io.BufferedReader r = new java.io.BufferedReader(
                     new java.io.InputStreamReader(new java.io.FileInputStream(f)))) {
@@ -3168,7 +3212,7 @@ public class AppUpdater {
      */
     private static boolean hasFailedUpdateMarker() {
         try {
-            java.io.File f = new java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update_progress.json"));
+            java.io.File f = new java.io.File(com.overdrive.app.util.ScratchRoot.path("overdrive_update_progress.json"));
             if (!f.exists()) return false;
             StringBuilder sb = new StringBuilder();
             try (java.io.BufferedReader r = new java.io.BufferedReader(

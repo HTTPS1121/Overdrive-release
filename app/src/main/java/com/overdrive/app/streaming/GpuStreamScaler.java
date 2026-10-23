@@ -1159,6 +1159,19 @@ public class GpuStreamScaler {
         clearBsContentTransform();
     }
 
+    /** Full-width card with the whole camera tile turned/mirrored/zoomed/shifted inside it;
+     *  the quarter-turn quad rotation is left to {@link #setContentRotation(int, int)}. */
+    public void setBsCameraFraming(float rotationDeg, boolean flipHorizontal, boolean flipVertical,
+                                   float zoom, float translateXFrac, float translateYFrac) {
+        this.bsCardWidthFrac = 1.0f;
+        this.bsCardShiftX = 0.0f;
+        this.bsCardAspect = 0.0f;
+        // A full-width card has the buffer's shape (the margins scale with it).
+        float bufAspect = (outputHeight > 0) ? (float) outputWidth / (float) outputHeight : 1.0f;
+        setBsContentTransform(rotationDeg, 0f, 0f, 0f, 0f, flipHorizontal, flipVertical,
+                zoom, translateXFrac, translateYFrac, bufAspect);
+    }
+
     /** Current card width as a fraction of the buffer (1.0 = full width).
      *
      *  <p>Test-visible (see {@link #isBsContentTransformActive}). A preset reshapes the
@@ -1625,13 +1638,14 @@ public class GpuStreamScaler {
         //                    applied within the local 0.5×0.5 region.
         //   uViewMode == 5 → raw passthrough (debug).
         // The legacy 4-strip math stays for uApaMode <= 2.5 paths.
+        // DiLink 5 single views read the same producer corners as views 7/8.
         String fullFrameSampling =
             isTexture2D
                 ? "        if (uViewMode >= 1 && uViewMode <= 4) {\n"
-                    + "            vec2 corner = vec2(0.0, 0.0);\n"
-                    + "            if (uViewMode == 2) corner = vec2(0.5, 0.0);\n"
-                    + "            else if (uViewMode == 3) corner = vec2(0.0, 0.5);\n"
-                    + "            else if (uViewMode == 4) corner = vec2(0.5, 0.5);\n"
+                    + "            vec2 corner = uProducerForFront;\n"
+                    + "            if (uViewMode == 2) corner = uProducerForRight;\n"
+                    + "            else if (uViewMode == 3) corner = uProducerForRear;\n"
+                    + "            else if (uViewMode == 4) corner = uProducerForLeft;\n"
                     + "            samplePos = corner + vTexCoord * 0.5;\n"
                     + "        } else {\n"
                     + "            samplePos = vTexCoord;\n"

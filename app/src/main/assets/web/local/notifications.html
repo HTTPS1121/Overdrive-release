@@ -9,15 +9,15 @@
     <link rel="apple-touch-icon" href="../shared/app-icon-dark.webp">
     <title data-i18n="app.notifications_title">Notifications - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       WebView detection MUST run before app-tabs.js builds the tab bar so
       we can filter OT_TABS to the Telegram-only flow on the head unit.
       The AndroidBridge JS interface is injected by WebViewFragment; its
       mere presence is the canonical "we're inside the Overdrive shell"
       signal (same approach core.js uses for locale / theme decisions).
-      Setting the class on <html> (not <body>) so CSS rules can style
+      Setting the class on <html> (not <body class="r-settings">) so CSS rules can style
       pre-paint elements like <main> and <style> media queries.
     -->
     <script>
@@ -40,7 +40,7 @@
       entirely when only one tab remains).
       The Telegram block reuses the legacy IDs (v2TelegramSendStartPing,
       v2TelegramTierGroup, v2TelegramNotices/Alerts/Critical) so the
-      SurvSettings bindings in shared/surveillance.js keep firing.
+      SurvSettings bindings in shared/surveillance.js?v=survtoggle15 keep firing.
     -->
     <script>
         var __OT_LOG_TAB = { id: 'log', label: 'Log', i18n: 'notif.tab_log', svg: '<line x1="8" y1="7" x2="18" y2="7"/><line x1="8" y1="12" x2="18" y2="12"/><line x1="8" y1="17" x2="14" y2="17"/><circle cx="4.5" cy="7" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17" r="1"/>' };
@@ -57,220 +57,320 @@
             ? __OT_ALL_TABS.filter(function (t) { return t.id === 'telegram' || t.id === 'log'; })
             : __OT_ALL_TABS;
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <link rel="manifest" href="/manifest.json">
     <style>
-        .notif-page-body { max-width: 720px; margin: 0 auto; }
-        .notif-section { margin-bottom: 28px; }
+        /* ============================================================
+           Mock layout. body.r-settings caps the measure on wide screens.
+           Each settings section is one mock group tile (icon-chip head,
+           rows inside); the Log tab is a list of tiles (below).
+           ============================================================ */
+        .notif-page-body { min-width: 0; }
+        .notif-section { margin-bottom: var(--card-gap); }
+        .notif-page-body > .notif-section:not([data-tab="log"]):not(.notif-hero) {
+            padding: 6px 0;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
+        }
+        .notif-head { display: flex; align-items: flex-start; padding: 14px 20px 8px; }
+        .notif-head-icon {
+            display: flex; flex-shrink: 0; align-items: center; justify-content: center;
+            width: 40px; height: 40px;
+            margin-right: 14px;
+            border-radius: 12px;
+            background: var(--well);
+            color: var(--on-surface-variant);
+        }
+        .notif-head-icon svg { width: 20px; height: 20px; }
+        [dir="rtl"] .notif-head-icon { margin-right: 0; margin-left: 14px; }
+        /* .setting-stack / .setting-desc only opt long descriptions into the
+           shared More / Less fold (app-shell.js); the box stays a plain block. */
+        .notif-head-text { display: block; flex: 1 1 auto; min-width: 0; padding: 0; border-bottom: 0; }
         .notif-section h2 {
-            font-size: 12px; font-weight: 600;
-            letter-spacing: 0.08em; text-transform: uppercase;
-            color: var(--text-secondary);
-            margin: 0 0 4px;
+            margin: 0;
+            color: var(--on-surface);
+            font-size: var(--fs-title); font-weight: 600; line-height: 1.25;
+            overflow-wrap: break-word;
         }
         .notif-section-sub {
-            font-size: 13px; color: var(--text-muted);
-            line-height: 1.5; margin: 0 0 14px;
+            margin: 2px 0 0;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label); line-height: 1.45;
+            overflow-wrap: break-word;
         }
-        .notif-card {
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            border-radius: 12px;
-            padding: 4px 0;
+        /* Caption that opens a sub-group inside a tile (Telegram tiers / delivery). */
+        .notif-subcap { position: relative; margin: 6px 0 0; padding: 14px 20px 4px; }
+        .notif-subcap::before,
+        .notif-row + .notif-row::before,
+        .device-row + .device-row::before,
+        #categoriesContainer > .notif-section + .notif-section::before {
+            content: "";
+            position: absolute; top: 0; right: 20px; left: 20px;
+            height: 1px;
+            background: var(--hairline);
         }
+        #v2TelegramTierWarning { margin-left: 20px; margin-right: 20px; }
+        /* Inner cards sit flush inside their group tile. */
+        .notif-card { padding: 0; border: 0; border-radius: 0; background: none; }
+        /* Category sub-groups (renderCategories) inside the Categories tile. */
+        #categoriesContainer > .notif-section { position: relative; margin: 0; }
+        #categoriesContainer > .notif-section + .notif-section { margin-top: 6px; }
+        #categoriesContainer .notif-section > h2 {
+            padding: 14px 20px 2px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label); font-weight: 600;
+        }
+        /* Rows (mock .row): title + description, control at the trailing edge. */
         .notif-row {
             position: relative;
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 14px 16px;
-            border-bottom: 1px solid var(--border-subtle);
+            display: flex; align-items: center;
+            min-height: 64px;
+            padding: 14px 20px;
         }
-        .notif-row:last-child { border-bottom: 0; }
-        .notif-row-text { flex: 1; min-width: 0; padding-right: 12px; }
+        .notif-row-text { display: block; flex: 1 1 auto; min-width: 0; margin-right: 16px; padding: 0; border-bottom: 0; }
+        [dir="rtl"] .notif-row-text { margin-right: 0; margin-left: 16px; }
         .notif-row-label {
-            font-size: 14px; font-weight: 500;
-            display: flex; align-items: center; gap: 8px;
-            flex-wrap: wrap;
+            color: var(--on-surface);
+            font-size: var(--fs-body); font-weight: 600; line-height: 1.3;
+            overflow-wrap: break-word;
         }
         .notif-row-note {
-            font-size: 12px; color: var(--text-secondary);
             margin-top: 2px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label); line-height: 1.45;
+            overflow-wrap: break-word;
         }
         .notif-sev-pill {
             position: relative;
             display: inline-block;
-            font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
-            padding: 2px 8px; border-radius: 999px;
-            background: var(--bg-hover);
-            color: var(--text-secondary);
+            margin-left: 8px;
+            padding: 0 8px;
+            border-radius: 8px;
+            background: var(--well-2);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-weight: 700; line-height: 22px;
+            letter-spacing: 0.04em; text-transform: uppercase;
+            vertical-align: 1px;
             cursor: help;
         }
-        .notif-sev-pill.warn { color: #FFB75A; background: rgba(255,183,90,0.1); }
-        .notif-sev-pill.critical { color: #FF6B6B; background: rgba(255,107,107,0.1); }
-        .notif-sev-pill.auto { color: #00E5FF; background: rgba(0,229,255,0.1); }
+        [dir="rtl"] .notif-sev-pill { margin-left: 0; margin-right: 8px; }
+        .notif-sev-pill.warn { background: var(--warning-soft); color: var(--warning); }
+        .notif-sev-pill.critical { background: var(--danger-soft); color: var(--danger); }
+        .notif-sev-pill.auto { background: var(--tertiary-soft); color: var(--tertiary); }
         /* Tooltip is a child of the pill (anchored to it), positioned just
-           below-right of the pill, kept narrow enough that it never covers
-           the toggle on the row's right edge. Triggers only on pill hover
-           so casual mouse movement through the row doesn't hide the toggle. */
+           below the pill, kept narrow enough that it never covers the
+           toggle on the row's trailing edge. Triggers only on pill hover /
+           focus so casual mouse movement through the row doesn't hide it. */
         .notif-sev-tooltip {
             position: absolute;
             top: calc(100% + 8px);
             left: 0;
+            z-index: 100;
             width: max-content;
-            max-width: min(240px, calc(100vw - 48px));
+            max-width: 240px;
             padding: 8px 10px;
-            background: var(--panel-overlay-bg);
-            border: 1px solid var(--border-default);
-            border-radius: 8px;
-            box-shadow: var(--shadow-overlay);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            color: var(--text-primary);
-            font-size: 11px; font-weight: 400; line-height: 1.45;
-            text-transform: none; letter-spacing: 0;
+            border-radius: var(--radius-sm);
+            background: var(--tile-raised);
+            box-shadow: var(--tile-shadow);
+            color: var(--on-surface);
+            font-size: var(--fs-caption); font-weight: 400; line-height: 1.45;
+            letter-spacing: 0; text-transform: none;
             white-space: normal; text-align: left;
             opacity: 0; pointer-events: none;
-            transition: opacity 0.15s;
-            z-index: 100;
+            transition: opacity var(--duration-fast) var(--easing-standard);
+        }
+        [dir="rtl"] .notif-sev-tooltip { left: auto; right: 0; text-align: right; }
+        @media (max-width: 480px) {
+            /* Anchor to the row so the tooltip never runs off a narrow screen. */
+            .notif-sev-pill { position: static; }
+            .notif-sev-tooltip,
+            [dir="rtl"] .notif-sev-tooltip { top: 100%; right: 20px; left: 20px; width: auto; max-width: none; margin-top: -6px; }
         }
         .notif-sev-pill:hover .notif-sev-tooltip,
         .notif-sev-pill:focus .notif-sev-tooltip,
         .notif-sev-pill:focus-within .notif-sev-tooltip {
             opacity: 1;
         }
+        /* Category switch (div role=switch) drawn like the shared M3 switch. */
         .notif-toggle {
-            position: relative; width: 44px; height: 26px;
-            background: var(--border-default); border-radius: 13px;
-            transition: background 0.15s;
-            flex-shrink: 0; cursor: pointer;
+            position: relative;
+            flex-shrink: 0;
+            width: 52px; height: 32px;
+            border-radius: 16px;
+            background: var(--well-2);
+            box-shadow: inset 0 0 0 2px var(--outline);
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard);
         }
-        .notif-toggle.on { background: #00E5FF; }
+        .notif-toggle::before { content: ""; position: absolute; top: -8px; right: 0; bottom: -8px; left: 0; }
         .notif-toggle::after {
-            content: ''; position: absolute; top: 3px; left: 3px;
-            width: 20px; height: 20px; border-radius: 50%;
-            background: #fff; transition: transform 0.15s;
+            content: "";
+            position: absolute; top: 8px; left: 8px;
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            background: var(--outline);
+            transition: left var(--duration-fast) var(--easing-standard), top var(--duration-fast) var(--easing-standard), width var(--duration-fast) var(--easing-standard), height var(--duration-fast) var(--easing-standard);
         }
-        .notif-toggle.on::after { transform: translateX(18px); }
+        .notif-toggle.on { background: var(--primary); box-shadow: none; }
+        .notif-toggle.on::after {
+            top: 4px; left: 24px;
+            width: 24px; height: 24px;
+            background: var(--on-primary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235DDBB6' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+        }
+        :root[data-theme="light"] .notif-toggle.on::after {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23007A62' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+        }
+        [dir="rtl"] .notif-toggle::after { left: auto; right: 8px; }
+        [dir="rtl"] .notif-toggle.on::after { left: auto; right: 24px; }
         /* Inactive toggle — push isn't enabled on this device so the
            per-category preference is moot. Show as visibly disabled and
            ignore clicks. */
         .notif-toggle.inactive {
-            background: var(--border-subtle);
+            opacity: 0.38;
             cursor: not-allowed;
             pointer-events: none;
-            opacity: 0.45;
         }
-        .notif-toggle.inactive.on { background: var(--border-subtle); }
-        .notif-toggle.inactive::after {
-            background: var(--text-muted);
-            transform: none !important;
-        }
+        .notif-toggle.inactive.on { background: var(--well-2); box-shadow: inset 0 0 0 2px var(--outline); }
+        .notif-toggle.inactive.on::after { top: 8px; left: 8px; width: 16px; height: 16px; background: var(--outline); }
+        /* Pill buttons: tonal by default, filled primary for the main action. */
         .notif-btn {
             display: inline-flex; align-items: center; justify-content: center;
-            min-width: 132px; height: 38px;
-            padding: 0 18px;
-            border: 1px solid rgba(0,229,255,0.4); border-radius: 8px;
-            background: rgba(0,229,255,0.08); color: #00E5FF;
-            font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer;
-            white-space: nowrap;
-            font-family: inherit;
+            min-height: 40px;
+            padding: 8px 20px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well-2);
+            color: var(--on-surface);
+            font-family: inherit; font-size: var(--fs-label); font-weight: 600; line-height: 1.2;
+            text-align: center;
+            cursor: pointer;
         }
-        .notif-btn:hover { background: rgba(0,229,255,0.15); }
-        .notif-btn.danger { border-color: rgba(255,107,107,0.4); background: rgba(255,107,107,0.08); color: #FF6B6B; }
-        .notif-btn.disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
-        /* Minimum-importance segmented control. ES5/Chrome-58 safe (flexbox,
-           no gap on the segments themselves — border-collapse look via -1px). */
+        #enableBtn, #tyreLimitsSave { background: var(--primary); color: var(--on-primary); }
+        .notif-btn.danger { background: var(--danger-soft); color: var(--danger); }
+        .notif-btn.disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+        /* Segmented control (mock .seg). Chrome-58 safe: sibling margins. */
         .notif-seg {
             display: flex; width: 100%;
-            border: 1px solid var(--border-subtle); border-radius: 8px;
-            overflow: hidden;
+            padding: 3px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well);
         }
         .notif-seg-btn {
             flex: 1 1 0; min-width: 0;
-            padding: 10px 12px;
-            border: 0; border-left: 1px solid var(--border-subtle);
-            background: transparent; color: var(--text-secondary);
-            font-family: inherit; font-size: 13px; font-weight: 500;
-            line-height: 1.2; cursor: pointer; white-space: nowrap;
-            text-overflow: ellipsis; overflow: hidden;
+            min-height: 38px;
+            padding: 6px 12px;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent;
+            color: var(--on-surface-variant);
+            font-family: inherit; font-size: var(--fs-label); font-weight: 600; line-height: 1.2;
+            overflow-wrap: break-word;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        .notif-seg-btn:first-child { border-left: 0; }
-        .notif-seg-btn:hover { background: rgba(0,229,255,0.08); }
-        .notif-seg-btn[aria-checked="true"] {
-            background: rgba(0,229,255,0.15); color: #00E5FF;
+        .notif-seg-btn + .notif-seg-btn { margin-left: 2px; }
+        [dir="rtl"] .notif-seg-btn + .notif-seg-btn { margin-left: 0; margin-right: 2px; }
+        .notif-seg-btn[aria-checked="true"] { background: var(--secondary-container); color: var(--on-secondary-container); }
+        @media (hover: hover) {
+            .notif-seg-btn:hover { color: var(--on-surface); }
+            .notif-seg-btn[aria-checked="true"]:hover { color: var(--on-secondary-container); }
         }
-        .notif-seg.disabled { opacity: 0.5; pointer-events: none; }
-        .notif-seg-hint { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
-        /* Compact variant: sits inline on the right of a .notif-row (like
-           .notif-range does) instead of spanning the card. Same look,
-           fixed-size segments. */
-        .notif-seg-compact {
-            width: auto; flex-shrink: 0;
-        }
-        .notif-seg-compact .notif-seg-btn {
-            flex: 0 0 auto; padding: 8px 14px; font-size: 12px;
-        }
+        .notif-seg.disabled { opacity: 0.45; pointer-events: none; }
+        .notif-seg-hint { margin-top: 10px; color: var(--on-surface-variant); font-size: var(--fs-label); }
+        #minSeverityCard { padding: 4px 20px 16px; }
+        /* Compact variant: sits inline at the trailing edge of a .notif-row
+           (like .notif-range does) instead of spanning the card. */
+        .notif-seg-compact { display: inline-flex; flex-shrink: 0; width: auto; }
+        .notif-seg-compact .notif-seg-btn { flex: 0 0 auto; padding: 6px 14px; }
         .notif-status {
-            font-size: 13px; padding: 12px 16px; border-radius: 8px;
-            margin: 12px 0; line-height: 1.5;
+            margin: 0 0 var(--card-gap);
+            padding: 12px 16px;
+            border-radius: var(--radius-md);
+            font-size: var(--fs-label); line-height: 1.5;
+            overflow-wrap: break-word;
         }
-        .notif-status.ok    { background: rgba(0,229,255,0.08); color: #00E5FF; }
-        .notif-status.warn  { background: rgba(255,183,90,0.08); color: #FFB75A; }
-        .notif-status.error { background: rgba(255,107,107,0.08); color: #FF6B6B; }
+        .notif-status.ok    { background: var(--primary-soft); color: var(--primary); }
+        .notif-status.warn  { background: var(--warning-soft); color: var(--warning); }
+        .notif-status.error { background: var(--danger-soft); color: var(--danger); }
         .notif-status code {
-            background: var(--bg-elevated); padding: 2px 6px; border-radius: 4px;
-            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            padding: 2px 6px;
+            border-radius: var(--radius-xs);
+            background: var(--well-2);
+            font-family: var(--family-mono, monospace); font-size: var(--fs-caption);
         }
-        .notif-permission-row {
-            display: grid;
-            grid-template-columns: 16px 1fr;
-            column-gap: 12px;
-            row-gap: 14px;
-            align-items: center;
+        /* Push delivery: the existing status card styled as the summary tile in
+           place (it stays in the Push tab). Identity icon; state readout below. */
+        .r-hero.notif-hero {
+            grid-template-columns: auto minmax(0, 1fr);
+            grid-row-gap: 16px;
+            margin-bottom: var(--card-gap);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
         }
-        .notif-permission-row::before {
-            content: ''; grid-column: 1; grid-row: 1;
-            width: 10px; height: 10px; border-radius: 50%;
-            background: var(--text-muted);
-            justify-self: center;
-        }
-        .notif-permission-row.granted::before { background: #00E5FF; box-shadow: 0 0 8px rgba(0,229,255,0.6); }
-        .notif-permission-row.denied::before  { background: #FF6B6B; }
-        .notif-permission-row.default::before { background: #FFB75A; }
+        .notif-hero > .r-hero-icon { background: var(--primary-soft); color: var(--primary); }
+        .notif-hero .r-hero-title { font-size: var(--fs-headline); font-weight: 700; line-height: 1.2; }
+        .notif-hero > .notif-status,
+        .notif-hero > .notif-card { grid-column: 1 / -1; margin: 0; }
+        .notif-permission-row { display: block; }
         .notif-permission-state {
-            grid-column: 2; grid-row: 1;
-            font-size: 14px; color: var(--text-secondary);
+            display: flex; align-items: center;
+            min-height: 48px;
+            padding: 12px 14px;
+            border-radius: var(--radius-md);
+            background: var(--well);
+            color: var(--on-surface);
+            font-size: var(--fs-body); font-weight: 600; line-height: 1.35;
+            overflow-wrap: break-word;
         }
-        .notif-action-row {
-            grid-column: 2; grid-row: 2;
-            display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+        .notif-permission-state::before {
+            content: "";
+            flex-shrink: 0;
+            width: 10px; height: 10px;
+            margin-right: 12px;
+            border-radius: 50%;
+            background: var(--on-surface-variant);
         }
-        .notif-action-row .notif-btn { flex: 0 0 auto; }
-        .device-row { padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); }
-        .device-row:last-child { border-bottom: 0; }
-        .device-row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-        .device-row-label { font-weight: 500; }
-        .device-row-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+        [dir="rtl"] .notif-permission-state::before { margin-right: 0; margin-left: 12px; }
+        .notif-permission-row.granted .notif-permission-state::before { background: var(--primary); }
+        .notif-permission-row.denied .notif-permission-state::before  { background: var(--danger); }
+        .notif-permission-row.default .notif-permission-state::before { background: var(--warning); }
+        .notif-action-row { display: flex; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+        .notif-action-row > .notif-btn { margin: 8px 8px 0 0; }
+        [dir="rtl"] .notif-action-row > .notif-btn { margin: 8px 0 0 8px; }
+        .device-row { position: relative; padding: 14px 20px; }
+        .device-row-top { display: flex; align-items: center; justify-content: space-between; }
+        .device-row-top > div { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; word-break: break-word; }
+        .device-row-top > .notif-btn { flex-shrink: 0; margin-left: 12px; }
+        [dir="rtl"] .device-row-top > .notif-btn { margin-left: 0; margin-right: 12px; }
+        .device-row-label { color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; line-height: 1.3; }
+        .device-row-meta { margin-top: 2px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
         /* "(this device)" tag — small tonal chip inline with the device label
            so the user can identify the row corresponding to the current
            browser before clicking Remove. */
         .device-row-self {
             display: inline-block;
             margin-left: 8px;
-            padding: 1px 8px;
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            color: var(--text-muted);
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            border-radius: 999px;
-            vertical-align: middle;
+            padding: 0 8px;
+            border-radius: var(--radius-full);
+            background: var(--well-2);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-weight: 600; line-height: 20px;
+            letter-spacing: 0.04em; text-transform: uppercase;
+            vertical-align: 1px;
+        }
+        [dir="rtl"] .device-row-self { margin-left: 0; margin-right: 8px; }
+        @media (max-width: 480px) {
+            .device-row-top { flex-wrap: wrap; }
+            .device-row-top > div { flex-basis: 100%; }
+            .device-row-top > .notif-btn,
+            [dir="rtl"] .device-row-top > .notif-btn { margin: 10px 0 0; }
         }
         .empty-state {
-            padding: 24px 16px; text-align: center;
-            color: var(--text-secondary); font-size: 13px;
+            padding: 24px 20px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            text-align: center;
         }
 
         /* ============================================================
@@ -280,21 +380,20 @@
            inputs sit in a fixed-width group on the row's right edge, where
            every other row in this page puts its control.
            ============================================================ */
-        .notif-range {
-            display: flex; align-items: center; gap: 6px;
-            flex-shrink: 0;
-        }
+        .notif-range { display: flex; flex-shrink: 0; align-items: center; }
+        .notif-range > * + * { margin-left: 6px; }
+        [dir="rtl"] .notif-range > * + * { margin-left: 0; margin-right: 6px; }
         .notif-num {
-            width: 68px; height: 34px;
+            width: 76px; height: 44px;
             padding: 0 8px;
-            border: 1px solid var(--border-default);
-            border-radius: 8px;
-            background: var(--bg-base);
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 13px; text-align: center;
+            border: 1px solid var(--outline-variant);
+            border-radius: var(--radius-sm);
+            background: var(--well);
+            color: var(--on-surface);
+            font-family: var(--family-mono, monospace);
+            font-size: var(--fs-label); text-align: center;
             /* Chrome 58 in the head-unit WebView still paints spinners on
-               number inputs; they'd overlap the 68px field. */
+               number inputs; they'd overlap the field. */
             -moz-appearance: textfield;
         }
         .notif-num::-webkit-outer-spin-button,
@@ -303,42 +402,47 @@
         }
         .notif-num:focus {
             outline: none;
-            border-color: #00E5FF;
-            box-shadow: 0 0 0 2px rgba(0,229,255,0.18);
+            border-color: var(--primary);
+            box-shadow: 0 0 0 1px var(--primary);
         }
         /* Server rejected the value, or it fails the local sanity check. */
         .notif-num.invalid {
-            border-color: #FF6B6B;
-            box-shadow: 0 0 0 2px rgba(255,107,107,0.18);
+            border-color: var(--danger);
+            box-shadow: 0 0 0 1px var(--danger);
         }
-        .notif-range-sep { color: var(--text-muted); font-size: 12px; }
-        .notif-num-unit {
-            color: var(--text-muted); font-size: 11px;
-            width: 26px; text-align: left;
-        }
+        .notif-range-sep { color: var(--on-surface-variant); font-size: var(--fs-label); }
+        .notif-num-unit { min-width: 26px; color: var(--on-surface-variant); font-size: var(--fs-caption); text-align: left; }
+        [dir="rtl"] .notif-num-unit { text-align: right; }
         /* Live PSI echo under each axle label, so a user thinking in PSI can
            sanity-check a kPa entry without leaving the page. */
         .notif-row-conv {
-            font-size: 11px; color: var(--text-muted);
             margin-top: 3px;
-            font-family: 'JetBrains Mono', monospace;
+            color: var(--on-surface-variant);
+            font-family: var(--family-mono, monospace); font-size: var(--fs-caption);
         }
         .notif-card-actions {
-            display: flex; justify-content: flex-end; gap: 10px;
-            align-items: center; flex-wrap: wrap;
-            padding: 14px 16px;
+            display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+            padding: 8px 20px 14px;
         }
+        .notif-card-actions > .notif-btn { margin: 6px 0 0 8px; }
+        [dir="rtl"] .notif-card-actions > .notif-btn { margin: 6px 8px 0 0; }
         .notif-card-actions .notif-hint {
-            font-size: 12px; color: var(--text-muted);
-            margin-right: auto; max-width: 60%;
+            flex: 1 1 200px; min-width: 0;
+            margin: 6px auto 0 0;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            overflow-wrap: break-word;
         }
-        @media (max-width: 520px) {
-            /* Stack the control under the label so the two inputs keep their
-               tap targets on the narrow head-unit portrait layout. */
+        .notif-card-actions .notif-hint:empty { display: none; }
+        [dir="rtl"] .notif-card-actions .notif-hint { margin: 6px 0 0 auto; }
+        @media (max-width: 599px) {
+            /* Stack the control under the label so the inputs keep their
+               tap targets on phones and the head-unit portrait layout. */
             #tyreLimitsCard .notif-row { flex-wrap: wrap; }
-            #tyreLimitsCard .notif-row-text { padding-right: 0; }
-            #tyreLimitsCard .notif-range { margin-top: 10px; }
-            #tyreLimitsCard .notif-seg-compact { margin-top: 10px; }
+            #tyreLimitsCard .notif-row-text,
+            [dir="rtl"] #tyreLimitsCard .notif-row-text { flex-basis: 100%; margin: 0; }
+            #tyreLimitsCard .notif-range,
+            #tyreLimitsCard .notif-seg-compact { margin-top: 12px; }
         }
 
         /* ============================================================
@@ -389,35 +493,59 @@
         .notif-row-label .status-dot {
             display: inline-block;
             width: 10px; height: 10px;
+            margin-right: 8px;
             border-radius: 50%;
-            vertical-align: middle;
-            margin-right: 6px;
-            flex-shrink: 0;
+            vertical-align: 1px;
         }
+        [dir="rtl"] .notif-row-label .status-dot { margin-right: 0; margin-left: 8px; }
         .notif-row-label .info-icon {
             display: inline-block;
             width: 14px; height: 14px;
-            vertical-align: middle;
             margin-right: 6px;
-            flex-shrink: 0;
+            vertical-align: middle;
         }
+        [dir="rtl"] .notif-row-label .info-icon { margin-right: 0; margin-left: 6px; }
 
-        /* Material 3 radio dot used by the vehicle-layout picker. Larger
-           hit target than the toggle and pulls colours from theme tokens
-           so dark / light flip cleanly. The selected state lights up with
-           the same accent the page accent (notif-toggle.on) uses, so the
-           picker reads as a peer of the per-category toggles. */
-        .notif-radio {
-            position: relative;
-            width: 22px; height: 22px;
-            border-radius: 50%;
-            border: 2px solid var(--border-default);
-            background: transparent;
-            cursor: pointer;
-            flex-shrink: 0;
-            transition: border-color 0.15s, background 0.15s;
+        /* Vehicle layout: LHD / RHD as mock choice cards (2-up, 1 column on
+           phones). The whole card is the hit target — the delegated handler
+           walks up to the closest [data-side]. paint() only flags the radio
+           (.on), so the selected card look is the radio's ::before stretched
+           over the card: the radio stays unpositioned, the row is the
+           positioned ancestor and its own stacking context (z-index 0), so
+           the overlay paints above the card fill and below its text. */
+        #driveSideCard {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-gap: 10px;
+            gap: 10px;
+            padding: 4px 20px 16px;
         }
-        .notif-radio:hover { border-color: #00E5FF; }
+        @media (max-width: 599px) {
+            #driveSideCard { grid-template-columns: minmax(0, 1fr); }
+        }
+        #driveSideCard .notif-row {
+            z-index: 0;
+            align-items: flex-start;
+            min-height: 0;
+            padding: 14px;
+            border-radius: var(--radius-md);
+            background: var(--well);
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard);
+        }
+        #driveSideCard .notif-row + .notif-row::before { display: none; }
+        #driveSideCard .notif-row-text { margin-right: 12px; }
+        [dir="rtl"] #driveSideCard .notif-row-text { margin-right: 0; margin-left: 12px; }
+        /* Material 3 radio (mock .choice-radio): ring off, thick ring on. */
+        .notif-radio {
+            flex-shrink: 0;
+            width: 20px; height: 20px;
+            margin-top: 1px;
+            border-radius: 50%;
+            box-shadow: inset 0 0 0 2px var(--outline);
+            cursor: pointer;
+            transition: box-shadow var(--duration-fast) var(--easing-standard);
+        }
         /* Pair :focus + :focus-visible — Chrome 58 (Android System WebView on
            the BYD head unit) added :focus-visible only in v86, so a rule
            targeting :focus-visible alone gets dropped at parse and the
@@ -426,245 +554,436 @@
            focus" semantics taking precedence. */
         .notif-radio:focus,
         .notif-radio:focus-visible {
-            outline: 2px solid #00E5FF;
+            outline: 2px solid var(--primary);
             outline-offset: 3px;
         }
-        .notif-radio.on {
-            border-color: #00E5FF;
-        }
-        .notif-radio.on::after {
-            content: '';
-            position: absolute;
-            top: 4px; left: 4px;
-            width: 10px; height: 10px;
-            border-radius: 50%;
-            background: #00E5FF;
-            box-shadow: 0 0 6px rgba(0,229,255,0.55);
+        .notif-radio.on { box-shadow: inset 0 0 0 6px var(--primary); }
+        .notif-radio.on::before {
+            content: "";
+            position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+            z-index: -1;
+            border-radius: var(--radius-md);
+            background: var(--primary-soft);
+            box-shadow: inset 0 0 0 2px var(--primary);
+            pointer-events: none;
         }
         .notif-radio.disabled {
             opacity: 0.45;
             cursor: not-allowed;
         }
-        /* The whole row is the hit target for the picker. The row itself
-           gets a pointer cursor so users see the affordance, and a subtle
-           hover lift makes it feel like a peer of the notif-toggle rows.
-           The radio dot inside still receives the click via the delegated
-           handler walking up to the closest [data-side] ancestor. */
-        #driveSideCard .notif-row {
-            cursor: pointer;
-        }
-        #driveSideCard .notif-row:hover .notif-radio:not(.on) {
-            border-color: #00E5FF;
+        @media (hover: hover) {
+            #driveSideCard .notif-row:hover { background-color: var(--well-2); }
+            #driveSideCard .notif-row:hover .notif-radio:not(.on) { box-shadow: inset 0 0 0 2px var(--primary); }
         }
 
         /* ============================================================
            NOTIFICATION LOG TAB (data-tab="log")
-           Ported filter/calendar CSS from charging.html + event-style
-           pagination. Chrome-58 safe: no flex gap (sibling margins), no
-           inset:0, explicit calendar-day height.
+           Mock list: filter chips, a summary line with the select / clear
+           actions, then the tiles. Filter + calendar sheets ported from
+           charging.html, event-style pagination. Chrome-58 safe: no flex
+           gap (sibling margins), no inset, explicit calendar-day height.
            ============================================================ */
         .nl-wrap { max-width: 100%; }
 
-        /* ---- Header: count (left) + icon actions (right) ---- */
-        .nl-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-        .nl-count { font-size: 15px; font-weight: 700; color: var(--text-primary); letter-spacing: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .nl-actions { display: flex; flex: 0 0 auto; }
+        /* ---- Summary line: count (start) + icon actions (end) ---- */
+        .nl-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .nl-count { flex: 1 1 auto; min-width: 0; color: var(--on-surface-variant); font-size: var(--fs-label); font-weight: 600; letter-spacing: 0; overflow-wrap: break-word; }
+        .nl-actions { display: flex; flex: 0 0 auto; margin-left: 12px; }
+        [dir="rtl"] .nl-actions { margin-left: 0; margin-right: 12px; }
         .nl-actions > * + * { margin-left: 8px; }
+        [dir="rtl"] .nl-actions > * + * { margin-left: 0; margin-right: 8px; }
         .nl-icon-btn {
-            width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center;
-            border-radius: var(--radius-full); background: var(--bg-surface); border: 1px solid var(--border-subtle);
-            color: var(--text-secondary); cursor: pointer; transition: background .2s, color .2s, border-color .2s;
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 44px; height: 44px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well);
+            color: var(--on-surface-variant);
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
             -webkit-tap-highlight-color: transparent;
         }
-        .nl-icon-btn svg { width: 18px; height: 18px; }
-        .nl-icon-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
-        .nl-icon-btn.active { background: var(--brand-primary); color: var(--bg-base); border-color: var(--brand-primary); }
-        .nl-icon-btn.danger:hover { background: rgba(255,180,171,0.14); color: var(--status-danger); border-color: var(--status-danger); }
+        .nl-icon-btn svg { width: 20px; height: 20px; }
+        .nl-icon-btn.active { background: var(--secondary-container); color: var(--on-secondary-container); }
+        @media (hover: hover) {
+            .nl-icon-btn:hover { background: var(--well-2); color: var(--on-surface); }
+            .nl-icon-btn.active:hover { background: var(--secondary-container); color: var(--on-secondary-container); }
+            .nl-icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+        }
 
-        /* ---- Filter bar: one row of dropdown chips ---- */
-        .nl-filterbar { display: flex; flex-wrap: nowrap; align-items: center; margin-bottom: 16px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
-        .nl-filterbar::-webkit-scrollbar { display: none; }
-        .nl-filterbar > * + * { margin-left: 8px; }
-        /* The 3 dimension chips shrink to share the row (label ellipsizes);
-           the reset chip is fixed-size and never wraps to a new line. */
-        .nl-filterbar .nl-fchip:not(.nl-fchip-reset) { flex: 0 1 auto; min-width: 0; }
+        /* ---- Filter chips (mock .fchips): the row wraps, labels never clip ---- */
+        .nl-filterbar { display: flex; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
         .nl-fchip {
-            display: inline-flex; align-items: center; height: 36px; padding: 0 12px;
-            border-radius: var(--radius-full); background: var(--bg-surface); border: 1px solid var(--border-subtle);
-            color: var(--text-secondary); font-size: 13px; font-weight: 600; cursor: pointer;
-            transition: background .2s, color .2s, border-color .2s; white-space: nowrap; max-width: 46vw;
+            display: inline-flex; align-items: center;
+            min-width: 0; max-width: 100%;
+            min-height: 40px;
+            margin: 0 8px 8px 0;
+            padding: 0 12px;
+            border: 0; border-radius: 12px;
+            background: transparent;
+            box-shadow: inset 0 0 0 1px var(--outline-variant);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label); font-weight: 600;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard), box-shadow var(--duration-fast) var(--easing-standard);
             -webkit-tap-highlight-color: transparent; touch-action: manipulation;
         }
-        .nl-fchip > svg:first-child { width: 15px; height: 15px; flex: 0 0 auto; margin-right: 7px; opacity: .85; }
-        .nl-fchip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .nl-fchip-caret { width: 15px; height: 15px; flex: 0 0 auto; margin-left: 5px; opacity: .7; transition: transform .2s; }
-        .nl-fchip:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-default); }
-        .nl-fchip.is-active { background: var(--brand-primary); color: var(--bg-base); border-color: var(--brand-primary); }
-        .nl-fchip.is-active > svg { opacity: 1; }
+        [dir="rtl"] .nl-fchip { margin: 0 0 8px 8px; }
+        .nl-fchip > svg:first-child { flex: 0 0 auto; width: 18px; height: 18px; margin-right: 8px; }
+        [dir="rtl"] .nl-fchip > svg:first-child { margin-right: 0; margin-left: 8px; }
+        .nl-fchip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nl-fchip-caret { flex: 0 0 auto; width: 16px; height: 16px; margin-left: 6px; transition: transform var(--duration-fast) var(--easing-standard); }
+        [dir="rtl"] .nl-fchip-caret { margin-left: 0; margin-right: 6px; }
+        .nl-fchip.is-active { background: var(--secondary-container); color: var(--on-secondary-container); box-shadow: none; }
         .nl-fchip.is-open .nl-fchip-caret { transform: rotate(180deg); }
-        .nl-fchip-reset { width: 36px; flex: 0 0 auto; padding: 0; justify-content: center; }
-        .nl-fchip-reset > svg:first-child { margin-right: 0; }
-        /* Narrow phones: tighten chips so all three + reset fit the row. */
-        @media (max-width: 400px) {
-            .nl-fchip { padding: 0 10px; height: 34px; font-size: 12px; }
-            .nl-fchip > svg:first-child { margin-right: 5px; width: 14px; height: 14px; }
-            .nl-fchip-caret { margin-left: 3px; }
-            .nl-filterbar > * + * { margin-left: 6px; }
+        .nl-fchip-reset { justify-content: center; width: 40px; padding: 0; }
+        .nl-fchip-reset > svg:first-child,
+        [dir="rtl"] .nl-fchip-reset > svg:first-child { margin: 0; }
+        @media (hover: hover) {
+            .nl-fchip:hover { color: var(--on-surface); box-shadow: inset 0 0 0 1px var(--outline); }
+            .nl-fchip.is-active:hover { color: var(--on-secondary-container); box-shadow: none; }
         }
 
         /* ---- Filter menu bottom-sheet (reuses .calendar-popup overlay) ---- */
         .nl-menu-header { display: flex; align-items: center; justify-content: space-between; }
-        .nl-menu-title { font-size: 17px; font-weight: 700; color: var(--text-primary); }
-        .nl-menu-close { width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; }
-        .nl-menu-close svg { width: 16px; height: 16px; }
+        .nl-menu-title { min-width: 0; color: var(--on-surface); font-size: var(--fs-title); font-weight: 600; overflow-wrap: break-word; }
+        .nl-menu-close {
+            display: flex; flex-shrink: 0; align-items: center; justify-content: center;
+            width: 40px; height: 40px;
+            margin-left: 12px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well);
+            color: var(--on-surface-variant);
+            cursor: pointer;
+        }
+        [dir="rtl"] .nl-menu-close { margin-left: 0; margin-right: 12px; }
+        .nl-menu-close svg { width: 18px; height: 18px; }
         .nl-menu-list { display: flex; flex-direction: column; }
         .nl-menu-item {
-            display: flex; align-items: center; padding: 13px 12px; border-radius: var(--radius-md);
-            background: transparent; color: var(--text-primary); font-size: 15px; font-weight: 500;
-            cursor: pointer; text-align: left; transition: background .15s; -webkit-tap-highlight-color: transparent;
+            display: flex; align-items: center;
+            min-height: 48px;
+            padding: 10px 14px;
+            border: 0; border-radius: var(--radius-md);
+            background: transparent;
+            color: var(--on-surface);
+            font-size: var(--fs-body); font-weight: 500; text-align: left;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard);
+            -webkit-tap-highlight-color: transparent;
         }
+        [dir="rtl"] .nl-menu-item { text-align: right; }
         .nl-menu-item + .nl-menu-item { margin-top: 2px; }
-        .nl-menu-item:hover { background: var(--bg-elevated); }
-        .nl-menu-item .nl-menu-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; margin-right: 11px; background: var(--text-muted); }
-        .nl-menu-item .nl-menu-check { width: 18px; height: 18px; flex: 0 0 auto; margin-left: auto; color: var(--brand-primary); opacity: 0; }
-        .nl-menu-item.selected { background: var(--bg-elevated); font-weight: 600; }
+        .nl-menu-item .nl-menu-dot { flex: 0 0 auto; width: 10px; height: 10px; margin-right: 12px; border-radius: 50%; background: var(--on-surface-variant); }
+        [dir="rtl"] .nl-menu-item .nl-menu-dot { margin-right: 0; margin-left: 12px; }
+        .nl-menu-item .nl-menu-check { flex: 0 0 auto; width: 18px; height: 18px; margin-left: auto; opacity: 0; }
+        [dir="rtl"] .nl-menu-item .nl-menu-check { margin-left: 0; margin-right: auto; }
+        .nl-menu-item.selected { background: var(--secondary-container); color: var(--on-secondary-container); font-weight: 600; }
         .nl-menu-item.selected .nl-menu-check { opacity: 1; }
-        .nl-menu-dot.sev-critical { background: var(--status-danger); }
-        .nl-menu-dot.sev-warn { background: var(--status-warning); }
-        .nl-menu-dot.sev-info { background: var(--status-info); }
+        .nl-menu-dot.sev-critical { background: var(--danger); }
+        .nl-menu-dot.sev-warn { background: var(--warning); }
+        .nl-menu-dot.sev-info { background: var(--tertiary); }
+        @media (hover: hover) {
+            .nl-menu-item:hover { background: var(--well); }
+            .nl-menu-item.selected:hover { background: var(--secondary-container); }
+        }
 
-        /* ---- Custom From -> To range row (revealed inside the date menu) ---- */
-
-        /* Custom From -> To range row + calendar popup (ported from charging). */
-        .calendar-popup { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--panel-overlay-bg-deep); z-index: 500; display: none; align-items: flex-end; justify-content: center; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+        /* ---- Bottom sheet + range calendar (ported from charging) ---- */
+        .calendar-popup { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 500; display: none; align-items: flex-end; justify-content: center; background: var(--panel-overlay-bg-deep); }
+        @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+            .calendar-popup { -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+        }
         .calendar-popup.active { display: flex; }
-        .calendar-panel { background: var(--bg-surface); border-radius: var(--radius-lg) var(--radius-lg) 0 0; padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 100%; max-width: 100%; max-height: 85vh; overflow-y: auto; display: flex; flex-direction: column; box-shadow: var(--shadow-lg); animation: nlSlideUp .3s ease; }
+        .calendar-panel {
+            display: flex; flex-direction: column;
+            width: 100%; max-width: 100%; max-height: 85vh;
+            overflow-y: auto;
+            padding: 20px;
+            padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+            border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+            background: var(--tile-raised);
+            box-shadow: var(--tile-shadow);
+            animation: nlSlideUp var(--duration-long) var(--easing-emphasized);
+        }
         .calendar-panel > * + * { margin-top: 16px; }
         @keyframes nlSlideUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @media (min-width: 480px) { .calendar-popup { align-items: center; padding: 20px; } .calendar-panel { border-radius: var(--radius-lg); max-width: 340px; max-height: none; padding-bottom: 20px; animation: nlPopIn .2s ease; } }
+        @media (min-width: 480px) {
+            .calendar-popup { align-items: center; padding: 20px; }
+            .calendar-panel { max-width: 360px; max-height: calc(100vh - 40px); padding-bottom: 20px; border-radius: var(--radius-xl); animation: nlPopIn var(--duration-med) var(--easing-standard); }
+        }
         @keyframes nlPopIn { from { transform: scale(.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .calendar-header { display: flex; justify-content: space-between; align-items: center; }
-        .calendar-title { font-size: 18px; font-weight: 600; }
-        .calendar-nav { display: flex; }
+        .calendar-title { min-width: 0; color: var(--on-surface); font-size: var(--fs-title); font-weight: 600; }
+        .calendar-nav { display: flex; flex-shrink: 0; }
         .calendar-nav button + button { margin-left: 8px; }
-        .calendar-nav button { width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; transition: all .2s; }
-        .calendar-nav button:hover { background: var(--bg-hover); color: var(--text-primary); }
-        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-        .calendar-weekday { text-align: center; font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 8px 0; text-transform: uppercase; }
-        .calendar-day { aspect-ratio: 1; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--text-secondary); cursor: pointer; position: relative; transition: all .2s; min-height: 40px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-        .calendar-day:hover { background: var(--bg-hover); }
-        .calendar-day:active { background: var(--bg-elevated); transform: scale(.95); }
-        .calendar-day.other-month { color: var(--text-muted); opacity: .5; }
-        .calendar-day.today { background: var(--bg-elevated); color: var(--text-primary); font-weight: 600; }
-        .calendar-day.selected { background: var(--brand-primary); color: var(--bg-base); }
-        .calendar-day.in-range { background: rgba(93,219,182,0.16); color: var(--text-primary); }
-        .calendar-day.disabled { color: var(--text-muted); opacity: .3; cursor: not-allowed; pointer-events: none; }
-
-        /* ---- Date sheet (presets + inline range calendar) ---- */
-        .nl-date-presets { display: flex; margin-bottom: 4px; }
-        .nl-date-presets > * + * { margin-left: 8px; }
-        .nl-date-preset {
-            flex: 1 1 0; height: 40px; border-radius: var(--radius-md);
-            background: var(--bg-elevated); border: 1px solid transparent;
-            color: var(--text-secondary); font-size: 14px; font-weight: 600; cursor: pointer;
-            transition: background .15s, color .15s, border-color .15s; -webkit-tap-highlight-color: transparent;
+        [dir="rtl"] .calendar-nav button + button { margin-left: 0; margin-right: 8px; }
+        .calendar-nav button {
+            display: flex; align-items: center; justify-content: center;
+            width: 40px; height: 40px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well);
+            color: var(--on-surface-variant);
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        .nl-date-preset:hover { color: var(--text-primary); }
-        .nl-date-preset.active { background: var(--brand-primary); color: var(--bg-base); border-color: var(--brand-primary); }
-        .nl-date-divider { display: flex; align-items: center; text-align: center; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-        .nl-date-divider::before, .nl-date-divider::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--border-subtle); }
+        /* Prev / next chevrons point along the reading direction. */
+        [dir="rtl"] .calendar-nav svg,
+        [dir="rtl"] .pagination-btn svg { transform: scaleX(-1); }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-gap: 4px; gap: 4px; }
+        .calendar-weekday { padding: 8px 0; color: var(--on-surface-variant); font-size: var(--fs-caption); font-weight: 600; text-align: center; text-transform: uppercase; }
+        .calendar-day {
+            position: relative;
+            display: flex; align-items: center; justify-content: center;
+            height: 40px; min-height: 40px;
+            border-radius: var(--radius-sm);
+            color: var(--on-surface);
+            font-size: var(--fs-label); font-weight: 500;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard);
+            -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+        }
+        .calendar-day:active { background: var(--well-2); }
+        .calendar-day.other-month { color: var(--on-surface-variant); opacity: .5; }
+        .calendar-day.today { background: var(--well-2); font-weight: 700; }
+        .calendar-day.in-range { background: var(--primary-soft); color: var(--on-surface); }
+        .calendar-day.selected { background: var(--primary); color: var(--on-primary); }
+        .calendar-day.disabled { opacity: .3; cursor: not-allowed; pointer-events: none; }
+        @media (hover: hover) {
+            .calendar-nav button:hover { background: var(--well-2); color: var(--on-surface); }
+            .calendar-day:hover { background: var(--well); }
+            .calendar-day.today:hover { background: var(--well-2); }
+            .calendar-day.in-range:hover { background: var(--primary-soft); }
+            .calendar-day.selected:hover { background: var(--primary); }
+        }
+
+        /* ---- Date sheet: presets as a segmented row + inline range calendar ---- */
+        .nl-date-presets { display: flex; margin-bottom: 4px; padding: 3px; border-radius: var(--radius-full); background: var(--well); }
+        .nl-date-presets > * + * { margin-left: 2px; }
+        [dir="rtl"] .nl-date-presets > * + * { margin-left: 0; margin-right: 2px; }
+        .nl-date-preset {
+            flex: 1 1 0; min-width: 0;
+            min-height: 38px;
+            padding: 4px 8px;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label); font-weight: 600; line-height: 1.2;
+            overflow-wrap: break-word;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
+            -webkit-tap-highlight-color: transparent;
+        }
+        .nl-date-preset.active { background: var(--secondary-container); color: var(--on-secondary-container); }
+        @media (hover: hover) {
+            .nl-date-preset:hover { color: var(--on-surface); }
+            .nl-date-preset.active:hover { color: var(--on-secondary-container); }
+        }
+        .nl-date-divider { display: flex; align-items: center; color: var(--on-surface-variant); font-size: var(--fs-caption); font-weight: 700; letter-spacing: .04em; text-align: center; text-transform: uppercase; }
+        .nl-date-divider::before, .nl-date-divider::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--hairline); }
         .nl-date-divider span { padding: 0 10px; }
-        .nl-date-summary { text-align: center; font-size: 14px; font-weight: 600; color: var(--text-primary); padding: 6px 0; }
-        .nl-date-apply { width: 100%; padding: 12px; color: var(--on-primary, #000); }
+        .nl-date-summary { padding: 6px 0; color: var(--on-surface); font-size: var(--fs-label); font-weight: 600; text-align: center; }
+        .nl-date-apply { width: 100%; min-height: 48px; }
         .nl-date-apply:disabled { opacity: .45; cursor: not-allowed; }
 
-        /* Bulk-select action bar (sticky above the list when selecting). */
-        .nl-bulk-bar { display: none; align-items: center; justify-content: space-between; padding: 10px 14px; margin-bottom: 12px; border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--border-default); position: sticky; top: 0; z-index: 6; }
-        .nl-bulk-left { display: flex; align-items: center; }
-        .nl-bulk-left > * + * { margin-left: 10px; }
-        .nl-bulk-count { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-        .nl-bulk-link { font-size: 12px; font-weight: 600; color: var(--text-secondary); cursor: pointer; background: none; }
-        .nl-bulk-link:hover { color: var(--text-primary); }
+        /* Bulk-select bar (select mode). Sticks just under the page header and
+           the sticky section tabs instead of sliding beneath them. */
+        .nl-bulk-bar {
+            display: none; flex-wrap: wrap; align-items: center; justify-content: space-between;
+            position: -webkit-sticky; position: sticky;
+            top: calc(var(--page-header-h, 64px) + var(--tabs-h, 0px) + 16px);
+            z-index: 6;
+            margin-bottom: 10px;
+            padding: 8px 8px 8px 16px;
+            border-radius: var(--radius-lg);
+            background: var(--tile-raised);
+            box-shadow: var(--tile-shadow);
+        }
+        [dir="rtl"] .nl-bulk-bar { padding: 8px 16px 8px 8px; }
+        :root[data-app-shell="1"] .nl-bulk-bar { top: calc(var(--tabs-h, 64px) + 16px); }
+        .nl-bulk-left { display: flex; flex-wrap: wrap; align-items: center; min-width: 0; }
+        .nl-bulk-left > * + * { margin-left: 8px; }
+        [dir="rtl"] .nl-bulk-left > * + * { margin-left: 0; margin-right: 8px; }
+        .nl-bulk-count { color: var(--on-surface); font-size: var(--fs-label); font-weight: 600; }
+        .nl-bulk-link {
+            min-height: 40px;
+            padding: 0 12px;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent;
+            color: var(--primary);
+            font-size: var(--fs-label); font-weight: 600;
+            cursor: pointer;
+        }
+        @media (hover: hover) {
+            .nl-bulk-link:hover { background: var(--primary-soft); }
+        }
 
-        /* ---- The cards ---- */
+        /* ---- List tiles (mock .item) ---- */
         #nlList { display: flex; flex-direction: column; }
         #nlList > * + * { margin-top: 10px; }
         .nl-card {
-            display: flex; align-items: flex-start; padding: 14px;
-            border-radius: var(--radius-lg); background: var(--bg-surface);
-            border: 1px solid var(--border-subtle); position: relative; transition: background .2s, border-color .2s, transform .12s;
+            position: relative;
+            display: flex; align-items: flex-start;
+            min-height: 72px;
+            padding: 14px 12px 14px 14px;
+            border: 0; border-radius: var(--radius-lg);
+            background: var(--tile);
+            box-shadow: var(--tile-shadow);
+            transition: background-color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
         }
+        [dir="rtl"] .nl-card { padding: 14px 14px 14px 12px; }
         .nl-card > * + * { margin-left: 12px; }
+        [dir="rtl"] .nl-card > * + * { margin-left: 0; margin-right: 12px; }
         .nl-card.nl-clickable { cursor: pointer; }
-        .nl-card.nl-clickable:hover { background: var(--bg-elevated); border-color: var(--border-default); }
-        .nl-card.nl-clickable:active { transform: scale(.995); }
-        /* Severity accent — left inset bar (matches events.html sev cards). */
-        .nl-card.sev-warn { box-shadow: inset 3px 0 0 var(--status-warning); }
-        .nl-card.sev-critical { box-shadow: inset 3px 0 0 var(--status-danger); }
+        .nl-card.nl-clickable:active { transform: scale(.99); }
+        @media (hover: hover) {
+            .nl-card.nl-clickable:hover { background-color: var(--tile-raised); }
+        }
+        /* Severity accent: a bar on the leading edge (the pill carries the word). */
+        .nl-card.sev-warn::before,
+        .nl-card.sev-critical::before {
+            content: "";
+            position: absolute; top: 14px; bottom: 14px; left: 0;
+            width: 3px;
+            border-radius: 0 3px 3px 0;
+            background: var(--warning);
+        }
+        .nl-card.sev-critical::before { background: var(--danger); }
+        [dir="rtl"] .nl-card.sev-warn::before,
+        [dir="rtl"] .nl-card.sev-critical::before { left: auto; right: 0; border-radius: 3px 0 0 3px; }
 
-        .nl-icon { flex: 0 0 auto; width: 40px; height: 40px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; background: var(--bg-elevated); color: var(--text-secondary); margin-top: 1px; }
+        .nl-icon { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 12px; background: var(--well); color: var(--on-surface-variant); }
         .nl-icon svg { width: 20px; height: 20px; }
-        .nl-icon.sev-warn { color: var(--status-warning); }
-        .nl-icon.sev-critical { color: var(--status-danger); }
-        .nl-icon.sev-info { color: var(--status-info); }
+        .nl-icon.sev-info { background: var(--tertiary-soft); color: var(--tertiary); }
+        .nl-icon.sev-warn { background: var(--warning-soft); color: var(--warning); }
+        .nl-icon.sev-critical { background: var(--danger-soft); color: var(--danger); }
 
-        .nl-thumb { flex: 0 0 auto; width: 64px; height: 48px; border-radius: var(--radius-sm); overflow: hidden; background: var(--bg-elevated); }
-        .nl-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .nl-thumb { flex: 0 0 auto; width: 64px; height: 48px; overflow: hidden; border-radius: var(--radius-sm); background: var(--well); }
+        .nl-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 
         .nl-body { flex: 1 1 auto; min-width: 0; }
-        .nl-line1 { display: flex; align-items: center; }
-        .nl-title { font-size: 15px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .nl-jump { margin-left: 8px; color: var(--text-muted); flex: 0 0 auto; }
-        .nl-jump svg { width: 15px; height: 15px; vertical-align: middle; }
-        .nl-text { font-size: 13px; color: var(--text-secondary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-        .nl-meta { display: flex; flex-wrap: wrap; align-items: center; margin-top: 8px; }
-        .nl-meta > * { margin-right: 8px; margin-top: 4px; }
-        .nl-time { font-size: 12px; color: var(--text-muted); margin-left: auto; margin-right: 0; }
+        .nl-line1 { display: flex; align-items: center; min-height: 22px; }
+        .nl-title { min-width: 0; overflow: hidden; color: var(--on-surface); font-size: var(--fs-body); font-weight: 700; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+        .nl-jump { flex: 0 0 auto; margin-left: 8px; color: var(--on-surface-variant); }
+        [dir="rtl"] .nl-jump { margin-left: 0; margin-right: 8px; }
+        .nl-jump svg { width: 16px; height: 16px; vertical-align: middle; }
+        .nl-text { display: -webkit-box; margin-top: 2px; overflow: hidden; color: var(--on-surface-variant); font-size: var(--fs-label); line-height: 1.45; text-overflow: ellipsis; overflow-wrap: break-word; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .nl-meta { display: flex; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+        .nl-meta > * { margin-top: 4px; margin-right: 8px; }
+        [dir="rtl"] .nl-meta > * { margin-right: 0; margin-left: 8px; }
+        .nl-time { margin-left: auto; margin-right: 0; color: var(--on-surface-variant); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; }
+        [dir="rtl"] .nl-time { margin-left: 0; margin-right: auto; }
 
-        .nl-sev-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-full); text-transform: uppercase; letter-spacing: .03em; }
-        .nl-sev-pill.sev-info { background: rgba(133,207,255,0.16); color: var(--status-info); }
-        .nl-sev-pill.sev-warn { background: rgba(255,184,112,0.16); color: var(--status-warning); }
-        .nl-sev-pill.sev-critical { background: rgba(255,180,171,0.16); color: var(--status-danger); }
-        .nl-group-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); background: var(--bg-elevated); color: var(--text-secondary); }
-        .nl-place { font-size: 12px; color: var(--text-secondary); }
-        .nl-chip { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); }
-        .nl-chip.prox-veryclose { background: rgba(255,180,171,0.18); color: var(--status-danger); }
-        .nl-chip.prox-close { background: rgba(255,184,112,0.18); color: var(--status-warning); }
+        .nl-sev-pill { padding: 0 8px; border-radius: 8px; font-size: var(--fs-caption); font-weight: 700; line-height: 22px; letter-spacing: .04em; text-transform: uppercase; }
+        .nl-sev-pill.sev-info { background: var(--tertiary-soft); color: var(--tertiary); }
+        .nl-sev-pill.sev-warn { background: var(--warning-soft); color: var(--warning); }
+        .nl-sev-pill.sev-critical { background: var(--danger-soft); color: var(--danger); }
+        .nl-group-pill { padding: 0 8px; border-radius: 8px; background: var(--well-2); color: var(--on-surface-variant); font-size: var(--fs-caption); font-weight: 600; line-height: 22px; }
+        .nl-place { min-width: 0; color: var(--on-surface-variant); font-size: var(--fs-caption); overflow-wrap: break-word; }
+        .nl-chip { padding: 0 8px; border-radius: 8px; background: var(--well-2); color: var(--on-surface-variant); font-size: var(--fs-caption); font-weight: 600; line-height: 22px; }
+        .nl-chip.prox-veryclose { background: var(--danger-soft); color: var(--danger); }
+        .nl-chip.prox-close { background: var(--warning-soft); color: var(--warning); }
 
-        .nl-del { flex: 0 0 auto; width: 34px; height: 34px; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .2s; }
-        .nl-del svg { width: 17px; height: 17px; }
-        .nl-del:hover { background: rgba(255,180,171,0.14); color: var(--status-danger); }
+        .nl-del {
+            display: flex; flex: 0 0 auto; align-items: center; justify-content: center;
+            width: 40px; height: 40px;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent;
+            color: var(--on-surface-variant);
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
+        }
+        .nl-del svg { width: 18px; height: 18px; }
+        @media (hover: hover) {
+            .nl-del:hover { background: var(--danger-soft); color: var(--danger); }
+        }
 
         /* Selection checkbox */
-        .nl-check { flex: 0 0 auto; display: inline-flex; align-items: center; cursor: pointer; margin-top: 4px; }
-        .nl-check input { position: absolute; opacity: 0; width: 0; height: 0; }
-        .nl-check-box { width: 22px; height: 22px; border-radius: var(--radius-sm); border: 2px solid var(--border-default); display: inline-block; position: relative; transition: all .2s; }
-        .nl-check input:checked + .nl-check-box { background: var(--brand-primary); border-color: var(--brand-primary); }
-        .nl-check input:checked + .nl-check-box:after { content: ''; position: absolute; left: 7px; top: 3px; width: 5px; height: 10px; border: solid var(--bg-base); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+        .nl-check { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 40px; height: 40px; cursor: pointer; }
+        .nl-check input { position: absolute; width: 0; height: 0; opacity: 0; }
+        .nl-check-box { position: relative; display: inline-block; width: 22px; height: 22px; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 2px var(--outline); transition: background-color var(--duration-fast) var(--easing-standard), box-shadow var(--duration-fast) var(--easing-standard); }
+        .nl-check input:checked + .nl-check-box { background: var(--primary); box-shadow: none; }
+        .nl-check input:checked + .nl-check-box:after { content: ''; position: absolute; left: 7px; top: 3px; width: 5px; height: 10px; border: solid var(--on-primary); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+        .nl-check input:focus + .nl-check-box { outline: 2px solid var(--primary); outline-offset: 2px; }
 
-        /* Pagination (events-style Prev / Next). */
-        .nl-pagination { display: none; justify-content: center; align-items: center; padding: 16px; margin-top: 8px; border-top: 1px solid var(--border-subtle); }
+        /* Pagination (events-style Prev / Next) as tonal pills. */
+        .nl-pagination { display: none; flex-wrap: wrap; align-items: center; justify-content: center; padding: 16px 0 8px; }
         .nl-pagination > * + * { margin-left: 8px; }
-        .pagination-btn { padding: 8px 16px; background: var(--bg-elevated); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 13px; font-weight: 500; transition: all .2s; display: flex; align-items: center; cursor: pointer; }
-        .pagination-btn svg { width: 14px; height: 14px; }
+        [dir="rtl"] .nl-pagination > * + * { margin-left: 0; margin-right: 8px; }
+        .pagination-btn {
+            display: inline-flex; align-items: center;
+            min-height: 40px;
+            padding: 0 18px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well-2);
+            color: var(--on-surface);
+            font-size: var(--fs-label); font-weight: 600;
+            cursor: pointer;
+        }
+        .pagination-btn svg { width: 16px; height: 16px; }
         .pagination-btn.prev svg { margin-right: 6px; }
         .pagination-btn.next svg { margin-left: 6px; }
-        .pagination-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+        [dir="rtl"] .pagination-btn.prev svg { margin-right: 0; margin-left: 6px; }
+        [dir="rtl"] .pagination-btn.next svg { margin-left: 0; margin-right: 6px; }
         .pagination-btn:disabled { opacity: .4; cursor: not-allowed; }
-        .pagination-info { font-size: 13px; color: var(--text-muted); padding: 0 12px; }
+        .pagination-info { padding: 0 8px; color: var(--on-surface-variant); font-size: var(--fs-label); font-variant-numeric: tabular-nums; }
 
-        /* Skeleton + empty */
-        .nl-skel-card { height: 76px; border-radius: var(--radius-lg); background: var(--bg-surface); opacity: .5; animation: nlPulse 1.3s ease-in-out infinite; }
+        /* Skeleton + empty state */
+        .nl-skel-card { height: 88px; border-radius: var(--radius-lg); background: var(--tile); box-shadow: var(--tile-shadow); animation: nlPulse 1.3s ease-in-out infinite; }
         .nl-skel-card + .nl-skel-card { margin-top: 10px; }
-        @keyframes nlPulse { 0%,100% { opacity: .35; } 50% { opacity: .6; } }
-        .nl-empty { text-align: center; padding: 48px 16px; color: var(--text-muted); }
-        .nl-empty svg { width: 56px; height: 56px; opacity: .4; margin-bottom: 12px; }
+        @keyframes nlPulse { 0%,100% { opacity: .45; } 50% { opacity: .8; } }
+        .nl-empty { padding: 40px 20px; border-radius: var(--radius-tile); background: var(--tile); box-shadow: var(--tile-shadow); color: var(--on-surface-variant); font-size: var(--fs-label); line-height: 1.45; text-align: center; }
+        .nl-empty svg { display: block; box-sizing: content-box; width: 28px; height: 28px; margin: 0 auto 14px; padding: 14px; border-radius: 50%; background: var(--well); color: var(--on-surface-variant); }
+        .nl-empty > div:first-of-type { color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; }
+
+        /* Touch: 44px targets on coarse pointers. */
+        @media (pointer: coarse) {
+            .nl-fchip, .notif-btn, .pagination-btn, .nl-bulk-link { min-height: 44px; }
+            .nl-fchip-reset { width: 44px; }
+            .nl-del, .nl-check, .nl-menu-close, .calendar-nav button { width: 44px; height: 44px; }
+            .notif-seg-btn, .nl-date-preset { min-height: 42px; }
+            .calendar-day { height: 44px; min-height: 44px; }
+            .notif-toggle::before { top: -10px; bottom: -10px; }
+        }
+        /* Car: 56px targets, larger list type. */
+        :root[data-android-embed="1"] .nl-fchip { min-height: 56px; padding: 0 18px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .nl-fchip-reset { width: 56px; padding: 0; }
+        :root[data-android-embed="1"] .nl-icon-btn,
+        :root[data-android-embed="1"] .nl-del,
+        :root[data-android-embed="1"] .nl-check,
+        :root[data-android-embed="1"] .nl-menu-close,
+        :root[data-android-embed="1"] .calendar-nav button { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .notif-btn,
+        :root[data-android-embed="1"] .pagination-btn,
+        :root[data-android-embed="1"] .nl-bulk-link,
+        :root[data-android-embed="1"] .nl-bulk-bar .btn,
+        :root[data-android-embed="1"] .nl-menu-item,
+        :root[data-android-embed="1"] .nl-date-apply { min-height: 56px; }
+        :root[data-android-embed="1"] .notif-seg-btn,
+        :root[data-android-embed="1"] .nl-date-preset { min-height: 50px; }
+        :root[data-android-embed="1"] .notif-btn,
+        :root[data-android-embed="1"] .notif-seg-btn,
+        :root[data-android-embed="1"] .pagination-btn,
+        :root[data-android-embed="1"] .nl-menu-item,
+        :root[data-android-embed="1"] .nl-date-preset,
+        :root[data-android-embed="1"] .nl-count,
+        :root[data-android-embed="1"] .nl-text { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .nl-title { font-size: var(--fs-title); }
+        :root[data-android-embed="1"] .nl-icon { width: 48px; height: 48px; }
+        :root[data-android-embed="1"] .nl-icon svg { width: 24px; height: 24px; }
+        :root[data-android-embed="1"] .notif-num { width: 88px; height: 56px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] #driveSideCard .notif-row { min-height: 72px; padding: 16px; }
+        :root[data-android-embed="1"] .calendar-day { height: 52px; min-height: 52px; font-size: var(--fs-body); }
+        @media (min-width: 480px) {
+            :root[data-android-embed="1"] .calendar-panel { max-width: 440px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .calendar-panel, .nl-skel-card { animation: none; }
+            .nl-card.nl-clickable:active { transform: none; }
+        }
     </style>
 </head>
-<body>
+<body class="r-settings">
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content">
@@ -702,7 +1021,36 @@
                          ============================================================ -->
                     <div class="notif-section" data-tab="log">
                         <div class="nl-wrap">
-                            <!-- Header: count (left) + icon actions (right) -->
+                            <!-- Mock list order: filter chips, then the summary line
+                                 (count + select / clear), the bulk bar, the list.
+                                 Every piece is addressed by id (notif-log.js), so the
+                                 order carries no script contract.
+                                 Filter chips: each opens a bottom-sheet menu (reuses
+                                 the calendar-popup pattern). The chip label reflects
+                                 the active selection; a chip with a non-default value
+                                 gets the .is-active accent. The row wraps. -->
+                            <div class="nl-filterbar" id="nlFilterBar">
+                                <button class="nl-fchip" id="nlDateChip" onclick="NOTIFLOG.openFilterMenu('date')">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                                    <span class="nl-fchip-label" id="nlDateChipLabel" data-i18n="notiflog.filter_all">All time</span>
+                                    <svg class="nl-fchip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </button>
+                                <button class="nl-fchip" id="nlCatChip" onclick="NOTIFLOG.openFilterMenu('cat')">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                                    <span class="nl-fchip-label" id="nlCatChipLabel" data-i18n="notiflog.filter_category">Category</span>
+                                    <svg class="nl-fchip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </button>
+                                <button class="nl-fchip" id="nlSevChip" onclick="NOTIFLOG.openFilterMenu('sev')">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                    <span class="nl-fchip-label" id="nlSevChipLabel" data-i18n="notiflog.filter_severity">Severity</span>
+                                    <svg class="nl-fchip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </button>
+                                <button class="nl-fchip nl-fchip-reset" id="nlResetChip" onclick="NOTIFLOG.resetFilters()" style="display:none;" title="Reset filters" aria-label="Reset filters">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/><path d="M3 3v5h5"/></svg>
+                                </button>
+                            </div>
+
+                            <!-- Summary line: count (start) + icon actions (end) -->
                             <div class="nl-header">
                                 <span class="nl-count" id="nlCount" data-i18n="notiflog.empty">No notifications yet</span>
                                 <div class="nl-actions">
@@ -723,31 +1071,6 @@
                                     <button class="nl-bulk-link" onclick="NOTIFLOG.clearSelection()" data-i18n="notiflog.clear_selection">Clear</button>
                                 </div>
                                 <button class="btn btn-danger" id="nlBulkDeleteBtn" onclick="NOTIFLOG.deleteSelected()" disabled data-i18n="notiflog.delete">Delete</button>
-                            </div>
-
-                            <!-- SOTA filter bar: one row of dropdown chips. Each opens
-                                 a bottom-sheet menu (reuses the calendar-popup pattern).
-                                 The chip label reflects the active selection; a chip with
-                                 a non-default value gets the .is-active accent. -->
-                            <div class="nl-filterbar" id="nlFilterBar">
-                                <button class="nl-fchip" id="nlDateChip" onclick="NOTIFLOG.openFilterMenu('date')">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                                    <span class="nl-fchip-label" id="nlDateChipLabel" data-i18n="notiflog.filter_all">All time</span>
-                                    <svg class="nl-fchip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                                </button>
-                                <button class="nl-fchip" id="nlCatChip" onclick="NOTIFLOG.openFilterMenu('cat')">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-                                    <span class="nl-fchip-label" id="nlCatChipLabel" data-i18n="notiflog.filter_category">Category</span>
-                                    <svg class="nl-fchip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                                </button>
-                                <button class="nl-fchip" id="nlSevChip" onclick="NOTIFLOG.openFilterMenu('sev')">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                                    <span class="nl-fchip-label" id="nlSevChipLabel" data-i18n="notiflog.filter_severity">Severity</span>
-                                    <svg class="nl-fchip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                                </button>
-                                <button class="nl-fchip nl-fchip-reset" id="nlResetChip" onclick="NOTIFLOG.resetFilters()" style="display:none;" title="Reset filters" aria-label="Reset filters">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/><path d="M3 3v5h5"/></svg>
-                                </button>
                             </div>
 
                             <!-- Skeleton (first load) -->
@@ -791,8 +1114,13 @@
                          edge so a flip here applies to the very next event
                          without restart. -->
                     <div class="notif-section" id="driveSideSection">
-                        <h2 id="driveSideHeading" data-i18n="notif.vehicle_layout">Vehicle layout</h2>
-                        <p class="notif-section-sub" data-i18n="notif.vehicle_layout_sub">Pick which side of the car the driver sits on. This decides whether door notifications label the front-axis doors as Front-left or Front-right. Saves immediately and applies to the next door event without restarting the daemon.</p>
+                        <div class="notif-head">
+                            <span class="notif-head-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg></span>
+                            <div class="notif-head-text setting-stack">
+                                <h2 id="driveSideHeading" data-i18n="notif.vehicle_layout">Vehicle layout</h2>
+                                <p class="notif-section-sub setting-desc" data-i18n="notif.vehicle_layout_sub">Pick which side of the car the driver sits on. This decides whether door notifications label the front-axis doors as Front-left or Front-right. Saves immediately and applies to the next door event without restarting the daemon.</p>
+                            </div>
+                        </div>
                         <!-- role=radiogroup wraps the two radio rows so screen
                              readers announce the picker as one unit instead of
                              two unrelated radios. aria-labelledby points at the
@@ -836,8 +1164,13 @@
                          Values are kPa — the unit the BYD TPMS reports — so
                          the comparison path never rounds. -->
                     <div class="notif-section" id="tyreLimitsSection">
-                        <h2 id="tyreLimitsHeading" data-i18n="notif.tyre_limits">Tyre pressure limits</h2>
-                        <p class="notif-section-sub" data-i18n="notif.tyre_limits_sub">Set the normal pressure range for each axle. A tyre below the minimum or above the maximum raises a warning; below the critical value it raises a deflated-tyre alert. Used for push and Telegram notifications and for the corner colours in Vehicle Control. Defaults suit stock tyres — change them if your placard pressures differ.</p>
+                        <div class="notif-head">
+                            <span class="notif-head-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg></span>
+                            <div class="notif-head-text setting-stack">
+                                <h2 id="tyreLimitsHeading" data-i18n="notif.tyre_limits">Tyre pressure limits</h2>
+                                <p class="notif-section-sub setting-desc" data-i18n="notif.tyre_limits_sub">Set the normal pressure range for each axle. A tyre below the minimum or above the maximum raises a warning; below the critical value it raises a deflated-tyre alert. Used for push and Telegram notifications and for the corner colours in Vehicle Control. Defaults suit stock tyres — change them if your placard pressures differ.</p>
+                            </div>
+                        </div>
                         <div class="notif-card" id="tyreLimitsCard">
                             <!-- Display-unit picker. Presentation only: the
                                  limit inputs below stay kPa (the canonical,
@@ -847,9 +1180,9 @@
                                  text. Saves immediately on tap (no Save press
                                  needed), same as the min-severity segments. -->
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="notif.tyre_unit">Display unit</div>
-                                    <div class="notif-row-note" data-i18n="notif.tyre_unit_note">How pressure readings are shown across the dashboard and in alerts. Limits below are always set in kPa.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="notif.tyre_unit_note">How pressure readings are shown across the dashboard and in alerts. Limits below are always set in kPa.</div>
                                 </div>
                                 <div class="notif-seg notif-seg-compact" id="tyreUnitSeg" role="radiogroup" aria-label="Pressure display unit">
                                     <button type="button" class="notif-seg-btn" data-unit="kpa" role="radio" aria-checked="false">kPa</button>
@@ -858,9 +1191,9 @@
                                 </div>
                             </div>
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="notif.tyre_front">Front axle</div>
-                                    <div class="notif-row-note" data-i18n="notif.tyre_axle_note">Normal range — minimum and maximum.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="notif.tyre_axle_note">Normal range — minimum and maximum.</div>
                                     <div class="notif-row-conv" id="tyreFrontConv">&nbsp;</div>
                                 </div>
                                 <div class="notif-range">
@@ -873,9 +1206,9 @@
                                 </div>
                             </div>
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="notif.tyre_rear">Rear axle</div>
-                                    <div class="notif-row-note" data-i18n="notif.tyre_axle_note">Normal range — minimum and maximum.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="notif.tyre_axle_note">Normal range — minimum and maximum.</div>
                                     <div class="notif-row-conv" id="tyreRearConv">&nbsp;</div>
                                 </div>
                                 <div class="notif-range">
@@ -888,9 +1221,9 @@
                                 </div>
                             </div>
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="notif.tyre_critical">Critical (deflated)</div>
-                                    <div class="notif-row-note" data-i18n="notif.tyre_critical_note">At or below this, the alert is escalated to critical. Applies to all four tyres and cannot exceed either axle minimum.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="notif.tyre_critical_note">At or below this, the alert is escalated to critical. Applies to all four tyres and cannot exceed either axle minimum.</div>
                                     <div class="notif-row-conv" id="tyreCriticalConv">&nbsp;</div>
                                 </div>
                                 <div class="notif-range">
@@ -908,23 +1241,31 @@
                     </div>
 
 
-                    <div class="notif-section" id="permissionSection" data-tab="push">
-                        <h2 data-i18n="notif.push_delivery">Push delivery</h2>
-                        <p class="notif-section-sub" data-i18n="notif.push_delivery_sub">
-                            Enables alerts on the device you are currently using. Each phone you install the dashboard onto needs to be enabled here once.
-                        </p>
+                    <!-- Summary tile (mock status hero), styled in place so it
+                         stays inside the Push tab: icon | title + folded
+                         description, then the banners and the live state
+                         readout with its actions. Children are placed on the
+                         .r-hero grid; scripts reach everything by id. -->
+                    <div class="notif-section r-hero notif-hero" id="permissionSection" data-tab="push">
+                        <span class="r-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span>
+                        <div class="r-hero-text notif-head-text setting-stack">
+                            <h2 class="r-hero-title" data-i18n="notif.push_delivery">Push delivery</h2>
+                            <p class="notif-section-sub r-hero-sub setting-desc" data-i18n="notif.push_delivery_sub">
+                                Enables alerts on the device you are currently using. Each phone you install the dashboard onto needs to be enabled here once.
+                            </p>
+                        </div>
                         <!-- Origin + backend warnings are PUSH-ONLY: they
                              explain why the per-device push subscribe button
                              is dead, so they shouldn't bleed onto the
                              Telegram or Devices tabs (those have nothing to
                              do with the Web Push origin requirement). -->
-                        <div id="originBanner" class="notif-status warn" style="display:none;margin-bottom:14px;" data-i18n="notif.origin_banner">
+                        <div id="originBanner" class="notif-status warn" style="display:none;" data-i18n="notif.origin_banner">
                             Push notifications require Zrok or a reverse proxy. Cloudflare quick tunnels change every restart and would invalidate every subscription. Tailscale serves over plain HTTP and can't be used for Web Push unless using a reverse proxy. Open the dashboard from your reserved Zrok or reverse proxy URL on your phone, Add to Home Screen, then return here to enable.
                         </div>
-                        <div id="backendBanner" class="notif-status warn" style="display:none;margin-bottom:14px;" data-i18n="notif.backend_banner">
+                        <div id="backendBanner" class="notif-status warn" style="display:none;" data-i18n="notif.backend_banner">
                             Notifications backend not initialized. Reserve a Zrok URL via the daemons screen and restart the daemon to enable push delivery.
                         </div>
-                        <div class="notif-card" style="padding: 16px 18px;">
+                        <div class="notif-card">
                             <div id="permissionRow" class="notif-permission-row">
                                 <div id="permissionState" class="notif-permission-state"></div>
                                 <div class="notif-action-row">
@@ -937,10 +1278,15 @@
                     </div>
 
                     <div class="notif-section" data-tab="push">
-                        <h2 data-i18n="notif.categories">Categories</h2>
-                        <p class="notif-section-sub" data-i18n="notif.categories_sub">
-                            Toggle which kinds of alerts are pushed to this device. Each category fires when the head unit detects the matching event; what triggers it depends on the related daemon's settings. Hover any row to see what its severity level means.
-                        </p>
+                        <div class="notif-head">
+                            <span class="notif-head-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg></span>
+                            <div class="notif-head-text setting-stack">
+                                <h2 data-i18n="notif.categories">Categories</h2>
+                                <p class="notif-section-sub setting-desc" data-i18n="notif.categories_sub">
+                                    Toggle which kinds of alerts are pushed to this device. Each category fires when the head unit detects the matching event; what triggers it depends on the related daemon's settings. Hover any row to see what its severity level means.
+                                </p>
+                            </div>
+                        </div>
 
                         <div id="categoriesContainer">
                             <div class="notif-card"><div class="empty-state" data-i18n="common.loading">Loading…</div></div>
@@ -948,10 +1294,15 @@
                     </div>
 
                     <div class="notif-section" data-tab="push">
-                        <h2 data-i18n="notif.min_importance">Minimum importance</h2>
-                        <p class="notif-section-sub" data-i18n="notif.min_importance_sub">
-                            A device-wide floor applied on top of the categories above. Raise it to silence lower-importance pushes in one place — e.g. "Warn and up" drops every Notice/Info push (routine surveillance, charging started/stopped) while keeping Alerts and Criticals. Off tiers are still recorded in the log.
-                        </p>
+                        <div class="notif-head">
+                            <span class="notif-head-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg></span>
+                            <div class="notif-head-text setting-stack">
+                                <h2 data-i18n="notif.min_importance">Minimum importance</h2>
+                                <p class="notif-section-sub setting-desc" data-i18n="notif.min_importance_sub">
+                                    A device-wide floor applied on top of the categories above. Raise it to silence lower-importance pushes in one place — e.g. "Warn and up" drops every Notice/Info push (routine surveillance, charging started/stopped) while keeping Alerts and Criticals. Off tiers are still recorded in the log.
+                                </p>
+                            </div>
+                        </div>
                         <div class="notif-card" id="minSeverityCard">
                             <!-- Starts disabled + hint shown to match renderMinSeverity's
                                  no-subscription default; the async init flips it on once a
@@ -969,15 +1320,20 @@
 
                     <!-- ===== Telegram tab ===== -->
                     <div class="notif-section" data-tab="telegram" id="telegramSection">
-                        <h2 data-i18n="notif.telegram">Telegram delivery</h2>
-                        <p class="notif-section-sub" data-i18n="notif.telegram_sub">
-                            Send surveillance events to a paired Telegram chat. Pair the bot in the Telegram daemon settings; toggles below decide which severities reach the chat. Off tiers are still recorded — only the message is suppressed.
-                        </p>
-                        <div class="notif-card" style="padding: 6px 0;">
+                        <div class="notif-head">
+                            <span class="notif-head-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></span>
+                            <div class="notif-head-text setting-stack">
+                                <h2 data-i18n="notif.telegram">Telegram delivery</h2>
+                                <p class="notif-section-sub setting-desc" data-i18n="notif.telegram_sub">
+                                    Send surveillance events to a paired Telegram chat. Pair the bot in the Telegram daemon settings; toggles below decide which severities reach the chat. Off tiers are still recorded — only the message is suppressed.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="notif-card">
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="surveillance.telegram_two_stage">Two-stage Telegram alerts</div>
-                                    <div class="notif-row-note" data-i18n="surveillance.telegram_two_stage_desc">Send a quick "recording started" message, then the photo when it ends. Off by default — the photo alone is usually enough.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="surveillance.telegram_two_stage_desc">Send a quick "recording started" message, then the photo when it ends. Off by default — the photo alone is usually enough.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="v2TelegramSendStartPing" disabled onchange="SurvSettings.updateTelegramStartPing()">
@@ -986,20 +1342,20 @@
                             </div>
                         </div>
 
-                        <div id="v2TelegramTierGroup" style="margin-top:18px;">
-                            <p class="notif-section-sub" data-i18n="surveillance.telegram_tiers_desc">Pick which severity tiers reach your Telegram chat. Off tiers are still recorded; only the message is suppressed.</p>
+                        <div id="v2TelegramTierGroup">
+                            <p class="notif-section-sub notif-subcap" data-i18n="surveillance.telegram_tiers_desc">Pick which severity tiers reach your Telegram chat. Off tiers are still recorded; only the message is suppressed.</p>
                             <div id="v2TelegramTierWarning" class="info-box-warning" style="display:none;margin-bottom:12px;">
                                 <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                                 <span style="font-size:12px;color:var(--warning);" data-i18n="surveillance.telegram_not_paired">Telegram bot isn't paired yet — tier toggles have no effect until you link a bot.</span>
                             </div>
-                            <div class="notif-card" style="padding: 6px 0;">
+                            <div class="notif-card">
                                 <div class="notif-row">
-                                    <div class="notif-row-text">
+                                    <div class="notif-row-text setting-stack">
                                         <div class="notif-row-label">
-                                            <span class="status-dot" style="background:var(--text-muted);"></span>
+                                            <span class="status-dot" style="background:var(--on-surface-variant);"></span>
                                             <span data-i18n="surveillance.tier_notice">Notice</span>
                                         </div>
-                                        <div class="notif-row-note" data-i18n="surveillance.tier_notice_desc">Routine activity (parked cars, distant movement)</div>
+                                        <div class="notif-row-note setting-desc" data-i18n="surveillance.tier_notice_desc">Routine activity (parked cars, distant movement)</div>
                                     </div>
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2TelegramNotices" disabled onchange="SurvSettings.updateTelegramTiers()">
@@ -1007,12 +1363,12 @@
                                     </label>
                                 </div>
                                 <div class="notif-row">
-                                    <div class="notif-row-text">
+                                    <div class="notif-row-text setting-stack">
                                         <div class="notif-row-label">
-                                            <span class="status-dot" style="background:#FFB75A;"></span>
+                                            <span class="status-dot" style="background:var(--warning);"></span>
                                             <span data-i18n="surveillance.tier_alert">Alert</span>
                                         </div>
-                                        <div class="notif-row-note" data-i18n="surveillance.tier_alert_desc">Approaching person, vehicle close enough to warrant attention</div>
+                                        <div class="notif-row-note setting-desc" data-i18n="surveillance.tier_alert_desc">Approaching person, vehicle close enough to warrant attention</div>
                                     </div>
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2TelegramAlerts" disabled onchange="SurvSettings.updateTelegramTiers()">
@@ -1020,12 +1376,12 @@
                                     </label>
                                 </div>
                                 <div class="notif-row">
-                                    <div class="notif-row-text">
+                                    <div class="notif-row-text setting-stack">
                                         <div class="notif-row-label">
-                                            <span class="status-dot" style="background:#FF6B6B;"></span>
+                                            <span class="status-dot" style="background:var(--danger);"></span>
                                             <span data-i18n="surveillance.tier_critical">Critical</span>
                                         </div>
-                                        <div class="notif-row-note" data-i18n="surveillance.tier_critical_desc">Person at very close range — likely tampering / loitering</div>
+                                        <div class="notif-row-note setting-desc" data-i18n="surveillance.tier_critical_desc">Person at very close range — likely tampering / loitering</div>
                                     </div>
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2TelegramCritical" disabled onchange="SurvSettings.updateTelegramTiers()">
@@ -1042,12 +1398,12 @@
                              via /api/telegram/preferences (partial-merge), the
                              same endpoint the Telegram daemon-behavior page
                              uses. -->
-                        <p class="notif-section-sub" style="margin-top:22px;" data-i18n="notif.telegram_delivery_sub">What kind of events Telegram receives. Independent from the per-tier filter above — these toggle entire categories on or off.</p>
-                        <div class="notif-card" style="padding: 6px 0;">
+                        <p class="notif-section-sub notif-subcap" data-i18n="notif.telegram_delivery_sub">What kind of events Telegram receives. Independent from the per-tier filter above — these toggle entire categories on or off.</p>
+                        <div class="notif-card">
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="telegram.critical_alerts">Critical alerts</div>
-                                    <div class="notif-row-note" data-i18n="telegram.critical_alerts_desc">Drop-everything events — vehicle health faults, tampering, charging faults. Keep this on.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="telegram.critical_alerts_desc">Drop-everything events — vehicle health faults, tampering, charging faults. Keep this on.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="tgPrefCriticalAlerts" onchange="TelegramPrefs.save()">
@@ -1055,9 +1411,9 @@
                                 </label>
                             </div>
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="telegram.connectivity_updates">Connectivity updates</div>
-                                    <div class="notif-row-note" data-i18n="telegram.connectivity_updates_desc">Notify when the daemon starts, stops, or restarts. Useful for diagnostics; chatty in normal use.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="telegram.connectivity_updates_desc">Notify when the daemon starts, stops, or restarts. Useful for diagnostics; chatty in normal use.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="tgPrefConnectivity" onchange="TelegramPrefs.save()">
@@ -1065,9 +1421,9 @@
                                 </label>
                             </div>
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="telegram.motion_text">Motion text alerts</div>
-                                    <div class="notif-row-note" data-i18n="telegram.motion_text_desc">Send a motion alert (text, plus the snapshot photo when one is available) when surveillance detects motion. Video clips have their own toggle below.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="telegram.motion_text_desc">Send a motion alert (text, plus the snapshot photo when one is available) when surveillance detects motion. Video clips have their own toggle below.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="tgPrefMotionText" onchange="TelegramPrefs.save()">
@@ -1075,9 +1431,9 @@
                                 </label>
                             </div>
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="telegram.video_uploads">Send videos</div>
-                                    <div class="notif-row-note" data-i18n="telegram.video_uploads_desc">Upload short clips on Critical events. Costs more bandwidth — disable if you're on a slow tunnel.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="telegram.video_uploads_desc">Upload short clips on Critical events. Costs more bandwidth — disable if you're on a slow tunnel.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="tgPrefVideoUploads" onchange="TelegramPrefs.save()">
@@ -1091,9 +1447,9 @@
                                  which also killed charging faults, proximity
                                  and battery-health messages. -->
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="telegram.tyre_alerts">Tyre pressure alerts</div>
-                                    <div class="notif-row-note" data-i18n="telegram.tyre_alerts_desc">Send a Telegram message when a tyre goes outside your configured pressure range, or when the TPMS reports a leak. Uses the limits set under Tyre pressure limits.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="telegram.tyre_alerts_desc">Send a Telegram message when a tyre goes outside your configured pressure range, or when the TPMS reports a leak. Uses the limits set under Tyre pressure limits.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="tgPrefTyreAlerts" onchange="TelegramPrefs.save()">
@@ -1106,9 +1462,9 @@
                                  than riding Critical alerts. Only fires when the
                                  feature itself is enabled under Surveillance. -->
                             <div class="notif-row">
-                                <div class="notif-row-text">
+                                <div class="notif-row-text setting-stack">
                                     <div class="notif-row-label" data-i18n="telegram.parking_messages">Parking messages</div>
-                                    <div class="notif-row-note" data-i18n="telegram.parking_messages_desc">Send "Parked" (place, GPS freshness, sentry state, four-camera still) and "Back at car" (time away, events, neighbours that came or went). Requires Parking Intelligence under Surveillance settings.</div>
+                                    <div class="notif-row-note setting-desc" data-i18n="telegram.parking_messages_desc">Send "Parked" (place, GPS freshness, sentry state, four-camera still) and "Back at car" (time away, events, neighbours that came or went). Requires Parking Intelligence under Surveillance settings.</div>
                                 </div>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="tgPrefParkingMessages" onchange="TelegramPrefs.save()">
@@ -1119,10 +1475,15 @@
                     </div>
 
                     <div class="notif-section" data-tab="devices">
-                        <h2 data-i18n="notif.registered_devices">Registered devices</h2>
-                        <p class="notif-section-sub" data-i18n="notif.devices_sub">
-                            Every phone that enabled push notifications appears here. Use Remove to deregister a device. Disable on this device above also unsubscribes the current browser locally, while Remove is server-side only.
-                        </p>
+                        <div class="notif-head">
+                            <span class="notif-head-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></span>
+                            <div class="notif-head-text setting-stack">
+                                <h2 data-i18n="notif.registered_devices">Registered devices</h2>
+                                <p class="notif-section-sub setting-desc" data-i18n="notif.devices_sub">
+                                    Every phone that enabled push notifications appears here. Use Remove to deregister a device. Disable on this device above also unsubscribes the current browser locally, while Remove is server-side only.
+                                </p>
+                            </div>
+                        </div>
                         <div class="notif-card" id="devicesCard">
                             <div class="empty-state" id="devicesEmpty" data-i18n="notif.no_devices">No devices registered yet.</div>
                         </div>
@@ -1182,13 +1543,13 @@
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <!-- surveillance.js owns the SurvSettings module that backs the Telegram
          tier toggles. We load it here so the v2TelegramSendStartPing /
          v2TelegramTierGroup controls hooked into surveillance.js wiring
          keep firing without a per-page bridge. -->
-    <script src="../shared/surveillance.js?v=survtoggle10"></script>
+    <script src="../shared/surveillance.js?v=survtoggle15"></script>
     <script src="../shared/notif-log.js?v=3"></script>
     <script>
         function toggleSidebar() {
@@ -1245,7 +1606,7 @@
         }
 
         // ===== Telegram delivery preferences module =====
-        // Lives here (not in shared/surveillance.js) because the four toggles
+        // Lives here (not in shared/surveillance.js?v=survtoggle15) because the four toggles
         // are notification-page-local — they don't bind to surveillance config
         // and don't need the heavier SurvSettings init flow. Load + save go
         // through /api/telegram/preferences (same endpoint telegram.html
@@ -2221,7 +2582,7 @@
                     if (enabled) toggleClasses.push('on');
                     if (!hasSubscription) toggleClasses.push('inactive');
                     row.innerHTML =
-                        '<div class="notif-row-text">' +
+                        '<div class="notif-row-text setting-stack">' +
                             '<div class="notif-row-label">' + escapeHtml(c.label) +
                                 '<span class="notif-sev-pill ' + severityClass(c.severity) + '" tabindex="0">' +
                                     escapeHtml(c.severity || 'info') +
@@ -2230,7 +2591,7 @@
                                     '</span>' +
                                 '</span>' +
                             '</div>' +
-                            (description ? '<div class="notif-row-note">' + escapeHtml(description) + '</div>' : '') +
+                            (description ? '<div class="notif-row-note setting-desc">' + escapeHtml(description) + '</div>' : '') +
                         '</div>' +
                         '<div class="' + toggleClasses.join(' ') + '" data-cat="' + escapeAttr(c.id) + '" role="switch" aria-checked="' + enabled + '" aria-disabled="' + (!hasSubscription) + '" tabindex="0"></div>';
                     card.appendChild(row);

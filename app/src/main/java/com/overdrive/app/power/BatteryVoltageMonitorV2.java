@@ -646,6 +646,29 @@ public final class BatteryVoltageMonitorV2 {
         }
     }
 
+    /**
+     * One-shot MCU wake for a remote-key actuation (lock/unlock/power). Wake only — this never
+     * asserts a hold the caller would then have to release; V2 keeps ownership of the re-sleep
+     * cadence. When this monitor is running in the current process we use {@link #forceWake()}
+     * so {@code isWakeupMcu} stays coherent and V2 re-sleeps on its own schedule; otherwise we
+     * fall straight to the HAL wake. On DiLink 5 the wake is skipped (returns false): the only
+     * DI5 wake path is the parked-generation lease, whose token is not obtainable here, and a
+     * skipped wake simply makes the readiness gate proceed (it fails open).
+     *
+     * @return true only when a wake was actually issued/confirmed.
+     */
+    public static boolean wakeForActuation() {
+        if (isDilink5Mode()) {
+            return false;
+        }
+        synchronized (BatteryVoltageMonitorV2.class) {
+            if (running) {
+                return forceWake();
+            }
+        }
+        return McuPowerHal.requestMcuWake();
+    }
+
     private static boolean forceWake() {
         if (!running) return false;
         // A wake decision supersedes any healthy-voltage sleep which may have
@@ -737,9 +760,7 @@ public final class BatteryVoltageMonitorV2 {
         }
         try {
             Class<?> cls = Class.forName("android.hardware.bydauto.ota.BYDAutoOtaDevice");
-            java.lang.reflect.Method getInstance = cls.getMethod(
-                    "getInstance", android.content.Context.class);
-            cachedOtaDevice = getInstance.invoke(null, appContext);
+            cachedOtaDevice = BydDeviceHelper.invokeGetInstance(cls, appContext);
             if (cachedOtaDevice != null) {
                 logger.info("resolveOtaDevice: " + cachedOtaDevice.getClass().getName());
             }

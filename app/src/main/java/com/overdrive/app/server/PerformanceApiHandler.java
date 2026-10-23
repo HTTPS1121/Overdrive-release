@@ -657,8 +657,20 @@ public class PerformanceApiHandler {
                 HttpResponse.sendJson(out, status.toString());
             } else {
                 JSONObject response = new JSONObject();
-                response.put("success", false);
-                response.put("error", Messages.get("errors.soh_not_initialized"));
+                double oemSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(null);
+                if (oemSoh > 0) {
+                    double displaySoh = Math.round(oemSoh * 10.0) / 10.0;
+                    response.put("success", true);
+                    response.put("soh", displaySoh);
+                    response.put("displaySoh", displaySoh);
+                    response.put("displaySource", "oem");
+                    response.put("oemSoh", displaySoh);
+                    response.put("estimatedSoh", -1);
+                    response.put("hasEstimate", true);
+                } else {
+                    response.put("success", false);
+                    response.put("error", Messages.get("errors.soh_not_initialized"));
+                }
                 HttpResponse.sendJson(out, response.toString());
             }
             return true;
@@ -891,15 +903,8 @@ public class PerformanceApiHandler {
     }
 
     /**
-     * Body for GET /api/performance/soh/nominal, or null while it is not known yet.
-     *
-     * The HTTP server starts before CameraDaemon attaches the SOH estimator to
-     * SocHistoryDatabase (initVehicleDataMonitor), so for the first seconds after
-     * a daemon start (every app update) the estimator is missing. Reporting
-     * "unset" then made the dashboard show the vehicle as unconfigured until the
-     * app was reopened. Until the estimator is ready, answer the user-set value
-     * straight from config; without one the value is still unknown (auto
-     * detection may fill it in), so return null.
+     * Body for GET /api/performance/soh/nominal, or null while it is unknown. Until the estimator
+     * is attached and ready, only the user-set value from config is authoritative.
      */
     static JSONObject nominalResponse(
             com.overdrive.app.abrp.SohEstimator sohEst,

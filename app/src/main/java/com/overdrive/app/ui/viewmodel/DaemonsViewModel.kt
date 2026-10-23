@@ -35,12 +35,69 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
         java.util.concurrent.ConcurrentHashMap<DaemonType, DaemonState>()
 
     private fun appStr(id: Int, vararg args: Any): String {
-        return getApplication<Application>().getString(id, *args)
+        return com.overdrive.app.util.AppLocaleContext.of(getApplication()).getString(id, *args)
     }
 
+    private companion object {
+        const val LAUNCH_STATE_GRACE_MS = 60_000L
+        val POLLED_TUNNELS = setOf(DaemonType.CLOUDFLARED_TUNNEL, DaemonType.ZROK_TUNNEL,
+            DaemonType.TAILSCALE_TUNNEL, DaemonType.WIREGUARD_TUNNEL)
+    }
+
+    // A stop pressed mid-launch owns an optional daemon's card; late launch results must not overwrite it.
+    private fun lateAfterUserStop(type: DaemonType): Boolean =
+        type in DaemonStartupManager.OPTIONAL_DAEMONS && type in DaemonStartupManager.userStoppedDaemons
+
+    // Stops recorded outside the app (e.g. Telegram) while the enabled pref is still on.
+    private val externallyStopped: MutableSet<DaemonType> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    // Last launch failure per daemon, kept so a retry countdown can still show the cause.
+    private val lastLaunchError = java.util.concurrent.ConcurrentHashMap<DaemonType, String>()
+
+    // Bumped by each user start so a stop probe issued before it can't flip the card back off.
+    private val userStartGenerations = java.util.concurrent.ConcurrentHashMap<DaemonType, Int>()
+
     private fun publishState(type: DaemonType, state: DaemonState) {
-        authoritativeStates[type] = state
+        if (state.status == DaemonStatus.RUNNING) {
+            externallyStopped.remove(type)
+            lastLaunchError.remove(type)
+        }
+        authoritativeStates.compute(type) { _, _ -> withIntent(state) }
         _daemonStates.postValue(HashMap(authoritativeStates))
+    }
+
+    private fun isUserEnabled(type: DaemonType): Boolean =
+        type in DaemonStartupManager.OPTIONAL_DAEMONS &&
+            type !in DaemonStartupManager.userStoppedDaemons &&
+            type !in externallyStopped &&
+            try {
+                com.overdrive.app.ui.util.PreferencesManager.isDaemonEnabled(type)
+            } catch (e: IllegalStateException) {
+                false
+            }
+
+    private fun withIntent(state: DaemonState): DaemonState {
+        val enabled = isUserEnabled(state.type)
+        return if (state.userEnabled == enabled) state else state.copy(userEnabled = enabled)
+    }
+
+    fun userStartGeneration(type: DaemonType): Int = userStartGenerations[type] ?: 0
+
+    /** [generation] is [userStartGeneration] when the stop was probed; a later user start wins. */
+    fun noteExternalStop(type: DaemonType, generation: Int) {
+        if (type !in DaemonStartupManager.OPTIONAL_DAEMONS) return
+        synchronized(externallyStopped) {
+            if (userStartGeneration(type) != generation || !externallyStopped.add(type)) return
+        }
+        authoritativeStates.computeIfPresent(type) { _, state -> withIntent(state) }
+        _daemonStates.postValue(HashMap(authoritativeStates))
+        refreshDaemonStatus(type)
+    }
+
+    /** The daemon is alive again, or its stop marker is gone or app-written. */
+    fun clearExternalStop(type: DaemonType) {
+        if (externallyStopped.remove(type)) refreshDaemonStatus(type)
     }
     
     // Expose cloudflared controller for tunnel URL access
@@ -86,7 +143,7 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
         tailscaleController = TailscaleController(app, adbLauncher)
         wireguardController = WireGuardController(app, adbLauncher)
         cameraDaemonController = CameraDaemonController(app, adbLauncher)
-        singboxController = SingboxController(adbLauncher)
+        singboxController = SingboxController(app, adbLauncher)
         
         controllers = mapOf(
             DaemonType.CAMERA_DAEMON to cameraDaemonController,
@@ -101,7 +158,7 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
         )
         
         // Initialize all states as stopped
-        val initialStates = DaemonType.values().associateWith { DaemonState.stopped(it) }
+        val initialStates = DaemonType.values().associateWith { withIntent(DaemonState.stopped(it)) }
         authoritativeStates.putAll(initialStates)
         _daemonStates.value = initialStates
         
@@ -152,8 +209,7 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
      * @param userInitiated true when the USER asked to start it (UI tap, or a
      *   Telegram start). This is the only case that may CLEAR durable stop
      *   intent: it rm's the disable sentinel, flips the optional-daemon
-     *   enabled-pref back ON, clears the in-memory user-stopped flag, and
-     *   applies tunnel mutual-exclusion.
+     *   enabled-pref back ON, and clears the in-memory user-stopped flag.
      *
      *   false when the HEALTH-CHECK is reviving a daemon it believes crashed.
      *   A revival must NEVER clear stop intent: if the death was actually a
@@ -172,28 +228,12 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
         if (userInitiated) {
             // Clear user-stopped flag so health check can manage this daemon
             DaemonStartupManager.clearUserStopped(type)
-
-            // Cloudflared and Zrok are mutually exclusive - stop the other one
-            // first. ONLY on a user start: a health-check revival must not
-            // silently kill the sibling tunnel.
+            synchronized(externallyStopped) {
+                userStartGenerations.merge(type, 1) { a, b -> a + b }
+                externallyStopped.remove(type)
+            }
             if (type == DaemonType.CLOUDFLARED_TUNNEL) {
-                // Stop zrok if running before starting cloudflared
-                val zrokState = authoritativeStates[DaemonType.ZROK_TUNNEL]
-                if (zrokState?.status == DaemonStatus.RUNNING) {
-                    LogManager.getInstance().info("Daemons", "Stopping Zrok (mutually exclusive with Cloudflared)")
-                    stopDaemonSilent(DaemonType.ZROK_TUNNEL)
-                    // Also update preference for zrok since we're stopping it
-                    startupManager?.onDaemonToggled(DaemonType.ZROK_TUNNEL, false)
-                }
-            } else if (type == DaemonType.ZROK_TUNNEL) {
-                // Stop cloudflared if running before starting zrok
-                val cloudflaredState = authoritativeStates[DaemonType.CLOUDFLARED_TUNNEL]
-                if (cloudflaredState?.status == DaemonStatus.RUNNING) {
-                    LogManager.getInstance().info("Daemons", "Stopping Cloudflared (mutually exclusive with Zrok)")
-                    stopDaemonSilent(DaemonType.CLOUDFLARED_TUNNEL)
-                    // Also update preference for cloudflared since we're stopping it
-                    startupManager?.onDaemonToggled(DaemonType.CLOUDFLARED_TUNNEL, false)
-                }
+                com.overdrive.app.launcher.TunnelLauncher.resetAutoStartBackoff()
             }
 
             // For optional daemons, save the enabled state so they auto-start
@@ -241,6 +281,16 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
                     "Skipping health-check revival of ${type.displayName} — user-stopped flag set")
                 return
             }
+            // Without a token every attempt fails at once; skip it and let the status poll show the setup prompt.
+            if (type == DaemonType.ZROK_TUNNEL) {
+                zrokController.hasEnableToken { hasToken ->
+                    if (!hasToken) return@hasEnableToken
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (type !in DaemonStartupManager.userStoppedDaemons) launchController(type, controller)
+                    }
+                }
+                return
+            }
         }
 
         launchController(type, controller)
@@ -251,10 +301,13 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
 
         controller.start(object : DaemonCallback {
             override fun onStatusChanged(status: DaemonStatus, message: String) {
+                if (lateAfterUserStop(type)) return
                 updateState(type, status, message)
             }
-            
+
             override fun onError(error: String) {
+                if (lateAfterUserStop(type)) return
+                lastLaunchError[type] = error
                 updateState(type, DaemonStatus.ERROR, error)
             }
         })
@@ -307,35 +360,12 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
                     LogManager.getInstance().warn("Daemons",
                         "Failed to clear start blockers for ${type.displayName}: $error")
                     updateState(type, DaemonStatus.ERROR,
-                        "Could not prepare daemon start: $error")
+                        appStr(R.string.daemon_status_prepare_failed, error))
                 }
             }
         )
     }
 
-    /**
-     * Stop daemon silently (used for mutual exclusion between tunnels).
-     * Doesn't update preferences or show stopping state.
-     */
-    private fun stopDaemonSilent(type: DaemonType) {
-        val controller = controllers[type] ?: return
-        controller.stop(object : DaemonCallback {
-            override fun onStatusChanged(status: DaemonStatus, message: String) {
-                updateState(type, status, message)
-            }
-            override fun onError(error: String) {
-                // "Silent" means no prefs/STOPPING UI, not "pretend it worked": a failed stop
-                // used to show STOPPED while the other tunnel kept running beside the new one.
-                LogManager.getInstance().warn("Daemons",
-                    "Silent stop of ${type.displayName} failed (mutual exclusion): $error")
-                updateState(type, DaemonStatus.ERROR, appStr(R.string.daemon_status_stop_failed, error))
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    refreshDaemonStatus(type)
-                }, 1000)
-            }
-        })
-    }
-    
     /** Restart the WireGuard tunnel to apply a changed launch option. No-op sentinel/pref changes. */
     fun restartWireGuard() {
         val type = DaemonType.WIREGUARD_TUNNEL
@@ -542,11 +572,33 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } else {
-                updateState(type, DaemonStatus.STOPPED, "Not running")
-                if (logResult) {
-                    LogManager.getInstance().debug("Daemons", "${type.name}: Not running")
+                // An optional daemon's app-side launch still reporting progress owns the card (switch stays locked).
+                val current = authoritativeStates[type]
+                if (current != null && current.status == DaemonStatus.STARTING &&
+                    type in POLLED_TUNNELS &&
+                    System.currentTimeMillis() - current.lastUpdated < LAUNCH_STATE_GRACE_MS
+                ) {
+                    return@isRunning
+                }
+                val waitMs = if (type == DaemonType.CLOUDFLARED_TUNNEL) {
+                    com.overdrive.app.launcher.TunnelLauncher.autoStartDelayMs()
+                } else 0L
+                if (waitMs > 0 && isUserEnabled(type)) {
+                    val cause = lastLaunchError[type]?.lineSequence()?.firstOrNull()?.trim()?.trimEnd(':', '：')
+                        ?.take(80)?.ifEmpty { null } ?: appStr(R.string.daemon_status_connect_failed)
+                    val minutes = ((waitMs + 59_999L) / 60_000L).toInt()
+                    updateState(type, DaemonStatus.ERROR, appStr(R.string.daemon_status_retry_in, cause, minutes))
+                } else {
+                    publishNotRunning(type, logResult)
                 }
             }
+        }
+    }
+
+    private fun publishNotRunning(type: DaemonType, logResult: Boolean) {
+        updateState(type, DaemonStatus.STOPPED, "Not running")
+        if (logResult) {
+            LogManager.getInstance().debug("Daemons", "${type.name}: Not running")
         }
     }
     
@@ -616,7 +668,7 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
         controllers.values.forEach { it.cleanup() }
         
         // Reset all states to stopped
-        val stoppedStates = DaemonType.values().associateWith { DaemonState.stopped(it) }
+        val stoppedStates = DaemonType.values().associateWith { withIntent(DaemonState.stopped(it)) }
         authoritativeStates.putAll(stoppedStates)
         _daemonStates.postValue(HashMap(authoritativeStates))
     }
@@ -628,7 +680,21 @@ class DaemonsViewModel(app: Application) : AndroidViewModel(app) {
     // Reads the authoritative map, not LiveData.value: postValue leaves .value
     // stale until the main thread drains, so a caller could act on old state.
     fun getState(type: DaemonType): DaemonState? = authoritativeStates[type]
-    
+
+    /**
+     * The other public tunnel (Cloudflared ↔ Zrok) when it is running or starting.
+     * The two may run side by side; starting one while the other is up is a user choice.
+     */
+    fun activePublicTunnelSibling(type: DaemonType): DaemonType? {
+        val sibling = when (type) {
+            DaemonType.CLOUDFLARED_TUNNEL -> DaemonType.ZROK_TUNNEL
+            DaemonType.ZROK_TUNNEL -> DaemonType.CLOUDFLARED_TUNNEL
+            else -> return null
+        }
+        val status = authoritativeStates[sibling]?.status
+        return sibling.takeIf { status == DaemonStatus.RUNNING || status == DaemonStatus.STARTING }
+    }
+
     /**
      * Update Zrok state to indicate configuration is needed.
      */

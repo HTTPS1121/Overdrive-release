@@ -16,9 +16,11 @@ public class MotionPipelineV2 {
     private static final DaemonLogger logger = DaemonLogger.getInstance("MotionV2");
     
     public static final int NUM_QUADRANTS = 4;
-    public static final int GRID_COLS = 10;
-    public static final int GRID_ROWS = 7;
-    public static final int TOTAL_BLOCKS = GRID_COLS * GRID_ROWS;  // 70
+    public static final int GRID_COLS = MotionGridGeometry.GRID_COLS;
+    public static final int GRID_ROWS = MotionGridGeometry.GRID_ROWS;
+    public static final int TOTAL_BLOCKS = MotionGridGeometry.TOTAL_BLOCKS;
+    public static final int POLICY_ROWS = MotionGridGeometry.POLICY_ROWS;
+    public static final int POLICY_BLOCKS = MotionGridGeometry.POLICY_BLOCKS;
     /**
      * Block edge length in quadrant pixels. MUST match {@code V2_BLOCK_SIZE} in
      * motion_pipeline_v2.h — the native side owns the grid geometry; this is the
@@ -27,13 +29,11 @@ public class MotionPipelineV2 {
      * staticness test) previously hard-coded 32 in three places, so the claim
      * that they "agree by construction" was not actually enforced by construction.
      *
-     * <p>Note the grid does NOT cover the full quadrant height: GRID_ROWS(7) × 32
-     * = 224 of 240 px, because 240/32 truncates. The bottom 16 px — the strip
-     * nearest the car — has no blocks and can never report motion. Any consumer
-     * inferring "no motion here" from the mask must treat that band as unknown
-     * rather than still.
+     * <p>The eighth row is clipped to 16 px. Legacy native libraries still
+     * cover only 224 px; result decoding records their actual confidence count.
+     * Consumers retain the conservative bottom-band detection policy.
      */
-    public static final int BLOCK_SIZE = 32;
+    public static final int BLOCK_SIZE = MotionGridGeometry.BLOCK_SIZE;
     /**
      * Per-block confidence at or above which a block counts as motion for
      * bbox-overlap tests. Shared so the detection-side filter and the hero-side
@@ -62,6 +62,7 @@ public class MotionPipelineV2 {
     // Native struct sizes (queried at init)
     private int configStructSize;
     private int resultStructSize;
+    private MotionResultLayout resultLayout;
     
     // Expected sizes with shadow filter fields (for backward compatibility)
     // Old config: up to maxDistanceRow = 56 bytes (varies by alignment)
@@ -109,46 +110,7 @@ public class MotionPipelineV2 {
     /**
      * Per-quadrant detection result.
      */
-    public static class QuadrantResult {
-        public boolean motionDetected;
-        public int threatLevel;
-        public int activeBlocks;
-        public int confirmedBlocks;
-        public int componentSize;
-        public float centroidX;
-        public float centroidY;
-        public float meanLuma;
-        public boolean brightnessSuppressed;
-        public boolean shadowFiltered;
-        // Motion DIRECTIONALITY signals (native Phase 2 — flow coherence).
-        // flowCoherence = |net flow| / |gross flow| over the largest connected
-        // component's blocks: ~1.0 = rigid coherent translation (real intruder),
-        // ~0.0 = in-place oscillation (flag / foliage / sweeping shadow whose
-        // per-block vectors cancel). netDriftBlocks = magnitude of the windowed
-        // cumulative net displacement of the component centroid (a real walker
-        // accumulates drift; a flag random-walks near zero).
-        //
-        // Default -1 = "native did not compute this" (old .so, or this build).
-        // Consumers MUST treat <0 as "unavailable" and fall back to other trust
-        // signals — never read a negative value as low coherence. Only populated
-        // when {@link #isNativeCoherenceSupported()} is true.
-        public float flowCoherence = -1f;
-        public float netDriftBlocks = -1f;
-        // Number of distinct connected components among the confirmed blocks.
-        // 1 = one object (2-3 when a subject fragments around an occluder);
-        // many = a diffuse response (rain, wipers, scene-wide light change).
-        // 0 = "native did not report this" (pre-salience .so). Treat as UNKNOWN,
-        // which for the salience channel means FAILING the compactness test: that
-        // channel only ever ADDS a trigger, so absent evidence must read as "do not
-        // trigger" (invariant I9). Do NOT "fail open" here — on a pre-salience .so
-        // that would manufacture a trigger on every high-mass frame.
-        public int componentCount = 0;
-        // Flash-filter salience probe outcome: 0 = did not run, 1 = probed and
-        // suppressed (lighting event), 2 = probed and RESCUED (large close
-        // object that the >25% mass filter would otherwise have erased).
-        public int salienceState = 0;
-        public float[] blockConfidence = new float[TOTAL_BLOCKS];
-    }
+    public static class QuadrantResult extends MotionResultLayout.Result {}
     
     /**
      * Pipeline configuration. Set fields and call {@link #applyConfig(Config)}.
@@ -507,92 +469,21 @@ public class MotionPipelineV2 {
             configStructSize = NativeMotion.getPipelineConfigSize();
             resultStructSize = NativeMotion.getQuadrantResultSize();
             
-            // Detect if native library includes shadow filter fields.
-            // 
-            // Exact struct layout of PipelineConfigV2 (all fields are 4-byte aligned):
-            //   float brightnessShiftThreshold     4 bytes  offset 0
-            //   int   brightnessSuppressionFrames   4 bytes  offset 4
-            //   int   shadowThreshold               4 bytes  offset 8
-            //   float lumaRatioThreshold            4 bytes  offset 12
-            //   int   edgeDiffThreshold             4 bytes  offset 16
-            //   int   densityThreshold              4 bytes  offset 20
-            //   float confidenceIncrement           4 bytes  offset 24
-            //   float confidenceDecay               4 bytes  offset 28
-            //   float confidenceThreshold           4 bytes  offset 32
-            //   int   minComponentSize              4 bytes  offset 36
-            //   float loiteringRadiusBlocks         4 bytes  offset 40
-            //   int   loiteringFrames               4 bytes  offset 44
-            //   bool  quadrantEnabled[4]            4 bytes  offset 48
-            //   int   alarmBlockThreshold           4 bytes  offset 52
-            //   int   maxDistanceRow                4 bytes  offset 56
-            //   --- base total: 60 bytes ---
-            //   int   shadowFilterMode              4 bytes  offset 60
-            //   float chromaRatioTolerance          4 bytes  offset 64
-            //   float shadowPixelFraction           4 bytes  offset 68
-            //   int   oscillationThreshold          4 bytes  offset 72
-            //   --- full total: 76 bytes ---
-            //
-            // The base struct (without shadow fields) is exactly 60 bytes.
-            // With shadow fields it's exactly 76 bytes (60 + 16).
-            // Use exact size check: if configStructSize == 76, shadow is supported.
-            // Also accept >= 76 in case future fields are added after shadow fields.
-            final int BASE_CONFIG_SIZE = 60;
-            final int SHADOW_FIELDS_SIZE = 16;  // 4 fields × 4 bytes each
-            final int COHERENCE_FIELDS_SIZE = 12;  // coherenceRatioMin + coherenceNetMin + coherenceMinFrames
-            final int SALIENCE_FIELDS_SIZE = 12;   // salienceEnabled + salienceMinBlocks + salienceDominanceFrac
-            nativeHasShadowFilter = (configStructSize >= BASE_CONFIG_SIZE + SHADOW_FIELDS_SIZE);
-            // Phase 2 coherence stage: config struct grew by the 3 coherence
-            // params past the shadow layout. Mirrors the shadow-fields probe.
-            nativeHasCoherence = (configStructSize >= BASE_CONFIG_SIZE + SHADOW_FIELDS_SIZE + COHERENCE_FIELDS_SIZE);
-            // Salience probe: 3 more params past the coherence layout.
-            nativeHasSalience = (configStructSize
-                    >= BASE_CONFIG_SIZE + SHADOW_FIELDS_SIZE + COHERENCE_FIELDS_SIZE + SALIENCE_FIELDS_SIZE);
-
-            // Result-struct sanity: the deserializer reads a fixed field layout
-            // then TOTAL_BLOCKS floats. If the native result size doesn't match
-            // what we expect for the detected capability tier, disable coherence
-            // parsing so we never read past / short of the struct (torn floats).
-            int expectedResultBase = resultStructSize - TOTAL_BLOCKS * 4;
-            // The coherence layout needs a base of at least 44 (36 bytes of fields
-            // before the two coherence floats + 8). The old test was `< 0`, which a
-            // 36-byte base (a .so whose result struct LACKS the coherence floats)
-            // passes — Java would then read the first 8 bytes of blockConfidence[] as
-            // flowCoherence/netDriftBlocks and under-read every quadrant by 8. Tight
-            // threshold, same fail-closed stance as the salience check below.
-            final int COHERENCE_RESULT_BASE_MIN = 44;
-            if (nativeHasCoherence && expectedResultBase < COHERENCE_RESULT_BASE_MIN) {
-                logger.warn("V2 result struct too small for coherence layout (result=" + resultStructSize
-                        + ", base=" + expectedResultBase + " < " + COHERENCE_RESULT_BASE_MIN
-                        + ") — disabling coherence parse");
-                nativeHasCoherence = false;
+            // Geometry is explicit in current libraries. Missing geometry is a
+            // known legacy 70-cell layout; unknown sizes never reach deserialization.
+            resultLayout = MotionResultLayout.resolve(configStructSize, resultStructSize,
+                    readNativeGeometry());
+            nativeHasShadowFilter = resultLayout.hasShadow;
+            nativeHasCoherence = resultLayout.hasCoherence;
+            nativeHasSalience = resultLayout.hasSalience;
+            for (QuadrantResult result : results) {
+                result.nativeBlockCount = resultLayout.blockCount;
+                result.coveredHeight = resultLayout.coveredHeight;
             }
-            // The salience RESULT fields (componentCount + salienceState) sit
-            // between the coherence floats and blockConfidence[], so parsing them
-            // shifts every subsequent read. Verify the result struct actually grew
-            // by those 8 bytes before trusting the config-side probe: a mismatched
-            // .so pair would otherwise tear the whole 70-float block array.
-            // Layout: 4(bool+pad) + 6*4 (threat/active/confirmed/component/cx/cy)
-            // + 4(meanLuma) + 4(2 bools + 2 pad) + 8(coherence) = 44, then +8.
-            // EXACT match, not >=. A >= test only catches a struct that SHRANK; if a
-            // future field is inserted before blockConfidence[] the base becomes 56,
-            // >= would still pass, and every one of the 70 floats would be read at
-            // the wrong offset. Equality fails closed on drift in either direction.
-            if (nativeHasSalience) {
-                final int SALIENCE_RESULT_BASE = 52;
-                if (!nativeHasCoherence || expectedResultBase != SALIENCE_RESULT_BASE) {
-                    logger.warn("V2 result struct layout does not match the salience layout (base="
-                            + expectedResultBase + ", expected " + SALIENCE_RESULT_BASE
-                            + ", coherence=" + nativeHasCoherence + ") — disabling salience parse");
-                    nativeHasSalience = false;
-                }
-            }
+            logger.info(String.format("V2 struct sizes: config=%d, result=%d, cells=%d, coverage=%d px",
+                    configStructSize, resultStructSize, resultLayout.blockCount,
+                    resultLayout.coveredHeight));
 
-            logger.info(String.format("V2 struct sizes: config=%d, result=%d (total result=%d), shadowFilter=%s, coherence=%s, salience=%s",
-                    configStructSize, resultStructSize, resultStructSize * NUM_QUADRANTS,
-                    nativeHasShadowFilter ? "supported" : "NOT supported (old native)",
-                    nativeHasCoherence ? "supported" : "NOT supported (Phase-1 native)",
-                    nativeHasSalience ? "supported" : "NOT supported (pre-salience native)"));
-            
             // Allocate direct ByteBuffers. The config buffer here is only
             // the pre-applyConfig default; applyConfig publishes fresh
             // immutable buffers (audit R13-1b).
@@ -727,60 +618,44 @@ public class MotionPipelineV2 {
      * Deserialize one QuadrantResultV2 from the ByteBuffer.
      */
     private void deserializeResult(ByteBuffer buf, QuadrantResult result) {
-        result.motionDetected = buf.get() != 0;
-        
-        // Alignment padding (3 bytes after bool to align int)
-        buf.get(); buf.get(); buf.get();
-        
-        result.threatLevel = buf.getInt();
-        result.activeBlocks = buf.getInt();
-        result.confirmedBlocks = buf.getInt();
-        result.componentSize = buf.getInt();
-        result.centroidX = buf.getFloat();
-        result.centroidY = buf.getFloat();
-        result.meanLuma = buf.getFloat();
-        result.brightnessSuppressed = buf.get() != 0;
-        
-        if (nativeHasShadowFilter) {
-            // New layout: 2 bools + 2 padding bytes
-            result.shadowFiltered = buf.get() != 0;
-            buf.get(); buf.get();  // 2 bytes padding to align float array
-        } else {
-            // Old layout: 1 bool + 3 padding bytes
-            result.shadowFiltered = false;
-            buf.get(); buf.get(); buf.get();  // 3 bytes padding
-        }
+        resultLayout.readQuadrant(buf, result);
+    }
 
-        // Flow-coherence floats (Phase 2). These are declared in the C struct
-        // BEFORE the blockConfidence[] array, so they MUST be read here, before
-        // the 70-float loop below — otherwise both reads tear. When the native
-        // build predates coherence, leave the -1 sentinel and don't advance.
-        if (nativeHasCoherence) {
-            result.flowCoherence = buf.getFloat();
-            result.netDriftBlocks = buf.getFloat();
-        } else {
-            result.flowCoherence = -1f;
-            result.netDriftBlocks = -1f;
-        }
-
-        // Salience result fields (componentCount + salienceState). Declared in the
-        // C struct AFTER the coherence floats and BEFORE blockConfidence[], so they
-        // MUST be read here — reading them out of order (or on a .so that lacks
-        // them) shifts every one of the 70 floats below.
-        if (nativeHasSalience) {
-            result.componentCount = buf.getInt();
-            result.salienceState = buf.getInt();
-        } else {
-            result.componentCount = 0;
-            result.salienceState = 0;
-        }
-
-        // Block confidence array (70 floats) — always the trailing field.
-        for (int i = 0; i < TOTAL_BLOCKS; i++) {
-            result.blockConfidence[i] = buf.getFloat();
+    private static int[] readNativeGeometry() {
+        try {
+            return NativeMotion.getPipelineGeometryV2();
+        } catch (UnsatisfiedLinkError legacyLibrary) {
+            return null;
         }
     }
-    
+
+    /** Converts persisted grid masks for the actual validated native library. */
+    public static byte[] toNativeRoiMask(byte[] mask) {
+        if (mask == null) return null;
+        MotionResultLayout layout = MotionResultLayout.resolve(
+                NativeMotion.getPipelineConfigSize(), NativeMotion.getQuadrantResultSize(),
+                readNativeGeometry());
+        return MotionGridGeometry.nativeRoiMask(mask, layout.blockCount);
+    }
+
+    /** Normalizes current or legacy persisted block arrays without changing ROI enable state. */
+    public static byte[] roiMaskFromJson(org.json.JSONArray array) {
+        if (array == null || (array.length() != TOTAL_BLOCKS && array.length() != POLICY_BLOCKS)) {
+            return null;
+        }
+        byte[] mask = new byte[array.length()];
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = (byte) (array.optInt(i, 1) != 0 ? 1 : 0);
+        }
+        return MotionGridGeometry.migrateRoiMask(mask);
+    }
+
+    public static org.json.JSONArray roiMaskToJson(byte[] mask) {
+        org.json.JSONArray array = new org.json.JSONArray();
+        for (byte enabled : mask) array.put(enabled != 0 ? 1 : 0);
+        return array;
+    }
+
     /**
      * Check if any quadrant detected motion above the given threat threshold.
      */

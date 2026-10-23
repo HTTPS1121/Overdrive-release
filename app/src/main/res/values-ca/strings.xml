@@ -435,7 +435,8 @@
     <string name="toast_soh_reset_failed_with_message">Ha fallat el restabliment: %1$s</string>
     <string name="toast_select_at_least_one_category">Seleccioneu almenys una categoria</string>
     <string name="toast_reset_failed_with_error">Ha fallat el restabliment: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s monitor de trànsit...</string>
+    <string name="toast_traffic_monitor_enabling">S\'està activant el Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">S\'està desactivant el Traffic Monitor…</string>
     <string name="dialog_close">Tanca</string>
     <string name="dialog_reset">Restableix</string>
     <string name="dialog_delete">Suprimeix</string>
@@ -453,14 +454,15 @@
     <string name="dialog_reset_complete_title">Restabliment completat</string>
     <string name="dialog_traffic_cannot_check_title">No es pot comprovar l\'estat</string>
     <string name="dialog_traffic_cannot_check_message">La connexió ADB encara no està llesta.\n\nL\'aplicació necessita accés ADB per a gestionar els paquets del sistema. Assegureu-vos:\n\n• La depuració USB està activada a les opcions del desenvolupador\n• S\'ha acceptat la sol·licitud d\'autorització ADB\n\nL\'estat s\'actualitzarà automàticament un cop connectat.</string>
-    <string name="dialog_traffic_disable_title">Voleu desactivar el monitor de trànsit BYD?</string>
-    <string name="dialog_traffic_disable_message">El Monitor de Trànsit BYD (com.byd.trafficmonitor) és una aplicació de sistema integrada que supervisa contínuament les condicions del trànsit rodat en segon pla.\n\nPer què desactivar-ho?\n\n• Consumeix dades mòbils (fins i tot quan està aparcat)\n• Usa CPU i bateria en segon pla\n• No és necessari si useu una aplicació de navegació separada\n• Pot interferir amb l\'ús de la xarxa de la dashcam\n\nAixò és segur de desactivar-ho — només afecta la superposició de trànsit integrada en el mapa. La navegació, el Bluetooth i totes les altres funcions del cotxe no es veuen afectades.\n\nEs requereix un reinici dur després d\'inhabilitar-ho (manteniu premut el botó de la consola central 5 segons).</string>
-    <string name="dialog_traffic_enable_title">Voleu tornar a activar el monitor de trànsit BYD?</string>
-    <string name="dialog_traffic_enable_message">El monitor de trànsit BYD està desactivat.\n\nSi es torna a activar, es restaurarà la superposició de trànsit incorporada en el mapa de navegació. Tingueu en compte que s\'executarà en segon pla i consumirà dades mòbils.\n\nEs requereix un reinici dur després d\'activar (manteniu premut el botó de la consola central 5 segons).</string>
-    <string name="dialog_traffic_status_title">Monitor de trànsit %1$s</string>
+    <string name="dialog_traffic_disable_title">Voleu desactivar el Traffic Monitor de BYD?</string>
+    <string name="dialog_traffic_disable_message">El Traffic Monitor de BYD (com.byd.trafficmonitor) és una aplicació del sistema integrada que controla quines aplicacions poden utilitzar dades mòbils. Impedeix que les aplicacions de tercers, inclosa OverDrive, utilitzin la SIM integrada del cotxe.\n\nPer què desactivar-lo?\n\n• Permet que OverDrive i altres aplicacions que instal·leu utilitzin internet a través de la SIM de BYD\n• Necessari per accedir al vostre cotxe a distància a través de la SIM de BYD\n\nLa vostra navegació, el Bluetooth i totes les altres funcions del cotxe no es veuen afectats.\n\nDesprés de desactivar-lo, cal fer un reinici forçat (manteniu premut el botó de la consola central durant 5 segons).</string>
+    <string name="dialog_traffic_enable_title">Voleu tornar a activar el Traffic Monitor de BYD?</string>
+    <string name="dialog_traffic_enable_message">El Traffic Monitor de BYD està desactivat actualment.\n\nSi el reactiveu, tornarà a impedir que OverDrive i altres aplicacions de tercers utilitzin la SIM integrada del cotxe, de manera que l\'accés remot a través de la SIM de BYD deixarà de funcionar.\n\nDesprés d\'activar-lo, cal fer un reinici forçat (manteniu premut el botó de la consola central durant 5 segons).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor activat</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor desactivat</string>
     <string name="dialog_traffic_reboot_message">El canvi s\'ha aplicat.\n\nSi us plau, realitzeu un reinici dur ara:\nPremeu i manteniu premut el botó de la consola central durant 5 segons.</string>
-    <string name="traffic_monitor_loading">Monitor de trànsit: comprovació...</string>
-    <string name="traffic_monitor_tap_to_check">Monitor de trànsit (toqueu a comprovar)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: s\'està comprovant…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (toqueu per comprovar-ho)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">Viatges</string>
     <string name="reset_label_soc_history">Història SoC + 12V</string>
@@ -516,6 +518,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Això encamina MQTT a través de Tailscale perquè pugueu arribar a un corredor privat a la vostra xarxa tailnet sense reenviament de ports.\n\nMentre està activat:\n• MQTT a un corredor de tailnet funciona (p. ex. Mosquitto en un dispositiu de la vostra tailnet)\n• MQTT a corredors públics (HiveMQ, AWS IoT, etc.) fallarà — Tailscale només encamina a la vostra xarxa tailnet\n• El dimoni Tailscale es reiniciarà per a aplicar el canvi\n• No afecta el trànsit d\'altres aplicacions i la resta del dispositiu\n\nPodeu desactivar-ho en qualsevol moment.</string>
     <string name="dialog_zrok_reset_title">Restableix l\'entorn Zrok</string>
     <string name="dialog_zrok_reset_message">Això:\n• Aturarà el túnel zrok si s\'executa\n• Eliminarà l\'entorn zrok d\'aquest dispositiu\n• Suprimirà el testimoni desat\n\nHaureu de tornar a introduir el vostre testimoni i tornar a activar. Això usa un dels vostres 5 ranures del dispositiu en zrok.io.\n\nN\'esteu segur?</string>
+    <string name="dialog_tunnel_conflict_title">Hi ha un altre túnel en execució</string>
+    <string name="dialog_tunnel_conflict_message">%1$s ja s\'està executant. Voleu canviar a %2$s (s\'aturarà %1$s) o executar tots dos túnels alhora?\n\nAmb tots dos en marxa:\n• El tauler és accessible des de dos enllaços públics\n• El consum de dades mòbils en repòs augmenta lleugerament\n• Tots dos s\'inicien automàticament després d\'un reinici</string>
+    <string name="dialog_tunnel_conflict_switch">Canvia</string>
+    <string name="dialog_tunnel_conflict_run_both">Executa tots dos</string>
     <string name="toast_resetting_zrok">S\'està restablint l\'entorn zrok...</string>
     <string name="toast_zrok_reset_success">S\'ha restablert l\'entorn Zrok. Introduïu un testimoni nou per a configurar-lo de nou.</string>
     <string name="toast_zrok_reset_partial">S\'ha restablert l\'entorn (pot ser que el fitxer de testimoni necessiti una neteja manual)</string>
@@ -576,9 +582,9 @@
     <string name="setup_overlay_already_granted">Ja concedit</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">Consells i resolució de problemes</string>
-    <string name="setup_traffic_title">Desactiva el monitor de trànsit BYD</string>
-    <string name="setup_traffic_body">El Monitor de Trànsit BYD bloqueja que les aplicacions de tercers arribin a Internet. Desactivar-lo permet que OverDrive i qualsevol altra aplicació que instal·leu realment utilitzin la xarxa. Després es requereix un reinici dur.</string>
-    <string name="setup_traffic_button">Obre el monitor de trànsit</string>
+    <string name="setup_traffic_title">Desactiveu el Traffic Monitor de BYD</string>
+    <string name="setup_traffic_body">El Traffic Monitor de BYD impedeix que les aplicacions de tercers accedeixin a internet. Si el desactiveu, OverDrive i qualsevol altra aplicació que instal·leu podran utilitzar realment la xarxa. Després cal fer un reinici forçat.</string>
+    <string name="setup_traffic_button">Obriu el Traffic Monitor</string>
     <string name="setup_camera_fix_title">El canal de la càmera és en nengre o incorrecte?</string>
     <string name="setup_camera_fix_body">Sonda de càmera, establiu l\'ID de la càmera a 0, feu clic a Desa i, a continuació, reinicieu el dimoni de la càmera. Si els canals encara són incorrectes, repetiu amb l\'ID de la càmera 1. Deixeu intacta la secció de mapatge.</string>
     <!-- Recording storage path -->
@@ -661,6 +667,8 @@
     <string name="settings_about_support_share_value">Cada enllaç compartit ajuda a un altre propietari de BYD a descobrir OverDrive.</string>
     <string name="settings_about_support_share_message">Feu una ullada a OverDrive — vigilància i càmdera de davantal de codi obert per a BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Comparteix OverDrive</string>
+    <string name="settings_about_youtube_title">Subscriu-te a YouTube</string>
+    <string name="settings_about_youtube_value">Fes m\'agrada, subscriu-te i comparteix: cada visualització ajuda Overdrive a créixer.</string>
     <string name="settings_about_open_link_failed">No s\'ha pogut obrir l\'enllaç.</string>
     <string name="settings_about_open_link_copied">No s\'ha trobat cap navegador. S\'ha copiat l\'URL: %1$s</string>
     <string name="settings_about_support_kofi_title">Ajudeu per a l següent llançament</string>
@@ -699,7 +707,7 @@
     <string name="recordings_preview_placeholder_body">Toqueu qualsevol element de l\'esquerra per a reproduir-lo.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">Consola ADB</string>
-    <string name="diagnostics_section_traffic">Monitor de trànsit</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Sonda de la càmera</string>
     <string name="diagnostics_section_battery">Salut de la bateria</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -815,6 +823,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Memòria pre i post intermèdia, còdec, límits d\'emmagatzematge.</string>
     <string name="settings_section_surveillance_subtitle">Zones de detecció, planificació, sensibilitat al moviment.</string>
+    <string name="settings_section_storage_subtitle">On es desen els enregistraments, límits d\'espai, neteja de la càmera BYD.</string>
     <string name="settings_section_daemons_subtitle">Executors Cloudflared, Zrok, Telegram, MQTT.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">Quant a OverDrive</string>
@@ -1468,8 +1477,8 @@
     <string name="onboarding_expert_bydcloud_body">Enllaçar el vostre compte BYD aquí permet bloquejar, fer flaix i tocar el clàxon de forma remota des del telèfon. Tracteu el compte enllaçat i el codi d\'accés com a sensible.</string>
     <string name="onboarding_expert_surveillance_body">Detecció fina, qualitat i emmagatzematge aquí. Això s\'obre com a pàgines de configuració de l\'aplicació servides des del cotxe — una pantalla en blanc només significa que l\'ajudant encara s\'està iniciant.</string>
     <string name="onboarding_expert_camprobe_title">Sonda de càmera — amb cura</string>
-    <string name="onboarding_expert_traffic_title">Monitor de trànsit — necessari per a l\'accés remot</string>
-    <string name="onboarding_expert_traffic_body">El Monitor de Trànsit integrat de BYD bloqueja a altres aplicacions l\'ús de la SIM integrada del cotxe. Si voleu arribar al vostre cotxe remotament per la SIM BYD, heu de desactivar-ho aquí. La unitat principal es reinicia per a aplicar el canvi.</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — necessari per a l\'accés remot</string>
+    <string name="onboarding_expert_traffic_body">El Traffic Monitor integrat de BYD impedeix que altres aplicacions utilitzin la SIM integrada del cotxe. Si voleu accedir al vostre cotxe a distància a través de la SIM de BYD, heu de desactivar-lo aquí. La unitat principal es reinicia per aplicar el canvi.</string>
     <string name="onboarding_expert_daemons_body">Aquests interruptors inicien i aturen els serveis en segon pla. Apagar la càmera, la vigilància o el sentinella ACC deixa d\'enregistrar i els manté apagats fins que els torneu a activar — fins i tot després d\'un reinici.</string>
     <string name="onboarding_expert_security_body">Establiu un PIN per a obrir l\'aplicació per a vehicles compartits. La vigilància i l\'enregistrament segueixen funcionant mentre l\'aplicació està bloquejada. Un PIN oblidat només es pot netejar des d\'un ordinador a través d\'USB.</string>
     <string name="daemons_wifi_auto_enable_save_failed">No s\'ha pogut canviar l\'estat de la Wi-Fi.</string>
@@ -1508,6 +1517,10 @@
     <string name="projection_status_preview">Mode de vista prèvia (reduceix la velocitat de fotogrames en aquest vehicle).</string>
     <string name="projection_status_none">Encara no es projecta res — trieu una aplicació i feu una emissió.</string>
     <string name="projection_status_service_down">El servei de clonatge no està preparat — reinicieu l\'aplicació (o el dimoni de la càmera) i torneu-ho a provar.</string>
+    <string name="projection_status_connecting">S\'està connectant a la pantalla del conductor…</string>
+    <string name="projection_status_mirror_unavailable">Clonatge no disponible</string>
+    <string name="projection_fullscreen_enter">Pantalla completa</string>
+    <string name="projection_fullscreen_exit">Surt de la pantalla completa</string>
     <string name="projection_bounds_hint_idle">Vista prèvia de la clonació</string>
     <string name="projection_status_adjust">Arrossegueu el marc per a moure\'l · arrossegueu una ansa per a canviar la mida de la vista prèvia.</string>
     <string name="projection_scale_title">Escalat del clonatge</string>
@@ -1646,6 +1659,8 @@
     <string name="action_share_evidence_pack">Comparteix el paquet de proves</string>
     <string name="camera_mode_option_dilink5">DiLink 5 — Sealion 7 / SA8155P</string>
     <string name="camera_mode_current_dilink5">Actual: DiLink 5</string>
+    <string name="camera_mode_option_camera2">Camera2 360 — Atto 3 EVO / DiLink 100</string>
+    <string name="camera_mode_current_camera2">Actual: Camera2 360</string>
     <string name="camera_dilink5_mapping_title">Ordre de les càmeres de DiLink 5</string>
     <string name="camera_dilink5_mapping_subtitle">Els identificadors físics de les càmeres s\'enumeren com a frontal, dreta, posterior i esquerra. Manteniu el mode automàtic tret que les previsualitzacions en brut demostrin que aquest vehicle utilitza un altre ordre.</string>
     <string name="camera_dilink5_mapping_current_auto">Actual: automàtic / valor predeterminat del model</string>
@@ -1668,6 +1683,19 @@
     <string name="toast_evidence_pack_failed">No s\'ha pogut crear el paquet de proves: %1$s</string>
     <string name="error_unknown">Error desconegut</string>
     <string name="projection_dilink5_mode_required">Establiu el mode del vehicle en DiLink 5 a Diagnòstic i reinicieu el servei de la càmera.</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Escoltant…</string>
+    <string name="voice_overlay_thinking">Pensant…</string>
+    <string name="voice_overlay_speaking">Parlant…</string>
+    <string name="voice_overlay_done">Fet</string>
+    <string name="voice_overlay_cancelled">Cancel·lat</string>
+    <string name="voice_overlay_not_understood">Perdona, no ho he entès</string>
+    <string name="voice_overlay_offline">L\'assistent d\'IA no està disponible</string>
+    <string name="voice_overlay_busy">L\'assistent ja s\'està fent servir</string>
+    <string name="voice_overlay_blocked_moving">No disponible mentre condueixes</string>
+    <string name="voice_overlay_refused">Això no es pot fer amb la veu</string>
+    <string name="voice_overlay_failed">No s\'ha pogut completar</string>
     <string name="settings_overlay_icon_opacity">Transparència de les icones</string>
     <string name="settings_overlay_icon_opacity_value">%1$d%%</string>
     <string name="settings_overlay_icon_size">Mida de la icona</string>

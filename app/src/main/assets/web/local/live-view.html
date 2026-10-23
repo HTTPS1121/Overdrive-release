@@ -10,9 +10,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
+    <script src="../shared/theme.js?v=11"></script>
     <script src="../shared/skeleton.js?v=4"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <script>
         if (typeof window.AndroidBridge !== 'undefined') {
             document.documentElement.classList.add('is-app-webview');
@@ -21,11 +21,12 @@
     <style>
         html.is-app-webview .cabin-listen-btn { display: none !important; }
     </style>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <link rel="stylesheet" href="../shared/leaflet.css" />
     <script src="../shared/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jmuxer@2.0.4/dist/jmuxer.min.js"></script>
-    <script src="../shared/SotaPlayer.js?v=13"></script>
+    <script src="../shared/SotaPlayer.js?v=14"></script>
     <script src="../shared/Decoder.js"></script>
     <script src="../shared/YUVCanvas.js"></script>
     <script src="../shared/Player.js"></script>
@@ -33,7 +34,7 @@
 <body class="live-view-page">
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content">
@@ -43,7 +44,7 @@
                         <line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>
                     </svg>
                 </button>
-                <div class="brand"><span class="brand-name" style="font-size:16px;">OverDrive</span></div>
+                <span style="font-weight:600;" data-i18n="nav.live_view">Live View</span>
                 <div style="width:40px;"></div>
             </div>
 
@@ -105,7 +106,7 @@
                                             <path d="M18.5 5.5a9 9 0 0 1 0 13"/>
                                         </svg>
                                     </button>
-                                    <button class="top-bar-btn" onclick="BYD.stream.toggleFullscreen()">
+                                    <button class="top-bar-btn" onclick="BYD.stream.toggleFullscreen()" aria-label="Fullscreen" data-i18n-attr="aria-label:events.player_fullscreen;title:events.player_fullscreen" title="Fullscreen">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/>
                                             <path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
@@ -303,21 +304,22 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <style>
-        /* Theme tokens for the Live View page. The chrome (top bar chips,
-           quality select, rail cards) resolves to the shared M3 surface
-           tokens so it matches the rest of the app in both schemes; only the
-           video stage and its scrim need page-local values. */
+        /* Theme tokens for the Live View page. The rail cards use the shared
+           tile tokens. Controls over the video are dark glass in both schemes,
+           because they sit on decoded video rather than on a themed surface. */
         .live-view-page {
-            --lv-panel-bg: var(--surface);
+            --lv-panel-bg: var(--page);
             --lv-top-overlay: linear-gradient(180deg, rgba(0,0,0,0.55) 0%, transparent 100%);
-            --lv-pill-bg: var(--surface-container);
-            --lv-pill-bg-hover: var(--surface-container-high);
-            --lv-pill-border: var(--outline-variant);
-            --lv-pill-border-soft: var(--outline-variant);
-            --lv-overlay-text: var(--on-surface);
-            --lv-label-overlay-bg: var(--surface-container);
-            --lv-idle-icon-bg: var(--surface-container);
-            --lv-idle-icon-border: var(--outline-variant);
+            --lv-pill-bg: rgba(0,0,0,0.6);
+            --lv-pill-bg-hover: rgba(0,0,0,0.74);
+            --lv-pill-border: rgba(255,255,255,0.2);
+            --lv-pill-border-soft: var(--hairline);
+            --lv-overlay-text: #ffffff;
+            --lv-overlay-muted: rgba(255,255,255,0.8);
+            --lv-overlay-warning: #FFB870;
+            --lv-label-overlay-bg: rgba(0,0,0,0.6);
+            --lv-idle-icon-bg: var(--well-2);
+            --lv-idle-icon-border: transparent;
             /* Camera controls sit over user-selected vehicle paint, so their
                contrast must not depend on either paint colour or app theme.
                A light edge + dark halo remains visible on white and black. */
@@ -388,26 +390,28 @@
             align-items: center;
         }
 
+        /* The halo keeps the dot readable on bright video without growing its box. */
         .conn-dot {
             width: 10px; height: 10px;
             flex: 0 0 10px;
             border-radius: 50%;
-            background: var(--text-muted);
-            transition: all 0.3s;
+            background: var(--outline);
+            box-shadow: 0 0 0 3px rgba(0,0,0,0.5);
+            transition: background-color var(--duration-med) var(--easing-standard);
         }
-        
+
         .connection-status.live .conn-dot {
             background: var(--status-success);
             animation: pulse 1.5s infinite;
         }
-        
+
         .connection-status.connecting .conn-dot {
-            background: var(--status-warning);
+            background: var(--warning);
             animation: pulse 0.6s infinite;
         }
 
         .connection-status.disconnected .conn-dot {
-            background: var(--status-danger);
+            background: var(--danger);
         }
         
         .quality-menu { position: relative; }
@@ -421,15 +425,18 @@
             font-size: 12px;
             font-weight: 600;
             font-family: inherit;
-            color: var(--text-primary);
+            color: var(--lv-overlay-text);
             background: var(--lv-pill-bg);
             border: 1px solid var(--lv-pill-border);
-            border-radius: var(--radius-md);
+            border-radius: var(--radius-full);
             cursor: pointer;
             outline: none;
+            transition: background-color var(--duration-fast) var(--easing-standard);
         }
 
-        .quality-menu__trigger:hover { background: var(--lv-pill-bg-hover); }
+        @media (hover: hover) {
+            .quality-menu__trigger:hover { background: var(--lv-pill-bg-hover); }
+        }
 
         .quality-menu__value {
             flex: 1 1 auto;
@@ -444,7 +451,7 @@
             width: 14px;
             height: 14px;
             margin-left: 8px;
-            color: var(--on-surface-variant);
+            color: var(--lv-overlay-muted);
         }
 
         /* Fixed, so the panel escapes the stage's overflow clipping; JS anchors
@@ -454,33 +461,53 @@
             position: fixed;
             z-index: 120;
             max-height: 320px;
-            padding: 4px;
+            padding: 6px;
             overflow-y: auto;
-            background: var(--surface-container-high);
-            border: 1px solid var(--outline-variant);
-            border-radius: var(--radius-md);
+            background: var(--tile-raised);
+            border: 0;
+            border-radius: var(--radius-lg);
+            box-shadow: 0 0 0 1px var(--hairline), 0 12px 32px rgba(0,0,0,0.32);
         }
 
         .quality-menu__list.is-open { display: block; }
 
         .quality-menu__option {
-            padding: 9px 12px;
-            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            min-height: 40px;
+            padding: 9px 14px;
+            border-radius: var(--radius-full);
             color: var(--on-surface);
-            font-size: 13px;
+            font-size: var(--fs-label);
             font-weight: 500;
             white-space: nowrap;
             cursor: pointer;
         }
+        .quality-menu__option + .quality-menu__option { margin-top: 2px; }
 
-        .quality-menu__option:hover { background: var(--surface-container-highest); }
+        @media (hover: hover) {
+            .quality-menu__option:hover { background: var(--well-2); }
+        }
 
         .quality-menu__option[aria-selected="true"] {
             background: var(--secondary-container);
             color: var(--on-secondary-container);
             font-weight: 600;
         }
+        /* The selected quality carries a check, so state is not colour-only. */
+        .quality-menu__option[aria-selected="true"]::before {
+            content: "";
+            flex-shrink: 0;
+            width: 10px;
+            height: 5px;
+            margin: -3px 10px 0 0;
+            border-bottom: 2px solid currentColor;
+            border-left: 2px solid currentColor;
+            -webkit-transform: rotate(-45deg);
+            transform: rotate(-45deg);
+        }
 
+        /* Native contract: size and spacing stay as they were; only the surface changes. */
         .top-bar-btn {
             width: 38px; height: 38px;
             display: flex;
@@ -488,27 +515,31 @@
             justify-content: center;
             background: var(--lv-pill-bg);
             border: 1px solid var(--lv-pill-border);
-            border-radius: var(--radius-md);
-            color: var(--text-secondary);
+            border-radius: var(--radius-full);
+            color: var(--lv-overlay-text);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background-color var(--duration-fast) var(--easing-standard),
+                border-color var(--duration-fast) var(--easing-standard),
+                color var(--duration-fast) var(--easing-standard);
         }
 
-        .top-bar-btn:hover { background: var(--lv-pill-bg-hover); color: var(--text-primary); }
+        @media (hover: hover) {
+            .top-bar-btn:hover { background: var(--lv-pill-bg-hover); }
+        }
         .top-bar-btn svg { width: 18px; height: 18px; }
         .cabin-listen-btn.is-active {
-            color: var(--on-primary-container);
-            border-color: var(--primary-container);
-            background: var(--primary-container);
+            color: var(--on-primary);
+            border-color: var(--primary);
+            background: var(--primary);
         }
         .cabin-listen-btn.is-connecting {
-            color: var(--status-warning);
-            border-color: var(--status-warning);
+            color: var(--lv-overlay-warning);
+            border-color: var(--lv-overlay-warning);
         }
         .cabin-listen-btn.is-paused {
-            color: var(--status-warning);
-            border-color: var(--status-warning);
-            background: var(--status-warning-container);
+            color: var(--lv-overlay-warning);
+            border-color: var(--lv-overlay-warning);
+            background: linear-gradient(var(--warning-soft), var(--warning-soft)), var(--lv-pill-bg);
         }
         
         /* Video Display — the stage and the layered video / canvas /
@@ -556,12 +587,15 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            color: var(--text-muted);
+            max-width: 100%;
+            padding: 0 24px;
+            color: var(--on-surface-variant);
+            text-align: center;
             transition: opacity 0.3s;
         }
-        
+
         .video-idle-state.hidden { opacity: 0; pointer-events: none; }
-        
+
         .idle-icon {
             width: 64px; height: 64px;
             margin-bottom: 16px;
@@ -570,18 +604,20 @@
             justify-content: center;
             background: var(--lv-idle-icon-bg);
             border: 1px solid var(--lv-idle-icon-border);
-            border-radius: var(--radius-md);
+            border-radius: var(--radius-lg);
         }
 
-        .idle-icon svg { width: 32px; height: 32px; opacity: 0.5; }
+        .idle-icon svg { width: 32px; height: 32px; opacity: 0.8; }
         .idle-alert { display: none; }
-        .idle-text { font-size: 14px; font-weight: 500; }
+        .idle-text { font-size: var(--fs-body); font-weight: 500; line-height: 1.4; overflow-wrap: break-word; }
 
         .idle-subtext {
             display: none;
             margin-top: 6px;
-            font-size: 12px;
-            color: var(--text-muted);
+            font-size: var(--fs-caption);
+            line-height: 1.4;
+            color: var(--on-surface-variant);
+            overflow-wrap: break-word;
         }
 
         .idle-spinner {
@@ -602,9 +638,9 @@
         .video-idle-state.is-error .idle-subtext { display: block; }
 
         .video-idle-state.is-error .idle-icon {
-            background: var(--status-danger-container);
+            background: var(--danger-soft);
             border-color: transparent;
-            color: var(--status-danger);
+            color: var(--danger);
         }
 
         .video-idle-state.is-error .idle-text { color: var(--on-surface); }
@@ -627,8 +663,9 @@
             padding: 8px 16px;
             background: var(--lv-label-overlay-bg);
             border: 1px solid var(--lv-pill-border);
-            border-radius: var(--radius-md);
-            font-size: 13px;
+            border-radius: var(--radius-full);
+            color: var(--lv-overlay-text);
+            font-size: var(--fs-label);
             font-weight: 600;
             z-index: 10;
         }
@@ -656,6 +693,7 @@
             z-index: 15;
         }
         .deterrent-controls .deterrent-btn + .deterrent-btn { margin-top: 10px; }
+        [dir="rtl"] .deterrent-controls { right: auto; left: 16px; }
 
         /* In the browser the theme picker sits bottom-right, over both the
            deterrent stack and the expand-map button. The app never mounts the
@@ -666,53 +704,59 @@
         html:not(.is-app-webview) .location-expand-button {
             margin-right: 60px;
         }
-        [dir="rtl"] html:not(.is-app-webview) .location-expand-button {
-            margin-right: 0;
+        html[dir="rtl"]:not(.is-app-webview) .location-expand-button {
+            margin-right: 12px;
             margin-left: 60px;
         }
 
-        /* Same surface language as .btn-map-float, so the two floating clusters
-           on this page read as one control family. */
+        /* Glass pills, like the other controls over the video. Width follows the
+           label so long translations stay inside the pill. */
         .deterrent-btn {
             display: flex;
             align-items: center;
             justify-content: flex-start;
             box-sizing: border-box;
-            width: 116px;
-            height: 40px;
-            padding: 0 12px;
-            background: var(--surface-container);
-            border: 1px solid var(--outline-variant);
-            border-radius: var(--radius-md);
-            color: var(--on-surface);
-            font-size: 13px;
+            min-width: 116px;
+            height: 44px;
+            padding: 0 18px 0 14px;
+            background: var(--lv-pill-bg);
+            border: 1px solid var(--lv-pill-border);
+            border-radius: var(--radius-full);
+            color: var(--lv-overlay-text);
+            font-size: var(--fs-label);
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s ease, border-color 0.2s ease;
+            transition: background-color var(--duration-fast) var(--easing-standard),
+                border-color var(--duration-fast) var(--easing-standard);
             -webkit-tap-highlight-color: transparent;
         }
         .deterrent-btn svg { width: 18px; height: 18px; margin-right: 8px; flex: 0 0 18px; }
+        [dir="rtl"] .deterrent-btn { padding: 0 14px 0 18px; }
+        [dir="rtl"] .deterrent-btn svg { margin-right: 0; margin-left: 8px; }
         .deterrent-btn .deterrent-label { line-height: 1; white-space: nowrap; }
-        .deterrent-btn:hover { background: var(--surface-container-high); }
+        @media (hover: hover) {
+            .deterrent-btn:hover { background: var(--lv-pill-bg-hover); }
+        }
         .deterrent-btn:focus-visible {
             outline: 2px solid var(--primary);
             outline-offset: 2px;
         }
         .deterrent-btn:disabled,
         .deterrent-btn[disabled] {
-            color: var(--on-surface-variant);
+            color: var(--lv-overlay-muted);
             border-style: dashed;
             cursor: not-allowed;
         }
 
         /* Pending state while the cloud round-trip is in flight — the only
-           place semantic colour appears. Blocks re-taps so a double-tap
+           place semantic colour appears (ring and icon; the label stays white
+           for contrast on bright video). Blocks re-taps so a double-tap
            doesn't queue two horn commands. */
         .deterrent-btn.pending {
-            border-color: var(--status-warning);
-            color: var(--status-warning);
+            border-color: var(--lv-overlay-warning);
             pointer-events: none;
         }
+        .deterrent-btn.pending svg { color: var(--lv-overlay-warning); }
 
         /* Bottom Car Selector */
         .car-selector-bottom {
@@ -751,7 +795,10 @@
 
         .car-image-fallback {
             position: absolute;
-            inset: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
             z-index: 2;
             object-fit: contain;
             opacity: 0.72;
@@ -861,53 +908,57 @@
             bottom: auto;
         }
         
-        .cam-hotspot:hover .hotspot-ring {
-            border-color: var(--brand-primary);
-            background: rgba(0,42,36,0.9);
-            box-shadow:
-                0 0 0 2px var(--lv-hotspot-ring-halo),
-                0 0 0 4px rgba(0,212,170,0.2);
+        /* Hover and active accents use the same fixed teal as the active label
+           text, so the selected ring reads the same on any paint and theme. */
+        @media (hover: hover) {
+            .cam-hotspot:hover .hotspot-ring {
+                border-color: var(--lv-hotspot-active-text);
+                background: rgba(0,42,36,0.9);
+                box-shadow:
+                    0 0 0 2px var(--lv-hotspot-ring-halo),
+                    0 0 0 4px rgba(114,244,217,0.2);
+            }
+
+            .cam-hotspot:hover .hotspot-label {
+                color: var(--lv-hotspot-active-text);
+                border-color: rgba(114,244,217,0.62);
+            }
         }
-        
-        .cam-hotspot:hover .hotspot-label {
-            color: var(--lv-hotspot-active-text);
-            border-color: rgba(0,212,170,0.62);
-        }
-        
+
         /* Active State with Animation */
         .cam-hotspot.active .hotspot-ring {
-            border-color: var(--brand-primary);
+            border-color: var(--lv-hotspot-active-text);
             background: rgba(0,48,40,0.94);
             animation: ringPulse 2s ease-in-out infinite;
         }
-        
+
         .cam-hotspot.active .hotspot-pulse {
-            background: rgba(0,212,170,0.4);
+            background: rgba(114,244,217,0.4);
             animation: hotspotPulse 1.5s ease-out infinite;
         }
-        
+
         .cam-hotspot.active .hotspot-label {
             color: var(--lv-hotspot-active-text);
             background: rgba(0,35,31,0.96);
-            border-color: rgba(0,212,170,0.72);
+            border-color: rgba(114,244,217,0.72);
             box-shadow: 0 2px 6px rgba(0,0,0,0.68);
         }
-        
+
         @keyframes hotspotPulse {
             0% { transform: scale(1); opacity: 0.6; }
             100% { transform: scale(2.5); opacity: 0; }
         }
-        
+
         @keyframes ringPulse {
             0%, 100% {
                 box-shadow:
                     0 0 0 2px var(--lv-hotspot-ring-halo),
-                    0 0 0 4px rgba(0,212,170,0.2);
+                    0 0 0 4px rgba(114,244,217,0.2);
             }
             50% {
                 box-shadow:
                     0 0 0 2px var(--lv-hotspot-ring-halo),
-                    0 0 0 6px rgba(0,212,170,0.32);
+                    0 0 0 6px rgba(114,244,217,0.32);
             }
         }
 
@@ -933,11 +984,14 @@
             background: var(--lv-panel-bg);
         }
 
+        /* Rail cards are tiles (shared tile tokens, no border). */
         .camera-selector-card,
         .live-location-card {
-            border: 1px solid var(--lv-pill-border-soft);
-            border-radius: var(--radius-md);
-            background: var(--surface-container-low);
+            border: 0;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255,255,255,0) 140px);
+            box-shadow: var(--tile-shadow);
             overflow: hidden;
         }
 
@@ -950,7 +1004,7 @@
 
         .selector-card-header {
             flex: 0 0 auto;
-            padding: 12px 14px 0;
+            padding: 14px 16px 0;
         }
 
         .camera-selector-card .car-selector-bottom {
@@ -976,26 +1030,28 @@
             flex: 0 0 auto;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 14px 10px;
+            padding: 14px 16px 10px;
         }
 
         .selector-card-header h2,
         .location-card-header h2 {
             margin: 0;
-            color: var(--text-primary);
-            font-size: 15px;
-            font-weight: 700;
-            line-height: 1.2;
+            color: var(--on-surface);
+            font-size: var(--fs-title);
+            font-weight: 600;
+            line-height: 1.25;
+            overflow-wrap: break-word;
         }
 
         .location-freshness {
             position: relative;
             display: flex;
             align-items: center;
-            margin-top: 5px;
-            color: var(--on-surface);
-            font-size: 11px;
+            margin-top: 4px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
             font-weight: 500;
+            font-variant-numeric: tabular-nums;
         }
 
         /* The dot carries the fix state; the label just names it. */
@@ -1006,6 +1062,7 @@
             border-radius: 50%;
             background: var(--outline);
         }
+        [dir="rtl"] .location-freshness-dot { margin-right: 0; margin-left: 6px; }
 
         /* Text width is unknowable before the reading lands, so the label slot
            reserves one and the placeholder covers it. */
@@ -1021,8 +1078,8 @@
         }
 
         .location-freshness-dot.is-live { background: var(--status-success); }
-        .location-freshness-dot.is-stale { background: var(--status-warning); }
-        .location-freshness-dot.is-down { background: var(--status-danger); }
+        .location-freshness-dot.is-stale { background: var(--warning); }
+        .location-freshness-dot.is-down { background: var(--danger); }
 
         .location-map-frame {
             position: relative;
@@ -1048,13 +1105,15 @@
             z-index: 20;
             display: flex;
             align-items: center;
-            padding: 6px 9px;
-            border: 1px solid var(--outline-variant);
-            border-radius: var(--radius-md);
-            background: var(--surface-container);
-            color: var(--on-surface-variant);
-            font-size: 10px;
+            padding: 6px 10px;
+            border: 1px solid var(--hairline);
+            border-radius: var(--radius-full);
+            background: var(--bar);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+            color: var(--on-surface);
+            font-size: var(--fs-caption);
             font-weight: 600;
+            font-variant-numeric: tabular-nums;
             line-height: 1;
         }
 
@@ -1082,27 +1141,33 @@
             -webkit-flex-shrink: 0;
             flex-shrink: 0;
         }
+        [dir="rtl"] .location-distance-chip svg { margin-right: 0; margin-left: 5px; }
 
+        /* Tonal pill (secondary action of the card). */
         .location-expand-button {
             display: flex;
             flex: 0 0 44px;
             align-items: center;
             justify-content: center;
             margin: 10px 12px 12px;
+            padding: 0 12px;
             border: 0;
-            border-radius: var(--radius-md);
+            border-radius: var(--radius-full);
             background: var(--secondary-container);
             color: var(--on-secondary-container);
-            font-size: 12px;
-            font-weight: 700;
+            font-size: var(--fs-label);
+            font-weight: 600;
+            text-align: center;
             cursor: pointer;
         }
 
         .location-expand-button svg {
+            flex-shrink: 0;
             width: 16px;
             height: 16px;
             margin-right: 8px;
         }
+        [dir="rtl"] .location-expand-button svg { margin-right: 0; margin-left: 8px; }
 
         .location-close-button {
             display: none;
@@ -1120,8 +1185,8 @@
             cursor: pointer;
         }
 
-        .location-close-button:hover {
-            background: var(--surface-container-high);
+        @media (hover: hover) {
+            .location-close-button:hover { background: var(--well-2); }
         }
 
         .location-close-button svg {
@@ -1157,14 +1222,15 @@
             margin: 0;
             border: 0;
             border-radius: 0;
-            background: var(--surface);
+            background: var(--page);
+            box-shadow: none;
         }
 
         #panelCameras.map-expanded .location-card-header {
             justify-content: flex-start;
             padding: 12px 16px;
-            border-bottom: 1px solid var(--outline-variant);
-            background: var(--surface-container);
+            border-bottom: 1px solid var(--hairline);
+            background: var(--bar);
         }
 
         /* Margin, NOT flex `gap`: gap is Chrome 84+ and BYD's in-app WebView is
@@ -1182,7 +1248,7 @@
         }
 
         #panelCameras.map-expanded .location-card-header h2 {
-            font-size: 18px;
+            font-size: var(--fs-title);
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -1208,11 +1274,33 @@
             margin-top: 8px;
         }
 
+        /* Map buttons: round, bar surface like the map chip; Directions is the
+           filled main action. Size comes from styles.css and the car app. */
+        .live-location-card .btn-map-float {
+            border-color: var(--hairline);
+            border-radius: var(--radius-full);
+            background: var(--bar);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+            color: var(--on-surface);
+        }
+        .live-location-card .btn-map-float.btn-directions {
+            border-color: var(--primary);
+            background: var(--primary);
+            color: var(--on-primary);
+        }
+        @media (hover: hover) {
+            .live-location-card .btn-map-float:hover { background: var(--tile-raised); }
+            .live-location-card .btn-map-float.btn-directions:hover {
+                background: var(--primary);
+                box-shadow: 0 6px 18px var(--primary-soft);
+            }
+        }
+
         #panelCameras.map-expanded .location-distance-chip {
             left: 16px;
             bottom: calc(16px + var(--safe-bottom, 0px));
             padding: 8px 12px;
-            font-size: 12px;
+            font-size: var(--fs-label);
         }
 
         #panelCameras.map-expanded .location-expand-button {
@@ -1243,7 +1331,7 @@
                 padding: 6px 8px 6px 10px;
                 font-size: 11px;
             }
-            .quality-menu__option { padding: 11px 12px; font-size: 12px; }
+            .quality-menu__option { min-height: 44px; padding: 11px 14px; font-size: var(--fs-label); }
             .top-bar-btn { width: 34px; height: 34px; }
             .car-selector-bottom { padding: 10px; padding-bottom: calc(14px + 60px + var(--safe-bottom)); }
             .car-image-container {
@@ -1260,12 +1348,13 @@
             .cam-hotspot[data-cam="6"] { top: 24px; left: 62%; }
             .idle-icon { width: 48px; height: 48px; }
             .idle-icon svg { width: 24px; height: 24px; }
-            .idle-text { font-size: 12px; }
-            /* Tighter deterrent buttons on phones so the pair doesn't crowd
-               the bottom-right of a small video stage. */
+            .idle-text { font-size: var(--fs-label); }
+            /* Narrower deterrent pills on phones so the pair doesn't crowd
+               the bottom-right of a small video stage; height stays 44px. */
             .deterrent-controls { right: 12px; bottom: calc(12px + var(--safe-bottom, 0px)); }
-            .deterrent-btn { width: 104px; height: 36px; padding: 0 10px; font-size: 12px; }
-            .deterrent-btn svg { width: 16px; height: 16px; flex: 0 0 16px; margin-right: 6px; }
+            [dir="rtl"] .deterrent-controls { left: 12px; }
+            .deterrent-btn { min-width: 104px; padding: 0 16px 0 12px; }
+            [dir="rtl"] .deterrent-btn { padding: 0 12px 0 16px; }
             .deterrent-controls .deterrent-btn + .deterrent-btn { margin-top: 8px; }
 
             /* On narrow/portrait screens keep the same information
@@ -1375,7 +1464,7 @@
             }
             #panelCameras .camera-selector-card,
             #panelCameras .live-location-card {
-                border-radius: var(--radius-md) var(--radius-md) 0 0;
+                border-radius: var(--radius-tile) var(--radius-tile) 0 0;
             }
             #panelCameras .live-location-card {
                 flex: 1 1 auto;
@@ -1445,7 +1534,15 @@
             #panelCameras .location-expand-button {
                 flex: 0 0 44px;
                 margin: 6px 7px calc(7px + var(--safe-bottom, 0px));
+                padding: 0;
                 font-size: 0;
+            }
+            /* Keep the icon-only button clear of a floating theme picker (with the
+               bottom bar the picker docks in the header instead). */
+            html:not(.is-app-webview):not(.has-bottom-nav) #panelCameras .location-expand-button { margin-right: 64px; }
+            html[dir="rtl"]:not(.is-app-webview):not(.has-bottom-nav) #panelCameras .location-expand-button {
+                margin-right: 7px;
+                margin-left: 64px;
             }
             #panelCameras .location-expand-button svg {
                 width: 17px;
@@ -1455,6 +1552,10 @@
             #panelCameras.map-expanded .live-location-card {
                 width: auto;
                 margin: 0;
+            }
+            :root[data-android-embed="1"] #panelCameras .selector-card-header h2,
+            :root[data-android-embed="1"] #panelCameras .location-card-header h2 {
+                font-size: var(--fs-body);
             }
         }
 
@@ -1490,16 +1591,110 @@
                 margin-left: 0;
             }
         }
+
+        /* Short landscape screens (phones turned sideways) cannot fit both
+           cards, so the rail scrolls instead of clipping the expand button. */
+        @media (orientation: landscape) and (max-height: 500px) {
+            #panelCameras .live-utility-rail { overflow-y: auto; }
+            #panelCameras .camera-selector-card,
+            #panelCameras .live-location-card {
+                flex: 0 0 auto;
+                min-height: 180px;
+            }
+        }
+
+        /* Glass blur where supported; the 60% fill alone carries legibility.
+           Kept off .quality-menu, whose fixed list must not be re-anchored. */
+        @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+            .quality-menu__trigger,
+            .top-bar-btn,
+            .camera-label-overlay,
+            .deterrent-btn {
+                -webkit-backdrop-filter: blur(8px);
+                backdrop-filter: blur(8px);
+            }
+        }
+
+        /* RTL: the quality trigger mirrors its padding, chevron and check. */
+        [dir="rtl"] .quality-menu__trigger { padding: 8px 14px 8px 10px; }
+        [dir="rtl"] .quality-menu__value { text-align: right; }
+        [dir="rtl"] .quality-menu__chevron { margin-left: 0; margin-right: 8px; }
+        [dir="rtl"] .quality-menu__option[aria-selected="true"]::before { margin: -3px 0 0 10px; }
+        @media (max-width: 768px) {
+            [dir="rtl"] .quality-menu__trigger { padding: 6px 10px 6px 8px; }
+        }
+
+        /* Car: 56px targets and body-size text on the controls this page sizes
+           (the car app sizes the top bar, hotspots and map buttons itself). */
+        :root[data-android-embed="1"] .deterrent-btn {
+            min-width: 132px;
+            height: 56px;
+            padding: 0 22px 0 18px;
+            font-size: var(--fs-body);
+        }
+        :root[data-android-embed="1"][dir="rtl"] .deterrent-btn { padding: 0 18px 0 22px; }
+        :root[data-android-embed="1"] .deterrent-btn svg { width: 20px; height: 20px; flex-basis: 20px; }
+        :root[data-android-embed="1"] .deterrent-controls .deterrent-btn + .deterrent-btn { margin-top: 12px; }
+        :root[data-android-embed="1"] .camera-label-overlay { padding: 10px 18px; }
+        :root[data-android-embed="1"] .idle-text { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .quality-menu__list { max-height: 440px; }
+        :root[data-android-embed="1"] .quality-menu__option {
+            min-height: 56px;
+            padding: 12px 18px;
+            font-size: var(--fs-body);
+        }
+        :root[data-android-embed="1"] .location-expand-button { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] #panelCameras .location-expand-button { flex-basis: 56px; }
+        :root[data-android-embed="1"] .location-close-button { width: 56px; height: 56px; }
+
+        /* Phone bottom bar (app-shell.js, browser only, shown under 769px). The
+           panel already ends above it (main-content padding), so the camera view
+           drops its own home-indicator inset and the floating-picker room (the
+           picker docks in the header). The quality list is capped to end above
+           the bar: header + top-bar row (46) + gap (6) + 8 + bar (76) = 136 + header. */
+        @media (max-width: 768px) {
+            html.has-bottom-nav .seamless-camera-view { --safe-bottom: 0px; }
+            html.has-bottom-nav:not(.is-app-webview) .deterrent-controls {
+                bottom: calc(12px + var(--safe-bottom, 0px));
+            }
+            html.has-bottom-nav:not(.is-app-webview) .location-expand-button {
+                margin-right: 12px;
+                margin-left: 12px;
+            }
+            html.has-bottom-nav .quality-menu__list {
+                max-height: calc(var(--vh, 1vh) * 100 - var(--live-mobile-header-h, 65px) - 136px);
+                max-height: calc(var(--vh, 1vh) * 100 - var(--live-mobile-header-h, 65px) - 136px - env(safe-area-inset-bottom, 0px));
+            }
+            /* CSS-only fullscreen (no Fullscreen API, e.g. iPhone) cannot paint over
+               the header or the bar, so it sits between them and keeps its exit
+               button reachable. Real fullscreen is full-viewport (UA rules). */
+            html.has-bottom-nav .seamless-camera-view.fullscreen {
+                top: var(--live-mobile-header-h, 0px);
+                bottom: 76px;
+                bottom: calc(var(--bottom-nav-h, 76px) + env(safe-area-inset-bottom, 0px));
+            }
+            html.has-bottom-nav .live-view-page .toast-container {
+                bottom: 92px;
+                bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+            }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
+            html.has-bottom-nav #panelCameras .live-utility-rail { padding-bottom: 8px; }
+            html.has-bottom-nav #panelCameras:not(.map-expanded) .camera-selector-card,
+            html.has-bottom-nav #panelCameras:not(.map-expanded) .live-location-card {
+                border-radius: var(--radius-tile);
+            }
+        }
     </style>
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <script src="../shared/cabin-audio.js?v=1"></script>
     <script src="../shared/stream.js?v=index5"></script>
-    <script src="../shared/map.js?v=7"></script>
-    <script src="../shared/surveillance.js?v=survtoggle10"></script>
+    <script src="../shared/map.js?v=8"></script>
+    <script src="../shared/surveillance.js?v=survtoggle15"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');

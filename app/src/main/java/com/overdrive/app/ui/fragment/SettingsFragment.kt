@@ -1,6 +1,5 @@
 package com.overdrive.app.ui.fragment
 
-import android.content.res.Configuration
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -32,6 +31,7 @@ import com.overdrive.app.ui.fragment.settings.SettingsPrivacyFragment
 import com.overdrive.app.ui.fragment.settings.RemoteCommunicationSettingsBinder
 import com.overdrive.app.ui.fragment.settings.SettingsRecordingFragment
 import com.overdrive.app.ui.fragment.settings.SettingsSecurityFragment
+import com.overdrive.app.ui.fragment.settings.SettingsStorageFragment
 import com.overdrive.app.ui.fragment.settings.SettingsSurveillanceFragment
 import com.overdrive.app.ui.util.PreferencesManager
 import com.overdrive.app.ui.util.navigateDrillDown
@@ -50,8 +50,8 @@ import java.util.Locale
  *    the right). Sections are dynamically inflated from the [Section]
  *    enum and click-swap a child fragment into `R.id.settingsContent`.
  *
- * Orientation detection happens in [onViewCreated] via
- * [resources.configuration.orientation]. Each branch wires a disjoint
+ * [onViewCreated] picks the branch from the inflated layout (only the
+ * landscape variant has `settingsContent`). Each branch wires a disjoint
  * set of views — the union of IDs would not exist in any single layout.
  */
 class SettingsFragment : Fragment() {
@@ -78,8 +78,9 @@ class SettingsFragment : Fragment() {
         val navigates: Boolean = false
     ) {
         APPEARANCE(R.string.settings_section_appearance, R.drawable.ic_dashboard),
-        RECORDING(R.string.settings_section_recording, R.drawable.ic_recording, navigates = true),
+        RECORDING(R.string.settings_section_recording, R.drawable.ic_recording_settings, navigates = true),
         SURVEILLANCE(R.string.settings_section_surveillance, R.drawable.ic_sentry, navigates = true),
+        STORAGE(R.string.recording_lib_filter_section_storage, R.drawable.ic_recording_storage, navigates = true),
         OVERLAY(R.string.settings_section_overlay, R.drawable.ic_overlay_rec_active),
         SECURITY(R.string.settings_section_security, R.drawable.ic_security_lock),
         DAEMONS(R.string.settings_section_daemons, R.drawable.ic_services),
@@ -131,10 +132,9 @@ class SettingsFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val isLandscape = resources.configuration.orientation ==
-            Configuration.ORIENTATION_LANDSCAPE
-
-        if (isLandscape && view.findViewById<View>(R.id.settingsContent) != null) {
+        // Branch on the inflated variant, not orientation: some head units resolve
+        // layout-land while reporting a non-landscape orientation.
+        if (view.findViewById<View>(R.id.settingsContent) != null) {
             setupLandscapeSubrail(view, savedInstanceState)
         } else {
             // Portrait: SOTA hub. Hero header is layout-driven; wire up the
@@ -257,6 +257,7 @@ class SettingsFragment : Fragment() {
         Section.APPEARANCE -> SettingsAppearanceFragment()
         Section.RECORDING -> SettingsRecordingFragment()
         Section.SURVEILLANCE -> SettingsSurveillanceFragment()
+        Section.STORAGE -> SettingsStorageFragment()
         Section.OVERLAY -> SettingsOverlayFragment()
         Section.SECURITY -> SettingsSecurityFragment()
         Section.DAEMONS -> SettingsDaemonsFragment()
@@ -344,6 +345,9 @@ class SettingsFragment : Fragment() {
         }
         view.findViewById<View>(R.id.cardSectionSurveillance)?.setOnClickListener {
             findNavController().navigateDrillDown(R.id.surveillanceSettingsWebFragment)
+        }
+        view.findViewById<View>(R.id.cardSectionStorage)?.setOnClickListener {
+            findNavController().navigateDrillDown(R.id.storageSettingsWebFragment)
         }
         view.findViewById<View>(R.id.cardSectionSecurity)?.setOnClickListener {
             findNavController().navigateDrillDown(R.id.settingsSecurityFragment)

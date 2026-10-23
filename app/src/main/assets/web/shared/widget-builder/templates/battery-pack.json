@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "name": "Battery pack",
+  "size": "small",
+  "about": "Just one part of the car, the battery pack, enlarged as the hero; its cells light up with the charge.",
+  "layers": [
+    { "type": "car", "name": "Pack", "parts": "pack", "x": 53, "y": 18.4, "scale": 2.2,
+      "power": "=is_charging ? charge_power : power", "soc": "=soc",
+      "phase": "=is_charging ? 'charging' : driving ? 'driving' : 'parked'", "drive": "awd" },
+    { "type": "text", "name": "Charge", "x": 34, "y": 158, "size": 34, "weight": 600, "text": "{soc}", "unit": "%", "color": "text", "motion": "number" },
+    { "type": "text", "name": "Range", "x": 240, "y": 158, "size": 18, "weight": 600, "align": "right", "text": "{dist(ev_range_km)}", "unit": "=dist_unit", "color": "text2" }
+  ]
+}

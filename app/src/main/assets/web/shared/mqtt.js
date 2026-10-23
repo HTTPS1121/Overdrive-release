@@ -426,6 +426,7 @@ const MQTT = {
             case 'charging_v2l': case 'drift_mode': case 'speed_limit_warning':
             case 'light_low_beam': case 'light_high_beam': case 'light_rear_fog':
             case 'light_front_fog': case 'light_hazard': case 'light_drl':
+            case 'door_open': case 'locked':
                 return yesNo(v);
 
             // Percentages
@@ -549,7 +550,7 @@ const MQTT = {
         'tyre_t_fl', 'tyre_t_fr', 'tyre_t_rl', 'tyre_t_rr',
         'tyre_system_state', 'tyre_temp_state',
         // Body
-        'door_lock', 'window_open',
+        'door_open', 'locked', 'door_lock', 'window_open',
         'light_left_turn', 'light_right_turn',
         'light_low_beam', 'light_high_beam', 'light_rear_fog',
         'light_front_fog', 'light_hazard', 'light_drl',

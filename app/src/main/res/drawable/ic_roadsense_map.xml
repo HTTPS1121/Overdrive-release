@@ -5,7 +5,7 @@
   Concept: a FOLDED MAP (three accordion panels) with a LOCATION PIN
   dropped on it — "hazards plotted on the map." Authored in the Material
   Symbols 960-unit grid and scaled via the same <group> transform
-  (scale 0.025 + translateY 24) used by ic_roadsense / ic_trips so the
+  (scale 0.025 + translateY 24) used by ic_roadsense so the
   optical weight matches the rest of the rail.
 
   Material baseline convention: x:0..960, y:-960..0, baseline y=0.

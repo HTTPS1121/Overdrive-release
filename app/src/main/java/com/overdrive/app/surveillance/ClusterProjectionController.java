@@ -171,13 +171,17 @@ public final class ClusterProjectionController {
     private static volatile ClusterProjectionController instance;
     private static final Object BOOT_RESTORE_LOCK = new Object();
     private static final Object LEGACY_COMMAND_DISPATCH_LOCK = new Object();
-    private static BootRestoreTicket sBootRestoreTicket;
+    private static volatile BootRestoreTicket sBootRestoreTicket;
+    private static final java.util.concurrent.atomic.AtomicInteger sRestoreDispatches =
+            new java.util.concurrent.atomic.AtomicInteger();
     private static volatile boolean sLegacyBootRestoreBlocksAdmission;
     private static final long BOOT_RESTORE_WAIT_TIMEOUT_MS = 20_000L;
     private static final int BOOT_RESTORE_MAX_ATTEMPTS = 3;
     private static final long[] BOOT_RESTORE_RETRY_DELAYS_MS =
             new long[] {500L, 1_500L};
-    private static final long LEGACY_COMMAND_WAIT_TIMEOUT_MS = 2_000L;
+    // DI3 sendInfo plus its durable marker writes routinely takes 2-6 s; only a
+    // wedged service may reach the indeterminate path.
+    private static final long LEGACY_COMMAND_WAIT_TIMEOUT_MS = 20_000L;
 
     private static final class BootRestoreTicket {
         final CountDownLatch completion = new CountDownLatch(1);
@@ -188,13 +192,30 @@ public final class ClusterProjectionController {
     enum LegacyCommandResult {
         ACCEPTED,
         REJECTED,
-        INDETERMINATE
+        INDETERMINATE,
+        /**
+         * No AutoContainer endpoint answered the legacy transport: the direct
+         * Binder path had no service/stub AND {@code service call} reported
+         * the service as absent. Definitive (nothing was dispatched), but
+         * distinct from {@link #REJECTED} so recovery can tell "no compositor
+         * service on this firmware" from "the service refused the opcode".
+         */
+        UNAVAILABLE
     }
 
     public enum LegacyBootRecoveryResult {
         RECOVERED,
         RETRYABLE_FAILURE,
-        SAME_BOOT_INDETERMINATE;
+        SAME_BOOT_INDETERMINATE,
+        /**
+         * Terminal, non-recovered: the OEM service answered every restore
+         * attempt with a definitive rejection of the legacy protocol (or the
+         * legacy endpoint is absent while a DI5-only alias exists). Nothing a
+         * retry can change on this firmware. The durable marker is retained
+         * as proof, but projection admission is released so the fence does
+         * not outlive the recovery it protected.
+         */
+        UNSUPPORTED;
 
         public boolean isRecovered() {
             return this == RECOVERED;
@@ -203,6 +224,61 @@ public final class ClusterProjectionController {
         public boolean isSameBootIndeterminate() {
             return this == SAME_BOOT_INDETERMINATE;
         }
+
+        /** Terminal verdicts end the bounded retry ladder. */
+        public boolean isTerminal() {
+            return this == RECOVERED || this == UNSUPPORTED;
+        }
+
+        public boolean isUnsupported() {
+            return this == UNSUPPORTED;
+        }
+
+        /**
+         * Only an unresolved same-boot command keeps admission blocked after a
+         * restore pass has FINISHED: a command that may still land must never
+         * be reordered against a fresh open. Every other outcome either
+         * restored the gauges or cannot be improved by refusing new sessions
+         * (a later successful close performs the same 18→0→profile restore).
+         */
+        public boolean blocksAdmissionAfterRestore() {
+            return this == SAME_BOOT_INDETERMINATE;
+        }
+    }
+
+    // ── Legacy protocol verdict (diagnostics for HTTP/UI, never load-bearing) ──
+    public static final String LEGACY_VERDICT_NONE = "";
+    public static final String LEGACY_VERDICT_RECOVERED = "recovered";
+    public static final String LEGACY_VERDICT_UNAVAILABLE = "unavailable";
+    public static final String LEGACY_VERDICT_UNSUPPORTED = "unsupported";
+    public static final String LEGACY_VERDICT_INDETERMINATE = "indeterminate";
+    public static final String LEGACY_VERDICT_RETRYABLE = "retryable";
+    private static volatile String sLegacyVerdict = LEGACY_VERDICT_NONE;
+    private static volatile String sLegacyVerdictDetail = "";
+    private static volatile String sLastLegacyShellOutput = "";
+
+    /** Last legacy-protocol verdict ({@code LEGACY_VERDICT_*}), for status/UI. */
+    public static String legacyProtocolVerdict() {
+        return sLegacyVerdict;
+    }
+
+    /** Human-readable detail for {@link #legacyProtocolVerdict()}. */
+    public static String legacyProtocolVerdictDetail() {
+        return sLegacyVerdictDetail;
+    }
+
+    private static void recordLegacyVerdict(String verdict, String detail) {
+        sLegacyVerdict = verdict == null ? LEGACY_VERDICT_NONE : verdict;
+        sLegacyVerdictDetail = detail == null ? "" : detail;
+    }
+
+    private static String compactShellOutput(String output) {
+        if (output == null) return "<empty>";
+        String compact = output.replaceAll("\\s+", " ").trim();
+        if (compact.isEmpty()) return "<empty>";
+        return compact.length() > 240
+                ? compact.substring(0, 240) + "..."
+                : compact;
     }
 
     private enum LegacyTransportResult {
@@ -259,6 +335,8 @@ public final class ClusterProjectionController {
     private volatile boolean ready = false;
     private volatile long openedAtMs = 0;
     private volatile long lastSignalMs = 0;
+    // noteSignal() only (the blind-spot turn loop); sustained re-acquires never refresh it.
+    private volatile long lastTurnSignalMs = 0;
     // Sequence epoch: bumped (under the synchronized state-transition block) every
     // time an open or close sequence is started. Each posted opcode-step lambda
     // captures the epoch at post time and bails if it no longer matches — so a
@@ -375,11 +453,11 @@ public final class ClusterProjectionController {
 
     /** Cheap volatile reads for the show-gate in the pipeline. */
     public boolean isOpen()  {
-        return !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        return !com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && projState == ST_OPEN;
     }
     public boolean isReady() {
-        return !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        return !com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && ready && projState == ST_OPEN;
     }
 
@@ -401,7 +479,7 @@ public final class ClusterProjectionController {
      *  Cheap: one post; the dumpsys runs at most once per posted re-drive on projThread.
      *  No-op if the projection isn't open/ready. */
     public void requestShowRedrive() {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return;
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) return;
         if (shuttingDown) return;
         if (projState != ST_OPEN) return;   // not open → nothing to re-drive
         projHandler.post(() -> {
@@ -433,12 +511,48 @@ public final class ClusterProjectionController {
     }
 
     /**
+     * True only when {@code surveillance} positively records an unresolved legacy command from
+     * this kernel boot. Unreadable markers and unknown boot ids answer false.
+     */
+    public static boolean isLegacyCommandUnresolvedThisBoot(
+            org.json.JSONObject surveillance) {
+        try {
+            LegacyGateSnapshot marker = parseLegacyGateSnapshot(surveillance);
+            if (!marker.readable || !marker.commandIndeterminate) return false;
+            String origin = canonicalBootIdOrNull(marker.commandBootId);
+            return origin != null && origin.equals(readCurrentBootId());
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static String describeReflectedCause(Throwable failure) {
+        try {
+            Throwable cause = failure instanceof java.lang.reflect.InvocationTargetException
+                    ? failure.getCause() : null;
+            return cause == null ? ""
+                    : " (cause " + cause.getClass().getName() + ": " + cause.getMessage() + ")";
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    /** True while a close sequence or gauge restore is still running and will settle admission. */
+    public static boolean isLegacyRestoreInFlight() {
+        ClusterProjectionController i = instance;
+        return (i != null && i.projState == ST_CLOSING)
+                || sRestoreDispatches.get() > 0
+                || sBootRestoreTicket != null
+                || DiLink5ClusterCast.isRecovering();
+    }
+
+    /**
      * Request the projection be open (idempotent). Called from the cluster branch
      * of the BS turn loop on signal-on. Cheap from the 250 ms loop: a volatile
      * read + at most one post. Also refreshes the linger timer.
      */
     public boolean requestOpen() {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
             return false;
         }
         if (isLegacyProjectionAdmissionBlocked()) {
@@ -501,8 +615,9 @@ public final class ClusterProjectionController {
      * is held. Re-acquiring the same token is idempotent. See {@link #releaseSustained(String)}.
      */
     public boolean acquireSustained(String token) {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
-            logger.warn("legacy cluster projection is unavailable in DI5 mode");
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
+            logger.warn("legacy cluster projection is unavailable on the DI5 "
+                    + "cluster transport");
             return false;
         }
         if (isLegacyProjectionAdmissionBlocked()) {
@@ -564,8 +679,17 @@ public final class ClusterProjectionController {
      * lifecycle; otherwise it force-closes + restores the gauges.
      */
     public void releaseSustained(String token) {
+        releaseSustained(token, false);
+    }
+
+    /** Cast stop / preview detach: lingers only for a genuine turn signal, not a re-acquire. */
+    public void releaseSustainedUnlessSignalled(String token) {
+        releaseSustained(token, true);
+    }
+
+    private void releaseSustained(String token, boolean turnSignalOnly) {
         sustainedHolders.remove(token != null ? token : "default");
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
             // DI5 direct projection has its own owner/lifecycle. A release from a
             // legacy blind-spot/camera cleanup must never turn into a stray 18→0
             // against the active shared-display session.
@@ -578,7 +702,8 @@ public final class ClusterProjectionController {
         // Last sustained holder gone. If a turn signal is currently active (fresh
         // within the linger window) keep it up and hand back to the transient
         // lifecycle; else close now.
-        long sinceSignal = System.currentTimeMillis() - lastSignalMs;
+        long sinceSignal = System.currentTimeMillis()
+                - (turnSignalOnly ? lastTurnSignalMs : lastSignalMs);
         if (sinceSignal < lingerCloseMs) {
             requestCloseLingered();   // transient takes over; closes after linger
         } else {
@@ -586,9 +711,32 @@ public final class ClusterProjectionController {
         }
     }
 
+    /**
+     * Null-safe static "no legacy projection is physically live" check. Used by
+     * the cluster-transport settings endpoint to decide whether a transport
+     * change may be applied live: covers TRANSIENT blind-spot opens too, which
+     * hold no sustained token. Never constructs the singleton.
+     */
+    public static boolean isProjectionIdleStatic() {
+        ClusterProjectionController i = instance;
+        return i == null || i.projState == ST_CLOSED;
+    }
+
+    /** Snapshot for optional overlay work; never constructs the projection singleton. */
+    public static ClusterAdasLifecycle.Source clusterAdasState() {
+        ClusterProjectionController i = instance;
+        boolean recovering = sLegacyBootRestoreBlocksAdmission
+                || sRestoreDispatches.get() > 0 || sBootRestoreTicket != null;
+        if (i == null) return new ClusterAdasLifecycle.Source(0L, false, recovering);
+        synchronized (i) {
+            return new ClusterAdasLifecycle.Source(i.seqEpoch, i.projState == ST_OPEN,
+                    i.projState != ST_CLOSED || recovering);
+        }
+    }
+
     /** True while ANY consumer holds the projection sustained (gates BS coexistence). */
     public boolean isSustainedHeld() {
-        return !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        return !com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && sustainedHeld();
     }
 
@@ -601,7 +749,7 @@ public final class ClusterProjectionController {
      *  retarget / ACC-off) is never repainted over the restored gauges. */
     public static boolean isSustainedHeldStatic() {
         ClusterProjectionController i = instance;
-        return !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        return !com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && i != null && i.sustainedHeld();
     }
 
@@ -613,12 +761,16 @@ public final class ClusterProjectionController {
      *  ALL holders — so a torn-down cast reports inactive without a keep-alive loop. */
     public static boolean holdsTokenStatic(String token) {
         ClusterProjectionController i = instance;
-        return !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        return !com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && i != null && token != null && i.sustainedHolders.contains(token);
     }
 
     /** Bump the signal timestamp (called every tick while a turn signal is active). */
-    public void noteSignal() { lastSignalMs = System.currentTimeMillis(); }
+    public void noteSignal() {
+        long now = System.currentTimeMillis();
+        lastSignalMs = now;
+        lastTurnSignalMs = now;
+    }
 
     /** Called on the first indicator-off tick. Lifts a max-cap lockout so a fresh
      *  indicator after the cap can re-open normally. No-op if not locked out. */
@@ -652,7 +804,7 @@ public final class ClusterProjectionController {
      * Public so disable / disarm / target-flip / errors can all force the gauges back.
      */
     public void forceClose(String reason) {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && projState == ST_CLOSED) {
             // The legacy controller owns no physical projection. Retire only its
             // bookkeeping; do not detach the DI5 mirror and do not emit 18→0.
@@ -846,6 +998,15 @@ public final class ClusterProjectionController {
                     + "and retaining durable ownership until a verified OS reboot");
             return false;
         }
+        // Definitive refusal of an OPEN opcode: remember why for the status
+        // endpoint (the cast UI otherwise only sees "cast failed"). The close
+        // that forceClose issues next re-derives the boot-recovery verdict.
+        recordLegacyVerdict(
+                result == LegacyCommandResult.UNAVAILABLE
+                        ? LEGACY_VERDICT_UNAVAILABLE
+                        : LEGACY_VERDICT_UNSUPPORTED,
+                "legacy open opcode " + op + " " + result + " "
+                        + compactShellOutput(sLastLegacyShellOutput));
         forceClose(rejectionReason);
         return false;
     }
@@ -1134,10 +1295,19 @@ public final class ClusterProjectionController {
      * closed. Static so it needs no live instance.
      */
     public static void clearStaleGateAtBoot() {
-        new Thread(
-                ClusterProjectionController
-                        ::clearStaleGateAtBootSynchronously,
-                "ClusterProjBootRestoreDispatch").start();
+        sRestoreDispatches.incrementAndGet();
+        try {
+            new Thread(() -> {
+                try {
+                    clearStaleGateAtBootSynchronously();
+                } finally {
+                    sRestoreDispatches.decrementAndGet();
+                }
+            }, "ClusterProjBootRestoreDispatch").start();
+        } catch (RuntimeException | Error dispatchFailure) {
+            sRestoreDispatches.decrementAndGet();
+            throw dispatchFailure;
+        }
     }
 
     public static boolean clearStaleGateAtBootSynchronously() {
@@ -1199,8 +1369,8 @@ public final class ClusterProjectionController {
                     return LegacyBootRecoveryResult
                             .SAME_BOOT_INDETERMINATE;
                 }
-                if (com.overdrive.app.camera.dilink5.DiLink5Platform
-                        .isSelected()
+                if (com.overdrive.app.camera.dilink5.ClusterTransport
+                        .isDiLink5()
                         && !allowDiLink5RecoveryFence) {
                     // Legacy and DI5 share the cluster compositor. Never erase
                     // proof of an interrupted legacy projection while DI5 may
@@ -1270,6 +1440,15 @@ public final class ClusterProjectionController {
             BootRestoreTicket ticket) {
         LegacyBootRecoveryResult recoveryResult =
                 LegacyBootRecoveryResult.RETRYABLE_FAILURE;
+        // Definitive "the legacy protocol has no working endpoint here"
+        // answers for opcode 18. When EVERY attempt is such an answer the
+        // outcome is terminal (UNSUPPORTED) — no retry ladder can change what
+        // the firmware exposes, and leaving the fence up forever merely
+        // blocked blind-spot / nav-map / cast on that model (field log
+        // 2026-09-23: 4 × 3 REJECTED at every boot, then a permanent block).
+        int definitiveRejections = 0;
+        boolean serviceAbsentGateCleared = false;
+        String lastCloseResult = "";
         try {
             int restoreProfile = readLegacyRestoreProfileOpcode();
             for (int attempt = 0;
@@ -1282,6 +1461,46 @@ public final class ClusterProjectionController {
                             LegacyBootRecoveryResult
                                     .SAME_BOOT_INDETERMINATE;
                     break;
+                }
+                lastCloseResult = closeResult + " "
+                        + compactShellOutput(sLastLegacyShellOutput);
+                if (closeResult == LegacyCommandResult.UNAVAILABLE) {
+                    // The legacy endpoint ("AutoContainer") is not registered.
+                    // Every legacy command — including the open that wrote
+                    // this marker — is addressed to that exact name, so no
+                    // legacy opcode can ever have reached the compositor and
+                    // there is nothing to restore: the same conclusion the
+                    // DI5 recovery draws for UNAVAILABLE
+                    // (DiLink5ClusterCast.powerDownCompositorOnce). A DI5-only
+                    // alias (auto_container) may still exist; that compositor
+                    // is owned and recovered by the DI5 markers, never by this
+                    // one. Treating absence as a failure kept the durable
+                    // marker (and a 3-attempt restore pass at every boot)
+                    // alive forever on such firmware.
+                    boolean diLink5AliasPresent = hasDiLink5ContainerService();
+                    if (clearGateFlagsStatic()) {
+                        logger.info("legacy boot gauge restore: no AutoContainer "
+                                + "endpoint on this firmware (" + lastCloseResult
+                                + (diLink5AliasPresent
+                                        ? "; a DI5 container alias answers instead"
+                                        : "")
+                                + "); nothing to restore — releasing the legacy "
+                                + "recovery gate");
+                        recordLegacyVerdict(
+                                LEGACY_VERDICT_UNAVAILABLE,
+                                "no AutoContainer endpoint on this firmware: "
+                                        + lastCloseResult);
+                        serviceAbsentGateCleared = true;
+                        recoveryResult =
+                                LegacyBootRecoveryResult.RECOVERED;
+                    } else {
+                        logger.warn("legacy boot gauge restore: no AutoContainer "
+                                + "endpoint, but the durable gate could not be "
+                                + "cleared");
+                    }
+                    break;
+                } else if (closeResult == LegacyCommandResult.REJECTED) {
+                    definitiveRejections++;
                 }
                 boolean closeSent =
                         closeResult == LegacyCommandResult.ACCEPTED;
@@ -1330,6 +1549,40 @@ public final class ClusterProjectionController {
                             BOOT_RESTORE_RETRY_DELAYS_MS[attempt])) break;
                 }
             }
+            if (recoveryResult == LegacyBootRecoveryResult.RETRYABLE_FAILURE
+                    && definitiveRejections >= BOOT_RESTORE_MAX_ATTEMPTS) {
+                // Every attempt was a definitive "no" for opcode 18 from a live
+                // endpoint: the legacy protocol is not accepted on this
+                // firmware. Retain the durable marker (it is still proof that
+                // a legacy open was attempted) but stop treating the outcome
+                // as retryable — DiLink5ClusterCast ends its ladder and both
+                // admission fences are released by finishBootGaugeRestore.
+                recoveryResult = LegacyBootRecoveryResult.UNSUPPORTED;
+                logger.warn("legacy boot gauge restore: opcode " + OP_CLOSE
+                        + " definitively refused on all "
+                        + BOOT_RESTORE_MAX_ATTEMPTS + " attempts ("
+                        + lastCloseResult + "); legacy cluster protocol is "
+                        + "unsupported on this firmware — releasing projection "
+                        + "admission, durable marker retained");
+                recordLegacyVerdict(
+                        LEGACY_VERDICT_UNSUPPORTED,
+                        "AutoContainer refused legacy opcode " + OP_CLOSE
+                                + " on every attempt: " + lastCloseResult);
+            } else if (recoveryResult
+                    == LegacyBootRecoveryResult.RECOVERED) {
+                if (!serviceAbsentGateCleared) {
+                    recordLegacyVerdict(LEGACY_VERDICT_RECOVERED, "");
+                }
+            } else if (recoveryResult
+                    == LegacyBootRecoveryResult.SAME_BOOT_INDETERMINATE) {
+                recordLegacyVerdict(
+                        LEGACY_VERDICT_INDETERMINATE,
+                        "a legacy command may still complete in this OS boot");
+            } else {
+                recordLegacyVerdict(
+                        LEGACY_VERDICT_RETRYABLE,
+                        "restore incomplete: " + lastCloseResult);
+            }
         } catch (Throwable failure) {
             logger.warn("legacy boot gauge restore failed: "
                     + failure.getMessage());
@@ -1352,13 +1605,56 @@ public final class ClusterProjectionController {
             BootRestoreTicket ticket,
             LegacyBootRecoveryResult recoveryResult) {
         ticket.result = recoveryResult;
+        // A finished pass blocks admission only while a same-boot command may
+        // still land (ordering hazard). RETRYABLE/UNSUPPORTED keep the durable
+        // marker, so the next boot re-runs this restore and any later
+        // successful close performs the same 18→0→profile; refusing new
+        // sessions in the meantime never restored a single gauge.
         sLegacyBootRestoreBlocksAdmission =
-                !recoveryResult.isRecovered();
+                recoveryResult.blocksAdmissionAfterRestore();
         ticket.completion.countDown();
         synchronized (BOOT_RESTORE_LOCK) {
             if (sBootRestoreTicket == ticket) {
                 sBootRestoreTicket = null;
             }
+        }
+    }
+
+    /**
+     * Called by {@code DiLink5ClusterCast} when its bounded recovery ladder is
+     * exhausted for a NON-indeterminate reason. Releases the legacy admission
+     * block unless a restore pass is still in flight (its own finish decides)
+     * or the durable marker proves a same-boot command may still complete.
+     *
+     * @return true when admission is no longer blocked by this controller
+     */
+    public static boolean releaseLegacyBootAdmissionAfterExhaustedRecovery() {
+        synchronized (BOOT_RESTORE_LOCK) {
+            if (sBootRestoreTicket != null) {
+                return false;
+            }
+            try {
+                org.json.JSONObject root =
+                        UnifiedConfigManager.readDurableConfigStrict();
+                LegacyGateSnapshot marker = parseLegacyGateSnapshot(
+                        root.optJSONObject("surveillance"));
+                if (!marker.readable) {
+                    return false;
+                }
+                if (legacyIndeterminateCommandMayStillComplete(
+                        marker.commandIndeterminate,
+                        marker.commandBootId,
+                        readCurrentBootId())) {
+                    return false;
+                }
+            } catch (Throwable readFailure) {
+                return false;
+            }
+            sLegacyBootRestoreBlocksAdmission = false;
+            logger.warn("legacy projection admission released after bounded "
+                    + "boot recovery retries were exhausted; durable recovery "
+                    + "marker retained for the next restore");
+            return true;
         }
     }
 
@@ -1382,7 +1678,7 @@ public final class ClusterProjectionController {
     public void shutdown() {
         watchdogHandler.removeCallbacks(maxCapTask);
         watchdogHandler.removeCallbacks(lingerTask);
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && projState == ST_CLOSED) {
             synchronized (this) {
                 shuttingDown = true;
@@ -2105,6 +2401,7 @@ public final class ClusterProjectionController {
     private static LegacyCommandResult sendInfoMarkedResult(
             String service, int op) {
         synchronized (LEGACY_COMMAND_DISPATCH_LOCK) {
+            sLastLegacyShellOutput = "";
             LegacyCommandMarkerResult markerResult =
                     markLegacyCommandInFlight();
             if (markerResult
@@ -2211,7 +2508,8 @@ public final class ClusterProjectionController {
             logger.warn("direct legacy Binder command " + op
                     + " completed ambiguously: "
                     + dispatchFailure.getClass().getSimpleName()
-                    + ": " + dispatchFailure.getMessage());
+                    + ": " + dispatchFailure.getMessage()
+                    + describeReflectedCause(dispatchFailure));
             return LegacyTransportResult.INDETERMINATE;
         }
     }
@@ -2242,8 +2540,12 @@ public final class ClusterProjectionController {
             case ACCEPTED:
                 return LegacyCommandResult.ACCEPTED;
             case REJECTED:
-            case UNAVAILABLE:
                 return LegacyCommandResult.REJECTED;
+            case UNAVAILABLE:
+                // Preserved (not collapsed into REJECTED): boot recovery must
+                // be able to tell "no compositor service on this firmware"
+                // from "the service refused the opcode".
+                return LegacyCommandResult.UNAVAILABLE;
             case INDETERMINATE:
             default:
                 sLegacyBootRestoreBlocksAdmission = true;
@@ -2350,7 +2652,11 @@ public final class ClusterProjectionController {
     private static DiLink5CommandResult sendDiLink5ContainerInfoResult(
             int op, boolean allowInactiveCleanup) {
         boolean cleanupOpcode = isAllowedDiLink5CleanupOpcode(op);
-        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        // The DI5 container protocol is admitted whenever the DI5 cluster
+        // transport is selected (dilink5 camera mode, config override, or
+        // DiLink 5 firmware identity); other transports only get cleanup
+        // authority (18/0) for stale DI5 ownership.
+        if (!com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                 && !(allowInactiveCleanup && cleanupOpcode)) {
             return DiLink5CommandResult.UNAVAILABLE;
         }
@@ -2812,18 +3118,26 @@ public final class ClusterProjectionController {
                     LegacyTransportResult.INDETERMINATE);
         }
 
+        int exitCode = process.exitValue();
+        String output = readProcessOutput(process);
         LegacyCommandResult result =
                 classifyLegacyServiceCallResult(
-                        process.exitValue(),
+                        exitCode,
                         false,
-                        readProcessOutput(process));
+                        output);
         try {
             process.destroy();
         } catch (Throwable ignored) {
         }
+        sLastLegacyShellOutput = "exit=" + exitCode + " "
+                + compactShellOutput(output);
         if (result != LegacyCommandResult.ACCEPTED) {
+            // Log the raw reply: without it a field log cannot distinguish
+            // "Service AutoContainer does not exist" from a Binder exception
+            // status word or a native -1 verdict (all used to read REJECTED).
             logger.warn("sendInfoShell(" + service + ", " + op
-                    + ") result=" + result);
+                    + ") result=" + result + " exit=" + exitCode
+                    + " output=" + compactShellOutput(output));
         }
         if (result == LegacyCommandResult.INDETERMINATE) {
             return legacyCommandResult(
@@ -2905,10 +3219,14 @@ public final class ClusterProjectionController {
             String output) {
         if (timedOut) return LegacyCommandResult.INDETERMINATE;
         if (exitCode != 0) {
+            // `service` exits non-zero with "Service X does not exist" / "not
+            // found" when no such Binder is registered: nothing was dispatched.
+            // Any other non-zero exit is ambiguous (the transaction may have
+            // reached the service before the tool failed).
             return output != null
                     && (output.contains("does not exist")
                             || output.contains("not found"))
-                    ? LegacyCommandResult.REJECTED
+                    ? LegacyCommandResult.UNAVAILABLE
                     : LegacyCommandResult.INDETERMINATE;
         }
         Integer status = parseDiLink5ServiceCallStatus(output);

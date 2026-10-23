@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="navmap_google_layers_cd">Kartenebenen</string>
+    <string name="navmap_google_type_default">Google-Karte</string>
+    <string name="navmap_google_type_satellite">Satellit</string>
+    <string name="navmap_google_type_hybrid">Hybrid</string>
+    <string name="navmap_google_type_terrain">Gelände</string>
+    <string name="navmap_google_type_overdrive">OverDrive-Karte</string>
+    <string name="navmap_google_traffic">Live-Verkehr</string>
+    <string name="navmap_google_traffic_on">Live-Verkehr an</string>
+    <string name="navmap_google_traffic_off">Live-Verkehr aus</string>
+    <string name="navmap_google_traffic_paused">Live-Verkehr bis %1$s pausiert (kostenloses Tageslimit)</string>
+    <string name="navmap_google_map_paused">Google-Karte bis %1$s pausiert (kostenloses Tageslimit)</string>
+    <string name="navmap_google_map_unavailable">Google-Karte nicht verfügbar, OverDrive-Karte wird angezeigt</string>
+    <string name="navmap_google_key_problem">Problem mit dem Google Maps-Schlüssel. Prüfen Sie die RoadSense-Einstellungen.</string>
+    <string name="navmap_google_route_key_problem">Google-Routing hat den Schlüssel abgelehnt. Prüfen Sie die RoadSense-Einstellungen.</string>
+    <string name="navmap_google_route_limit">Google-Routing-Limit für heute erreicht</string>
+    <string name="navmap_google_arrived">Sie haben Ihr Ziel erreicht</string>
+    <string name="navmap_google_traffic_delay">+%1$s durch Verkehr</string>
+    <string name="navmap_google_no_delays">Keine Verkehrsverzögerungen</string>
+    <string name="navmap_google_faster_route">Schnellere Route gefunden, spart %1$s</string>
+    <string name="navmap_google_faster_route_switch">Wechseln</string>
+    <string name="navmap_google_routes_by_google">Routen von Google</string>
+    <string name="navmap_google_routing_provided_by">Routing bereitgestellt von %1$s</string>
+    <string name="navmap_google_place_failed">Dieser Ort konnte nicht geöffnet werden</string>
+    <string name="navmap_google_finding_place">Ort wird gesucht…</string>
+</resources>

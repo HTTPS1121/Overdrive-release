@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">नक्शे की लेयर</string>
+    <string name="navmap_google_type_default">Google नक्शा</string>
+    <string name="navmap_google_type_satellite">सैटेलाइट</string>
+    <string name="navmap_google_type_hybrid">हाइब्रिड</string>
+    <string name="navmap_google_type_terrain">भू-भाग</string>
+    <string name="navmap_google_type_overdrive">OverDrive नक्शा</string>
+    <string name="navmap_google_traffic">लाइव ट्रैफ़िक</string>
+    <string name="navmap_google_traffic_on">लाइव ट्रैफ़िक चालू</string>
+    <string name="navmap_google_traffic_off">लाइव ट्रैफ़िक बंद</string>
+    <string name="navmap_google_traffic_paused">लाइव ट्रैफ़िक %1$s तक रुका हुआ है (मुफ्त दैनिक सीमा)</string>
+    <string name="navmap_google_map_paused">Google नक्शा %1$s तक रुका हुआ है (मुफ्त दैनिक सीमा)</string>
+    <string name="navmap_google_map_unavailable">Google नक्शा उपलब्ध नहीं है, OverDrive नक्शा दिखाया जा रहा है</string>
+    <string name="navmap_google_key_problem">Google Maps कुंजी में समस्या है। RoadSense सेटिंग्स जाँचें।</string>
+    <string name="navmap_google_route_key_problem">Google रूटिंग ने कुंजी अस्वीकार कर दी। RoadSense सेटिंग्स जाँचें।</string>
+    <string name="navmap_google_route_limit">आज की Google रूटिंग सीमा पूरी हो गई</string>
+    <string name="navmap_google_arrived">आप अपने गंतव्य पर पहुँच गए हैं</string>
+    <string name="navmap_google_traffic_delay">ट्रैफ़िक से +%1$s</string>
+    <string name="navmap_google_no_delays">ट्रैफ़िक से कोई देरी नहीं</string>
+    <string name="navmap_google_faster_route">तेज़ मार्ग मिला, %1$s की बचत</string>
+    <string name="navmap_google_faster_route_switch">बदलें</string>
+    <string name="navmap_google_routes_by_google">Google द्वारा मार्ग</string>
+    <string name="navmap_google_routing_provided_by">रूटिंग %1$s द्वारा प्रदान की गई</string>
+    <string name="navmap_google_place_failed">वह स्थान नहीं खुल सका</string>
+    <string name="navmap_google_finding_place">स्थान ढूँढ रहा है…</string>
+</resources>

@@ -23,6 +23,10 @@ object BydDataCacheWhitelist {
     private const val DILINK5_RETRY_DELAY_MS = 3_000L
 
     @Volatile private var lastApplyFailure: String? = null
+    // DI5's app-boot (auto-start) entry is reachable only from this app process; the daemon is told.
+    @Volatile private var appStartupVerified = false
+    // The daemon answered with per-grant results; retrying seconds later cannot change them.
+    @Volatile private var lastAnswerDefinitive = false
     
     /**
      * Apply all BYD whitelist mechanisms.
@@ -59,8 +63,11 @@ object BydDataCacheWhitelist {
 
     @JvmStatic
     fun applyViaDaemonWhenReady(): Boolean {
+        appStartupVerified = appStartupVerified || applyStartupAppInAppProcess()
+        lastAnswerDefinitive = false
         for (attempt in 1..DILINK5_READY_ATTEMPTS) {
             if (isDaemonReady() && applyViaDaemon()) return true
+            if (lastAnswerDefinitive) return false
             if (attempt < DILINK5_READY_ATTEMPTS && !sleepBeforeRetry()) {
                 return false
             }
@@ -79,7 +86,8 @@ object BydDataCacheWhitelist {
                 "/api/system/background-access", "POST", 3000, 8000)
             connection = conn
             conn.doOutput = true
-            conn.outputStream.use { it.write(byteArrayOf()) }
+            val request = JSONObject().put("startupApp", appStartupVerified).toString()
+            conn.outputStream.use { it.write(request.toByteArray()) }
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -87,6 +95,8 @@ object BydDataCacheWhitelist {
                     ?.let { runCatching { JSONObject(it) }.getOrNull() }
             val success = code in 200..299
                     && response?.optBoolean("success", false) == true
+            lastAnswerDefinitive = code in 200..299
+                    && response != null && !response.has("error")
             lastApplyFailure = if (success) null else response
                     ?.optString("error")
                     ?.takeIf { it.isNotBlank() }
@@ -104,6 +114,24 @@ object BydDataCacheWhitelist {
             } catch (_: Exception) {
             }
         }
+    }
+
+    /** DI5 auto-start: Thundersoft's app-boot entry, whose settings adapter binds only from an app. */
+    private fun applyStartupAppInAppProcess(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P
+                || android.app.Application.getProcessName() != PKG) {
+            return false
+        }
+        val app = runCatching {
+            Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null) as? Context
+        }.getOrNull() ?: return false
+        val device = com.overdrive.app.byd.BydDeviceHelper.getDevice(
+                "android.hardware.bydauto.startup.BYDAutoStartupAppDevice", app)
+        val enabled = com.overdrive.app.byd.BydDeviceHelper.verifyStartupAppAccess(
+                device, PKG, 30, 100L)
+        Log.i(TAG, "DI5 app-boot entry enabled from the app process: $enabled")
+        return enabled
     }
 
     private fun isDaemonReady(): Boolean {

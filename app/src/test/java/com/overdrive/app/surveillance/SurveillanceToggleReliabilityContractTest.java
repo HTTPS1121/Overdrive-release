@@ -27,13 +27,15 @@ public class SurveillanceToggleReliabilityContractTest {
         assertTrue(html.contains(
                 "<main class=\"main-content\" aria-busy=\"true\" inert style=\"pointer-events:none\">"));
         assertTrue(html.contains("settings-hydration.js?v=1"));
-        assertTrue(html.contains("surveillance.js?v=survtoggle10"));
-        assertTrue(html.contains("id=\"cdrCleanupEnabled\" disabled"));
-        assertTrue(html.contains("id=\"cdrReservedSlider\""));
-        assertTrue(html.contains("id=\"cdrProtectedSlider\""));
-        assertTrue(html.contains(
-                "id=\"cdrMinKeepSlider\" min=\"0\" max=\"100\""));
-        assertTrue(html.contains(
+        assertTrue(html.contains("surveillance.js?v=survtoggle15"));
+        // The OEM dashcam (DVR) reserve controls moved to the Storage page.
+        String storageHtml = readRepositoryFile("app/src/main/assets/web/local/storage.html");
+        assertTrue(storageHtml.contains("id=\"cdrCleanupEnabled\" disabled"));
+        assertTrue(storageHtml.contains("id=\"cdrReservedSlider\""));
+        assertTrue(storageHtml.contains("id=\"cdrProtectedSlider\""));
+        assertTrue(storageHtml.contains(
+                "id=\"cdrMinKeepSlider\" disabled min=\"0\" max=\"100\""));
+        assertTrue(storageHtml.contains(
                 "id=\"cdrCleanupNow\" disabled"));
         assertTrue(script.contains(
                 "if (!this._hydrated || !this.savedConfig || this._surveillanceTogglePending)"));

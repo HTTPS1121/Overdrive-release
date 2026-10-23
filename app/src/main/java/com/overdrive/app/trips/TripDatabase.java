@@ -21,7 +21,7 @@ public class TripDatabase {
     private static final String TAG = "TripDatabase";
     private static final DaemonLogger logger = DaemonLogger.getInstance(TAG);
 
-    private static final String DB_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_trips_h2");
+    private static final String DB_PATH = com.overdrive.app.util.ScratchRoot.path("overdrive_trips_h2");
     // DB_CLOSE_ON_EXIT=FALSE: avoid H2's JVM shutdown hook racing the
     // daemon's explicit close path. Without this we hit the same orphaned-
     // lock-file pattern as SocHistoryDatabase, which blocks the next
@@ -41,6 +41,8 @@ public class TripDatabase {
     // happens-before edge so any reader sees the freshly-swapped connection.
     private volatile Connection connection;
     private volatile boolean isInitialized = false;
+    private final com.overdrive.app.storage.H2StoreSalvage storeSalvage =
+            new com.overdrive.app.storage.H2StoreSalvage(DB_PATH, logger);
 
     // ==================== LIFECYCLE ====================
 
@@ -106,7 +108,9 @@ public class TripDatabase {
                     }
                 } else {
                     logger.error("Failed to initialize trip database: " + e.getClass().getName() + " - " + msg, e);
-                    break;
+                    if (isLockError || !storeSalvage.shouldReplace(e) || !storeSalvage.replace()) break;
+                    // The replacement store gets an attempt of its own.
+                    attempt--;
                 }
             }
         }
@@ -712,6 +716,57 @@ public class TripDatabase {
     }
 
     /**
+     * {@link #getTrips(int, int, int)} with micro_moments_json read as NULL. Selecting the
+     * CLOB makes H2 copy it into a temporary LOB, a store write on every read.
+     */
+    public synchronized List<TripRecord> getTripsWithoutMoments(int days, int limit, int offset) {
+        List<TripRecord> trips = new ArrayList<>();
+        if (!ensureConnection()) return trips;
+        if (offset < 0) offset = 0;
+
+        long cutoff = System.currentTimeMillis() - ((long) days * 86400000L);
+        String sql = "SELECT " + COLUMNS_WITHOUT_MOMENTS + " FROM trips WHERE start_time >= ? AND end_time > 0 " +
+                "ORDER BY start_time DESC LIMIT ? OFFSET ?";
+
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setLong(1, cutoff);
+            pstmt.setInt(2, limit);
+            pstmt.setInt(3, offset);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    trips.add(readTripFromResultSet(rs));
+                }
+            }
+        } catch (Exception e) {
+            logger.error("Failed to get trips", e);
+            reconnect();
+        }
+        return trips;
+    }
+
+    /** {@link #getTrip(long)} with micro_moments_json read as NULL; see {@link #getTripsWithoutMoments}. */
+    public synchronized TripRecord getTripWithoutMoments(long id) {
+        if (!ensureConnection()) return null;
+
+        String sql = "SELECT " + COLUMNS_WITHOUT_MOMENTS + " FROM trips WHERE id=?";
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setLong(1, id);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    return readTripFromResultSet(rs);
+                }
+            }
+        } catch (Exception e) {
+            logger.error("Failed to get trip id=" + id, e);
+            reconnect();
+        }
+        return null;
+    }
+
+    private static final String COLUMNS_WITHOUT_MOMENTS =
+            "* EXCEPT (micro_moments_json), CAST(NULL AS VARCHAR) AS micro_moments_json";
+
+    /**
      * List trips whose start_time falls within an explicit [fromMs, toMs]
      * window (both epoch ms, inclusive), newest first. Backs the custom
      * date-range filter in the Trips UI, complementing the "last N days"
@@ -744,6 +799,35 @@ public class TripDatabase {
             }
         } catch (Exception e) {
             logger.error("Failed to get trips in range", e);
+            reconnect();
+        }
+        return trips;
+    }
+
+    /**
+     * {@link #getTripsBetween} without paging and with micro_moments_json read as NULL: every
+     * finished trip in the window, newest first, up to {@code limit} rows. Feeds the period
+     * totals on GET /api/trips/summary.
+     */
+    public synchronized List<TripRecord> getTripsBetweenWithoutMoments(long fromMs, long toMs, int limit) {
+        List<TripRecord> trips = new ArrayList<>();
+        if (!ensureConnection()) return trips;
+        if (toMs <= 0) toMs = System.currentTimeMillis();
+        if (fromMs > toMs) { long t = fromMs; fromMs = toMs; toMs = t; }
+
+        String sql = "SELECT " + COLUMNS_WITHOUT_MOMENTS + " FROM trips WHERE start_time >= ? "
+                + "AND start_time <= ? AND end_time > 0 ORDER BY start_time DESC LIMIT ?";
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setLong(1, fromMs);
+            pstmt.setLong(2, toMs);
+            pstmt.setInt(3, limit);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    trips.add(readTripFromResultSet(rs));
+                }
+            }
+        } catch (Exception e) {
+            logger.error("Failed to get trips for period totals", e);
             reconnect();
         }
         return trips;
@@ -1152,6 +1236,39 @@ public class TripDatabase {
                     pstmt.executeUpdate();
                 }
             }
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                // The trips this (year, week) key holds: its week, a day either side, in its calendar
+                // year; weeks 1 and 52/53 also take the year's other end. The key itself decides.
+                Calendar yearStart = (Calendar) cal.clone();
+                yearStart.set(Calendar.DAY_OF_YEAR, 1);
+                yearStart.set(Calendar.HOUR_OF_DAY, 0);
+                yearStart.set(Calendar.MINUTE, 0);
+                yearStart.set(Calendar.SECOND, 0);
+                yearStart.set(Calendar.MILLISECOND, 0);
+                Calendar yearEnd = (Calendar) yearStart.clone();
+                yearEnd.add(Calendar.YEAR, 1);
+                Calendar from = (Calendar) cal.clone();
+                from.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY);
+                from.set(Calendar.HOUR_OF_DAY, 0);
+                from.set(Calendar.MINUTE, 0);
+                from.set(Calendar.SECOND, 0);
+                from.set(Calendar.MILLISECOND, 0);
+                from.add(Calendar.DAY_OF_MONTH, -1);
+                Calendar to = (Calendar) from.clone();
+                to.add(Calendar.DAY_OF_MONTH, 9);
+                java.util.List<long[]> windows = new java.util.ArrayList<>();
+                windows.add(new long[] {from.getTimeInMillis(), to.getTimeInMillis()});
+                if (week == 1 || week >= 52) {
+                    Calendar firstDays = (Calendar) yearStart.clone();
+                    firstDays.add(Calendar.DAY_OF_MONTH, 8);
+                    Calendar lastDays = (Calendar) yearEnd.clone();
+                    lastDays.add(Calendar.DAY_OF_MONTH, -10);
+                    windows.add(new long[] {yearStart.getTimeInMillis(), firstDays.getTimeInMillis()});
+                    windows.add(new long[] {lastDays.getTimeInMillis(), yearEnd.getTimeInMillis()});
+                }
+                applyScoredTripAverages("weekly_rollups", "week_number", year, week,
+                        mergeWithin(windows, yearStart.getTimeInMillis(), yearEnd.getTimeInMillis()), true);
+            }
             logger.debug("Updated weekly rollup year=" + year + " week=" + week);
         } catch (Exception e) {
             logger.error("Failed to update weekly rollup", e);
@@ -1227,6 +1344,19 @@ public class TripDatabase {
                     pstmt.setInt(14, month);
                     pstmt.executeUpdate();
                 }
+            }
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                Calendar from = (Calendar) cal.clone();
+                from.set(Calendar.DAY_OF_MONTH, 1);
+                from.set(Calendar.HOUR_OF_DAY, 0);
+                from.set(Calendar.MINUTE, 0);
+                from.set(Calendar.SECOND, 0);
+                from.set(Calendar.MILLISECOND, 0);
+                Calendar to = (Calendar) from.clone();
+                to.add(Calendar.MONTH, 1);
+                applyScoredTripAverages("monthly_rollups", "month_number", year, month,
+                        java.util.Collections.singletonList(
+                                new long[] {from.getTimeInMillis(), to.getTimeInMillis()}), false);
             }
             logger.debug("Updated monthly rollup year=" + year + " month=" + month);
         } catch (Exception e) {
@@ -2028,8 +2158,28 @@ public class TripDatabase {
         if (target == null || samples == null || samples.isEmpty()) return;
         double avg = target.avgSpeedKmh;
         int max = target.maxSpeedKmh;
+        // DI5 rows without a vehicle speed or with unknown pedals were kept out of live scoring too.
+        boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        java.util.List<TelemetrySample> scoring = new java.util.ArrayList<>(samples.size());
+        for (TelemetrySample s : samples) {
+            if (diLink5 ? s.isDiLink5ScoringEligible() : s.isScoringEligible()) scoring.add(s);
+        }
+        // DI5: elevation from every row, as the live trip takes it from its whole journal; too little
+        // scoreable data (1 Hz rows) leaves the trip unscored, the UI's "no data".
+        double[] elevation = diLink5 ? TripScoreEngine.journalElevation(samples, Long.MAX_VALUE) : null;
+        // DI5: 1 Hz rows stand in for their 5 Hz samples, for the coverage gate as for the engine.
+        if (diLink5) scoring = TripScoreEngine.diLink5At5Hz(scoring);
+        if (scoring.isEmpty() || (diLink5 && !TripScoreEngine.hasDiLink5ScoringCoverage(
+                TripScoreEngine.scoreableSeconds(scoring), target.durationSeconds))) {
+            if (elevation != null) TripScoreEngine.applyElevation(target, elevation[0], elevation[1]);
+            return;
+        }
         try {
-            new TripScoreEngine().computeSummary(target, samples);
+            if (elevation != null) {
+                new TripScoreEngine().computeSummary(target, scoring, elevation[0], elevation[1]);
+            } else {
+                new TripScoreEngine().computeSummary(target, scoring);
+            }
         } catch (Throwable t) {
             logger.warn("recover: scoring from telemetry failed: " + t.getMessage());
         } finally {
@@ -2067,10 +2217,19 @@ public class TripDatabase {
             java.io.File journal = sm.getTripJournalDir();
             java.io.File parent = f.getParentFile();
             if (journal == null || parent == null || !journal.equals(parent)) return null;
-            java.io.File tripsDir = sm.getTripsDir();
+            java.io.File tripsDir = sm.getTripsWriteDir();
             if (tripsDir == null) return null;
             java.io.File dest = new java.io.File(tripsDir, rowId + ".jsonl.gz");
-            if (!com.overdrive.app.storage.StorageManager.moveFileCrossVolume(f, dest)) return null;
+            boolean moved = com.overdrive.app.storage.StorageManager.moveFileCrossVolume(f, dest);
+            // The trips card refuses writes: its dir now resolves to internal — move there.
+            if (!moved && sm.reportWriteFault(tripsDir)) {
+                java.io.File internal = sm.getTripsWriteDir();
+                if (internal != null && !internal.equals(tripsDir)) {
+                    dest = new java.io.File(internal, rowId + ".jsonl.gz");
+                    moved = com.overdrive.app.storage.StorageManager.moveFileCrossVolume(f, dest);
+                }
+            }
+            if (!moved) return null;
             synchronized (this) {
                 TripRecord row = getTrip(rowId);
                 if (row == null) return dest.getAbsolutePath();
@@ -2129,6 +2288,7 @@ public class TripDatabase {
         double distKm = 0;
         int maxSpeed = 0;
         long speedSum = 0; int speedCount = 0;
+        final boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
         double elevGain = 0, elevLoss = 0;
         ElevationEstimator elevation = new ElevationEstimator();
         double prevLat = 0, prevLon = 0;
@@ -2141,8 +2301,16 @@ public class TripDatabase {
         // tail doesn't dilute avg speed or extend distance/elevation either.
         for (int i = 0; i <= lastIdx; i++) {
             TelemetrySample s = samples.get(i);
-            if (s.speedKmh > maxSpeed) maxSpeed = s.speedKmh;
-            speedSum += s.speedKmh; speedCount++;
+            // DI5 rows without a vehicle speed: a GPS speed only feeds the peak, as it did live; an
+            // older DI5 journal's unreported zero is no reading.
+            if (s.hasVehicleSpeed() && (!diLink5 || s.hasDiLink5Speed())) {
+                // DI5: a parked row's speed (frozen, or GPS noise) is not the trip's peak, as live.
+                if (s.speedKmh > maxSpeed && !(diLink5 && s.isDiLink5Parked())) maxSpeed = s.speedKmh;
+                speedSum += s.speedKmh; speedCount++;
+            } else if (s.speedSource == TelemetrySample.SPEED_GPS && s.peakKmh() > maxSpeed
+                    && !s.isDiLink5Parked()) {
+                maxSpeed = s.peakKmh();
+            }
 
             boolean hasGps = s.lat != 0 || s.lon != 0;
             if (hasGps) {
@@ -2174,13 +2342,28 @@ public class TripDatabase {
             // rate because the smoothing window is time-based. Old telemetry
             // files lack the "va"/"am" keys — they decode as 0/false, meaning
             // "no accuracy gate, no source flips" (graceful degradation).
+            // DI5: a P read off the unchecked gear signal does not stop a moving car's climb counting, and
+            // a stale gear (outside 1-6) is unknown.
+            int elevationGear = !diLink5 ? s.gearMode
+                    : s.gearMode < 1 || s.gearMode > 6 ? 0
+                    : s.gearMode == 1 && s.isDiLink5Moving() ? 4 : s.gearMode;
             elevation.addSample(s.timestampMs, s.altitude, s.verticalAccuracyM,
                     s.altitudeIsMsl,
-                    ElevationEstimator.isElevationEligible(s.gearMode, s.speedKmh));
+                    ElevationEstimator.isElevationEligible(elevationGear, s.speedKmh));
         }
         elevGain = elevation.getGainM();
         elevLoss = elevation.getLossM();
 
+        // DI5 has no odometer: measure the journal as the live trip did, not fix-to-fix jitter; an older
+        // DI5 journal's unreported zeros are measured by position. A restart gap no fix measured has no
+        // distance, so its time leaves the average, as live.
+        double unmeasuredSeconds = 0;
+        if (diLink5) {
+            TripTelemetryRecorder.JournalDistance jd =
+                    TripTelemetryRecorder.diLink5JournalDistance(samples.subList(0, lastIdx + 1));
+            distKm = jd.km;
+            unmeasuredSeconds = jd.unmeasuredMs(t.startTime, t.endTime) / 1000.0;
+        }
         t.distanceKm = distKm;
         t.maxSpeedKmh = maxSpeed;
         // Avg speed: PREFER distance/duration. The telemetry file retains the
@@ -2193,7 +2376,11 @@ public class TripDatabase {
         // duration is unusable.
         double speedAvg;
         if (distKm > 0 && t.durationSeconds > 0) {
-            speedAvg = distKm / (t.durationSeconds / 3600.0);
+            double seconds = t.durationSeconds - unmeasuredSeconds;
+            if (seconds <= 0) seconds = t.durationSeconds;
+            speedAvg = distKm / (seconds / 3600.0);
+            // DI5, as live: a peak no speed reading caught is at least the average.
+            if (diLink5 && t.maxSpeedKmh < speedAvg) t.maxSpeedKmh = (int) Math.ceil(speedAvg);
         } else {
             speedAvg = speedCount > 0 ? (double) speedSum / speedCount : 0;
         }
@@ -2214,11 +2401,20 @@ public class TripDatabase {
      * Index of the last MOVING sample (speed > 0, non-Park gear, or GPS
      * displacement > 10 m vs the following fix), i.e. where the parked tail
      * begins. Shared by reconstruction and the same-session resume so both
-     * agree on when a journaled trip actually stopped. Returns 0 when nothing
-     * in the list moved.
+     * agree on when a journaled trip actually stopped (except a stale DI5
+     * gear, see below). Returns 0 when nothing in the list moved.
      */
     static int lastMovingSampleIndex(java.util.List<TelemetrySample> samples) {
+        return lastMovingSampleIndex(samples, false);
+    }
+
+    /**
+     * As above. {@code staleGearMoves}: a stale DI5 gear (outside 1-6) counts as a driving gear, for a
+     * resume asking whether the car is known parked (live parks only on P); recovery passes false.
+     */
+    static int lastMovingSampleIndex(java.util.List<TelemetrySample> samples, boolean staleGearMoves) {
         if (samples == null || samples.isEmpty()) return 0;
+        final boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
         int lastIdx = samples.size() - 1;
         double nextGpsLat = 0, nextGpsLon = 0; boolean haveNextGps = false;
         while (lastIdx > 0) {
@@ -2230,7 +2426,12 @@ public class TripDatabase {
                 }
                 nextGpsLat = s.lat; nextGpsLon = s.lon; haveNextGps = true;
             }
-            boolean moving = s.speedKmh > 0 || (s.gearMode != 0 && s.gearMode != 1) || gpsMoved;
+            // A DI5 GPS-fallback speed is not wheel speed: parked GPS noise must not keep the tail. A stale
+            // DI5 gear (outside 1-6) is unknown: a driving gear only for a resume.
+            boolean moving = (s.hasVehicleSpeed() && s.speedKmh > 0)
+                    || (s.gearMode != 0 && s.gearMode != 1
+                            && (!diLink5 || staleGearMoves || (s.gearMode >= 2 && s.gearMode <= 6)))
+                    || gpsMoved;
             if (moving) break;
             lastIdx--;
         }
@@ -2373,6 +2574,13 @@ public class TripDatabase {
      * no derived rollup/route/bucket tables; those rebuild on import). Each
      * element carries the portable trip columns. Read-only.
      */
+    /** One finished trip in the {@link #exportTripsJson} row format, or null. */
+    public org.json.JSONObject exportTripJson(long id) {
+        TripRecord t = getTrip(id);
+        if (t == null || t.endTime <= 0) return null;
+        return tripToJson(t);
+    }
+
     public org.json.JSONArray exportTripsJson() {
         org.json.JSONArray arr = new org.json.JSONArray();
         if (!ensureConnection()) return arr;
@@ -2983,6 +3191,84 @@ public class TripDatabase {
     /**
      * Compute running average: (oldAvg * oldCount + newValue) / (oldCount + 1)
      */
+    /** Windows clipped to [lo, hi), sorted and merged, so no trip falls in two of them. */
+    private static java.util.List<long[]> mergeWithin(java.util.List<long[]> windows, long lo, long hi) {
+        java.util.List<long[]> clipped = new java.util.ArrayList<>();
+        for (long[] w : windows) {
+            long start = Math.max(w[0], lo), end = Math.min(w[1], hi);
+            if (end > start) clipped.add(new long[] {start, end});
+        }
+        clipped.sort((x, y) -> Long.compare(x[0], y[0]));
+        java.util.List<long[]> merged = new java.util.ArrayList<>();
+        for (long[] w : clipped) {
+            long[] last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
+            if (last != null && w[0] <= last[1]) {
+                last[1] = Math.max(last[1], w[1]);
+            } else {
+                merged.add(w);
+            }
+        }
+        return merged;
+    }
+
+    /**
+     * DI5: sets a rollup's five score averages over the period's scored trips only. Trips the engine
+     * left unscored ("no data") still count in the totals, but their zeros must not drag the scores.
+     * A weekly row takes exactly the trips in its windows whose (year, ISO week) key is its own.
+     */
+    private void applyScoredTripAverages(String table, String periodColumn, int year, int period,
+                                         java.util.List<long[]> windows, boolean byWeekKey) throws Exception {
+        double a = 0, s = 0, sd = 0, e = 0, c = 0;
+        int n = 0;
+        String avgSql = "SELECT start_time, anticipation_score, smoothness_score, speed_discipline_score, "
+                + "efficiency_score, consistency_score FROM trips "
+                + "WHERE start_time >= ? AND start_time < ? AND (anticipation_score > 0 OR smoothness_score > 0 "
+                + "OR speed_discipline_score > 0 OR efficiency_score > 0 OR consistency_score > 0)";
+        Calendar key = Calendar.getInstance(Locale.US);
+        key.setMinimalDaysInFirstWeek(4);
+        key.setFirstDayOfWeek(Calendar.MONDAY);
+        try (PreparedStatement pstmt = connection.prepareStatement(avgSql)) {
+            for (long[] window : windows) {
+                pstmt.setLong(1, window[0]);
+                pstmt.setLong(2, window[1]);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        if (byWeekKey) {
+                            key.setTimeInMillis(rs.getLong(1));
+                            if (key.get(Calendar.YEAR) != year || key.get(Calendar.WEEK_OF_YEAR) != period) continue;
+                        }
+                        a += rs.getInt(2);
+                        s += rs.getInt(3);
+                        sd += rs.getInt(4);
+                        e += rs.getInt(5);
+                        c += rs.getInt(6);
+                        n++;
+                    }
+                }
+            }
+        }
+        if (n > 0) {
+            a /= n;
+            s /= n;
+            sd /= n;
+            e /= n;
+            c /= n;
+        }
+        String updSql = "UPDATE " + table + " SET avg_anticipation=?, avg_smoothness=?, "
+                + "avg_speed_discipline=?, avg_efficiency_score=?, avg_consistency=? "
+                + "WHERE \"year\"=? AND " + periodColumn + "=?";
+        try (PreparedStatement pstmt = connection.prepareStatement(updSql)) {
+            pstmt.setInt(1, (int) Math.round(a));
+            pstmt.setInt(2, (int) Math.round(s));
+            pstmt.setInt(3, (int) Math.round(sd));
+            pstmt.setInt(4, (int) Math.round(e));
+            pstmt.setInt(5, (int) Math.round(c));
+            pstmt.setInt(6, year);
+            pstmt.setInt(7, period);
+            pstmt.executeUpdate();
+        }
+    }
+
     private double runningAvg(double oldAvg, int oldCount, double newValue) {
         return (oldAvg * oldCount + newValue) / (oldCount + 1);
     }

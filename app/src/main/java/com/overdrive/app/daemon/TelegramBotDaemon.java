@@ -52,11 +52,11 @@ public class TelegramBotDaemon {
     // ==================== ENCRYPTED CONSTANTS (SOTA Java obfuscation) ====================
     // Decrypted at runtime via Safe.s() - AES-256-CBC with stack-based key reconstruction
     /** /data/local/tmp */
-    private static String PATH_DATA_LOCAL_TMP() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("vuaMjrmBGBFh07qqnUuL8w==")); }
+    private static String PATH_DATA_LOCAL_TMP() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("vuaMjrmBGBFh07qqnUuL8w==")); }
     /** /data/local/tmp/telegram_config.properties */
-    private static String PATH_TELEGRAM_CONFIG() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("ZHx6IP38aGV/Q7iMCCcxzwQSn0P1N0jxHygc8N+4Ft+9mlR8XQ+WvEw0ktanrtNx")); }
+    private static String PATH_TELEGRAM_CONFIG() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("ZHx6IP38aGV/Q7iMCCcxzwQSn0P1N0jxHygc8N+4Ft+9mlR8XQ+WvEw0ktanrtNx")); }
     /** /data/local/tmp/tunnel_url.txt */
-    private static String PATH_TELEGRAM_URL_FILE() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("ZHx6IP38aGV/Q7iMCCcxz/kVx51CDNRiQ/Mc5+npiPo=")); }
+    private static String PATH_TELEGRAM_URL_FILE() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("ZHx6IP38aGV/Q7iMCCcxz/kVx51CDNRiQ/Mc5+npiPo=")); }
     /** https://api.telegram.org/bot */
     private static String TELEGRAM_API_BASE() { return Safe.s("FS7R/5I0wopp0qBqyJXzvDKg6eI9UXmD/Oei3NbaaGQ="); }
     
@@ -71,7 +71,7 @@ public class TelegramBotDaemon {
     private static final int IPC_PORT = 19880;
     
     // Singleton lock (same pattern as CameraDaemon / AccSentryDaemon)
-    private static final String LOCK_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegram_bot_daemon.lock");
+    private static final String LOCK_FILE = com.overdrive.app.util.ScratchRoot.path("telegram_bot_daemon.lock");
     private static java.io.RandomAccessFile lockFileHandle;
     private static java.nio.channels.FileLock fileLock;
     
@@ -180,6 +180,7 @@ public class TelegramBotDaemon {
     private static CommandRouter commandRouter;
     
     public static void main(String[] args) {
+        com.overdrive.app.util.ScratchRoot.bootstrapFromEnv();
         int myUid = android.os.Process.myUid();
         int myPid = android.os.Process.myPid();
         
@@ -580,7 +581,7 @@ public class TelegramBotDaemon {
                 if (com.overdrive.app.telegram.config.UnifiedTelegramConfig.botTokenPresentButUndecryptable()) {
                     log("ERROR: bot token is stored but could NOT be decrypted "
                             + "(firmware/OTA changed the key, or "
-                            + com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.byd_device_id is missing/unreadable). ")
+                            + com.overdrive.app.util.ScratchRoot.path(".byd_device_id") + " is missing/unreadable). "
                             + "Re-enter the token in the Telegram settings to recover.");
                 } else {
                     log("bot_token not set in unified config");
@@ -719,10 +720,9 @@ public class TelegramBotDaemon {
             // Proxy first, DIRECT second — a FROZEN chain resolved once per
             // rebuild (getGlobalProxy() may shell out, so it must never run
             // per-request). On CN firmware the proxy leg is the one that
-            // works and stays first; on a tailnet-only Tailscale listener
-            // (through which api.telegram.org is unreachable while the
-            // listener probes healthy) OkHttp falls through to direct in the
-            // same call instead of wedging the daemon until the next rebuild.
+            // works and stays first; if it dies, OkHttp falls through to
+            // direct in the same call instead of wedging the daemon until
+            // the next rebuild.
             final java.util.List<java.net.Proxy> routeChain =
                     com.overdrive.app.mqtt.ProxyHelper.proxyRouteChain(proxy);
             builder.proxySelector(new java.net.ProxySelector() {
@@ -882,7 +882,7 @@ public class TelegramBotDaemon {
      */
     private static java.net.Proxy getGlobalProxy() {
         try {
-            if (com.overdrive.app.mqtt.ProxyHelper.isProxyAvailable()) {
+            if (com.overdrive.app.mqtt.ProxyHelper.isEgressProxyAvailable()) {
                 java.net.Proxy proxy =
                         com.overdrive.app.mqtt.ProxyHelper.getHttpProxy();
                 if (proxy != null) {
@@ -994,7 +994,8 @@ public class TelegramBotDaemon {
         // every stdio descriptor so no pipe is held open by the parent.
         String wrapped = "(" + command + " </dev/null &)";
         try {
-            ProcessBuilder pb = new ProcessBuilder("sh", "-c", wrapped);
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(wrapped));
+            com.overdrive.app.util.ScratchRoot.applyEnv(pb);
             pb.redirectOutput(ProcessBuilder.Redirect.to(new java.io.File("/dev/null")));
             pb.redirectError(ProcessBuilder.Redirect.to(new java.io.File("/dev/null")));
             pb.start();
@@ -1288,7 +1289,15 @@ public class TelegramBotDaemon {
                     long chatId = cmd.optLong("chatId", ownerChatId);
                     String text = cmd.optString("text", "");
                     String msgCategory = cmd.optString("category", "CRITICAL");
-                    if (!isCategoryEnabled(msgCategory)) {
+                    boolean remoteAccess = com.overdrive.app.remoteaccess.RemoteAccessNotifications
+                            .TELEGRAM_CATEGORY.equals(msgCategory);
+                    boolean categoryEnabled = remoteAccess
+                            ? com.overdrive.app.remoteaccess.RemoteAccessNotifications.canDeliver(
+                                    cmd.optJSONObject("remoteAccess"), "telegram")
+                                    && com.overdrive.app.telegram.config.UnifiedTelegramConfig
+                                            .shouldStartOnAccOff()
+                            : isCategoryEnabled(msgCategory);
+                    if (!categoryEnabled) {
                         log("sendMessage skipped - " + msgCategory + " disabled");
                         response.put("status", "skipped");
                         response.put("message", msgCategory + " disabled");
@@ -1356,7 +1365,7 @@ public class TelegramBotDaemon {
                             // the hint and deny the next legit notify its
                             // post-update framing.
                             boolean postUpdatePresent = new File(
-                                    com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_post_update_pending_telegram")
+                                    com.overdrive.app.util.ScratchRoot.path("overdrive_post_update_pending_telegram")
                                 ).exists();
                             // A FAILED install (Telegram-triggered) leaves the
                             // failure hint instead of the success hint — bypass
@@ -1364,7 +1373,7 @@ public class TelegramBotDaemon {
                             // install failed NOW, not 10 min later (symmetric
                             // with the post-update success bypass above).
                             boolean installFailedPresent = new File(
-                                    com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_install_failed_pending_telegram")
+                                    com.overdrive.app.util.ScratchRoot.path("overdrive_install_failed_pending_telegram")
                                 ).exists();
                             if (!postUpdatePresent
                                     && !installFailedPresent
@@ -1516,7 +1525,7 @@ public class TelegramBotDaemon {
                     String pTitle = cmd.optString("title", "");
                     String pBody = cmd.optString("body", "");
                     StringBuilder pText = new StringBuilder();
-                    if (!pTitle.isEmpty()) pText.append("**").append(mdEscape(pTitle)).append("**");
+                    if (!pTitle.isEmpty()) pText.append("*").append(mdEscape(pTitle)).append("*");
                     if (!pBody.isEmpty()) {
                         if (pText.length() > 0) pText.append("\n");
                         pText.append(mdEscape(pBody));
@@ -1839,7 +1848,7 @@ public class TelegramBotDaemon {
      * generous for actual uptime feedback while collapsing crash-loop noise
      * to a single message.
      */
-    private static final String GREETING_STAMP_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.tg_last_greeted");
+    private static final String GREETING_STAMP_FILE = com.overdrive.app.util.ScratchRoot.path(".tg_last_greeted");
     private static final long GREETING_THROTTLE_MS = 60L * 60L * 1000L; // 1 hour
 
     /**
@@ -1874,7 +1883,7 @@ public class TelegramBotDaemon {
     // health-check restart loop produces a "URL changed" Telegram message
     // unless throttled. 10 min window matches "user-meaningful URL
     // change" — anything more frequent IS the loop, not real change.
-    private static final String TUNNEL_NOTIFY_STAMP_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.tunnel_last_notified");
+    private static final String TUNNEL_NOTIFY_STAMP_FILE = com.overdrive.app.util.ScratchRoot.path(".tunnel_last_notified");
     private static final long TUNNEL_NOTIFY_THROTTLE_MS = 10L * 60L * 1000L; // 10 min
 
     // Serializes the notifyTunnel IPC critical section. IPC_WORKERS is a
@@ -2022,6 +2031,13 @@ public class TelegramBotDaemon {
                                     ? "unavailable, mtime-only" : "unchanged") + ")");
                             return;
                         }
+                        // DiLink 5 cold-boots on every parked/charging wake; only a reboot that the
+                        // vehicle is switched on for skips the throttle.
+                        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                                && !isDiLink5VehicleOn()) {
+                            greetOnceVehicleIsOn(currentBootId, age);
+                            return;
+                        }
                         log("Greeting throttle bypassed (reboot detected: stamped="
                                 + stampedBootId + ", current=" + currentBootId + ")");
                     }
@@ -2032,6 +2048,64 @@ public class TelegramBotDaemon {
             }
         }
 
+        sendGreetingNow(currentBootId);
+    }
+
+    private static final long GREETING_VEHICLE_ON_WAIT_MS = 4L * 60_000L;
+    private static final long GREETING_VEHICLE_ON_POLL_MS = 10_000L;
+
+    /** Ignition read from properties, or the camera daemon's published ACC state. */
+    private static boolean isDiLink5VehicleOn() {
+        if (com.overdrive.app.monitor.AccMonitor.isDiLink5IgnitionOnFromProperties()) return true;
+        java.net.HttpURLConnection connection = null;
+        try {
+            connection = com.overdrive.app.util.DaemonHttpClient.open("/status", "GET", 1500, 3000);
+            if (connection.getResponseCode() != 200) return false;
+            try (java.io.InputStream in = connection.getInputStream()) {
+                java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = in.read(buffer)) != -1 && body.size() < 512 * 1024) {
+                    body.write(buffer, 0, read);
+                }
+                return new JSONObject(body.toString("UTF-8")).optBoolean("acc", false);
+            }
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    /** DiLink 5: a reboot that stays parked (e.g. a charging wake) does not greet; one that drives does. */
+    private static void greetOnceVehicleIsOn(String currentBootId, long ageMs) {
+        log("Startup greeting deferred (rebooted with the vehicle off; last sent " + (ageMs / 1000)
+                + "s ago) — waiting up to " + (GREETING_VEHICLE_ON_WAIT_MS / 60_000) + " min for ignition");
+        Thread gate = new Thread(() -> {
+            long deadline = System.nanoTime() + GREETING_VEHICLE_ON_WAIT_MS * 1_000_000L;
+            try {
+                while (running && System.nanoTime() < deadline) {
+                    Thread.sleep(GREETING_VEHICLE_ON_POLL_MS);
+                    if (isDiLink5VehicleOn()) {
+                        if (ownerChatId <= 0 || !connectivityAlertsEnabled) {
+                            log("Deferred startup greeting dropped (owner unpaired or connectivity updates off)");
+                            return;
+                        }
+                        log("Vehicle is on — sending the deferred startup greeting");
+                        sendGreetingNow(currentBootId);
+                        return;
+                    }
+                }
+                log("Startup greeting skipped (vehicle stayed off after the reboot)");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "TelegramGreetingGate");
+        gate.setDaemon(true);
+        gate.start();
+    }
+
+    private static void sendGreetingNow(String currentBootId) {
         try {
             String greeting = tr("greeting.online");
 
@@ -2354,7 +2428,7 @@ public class TelegramBotDaemon {
                 if (parts.length == 2) {
                     String action = parts[1];
                     String callbackText;
-                    if ("start".equals(action)) {
+                    if ("start".equals(action) || "switch".equals(action) || "both".equals(action)) {
                         callbackText = tr("callback.starting");
                     } else if ("stop".equals(action)) {
                         callbackText = tr("callback.stopping");
@@ -3248,7 +3322,7 @@ public class TelegramBotDaemon {
     private static String execShell(String command) {
         Process p = null;
         try {
-            p = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+            p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(command)});
             BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
             StringBuilder output = new StringBuilder();
             String line;
@@ -3313,7 +3387,7 @@ public class TelegramBotDaemon {
      * avoid pulling the whole updater package transitively.
      */
     private static String consumePostUpdateHint() {
-        File hint = new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_post_update_pending_telegram"));
+        File hint = new File(com.overdrive.app.util.ScratchRoot.path("overdrive_post_update_pending_telegram"));
         if (!hint.exists()) return null;
         String version = null;
         try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(hint)))) {
@@ -3344,7 +3418,7 @@ public class TelegramBotDaemon {
      * process and we avoid pulling the whole updater package transitively.
      */
     private static String consumeInstallFailedHint() {
-        File hint = new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_install_failed_pending_telegram"));
+        File hint = new File(com.overdrive.app.util.ScratchRoot.path("overdrive_install_failed_pending_telegram"));
         if (!hint.exists()) return null;
         String reason = null;
         try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(hint)))) {

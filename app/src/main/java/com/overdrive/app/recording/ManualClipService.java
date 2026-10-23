@@ -411,7 +411,6 @@ public final class ManualClipService {
         }
 
         final long exportStartPtsUs = startPtsUs;
-        final boolean startTruncated = truncated;
         // Publish BEFORE queueing the worker. With afterSeconds=0 the worker
         // can reach a terminal FAILED publish within microseconds (coverage
         // refusal, cursor null); publishing RECORDING after execute() could
@@ -421,7 +420,7 @@ public final class ManualClipService {
         publishState(STATE_RECORDING, truncated ? "truncated:" + availableBefore : null);
         try {
             exportExecutor.execute(() -> exportWhenReady(
-                    encoder, window, exportStartPtsUs, endPtsUs, startTruncated));
+                    encoder, window, exportStartPtsUs, endPtsUs));
         } catch (RuntimeException e) {
             encoder.releaseManualClipReservation();
             requestInFlight.set(false);
@@ -451,8 +450,7 @@ public final class ManualClipService {
     private void exportWhenReady(HardwareEventRecorderGpu requestedEncoder,
                                  ManualClipWindow window,
                                  long startPtsUs,
-                                 long endPtsUs,
-                                 boolean startTruncated) {
+                                 long endPtsUs) {
         try {
             if (!awaitPostRoll(requestedEncoder, endPtsUs, window.getAfterSeconds())) {
                 logger.warn("Instant replay cancelled: encoder changed or post-roll did not arrive");
@@ -469,11 +467,12 @@ public final class ManualClipService {
             }
 
             AtomicReference<File> outputRef = new AtomicReference<>();
+            // A byte-full ring keeps evicting its head during post-roll; save what is retained.
             boolean exported = requestedEncoder.exportManualClip(() -> {
                 File output = prepareOutputFile();
                 outputRef.set(output);
                 return output;
-            }, startPtsUs, endPtsUs, startTruncated);
+            }, startPtsUs, endPtsUs, true);
             File output = outputRef.get();
             if (!exported || output == null) {
                 // output == null covers both "refused before the provider ran"

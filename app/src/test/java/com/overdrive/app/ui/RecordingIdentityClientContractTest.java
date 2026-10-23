@@ -1,6 +1,5 @@
 package com.overdrive.app.ui;
 
-import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -32,8 +31,6 @@ public class RecordingIdentityClientContractTest {
     @Test
     public void webMirrorsUseStableKeysAndServerActionUrls() throws IOException {
         byte[] shared = readRepositoryBytes("app/src/main/assets/web/shared/events.js");
-        byte[] local = readRepositoryBytes("app/src/main/assets/web/local/shared/events.js");
-        assertArrayEquals(shared, local);
 
         String script = new String(shared, StandardCharsets.UTF_8);
         assertTrue(script.contains("return rec && rec.id ? rec.id"));

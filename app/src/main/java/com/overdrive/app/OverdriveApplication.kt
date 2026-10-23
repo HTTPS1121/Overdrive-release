@@ -24,6 +24,9 @@ class OverdriveApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // Before anything that resolves a shared path.
+        com.overdrive.app.util.ScratchRoot.bootstrap(this)
+
         try {
             startService(Intent(this, com.overdrive.app.remote.RemoteDevViewBridgeService::class.java))
         } catch (error: Throwable) {
@@ -101,6 +104,9 @@ class OverdriveApplication : Application() {
         // receivers and a second 60s re-assert timer, doubling the relay POSTs for
         // values the daemon already has. Same idiom as BydDataCollector.
         if (packageName == android.app.Application.getProcessName()) {
+            com.overdrive.app.remoteaccess.SharedBluetoothKeepAliveController.resume(this)
+            com.overdrive.app.remoteaccess.KeyFobAccessMonitor.resumeIfEnabled(this)
+            com.overdrive.app.remoteaccess.BluetoothAccessMonitor.resumeIfEnabled(this)
             try {
                 com.overdrive.app.services.CallStateMonitor.start(this)
             } catch (ignored: Throwable) {

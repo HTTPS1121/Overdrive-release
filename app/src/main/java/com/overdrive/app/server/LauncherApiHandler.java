@@ -61,8 +61,8 @@ public final class LauncherApiHandler {
     /** Manifest locations, mirroring {@link ModelsApiHandler} (whose readers are
      *  private). Bundled ships in the APK; the remote cache is written by the
      *  updater. Higher {@code version} wins — same precedence as core. */
-    private static final String MANIFEST_BUNDLED_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/web/shared/models/manifest.json");
-    private static final String MANIFEST_REMOTE_CACHE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive/models/manifest.json");
+    private static final String MANIFEST_BUNDLED_PATH = com.overdrive.app.util.ScratchRoot.path("web/shared/models/manifest.json");
+    private static final String MANIFEST_REMOTE_CACHE = com.overdrive.app.util.ScratchRoot.path("overdrive/models/manifest.json");
 
     private LauncherApiHandler() {}
 
@@ -136,10 +136,23 @@ public final class LauncherApiHandler {
         root.put("trip",      buildTrip());
         root.put("roadsense", buildRoadsense());
         root.put("tyres",     buildTyres());
+        root.put("power",     buildPower());
+        root.put("blindSpot", buildBlindSpot());
         root.put("air",       buildAir());
         root.put("media",     JSONObject.NULL);   // no daemon-side MediaSession source (see report)
         root.put("env",       buildEnv());
+        root.put("terrain",   buildTerrain());
         HttpResponse.sendJson(out, root.toString());
+    }
+
+    /** terrain: altitude, grade and the elevation profile behind the car while driving; null when parked a while. */
+    private static Object buildTerrain() {
+        try {
+            JSONObject t = com.overdrive.app.monitor.TerrainTracker.get().toJson();
+            return t != null ? t : JSONObject.NULL;
+        } catch (Throwable t) {
+            return JSONObject.NULL;
+        }
     }
 
     /** vehicle: modelId/color/driveSide from UnifiedConfigManager.getVehicle();
@@ -236,6 +249,19 @@ public final class LauncherApiHandler {
                 }
             } catch (Throwable ignored) {}
             o.put("locked", locked);
+            // driver door alone (live OTA read): not a whole-car state, only the lock tile's action
+            if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                Object driverLocked = JSONObject.NULL;
+                try {
+                    int door = com.overdrive.app.byd.BydDataCollector.getInstance().readDoorLockState();
+                    if (door == com.overdrive.app.byd.BydDataCollector.DOOR_STATE_LOCK) {
+                        driverLocked = Boolean.TRUE;
+                    } else if (door == com.overdrive.app.byd.BydDataCollector.DOOR_STATE_UNLOCK) {
+                        driverLocked = Boolean.FALSE;
+                    }
+                } catch (Throwable ignored) {}
+                o.put("driverLocked", driverLocked);
+            }
 
             // parked: gear == P.
             o.put("parked", gear != null && "P".equals(gear));
@@ -285,21 +311,26 @@ public final class LauncherApiHandler {
             if (soc != null) { o.put("socPct", round1(soc.socPercent)); any = true; }
             else o.put("socPct", JSONObject.NULL);
 
-            // usableKwh + healthPct from the SOH estimator: usable = nominal × SOH.
+            // Canonical health percent; usable energy also requires nominal capacity.
             Object usableKwh = JSONObject.NULL;
             Object healthPct = JSONObject.NULL;
             try {
+                com.overdrive.app.monitor.SocHistoryDatabase socDb =
+                        com.overdrive.app.monitor.SocHistoryDatabase.getInstance();
                 com.overdrive.app.abrp.SohEstimator soh =
-                        com.overdrive.app.monitor.SocHistoryDatabase.getInstance().getSohEstimator();
+                        socDb != null ? socDb.getSohEstimator() : null;
+                double canonicalSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(soh);
+                if (canonicalSoh > 0) {
+                    healthPct = (int) Math.round(canonicalSoh);
+                    any = true;
+                }
                 if (soh != null) {
                     double nominal = soh.getNominalCapacityKwh();
-                    boolean hasSoh = soh.hasDisplaySoh();
-                    double sohPct = hasSoh ? soh.getDisplaySoh() : 100.0;
+                    double sohPct = canonicalSoh > 0 ? canonicalSoh : 100.0;
                     if (nominal > 0) {
                         usableKwh = round1(nominal * (sohPct / 100.0));
                         any = true;
                     }
-                    if (hasSoh) { healthPct = (int) Math.round(sohPct); any = true; }
                 }
             } catch (Throwable ignored) {}
             o.put("usableKwh", usableKwh);
@@ -444,13 +475,23 @@ public final class LauncherApiHandler {
             boolean live = false;
             com.overdrive.app.trips.TripRecord trip = null;
             try {
-                live = tam.isTripActive();
-                if (live) trip = tam.getActiveTrip();
+                trip = tam.getLiveTripSnapshot();
+                live = trip != null;
             } catch (Throwable ignored) {}
             if (trip == null && db != null) {
                 try {
-                    java.util.List<com.overdrive.app.trips.TripRecord> recent = db.getTrips(365, 1, 0);
+                    java.util.List<com.overdrive.app.trips.TripRecord> recent = db.getTripsWithoutMoments(365, 1, 0);
                     if (recent != null && !recent.isEmpty()) trip = recent.get(0);
+                } catch (Throwable ignored) {}
+            }
+            // the trip just driven until its row is finished (or if finishing it failed): the table
+            // lists only finished rows, so it would offer the one before
+            if (!live) {
+                try {
+                    com.overdrive.app.trips.TripRecord ended = tam.getLastEndedSnapshot();
+                    // newer than the table's latest finished trip, and its row not deleted since
+                    if (ended != null && (trip == null || trip.startTime < ended.startTime)
+                            && (ended.id <= 0 || db == null || db.getTripWithoutMoments(ended.id) != null)) trip = ended;
                 } catch (Throwable ignored) {}
             }
             if (trip == null) return JSONObject.NULL;
@@ -459,6 +500,20 @@ public final class LauncherApiHandler {
             o.put("phase", live ? "live" : "past");
             o.put("distanceKm", round1(trip.distanceKm));
             o.put("durationMin", trip.durationSeconds / 60);
+            o.put("maxKmh", trip.maxSpeedKmh > 0 ? trip.maxSpeedKmh : (Object) JSONObject.NULL);
+            // the trip widget's tiles: average speed, energy used and the charge it took
+            o.put("avgKmh", trip.avgSpeedKmh > 0 ? round1(trip.avgSpeedKmh) : (Object) JSONObject.NULL);
+            double kwh = trip.getResolvedEnergyKwh();
+            o.put("kwh", kwh > 0 ? round1(kwh) : (Object) JSONObject.NULL);
+            o.put("socStart", trip.socStart > 0 ? (Object) (int) Math.round(trip.socStart) : JSONObject.NULL);
+            o.put("socEnd", trip.socEnd > 0 ? (Object) (int) Math.round(trip.socEnd) : JSONObject.NULL);
+            // a hybrid's engine ran: the kWh figures then cover only part of the distance. Null when
+            // a hybrid's engine use wasn't captured (the trip began before the powertrain was known)
+            boolean ran = trip.iceSeconds() > 0 || trip.litresUsed > 0.05
+                    || (trip.fuelPctStart >= 0 && trip.fuelPctEnd >= 0 && trip.fuelPctStart - trip.fuelPctEnd >= 2);
+            boolean captured = trip.fuelPctStart >= 0 || trip.fuelConStart >= 0;
+            o.put("engine", ran ? Boolean.TRUE : trip.isPhev && !captured ? JSONObject.NULL : (Object) Boolean.FALSE);
+            o.put("fuelL", trip.litresUsed > 0.05 ? round1(trip.litresUsed) : (Object) JSONObject.NULL);
             // whPerKm from kWh/km × 1000; null when no energy figure exists.
             o.put("whPerKm", trip.energyPerKm > 0 ? (int) Math.round(trip.energyPerKm * 1000.0) : (Object) JSONObject.NULL);
             o.put("cost", trip.tripCost > 0 ? round1(trip.tripCost) : (Object) JSONObject.NULL);
@@ -478,6 +533,7 @@ public final class LauncherApiHandler {
                 dna.put("consistency", trip.consistencyScore);
                 dna.put("pace", trip.speedDisciplineScore);
                 o.put("dna", dna);
+                o.put("dnaAvg", false);
             } else {
                 Object avg = JSONObject.NULL;
                 try {
@@ -495,6 +551,7 @@ public final class LauncherApiHandler {
                     }
                 } catch (Throwable ignored) {}
                 o.put("dna", avg);
+                o.put("dnaAvg", avg != JSONObject.NULL);
             }
             return o;
         } catch (Throwable t) {
@@ -571,8 +628,9 @@ public final class LauncherApiHandler {
             }
             Object loBar = JSONObject.NULL;
             Object hiBar = JSONObject.NULL;
+            JSONObject th = null;
             try {
-                JSONObject th = com.overdrive.app.config.UnifiedConfigManager.getTyreThresholds();
+                th = com.overdrive.app.config.UnifiedConfigManager.getTyreThresholds();
                 int low = Math.min(th.optInt("frontLow"), th.optInt("rearLow"));
                 int high = Math.max(th.optInt("frontHigh"), th.optInt("rearHigh"));
                 // Exact kPa/100 — see the band-precision note in the javadoc.
@@ -583,6 +641,55 @@ public final class LauncherApiHandler {
             }
             o.put("loBar", loBar);
             o.put("hiBar", hiBar);
+            // Each corner judged the way Vehicle Control and the alerts judge it: its own axle's limits,
+            // the critical limit, and the car's own TPMS flags, which can call a tyre low inside the band.
+            String[] keys = {"flState", "frState", "rlState", "rrState"};
+            for (int i = 0; i < 4; i++) {
+                o.put(keys[i], tyreState(i, p[i], vd.tyrePressureState, vd.tyreAirLeakState, th));
+            }
+            return o;
+        } catch (Throwable t) {
+            return JSONObject.NULL;
+        }
+    }
+
+    /**
+     * power: signed HV pack power (kW; + drawing, − regen or charging), front/rear motor
+     * speed and engine power, for the glass power-flow widget. Each leaf is null when the
+     * trim doesn't report it; engine power only counts while its live read is under 15 s old.
+     */
+    /** blindSpot: the radar's per-side alert (1 = a vehicle beside us), held a few seconds past each pulse. */
+    private static Object buildBlindSpot() {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("left", com.overdrive.app.automation.condition.BlindSpotEvent.widgetLevel(true));
+            o.put("right", com.overdrive.app.automation.condition.BlindSpotEvent.widgetLevel(false));
+            o.put("any", com.overdrive.app.automation.condition.BlindSpotEvent.widgetLevelAny());
+            return o;
+        } catch (Throwable t) {
+            return JSONObject.NULL;
+        }
+    }
+
+    private static Object buildPower() {
+        try {
+            com.overdrive.app.byd.BydVehicleData vd =
+                    com.overdrive.app.byd.BydDataCollector.getInstance().getData();
+            if (vd == null) return JSONObject.NULL;
+            JSONObject o = new JSONObject();
+            boolean engineFresh = vd.enginePowerAtMs > 0
+                    && System.currentTimeMillis() - vd.enginePowerAtMs < 15_000L;
+            double pack = vd.hvBatteryPowerKw;
+            // without a pack reading (DiLink 3), a battery-electric car's engine device reports the net bus power
+            if (Double.isNaN(pack) && engineFresh
+                    && !com.overdrive.app.byd.BydDataCollector.getInstance().isPhevPublic()) pack = vd.enginePowerKw;
+            o.put("packKw", Double.isNaN(pack) ? JSONObject.NULL : (Object) round1(pack));
+            o.put("frontRpm", vd.frontMotorSpeed == com.overdrive.app.byd.BydVehicleData.UNAVAILABLE
+                    ? JSONObject.NULL : (Object) vd.frontMotorSpeed);
+            o.put("rearRpm", vd.rearMotorSpeed == com.overdrive.app.byd.BydVehicleData.UNAVAILABLE
+                    ? JSONObject.NULL : (Object) vd.rearMotorSpeed);
+            o.put("engineKw", engineFresh && !Double.isNaN(vd.enginePowerKw)
+                    ? (Object) round1(vd.enginePowerKw) : JSONObject.NULL);
             return o;
         } catch (Throwable t) {
             return JSONObject.NULL;
@@ -619,6 +726,28 @@ public final class LauncherApiHandler {
      * reading alone, 234 kPa (2.3) compared as BELOW an exact 2.34 low
      * (over-warn). Reading and band must share the same precision.
      */
+    /**
+     * "ok", "low", "high" or "critical" for corner [i] ([FL, FR, RL, RR]); null with nothing to go on.
+     * The worse of the kPa reading against that axle's limits and the firmware's own pressure and leak
+     * flags, as BydDataCollector.evaluatePressureCorner and vehicle-control.js decide it.
+     */
+    private static Object tyreState(int i, int kPa, int[] pressureStates, int[] leakStates, JSONObject th) {
+        boolean front = i < 2;
+        int low = th != null ? th.optInt(front ? "frontLow" : "rearLow", 234) : 234;
+        int high = th != null ? th.optInt(front ? "frontHigh" : "rearHigh", 310) : 310;
+        int critical = th != null ? th.optInt("criticalLow", 152) : 152;
+        int pState = pressureStates != null && pressureStates.length > i ? pressureStates[i] : -1;
+        int leak = leakStates != null && leakStates.length > i ? leakStates[i] : -1;
+        boolean kPaValid = kPa > 0 && kPa != com.overdrive.app.byd.BydVehicleData.UNAVAILABLE;
+        if (leak == 2 || (kPaValid && kPa <= critical)) return "critical";
+        if (kPaValid && kPa < low) return "low";
+        if (kPaValid && kPa > high) return "high";
+        if (leak == 1 || com.overdrive.app.byd.BydVehicleData.isTyreUnderpressureState(pState)) return "low";
+        if (com.overdrive.app.byd.BydVehicleData.isTyreOverpressureState(pState)) return "high";
+        if (kPaValid || pState == com.overdrive.app.byd.BydVehicleData.TYRE_PRESSURE_STATE_NORMAL) return "ok";
+        return JSONObject.NULL;
+    }
+
     private static Object barOrNull(int kPa) {
         if (kPa == com.overdrive.app.byd.BydVehicleData.UNAVAILABLE || kPa <= 0) return JSONObject.NULL;
         return kPa / 100.0;   // 1 bar = 100 kPa

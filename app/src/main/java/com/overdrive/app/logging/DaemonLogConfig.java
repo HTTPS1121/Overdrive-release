@@ -139,6 +139,9 @@ public final class DaemonLogConfig {
     /** ProximityRecordingHandler - proximity-triggered recording */
     public static final boolean PROXIMITY_RECORDING_HANDLER = false;
     
+    /** ProximityBlindSpotMonitor - blind-spot radar trigger */
+    public static final boolean PROXIMITY_BLIND_SPOT_MONITOR = false;
+    
     /** ProximityGuardConfig - proximity guard configuration */
     public static final boolean PROXIMITY_GUARD_CONFIG = false;
 
@@ -297,6 +300,7 @@ public final class DaemonLogConfig {
             if (PROXIMITY_GUARD_CONTROLLER) ENABLED_TAGS.add("ProximityGuardController");
             if (PROXIMITY_RADAR_MONITOR)    ENABLED_TAGS.add("ProximityRadarMonitor");
             if (PROXIMITY_RECORDING_HANDLER) ENABLED_TAGS.add("ProximityRecordingHandler");
+            if (PROXIMITY_BLIND_SPOT_MONITOR) ENABLED_TAGS.add("ProximityBlindSpotMonitor");
             if (PROXIMITY_GUARD_CONFIG)     ENABLED_TAGS.add("ProximityGuardConfig");
             if (GEAR_MONITOR)               ENABLED_TAGS.add("GearMonitor");
             if (VEHICLE_DATA_MONITOR)       ENABLED_TAGS.add("VehicleDataMonitor");

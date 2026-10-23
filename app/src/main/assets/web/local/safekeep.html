@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title data-i18n="app.safekeep_title">SafeKeep - OverDrive</title>
+    <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
+    <script>
+        window.OT_TABS = [
+            { id: 'overview', label: 'Overview', i18n: 'safekeep.tab_overview', svg: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>', readOnly: true },
+            { id: 'storage', label: 'Storage', i18n: 'safekeep.tab_storage', svg: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>', readOnly: true },
+            { id: 'backup', label: 'What & when', i18n: 'safekeep.tab_backup', svg: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>', readOnly: true },
+            { id: 'limits', label: 'Limits', i18n: 'safekeep.tab_limits', svg: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>', readOnly: true },
+            { id: 'activity', label: 'Activity', i18n: 'safekeep.tab_activity', svg: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>', readOnly: true }
+        ];
+        window.OT_setActiveTab = function (id) {
+            var btn = document.querySelector('.bottom-tabs .bottom-tab[data-tab-target="' + id + '"]');
+            if (btn) { btn.click(); return true; }
+            return false;
+        };
+    </script>
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
+    <style>
+        /* Chrome 58 WebView: no flex gap and no unprefixed grid gap, so spacing uses margins. */
+        .sk-hero { display: flex; align-items: flex-start; }
+        .sk-hero-icon { -webkit-margin-end: 16px; margin-inline-end: 16px; }
+        .sk-hero-icon { width: 48px; height: 48px; border-radius: 14px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--primary-container, var(--bg-elevated)); color: var(--brand-primary); }
+        .sk-hero-icon svg { width: 26px; height: 26px; }
+        .sk-hero-title { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
+        .sk-hero-text { font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+        .sk-state-line { display: flex; align-items: center; margin-bottom: 6px; }
+        .sk-state-line > * + * { -webkit-margin-start: 10px; margin-inline-start: 10px; }
+        .sk-state-text { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+        .sk-reason { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+        .sk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); grid-gap: 10px; gap: 10px; margin: 12px 0; }
+        .sk-stat { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md, 12px); padding: 10px 12px; }
+        .sk-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+        .sk-stat-value { font-size: 18px; font-weight: 700; color: var(--text-primary); margin-top: 2px; }
+        .sk-stat-sub { font-size: 12px; color: var(--text-secondary); }
+        .sk-transfer { padding: 10px 0; border-top: 1px solid var(--border-subtle); }
+        .sk-transfer:first-child { border-top: none; }
+        .sk-transfer-top { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-primary); }
+        .sk-transfer-top > * + * { -webkit-margin-start: 10px; margin-inline-start: 10px; }
+        .sk-transfer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sk-transfer-meta { color: var(--text-muted); white-space: nowrap; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+        .sk-transfer .storage-bar { margin-top: 6px; }
+        .sk-net { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+        .sk-actions { display: flex; flex-wrap: wrap; align-items: center; margin: 9px -5px -5px; }
+        .sk-actions > * { margin: 5px; }
+        .sk-actions .select-control { min-width: 150px; }
+        .sk-chip-row { display: flex; flex-wrap: wrap; margin: -4px; }
+        .sk-chip-row > * { margin: 4px; }
+        .sk-chip { display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border-default); background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; user-select: none; }
+        .sk-chip.active { border-color: var(--brand-primary); color: var(--brand-primary); background: var(--primary-container, rgba(59,130,246,.12)); }
+        .sk-chip .sk-x { opacity: .7; font-weight: 700; -webkit-margin-start: 6px; margin-inline-start: 6px; }
+        .sk-lane-head { display: flex; align-items: center; }
+        .sk-lane-head > * + * { -webkit-margin-start: 12px; margin-inline-start: 12px; }
+        .sk-lane-head .setting-info { flex: 1; }
+        .sk-sub { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin: 16px 0 8px; }
+        .sk-cond { display: flex; flex-wrap: wrap; align-items: center; margin: -4px -4px 4px; }
+        .sk-cond > * { margin: 4px; }
+        .sk-cond .select-control, .sk-cond .text-input { min-width: 0; }
+        .sk-cond .sk-cond-type { flex: 1 1 160px; }
+        .sk-cond .sk-cond-cmp { flex: 0 0 110px; }
+        .sk-cond .sk-cond-val { flex: 1 1 120px; }
+        .sk-row-inline { display: flex; flex-wrap: wrap; align-items: center; margin: -5px; }
+        .sk-row-inline > * { margin: 5px; }
+        .sk-queue-row { display: flex; align-items: center; padding: 10px 0; border-top: 1px solid var(--border-subtle); }
+        .sk-queue-row > * + * { -webkit-margin-start: 12px; margin-inline-start: 12px; }
+        .sk-queue-row:first-child { border-top: none; }
+        .sk-queue-info { flex: 1; min-width: 0; }
+        .sk-queue-name { font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sk-queue-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+        .sk-queue-err { font-size: 12px; color: var(--danger); margin-top: 2px; word-break: break-word; }
+        .sk-provider-grid .mode-option { margin-bottom: 8px; }
+        .sk-qr { display: flex; flex-direction: column; align-items: center; margin: 8px 0 4px; }
+        .sk-qr > * + * { margin-top: 12px; }
+        .sk-qr img { width: 208px; height: 208px; border-radius: 12px; background: #fff; padding: 8px; box-sizing: border-box; }
+        .sk-code { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; letter-spacing: .12em; color: var(--text-primary); }
+        .sk-link { word-break: break-all; font-size: 13px; color: var(--brand-primary); }
+        .sk-wait { display: flex; align-items: center; font-size: 13px; color: var(--text-secondary); }
+        .sk-wait > * + * { -webkit-margin-start: 10px; margin-inline-start: 10px; }
+        .sk-spinner { width: 18px; height: 18px; border: 2px solid var(--bg-elevated); border-top-color: var(--brand-primary); border-radius: 50%; animation: skspin 1s linear infinite; flex-shrink: 0; }
+        @keyframes skspin { to { transform: rotate(360deg); } }
+        .sk-kit { font-family: 'JetBrains Mono', monospace; font-size: 12px; word-break: break-all; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: 10px; padding: 10px; color: var(--text-primary); user-select: all; }
+        .sk-modal-body { max-height: 70vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .sk-modal-card { max-width: 520px; width: 92%; }
+        .sk-field { margin-bottom: 12px; }
+        .sk-muted { color: var(--text-muted); font-size: 12px; }
+        .sk-result { font-size: 13px; line-height: 1.5; color: var(--text-secondary); margin-top: 10px; }
+        .sk-result-row { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--border-subtle); }
+        .sk-result-row > * + * { -webkit-margin-start: 10px; margin-inline-start: 10px; }
+        .sk-result-row:first-child { border-top: none; }
+        .sk-ok { color: var(--success, #22c55e); }
+        .sk-warn { color: var(--warning, #f59e0b); }
+        .sk-hidden { display: none !important; }
+        .sk-steps { margin: 6px 0 10px; -webkit-padding-start: 20px; padding-inline-start: 20px; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+        .sk-steps li + li { margin-top: 4px; }
+        .safe-zone-meta .sk-dot-sep { margin: 0 4px; opacity: .6; }
+    </style>
+</head>
+<body class="r-settings">
+    <div class="app-layout">
+        <div id="app-shell-mount"></div>
+        <main class="main-content">
+            <div class="mobile-header">
+                <button class="menu-toggle" onclick="toggleSidebar()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+                </button>
+                <span style="font-weight:600;" data-i18n="nav.safekeep">SafeKeep</span>
+                <div style="width:40px;"></div>
+            </div>
+
+            <header class="page-header">
+                <h1 class="page-title" data-i18n="safekeep.page_title">SafeKeep</h1>
+                <div class="header-actions">
+                    <span class="status-badge inactive" id="skBadge" data-i18n="safekeep.badge_off">OFF</span>
+                </div>
+            </header>
+
+            <div class="page-body">
+                <!-- ===== Overview ===== -->
+                <div class="card" data-tab="overview" id="skMasterCard" data-collapse="off">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                            <span data-i18n="safekeep.master_title">Keep a safe copy</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="sk-hero">
+                            <div class="sk-hero-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="26" height="26"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><polyline points="9 14 11.5 16.5 16 12"/></svg></div>
+                            <div>
+                                <div class="sk-hero-title" data-i18n="safekeep.hero_title">Your clips and trips, off the car</div>
+                                <div class="sk-hero-text" data-i18n="safekeep.hero_text">SafeKeep copies sentry events, saved clips, dashcam recordings and trip history to storage you own — Google Drive, OneDrive, Dropbox, Nextcloud, a NAS or an S3 bucket — so evidence survives even if the car or its SD card doesn't.</div>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="margin-top:16px;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="safekeep.master_toggle">SafeKeep</div>
+                                <div class="setting-desc" data-i18n="safekeep.master_toggle_desc">When off, SafeKeep uses no CPU, storage or network at all.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch"><input type="checkbox" id="skEnabled" onchange="SK.toggleMaster(this.checked)"><span class="toggle-slider"></span></label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card sk-hidden" data-tab="overview" id="skSetupCard" data-collapse="off">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+                        <p data-i18n="safekeep.setup_empty">Connect your first storage to start backing up.</p>
+                        <button class="btn btn-primary" onclick="SK.openAddStorage()" data-i18n="safekeep.add_storage">Add storage</button>
+                    </div>
+                </div>
+
+                <div class="card sk-hidden" data-tab="overview" id="skStatusCard" data-collapse="off">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                            <span data-i18n="safekeep.status_title">Status</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="sk-state-line">
+                            <span class="status-dot" id="skStateDot"></span>
+                            <span class="sk-state-text" id="skStateText">—</span>
+                        </div>
+                        <div class="sk-reason" id="skReason"></div>
+                        <div id="skCurrent"></div>
+                        <div class="sk-grid" id="skBacklog"></div>
+                        <div id="skMobile"></div>
+                        <div class="sk-net" id="skNet"></div>
+                        <div class="sk-actions">
+                            <button class="btn btn-primary" onclick="SK.syncNow()" data-i18n="safekeep.sync_now">Sync now</button>
+                            <select class="select-control" id="skPauseFor">
+                                <option value="60" data-i18n="safekeep.pause_1h">Pause for 1 hour</option>
+                                <option value="480" data-i18n="safekeep.pause_8h">Pause for 8 hours</option>
+                                <option value="1440" data-i18n="safekeep.pause_24h">Pause for 24 hours</option>
+                                <option value="0" data-i18n="safekeep.pause_forever">Pause until resumed</option>
+                            </select>
+                            <button class="btn btn-secondary" id="skPauseBtn" onclick="SK.pause()" data-i18n="safekeep.pause">Pause</button>
+                            <button class="btn btn-secondary sk-hidden" id="skResumeBtn" onclick="SK.resume()" data-i18n="safekeep.resume">Resume</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===== Storage ===== -->
+                <div class="card" data-tab="storage" id="skStorageCard" data-collapse="off">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                            <span data-i18n="safekeep.storage_title">Your storage</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="safe-zone-list" id="skDestList"></div>
+                        <div class="byd-action-row" style="margin-top:14px;">
+                            <button class="btn btn-primary" onclick="SK.openAddStorage()" data-i18n="safekeep.add_storage">Add storage</button>
+                        </div>
+                        <div class="info-box-note" style="margin-top:14px;">
+                            <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                            <div class="info-note" data-i18n="safekeep.storage_note">SafeKeep only sees what it uploads: Google Drive and OneDrive give it access to its own files or folder, never the rest of your account. OverDrive never stores your footage.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===== What & when ===== -->
+                <div id="skLanes" data-tab="backup"></div>
+                <div class="card" data-tab="backup" id="skLanesSave" data-collapse="off">
+                    <div class="card-body">
+                        <div class="byd-action-row">
+                            <button class="btn btn-primary" onclick="SK.saveLanes()" data-i18n="safekeep.save">Save</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===== Limits ===== -->
+                <div class="card" data-tab="limits" id="skLimitsNet">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                        <span data-i18n="safekeep.home_wifi_title">Home Wi-Fi</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-desc" style="margin-bottom:10px;" data-i18n="safekeep.home_wifi_desc">"Home" rules only upload on these networks (or when a NAS on your network answers). Leave empty to treat any Wi-Fi that isn't a phone hotspot as home.</div>
+                        <div class="sk-chip-row" id="skHomeSsids"></div>
+                        <div class="sk-row-inline" style="margin-top:10px;">
+                            <input class="text-input" id="skSsidInput" style="flex:1;min-width:160px;" data-i18n-attr="placeholder:safekeep.ssid_placeholder" placeholder="Network name">
+                            <button class="btn btn-secondary" onclick="SK.addSsid()" data-i18n="safekeep.add">Add</button>
+                            <button class="btn btn-secondary" id="skAddCurrentSsid" onclick="SK.addCurrentSsid()" data-i18n="safekeep.add_current_wifi">Add current Wi-Fi</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card" data-tab="limits" id="skLimitsData">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+                        <span data-i18n="safekeep.data_title">Data and bandwidth</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.mobile_cap">Mobile data per month (MB)</div><div class="setting-desc" data-i18n="safekeep.mobile_cap_desc">Only rules that allow mobile data can use it. 0 means no mobile data.</div></div>
+                            <div class="setting-control"><input type="number" class="text-input" id="skMobileCap" min="0" max="100000" style="width:96px;min-width:96px;"></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.reset_day">Allowance resets on day</div></div>
+                            <div class="setting-control"><select class="select-control" id="skResetDay"></select></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.driving_mbps">Speed while driving (Mbps)</div><div class="setting-desc" data-i18n="safekeep.driving_mbps_desc">Leaves room for navigation and streaming. 0 = no limit.</div></div>
+                            <div class="setting-control"><input type="number" class="text-input" id="skDrivingMbps" min="0" max="1000" step="0.5" style="width:96px;min-width:96px;"></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.mobile_mbps">Speed on mobile data (Mbps)</div></div>
+                            <div class="setting-control"><input type="number" class="text-input" id="skMobileMbps" min="0" max="1000" step="0.5" style="width:96px;min-width:96px;"></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.wifi_mbps">Speed on Wi-Fi while parked (Mbps)</div><div class="setting-desc" data-i18n="safekeep.unlimited_hint">0 = no limit.</div></div>
+                            <div class="setting-control"><input type="number" class="text-input" id="skWifiMbps" min="0" max="10000" step="1" style="width:96px;min-width:96px;"></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.pause_live">Pause videos during live view</div><div class="setting-desc" data-i18n="safekeep.pause_live_desc">Live view shares the car's uplink. Snapshots and trips still go.</div></div>
+                            <div class="setting-control"><label class="toggle-switch"><input type="checkbox" id="skPauseLive"><span class="toggle-slider"></span></label></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.concurrency">Parallel uploads on home Wi-Fi</div></div>
+                            <div class="setting-control"><div class="btn-group" id="skConcurrency"><button class="btn-toggle" data-value="1" onclick="SK.setToggle('skConcurrency','1')">1</button><button class="btn-toggle" data-value="2" onclick="SK.setToggle('skConcurrency','2')">2</button></div></div></div>
+                    </div>
+                </div>
+                <div class="card" data-tab="limits" id="skLimitsPower">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>
+                        <span data-i18n="safekeep.power_title">Parked uploads</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.parked_minutes">Upload time per parking</div><div class="setting-desc" data-i18n="safekeep.parked_minutes_desc">Caps how long uploads keep going after you park (unlimited while charging).</div></div>
+                            <div class="setting-control"><select class="select-control" id="skParkedMinutes">
+                                <option value="15">15 min</option><option value="30">30 min</option><option value="60">1 h</option><option value="120">2 h</option><option value="240">4 h</option><option value="0" data-i18n="safekeep.no_limit">No limit</option>
+                            </select></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.min_12v">Stop below 12 V battery</div><div class="setting-desc" data-i18n="safekeep.min_12v_desc">Protects the starter battery while parked.</div></div>
+                            <div class="setting-control"><select class="select-control" id="skMin12v">
+                                <option value="118">11.8 V</option><option value="120">12.0 V</option><option value="122">12.2 V</option><option value="124">12.4 V</option><option value="126">12.6 V</option>
+                            </select></div></div>
+                        <div class="info-box-note" id="skOnOnlyNote" style="display:none;margin-top:10px;">
+                            <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                            <div class="info-note" data-i18n="safekeep.on_only_note">Your surveillance mode is "Vehicle on only", so SafeKeep can upload only while the car is on.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card" data-tab="limits" id="skLimitsCar">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                        <span data-i18n="safekeep.car_storage_title">On the car</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.vehicle_name">Folder name for this car</div></div>
+                            <div class="setting-control"><input class="text-input" id="skVehicleName" maxlength="64" style="width:180px;"></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.pin_cap">Keep clips waiting to upload (GB)</div><div class="setting-desc" data-i18n="safekeep.pin_cap_desc">Rotation skips clips still waiting to upload, up to this much space and 3 days.</div></div>
+                            <div class="setting-control"><input type="number" class="text-input" id="skPinGb" min="0.5" max="64" step="0.5" style="width:96px;min-width:96px;"></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.lock_cap">Space for locked clips (GB)</div><div class="setting-desc" data-i18n="safekeep.lock_cap_desc">Locked clips are never deleted by rotation while SafeKeep is on.</div></div>
+                            <div class="setting-control"><input type="number" class="text-input" id="skLockGb" min="0.5" max="128" step="0.5" style="width:96px;min-width:96px;"></div></div>
+                    </div>
+                </div>
+                <div class="card" data-tab="limits" id="skLimitsNotify">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                        <span data-i18n="safekeep.notify_title">Telegram notifications</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.notify_auth">Sign-in expired</div></div><div class="setting-control"><label class="toggle-switch"><input type="checkbox" id="skNotifyAuth"><span class="toggle-slider"></span></label></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.notify_quota">Storage almost full</div></div><div class="setting-control"><label class="toggle-switch"><input type="checkbox" id="skNotifyQuota"><span class="toggle-slider"></span></label></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.notify_mobile">Mobile data allowance used</div></div><div class="setting-control"><label class="toggle-switch"><input type="checkbox" id="skNotifyMobile"><span class="toggle-slider"></span></label></div></div>
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.notify_saved">Each clip saved</div><div class="setting-desc" data-i18n="safekeep.notify_saved_desc">Includes a private link where the storage supports it.</div></div><div class="setting-control"><label class="toggle-switch"><input type="checkbox" id="skNotifySaved"><span class="toggle-slider"></span></label></div></div>
+                    </div>
+                </div>
+                <div class="card" data-tab="limits" id="skLimitsHooks" data-collapse-default="closed">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                        <span data-i18n="safekeep.webhooks_title">Webhooks</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-desc" style="margin-bottom:10px;" data-i18n="safekeep.webhooks_desc">POST a JSON message when a trip finishes or a clip is saved — for Home Assistant, n8n, Zapier and friends. Signed with HMAC-SHA256 when you set a secret.</div>
+                        <div id="skWebhooks"></div>
+                        <div class="byd-action-row" style="margin-top:10px;"><button class="btn btn-secondary" onclick="SK.addWebhook()" data-i18n="safekeep.add_webhook">Add webhook</button></div>
+                    </div>
+                </div>
+                <div class="card" data-tab="limits" id="skLimitsSave" data-collapse="off">
+                    <div class="card-body"><div class="byd-action-row"><button class="btn btn-primary" onclick="SK.saveLimits()" data-i18n="safekeep.save">Save</button></div></div>
+                </div>
+
+                <!-- ===== Activity ===== -->
+                <div class="card" data-tab="activity" id="skQueueCard" data-collapse="off">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                        <span data-i18n="safekeep.queue_title">Queue</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="sk-row-inline" style="justify-content:space-between;">
+                            <div class="btn-group" id="skQueueFilter">
+                                <button class="btn-toggle active" data-value="" onclick="SK.queueFilter('')" data-i18n="safekeep.filter_open">Open</button>
+                                <button class="btn-toggle" data-value="FAILED" onclick="SK.queueFilter('FAILED')" data-i18n="safekeep.filter_failed">Failed</button>
+                                <button class="btn-toggle" data-value="DONE" onclick="SK.queueFilter('DONE')" data-i18n="safekeep.filter_done">Saved</button>
+                            </div>
+                            <button class="btn btn-secondary" onclick="SK.retryAll()" data-i18n="safekeep.retry_failed">Retry failed</button>
+                        </div>
+                        <div id="skQueue" style="margin-top:10px;"></div>
+                    </div>
+                </div>
+                <div class="card" data-tab="activity" id="skCheckCard">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        <span data-i18n="safekeep.check_title">What would upload now?</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-desc" data-i18n="safekeep.check_desc">Checks every rule against the car's current network, power and activity without uploading anything.</div>
+                        <div class="byd-action-row" style="margin-top:10px;"><button class="btn btn-secondary" onclick="SK.dryRun()" data-i18n="safekeep.check_now">Check now</button></div>
+                        <div id="skDryRun" class="sk-result"></div>
+                    </div>
+                </div>
+                <div class="card" data-tab="activity" id="skRestoreCard" data-collapse-default="closed">
+                    <div class="card-header"><div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                        <span data-i18n="safekeep.restore_title">Restore and history</span>
+                    </div></div>
+                    <div class="card-body">
+                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="safekeep.restore_from">Restore from</div></div>
+                            <div class="setting-control"><select class="select-control" id="skRestoreDest"></select></div></div>
+                        <div class="md-field" style="margin-top:8px;">
+                            <div class="md-field-box">
+                                <input class="md-input" id="skRestoreIdentity" type="password" placeholder=" " autocomplete="off">
+                                <label class="md-label" for="skRestoreIdentity" data-i18n="safekeep.identity_label">Secret key (only for encrypted backups)</label>
+                            </div>
+                            <span class="md-supporting" data-i18n="safekeep.identity_hint">Starts with AGE-SECRET-KEY-1. Used once in this request, never stored.</span>
+                        </div>
+                        <div class="byd-action-row" style="margin-top:10px;">
+                            <button class="btn btn-secondary" onclick="SK.restoreTrips()" data-i18n="safekeep.restore_trips">Restore trips</button>
+                            <button class="btn btn-secondary" onclick="SK.restoreSettings()" data-i18n="safekeep.restore_settings">Restore settings</button>
+                        </div>
+                        <div class="sk-sub" data-i18n="safekeep.backfill_title">Back up past trips</div>
+                        <div class="sk-row-inline">
+                            <select class="select-control" id="skBackfillDays">
+                                <option value="30" data-i18n="safekeep.last_30">Last 30 days</option>
+                                <option value="365" data-i18n="safekeep.last_year">Last year</option>
+                                <option value="0" data-i18n="safekeep.all_history">All history</option>
+                            </select>
+                            <button class="btn btn-secondary" onclick="SK.backfillTrips()" data-i18n="safekeep.queue_trips">Queue trips</button>
+                        </div>
+                        <div id="skRestoreResult" class="sk-result"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="../shared/auth.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/safekeep.js?v=6"></script>
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('sidebarOverlay').classList.toggle('show');
+        }
+        BYD.i18n.init().then(function () {
+            BYD.core.init();
+            SK.init();
+        });
+    </script>
+</body>
+</html>

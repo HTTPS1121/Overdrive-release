@@ -18,7 +18,12 @@ final class RecordingsIndexSchema {
     // peak_confidence (Parking Intelligence session grouping + camera and
     // confidence filters). Added via ALTER TABLE ADD COLUMN IF NOT EXISTS in
     // ensure(); the v4 identity migration is untouched.
-    static final int VERSION = 5;
+    // v6: SORT_INDEX, created by createIndexes() IF NOT EXISTS (no data migration).
+    static final int VERSION = 6;
+
+    // H2 only index-sorts when the index STARTS with the ORDER BY column, so this
+    // cannot be folded into idx_rec_available_ts.
+    static final String SORT_INDEX = "idx_rec_ts_rank";
 
     private static final String[] LEGACY_COLUMNS = {
         "filename", "abs_path", "type", "camera_id", "ts_ms", "size_bytes",
@@ -208,6 +213,23 @@ final class RecordingsIndexSchema {
         statement.execute("CREATE INDEX IF NOT EXISTS idx_rec_storage ON recordings(storage)");
         statement.execute("CREATE INDEX IF NOT EXISTS idx_rec_parking"
                 + " ON recordings(parking_session_id)");
+        statement.execute("CREATE INDEX IF NOT EXISTS " + SORT_INDEX
+                + " ON recordings(ts_ms DESC, root_rank)");
+    }
+
+    /** True when {@link #SORT_INDEX} exists; gate for the USE INDEX hint. */
+    static boolean sortIndexExists(Connection connection) {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.INDEXES"
+                        + " WHERE TABLE_NAME = ? AND INDEX_NAME = ?")) {
+            ps.setString(1, "RECORDINGS");
+            ps.setString(2, SORT_INDEX.toUpperCase(Locale.US));
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt(1) > 0;
+            }
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static void createMetaTable(Statement statement) throws Exception {

@@ -15,13 +15,14 @@ import java.lang.reflect.Method;
  * CameraDaemon runs as a standalone process launched via the PermissionGranter
  * shell wrapper — it is NOT forked from Zygote, so Android's normal font
  * preload never runs and the native {@code gDefaultTypeface} can stay
- * {@code null}. On DiLink 3/4 the native font system still initializes lazily
- * on first use, so {@link Typeface#create(Typeface, int)} works. On DiLink 5
- * the BSP ships a different font configuration ({@code /system/etc/fonts.xml}
- * layout), the lazy init fails, {@code Typeface.create(...)} returns
- * {@code null}, and — because the old renderer code only set the typeface
- * {@code if (created != null)} — the paints kept a {@code null} typeface. The
- * FIRST {@code Canvas.drawText}/{@code Paint.measureText} on such a paint then
+ * {@code null}. On Android 11 and older (DiLink 3/4) Typeface's static
+ * initializer loads the system font map, so {@link Typeface#create(Typeface, int)}
+ * works. On Android 12+ (DiLink 5) that load is lazy and only Zygote /
+ * bindApplication trigger it, so here {@code Typeface.DEFAULT} stays
+ * {@code null} until {@link #bootstrap()} loads the map itself. Before that,
+ * {@code Typeface.create(...)} failed and — because the old renderer code only
+ * set the typeface {@code if (created != null)} — the paints kept a
+ * {@code null} typeface. The FIRST {@code Canvas.drawText}/{@code Paint.measureText} on such a paint then
  * tripped this native check inside {@code Typeface.cpp::resolveDefault()}:
  *
  * <pre>Assertion failed: src == nullptr &amp;&amp; gDefaultTypeface == nullptr</pre>
@@ -35,10 +36,10 @@ import java.lang.reflect.Method;
  * <ol>
  *   <li><b>Native default backstop.</b> {@link #bootstrap()} loads a real
  *       {@link Typeface} straight from a font FILE via
- *       {@link Typeface#createFromFile(File)} (that path reads the file bytes
- *       and never consults the missing default, so it succeeds even when
- *       {@code gDefaultTypeface == null}) and — <b>only when the platform
- *       default is detected as unusable</b> — installs it as the process
+ *       {@link Typeface#createFromFile(File)} (on Android 12+ that call
+ *       dereferences {@code Typeface.DEFAULT} and throws while it is null) and
+ *       — <b>only when the platform default is detected as unusable</b> —
+ *       installs it as the process
  *       default through {@code Typeface.setDefault()}, the only call that sets
  *       the <i>native</i> {@code gDefaultTypeface}. Once it is non-null, NO
  *       {@code drawText} anywhere in the process can hit the assertion, even on
@@ -181,6 +182,8 @@ public final class DaemonFonts {
     public static synchronized boolean bootstrap() {
         if (bootstrapped) return available;
 
+        loadSystemFontMapIfLazy();
+
         // Probe the platform default ONCE. This — not the device model — is how
         // we tell a healthy BSP (DiLink 3/4) from a broken one (DiLink 5). The
         // same code ships everywhere; only this runtime result differs.
@@ -194,8 +197,9 @@ public final class DaemonFonts {
         boolean sysOk = systemDefaultUsable();
         boolean knownBroken = systemDefaultKnownBroken();
 
-        // 1) Load a guaranteed-good face from disk (createFromFile reads the
-        //    file bytes and never consults the possibly-null default). Needed
+        // 1) Load a guaranteed-good face from disk (createFromFile never
+        //    consults the native default; on Android 12+ it needs the Java
+        //    Typeface.DEFAULT that loadSystemFontMapIfLazy() provides). Needed
         //    as the per-paint fallback in apply() and, on a broken BSP, as the
         //    process default installed below.
         fileRegular = loadFirst(REGULAR_CANDIDATES);
@@ -314,6 +318,23 @@ public final class DaemonFonts {
         if (tf != null) paint.setTypeface(tf);
         // else: no face at all — leave paint untouched; canDrawText() is false
         // and the caller will skip drawText entirely.
+    }
+
+    /**
+     * Android 12+ builds the system font map lazily (Zygote preload / bindApplication), and
+     * neither runs for this app_process daemon: Typeface.DEFAULT stays null and createFromFile()
+     * NPEs on it. Load the map the way Zygote does. Inert on Android 11 and older.
+     */
+    private static void loadSystemFontMapIfLazy() {
+        if (Typeface.DEFAULT != null) return;
+        try {
+            Typeface.class.getMethod("loadPreinstalledSystemFontMap").invoke(null);
+            logger.info("Loaded preinstalled system font map (lazy-init platform), default="
+                    + (Typeface.DEFAULT != null));
+        } catch (Throwable t) {
+            Throwable cause = t.getCause() != null ? t.getCause() : t;
+            logger.warn("System font map load failed: " + cause);
+        }
     }
 
     private static Typeface loadFirst(String[] paths) {

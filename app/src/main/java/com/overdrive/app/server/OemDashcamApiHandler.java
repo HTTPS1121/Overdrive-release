@@ -183,6 +183,64 @@ public class OemDashcamApiHandler {
     // legitimate restart can heal again.
     private static volatile boolean eglHealAttempted = false;
 
+    // Legacy: a warm pipeline whose camera never delivered a frame is reopened on a
+    // backoff (a handle opened while the cameras were unpowered never recovers).
+    private static final long OEM_NO_FRAME_RESTART_AFTER_MS = 60_000L;
+    private static final long[] OEM_NO_FRAME_RESTART_BACKOFF_MS = {60_000L, 120_000L, 300_000L};
+    // Reset on every ACC change and pipeline teardown: a DVR that never streams costs at
+    // most this many reopens in between.
+    private static final int OEM_NO_FRAME_MAX_RESTARTS = 3;
+    private static int oemNoFrameRestarts = 0;            // guarded by LIFECYCLE_LOCK
+    private static long oemNoFrameNextRestartAtMs = 0L;   // guarded by LIFECYCLE_LOCK
+    private static int oemNoFrameAccPhase = -1;           // guarded by LIFECYCLE_LOCK
+    private static long oemNoFrameAccPhaseStartMs = 0L;   // guarded by LIFECYCLE_LOCK
+
+    /** Caller holds LIFECYCLE_LOCK. */
+    private static boolean shouldRestartNeverStreamedOem(
+            com.overdrive.app.camera.OemDashcamPipeline pipeline) {
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                || com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            return false;
+        }
+        boolean accOn = com.overdrive.app.monitor.AccMonitor.isAccOn();
+        long now = android.os.SystemClock.elapsedRealtime();
+        int accPhase = accOn ? 1 : 0;
+        if (accPhase != oemNoFrameAccPhase) {
+            oemNoFrameAccPhaseStartMs = now;
+        }
+        if (pipeline.hasDeliveredFrame() || accPhase != oemNoFrameAccPhase) {
+            oemNoFrameAccPhase = accPhase;
+            oemNoFrameRestarts = 0;
+            oemNoFrameNextRestartAtMs = 0L;
+            if (pipeline.hasDeliveredFrame()) {
+                return false;
+            }
+        }
+        long noFrameMs = pipeline.getNoFrameSinceAttachMs();
+        // DiLink 4: parked producers pause legitimately, and right after ACC ON byd_apa is still
+        // re-powering cameras — only a DVR silent for a full window into the drive is a fault.
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isDiLink4Selected()) {
+            if (!accOn) {
+                return false;
+            }
+            noFrameMs = Math.min(noFrameMs, now - oemNoFrameAccPhaseStartMs);
+        }
+        if (noFrameMs < OEM_NO_FRAME_RESTART_AFTER_MS || pipeline.isRecording()
+                || oemNoFrameRestarts >= OEM_NO_FRAME_MAX_RESTARTS
+                || now < oemNoFrameNextRestartAtMs) {
+            return false;
+        }
+        long backoffMs = OEM_NO_FRAME_RESTART_BACKOFF_MS[
+            Math.min(oemNoFrameRestarts, OEM_NO_FRAME_RESTART_BACKOFF_MS.length - 1)];
+        oemNoFrameRestarts++;
+        oemNoFrameNextRestartAtMs = now + backoffMs;
+        com.overdrive.app.daemon.CameraDaemon.log(
+            "OemDashcam: camera id " + pipeline.getCameraId() + " delivered no frame "
+            + (noFrameMs / 1000) + "s after attach — restarting the pipeline (attempt "
+            + oemNoFrameRestarts + "/" + OEM_NO_FRAME_MAX_RESTARTS + ")");
+        return true;
+    }
+
     /**
      * Start the periodic self-heal ticker. Idempotent — a second call while
      * the thread is alive is a no-op. Call once at daemon boot.
@@ -262,6 +320,11 @@ public class OemDashcamApiHandler {
             try {
                 if (shouldRun) {
                     if (existing == null || !existing.isRunning()) {
+                        existing = startPipeline(expectedRevision);
+                        if (existing == null) return;
+                    } else if (shouldRestartNeverStreamedOem(existing)) {
+                        try { existing.stop(); } catch (Throwable ignored) {}
+                        com.overdrive.app.daemon.CameraDaemon.setOemDashcamPipeline(null);
                         existing = startPipeline(expectedRevision);
                         if (existing == null) return;
                     } else if (streamingDesired
@@ -354,6 +417,8 @@ public class OemDashcamApiHandler {
                         try { existing.stopRecording(); } catch (Throwable ignored) {}
                         try { existing.stop(); } catch (Throwable ignored) {}
                         com.overdrive.app.daemon.CameraDaemon.setOemDashcamPipeline(null);
+                        oemNoFrameRestarts = 0;
+                        oemNoFrameNextRestartAtMs = 0L;
                         com.overdrive.app.daemon.CameraDaemon.log(
                             "OemDashcam: pipeline stopped (no triggers, no streaming clients)");
                     }
@@ -1420,7 +1485,7 @@ public class OemDashcamApiHandler {
      */
     private static String execShell(String cmd) {
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
             BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
             StringBuilder out = new StringBuilder();
             String line;

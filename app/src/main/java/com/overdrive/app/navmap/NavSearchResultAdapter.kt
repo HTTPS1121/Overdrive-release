@@ -1,9 +1,11 @@
 package com.overdrive.app.navmap
 
+import android.content.res.Configuration
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
@@ -30,7 +32,7 @@ class NavSearchResultAdapter(
     private val onResultTap: (SearchResult) -> Unit,
     private val onResultLongPress: ((SearchResult) -> Unit)? = null,
     private val onResultRemove: ((SearchResult) -> Unit)? = null
-) : ListAdapter<SearchResult, NavSearchResultAdapter.ResultViewHolder>(DiffCallback()) {
+) : ListAdapter<SearchResult, RecyclerView.ViewHolder>(DiffCallback()) {
 
     /**
      * Whether the current list is the RECENT-searches set (true) vs live autocomplete
@@ -39,6 +41,9 @@ class NavSearchResultAdapter(
      * [submitRecents] / [submitResults] so the row binding stays trivial.
      */
     private var removable = false
+
+    /** The Google Maps attribution row trails the list while any shown result is Google-sourced. */
+    private var attributionShown = false
 
     /** Submit the RECENT-searches list (rows get a trailing ✕ remove button). */
     fun submitRecents(items: List<SearchResult>) {
@@ -52,14 +57,47 @@ class NavSearchResultAdapter(
         submitList(items) { notifyDataSetChanged() }
     }
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ResultViewHolder {
+    override fun getItemCount(): Int = super.getItemCount() + if (attributionShown) 1 else 0
+
+    override fun getItemViewType(position: Int): Int =
+        if (attributionShown && position == super.getItemCount()) VIEW_TYPE_ATTRIBUTION else VIEW_TYPE_RESULT
+
+    // Runs after the list diff is dispatched, so the footer insert/remove lands at the new list end.
+    override fun onCurrentListChanged(previousList: List<SearchResult>, currentList: List<SearchResult>) {
+        val show = currentList.any { it.source == SOURCE_GOOGLE }
+        if (show == attributionShown) return
+        attributionShown = show
+        if (show) notifyItemInserted(currentList.size) else notifyItemRemoved(currentList.size)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        if (viewType == VIEW_TYPE_ATTRIBUTION) {
+            val footer = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_nav_search_attribution, parent, false)
+            return AttributionViewHolder(footer)
+        }
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_nav_search_result, parent, false)
         return ResultViewHolder(view)
     }
 
-    override fun onBindViewHolder(holder: ResultViewHolder, position: Int) {
-        holder.bind(getItem(position))
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        if (holder is AttributionViewHolder) {
+            holder.bind()
+            return
+        }
+        (holder as ResultViewHolder).bind(getItem(position))
+    }
+
+    /** Non-clickable Google Maps logo row; never reaches the row callbacks. */
+    private class AttributionViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+        private val logo: ImageView = itemView.findViewById(R.id.ivSearchAttributionLogo)
+
+        fun bind() {
+            val night = (itemView.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+            logo.setImageResource(if (night) R.drawable.google_maps_logo_white else R.drawable.google_maps_logo_gray)
+        }
     }
 
     inner class ResultViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
@@ -72,7 +110,13 @@ class NavSearchResultAdapter(
             // remainder is the muted secondary line. Falls back to a single line
             // when the label has no comma.
             val comma = result.label.indexOf(',')
-            if (comma > 0 && comma < result.label.length - 1) {
+            val secondary = result.secondary?.takeIf { it.isNotBlank() }
+            if (secondary != null) {
+                // A provider-supplied second line replaces the comma split.
+                tvTitle.text = result.label
+                tvSubtitle.text = secondary
+                tvSubtitle.visibility = View.VISIBLE
+            } else if (comma > 0 && comma < result.label.length - 1) {
                 tvTitle.text = result.label.substring(0, comma).trim()
                 tvSubtitle.text = result.label.substring(comma + 1).trim()
                 tvSubtitle.visibility = View.VISIBLE
@@ -100,12 +144,20 @@ class NavSearchResultAdapter(
     }
 
     private class DiffCallback : DiffUtil.ItemCallback<SearchResult>() {
+        // Place predictions carry NaN coordinates (NaN != NaN), so they match on place id.
         override fun areItemsTheSame(oldItem: SearchResult, newItem: SearchResult): Boolean =
-            oldItem.lat == newItem.lat &&
+            if (oldItem.placeId != null || newItem.placeId != null) oldItem.placeId == newItem.placeId
+            else oldItem.lat == newItem.lat &&
                 oldItem.lng == newItem.lng &&
                 oldItem.label == newItem.label
 
         override fun areContentsTheSame(oldItem: SearchResult, newItem: SearchResult): Boolean =
             oldItem == newItem
+    }
+
+    private companion object {
+        const val VIEW_TYPE_RESULT = 0
+        const val VIEW_TYPE_ATTRIBUTION = 1
+        const val SOURCE_GOOGLE = "google"
     }
 }

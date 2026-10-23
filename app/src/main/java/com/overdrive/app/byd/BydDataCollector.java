@@ -394,22 +394,161 @@ public class BydDataCollector {
     }
 
     private static final String APP_PROCESS = "com.overdrive.app";
-    private static final long DILINK5_AUTOMATION_MAX_AGE_MS = 15_000L;
+    // Package-private so the carsvc rail's timing-budget test can assert the budgets against it.
+    static final long DILINK5_AUTOMATION_MAX_AGE_MS = 15_000L;
     private static final long DILINK5_DYNAMIC_MAX_AGE_MS =
             CarSvcTelemetry.DUMP_TTL_MS + 1_000L;
     private static final long DILINK5_INGRESS_MAX_DELAY_MS =
             DILINK5_AUTOMATION_MAX_AGE_MS;
     private final Object diLink5IngressLock = new Object();
+    // DI5 daemon: car_service charging fallback for a missing or blind producer. A connected gun
+    // with live power calls a charge; an unreadable gun also needs SoC to rise. After the producer
+    // stops, only a SoC rise measured wholly after that stop overrides it. Power that stays
+    // positive while SoC never rises is sticky.
+    private static final long DILINK5_CARSVC_CHARGING_POLL_MS = 20_000L;
+    // carsvc lock rail (daemon; INACTIVE unless di5LockRails names "carsvc"): fixed-rate dump poll
+    // while ACC is not authoritatively ON and remote access is enabled, so one discarded dump still
+    // leaves the gate known inside its 15 s window (2 * 6 s + 2 s TTL <= 15 s); a per-command
+    // burst re-dumps as soon as the previous dump's 2 s source TTL lapses, for at most 12 s.
+    static final long DILINK5_CARSVC_LOCK_POLL_MS = 6_000L;
+    static final long DILINK5_CARSVC_LOCK_BURST_MAX_MS = 12_000L;
+    static final long DILINK5_CARSVC_LOCK_BURST_MIN_PAUSE_MS = 100L;
+    static final long DILINK5_CARSVC_SETTINGS_READ_MS = 30_000L;
+    // car_service LF door-lock encoding, assumed to share the app/OTA domain (UNLOCK=1 / LOCK=2).
+    // UNVERIFIED on this car; the Stage 0 diagnostic logs raw and mapped so an inversion is
+    // detectable.
+    static final int CARSVC_LF_UNLOCKED = 1;
+    static final int CARSVC_LF_LOCKED = 2;
+    // The only HAL timestamp domain the carsvc rail evaluates: SystemClock.elapsedRealtimeNanos
+    // (fixed by the Stage 0 result note's tsDomain token; a constant, not a setting).
+    static final String CARSVC_TS_DOMAIN_ELAPSED_REALTIME = "elapsed";
+    static final String CARSVC_TS_DOMAIN = CARSVC_TS_DOMAIN_ELAPSED_REALTIME;
+    // Setting di5CarSvcLockMaxEventAgeSec: how old the car_service LF lock HAL event may be.
+    static final long DILINK5_CARSVC_LOCK_MAX_EVENT_AGE_DEFAULT_SEC = 86_400L;
+    static final long DILINK5_CARSVC_LOCK_MAX_EVENT_AGE_MIN_SEC = 60L;
+    static final long DILINK5_CARSVC_LOCK_MAX_EVENT_AGE_MAX_SEC = 86_400L;
+    // Stage 0 car_service lock diagnostics (daemon, piggybacks on the charging poll's dump).
+    private static final long DILINK5_CARSVC_LOCK_LOG_MS = 60_000L;
+    private static final long DILINK5_CARSVC_LOCK_NO_DUMP_LOG_MS = 5 * 60_000L;
+    private static final long DILINK5_CARSVC_DUMP_STATS_LOG_MS = 5 * 60_000L;
+    private static final long DILINK5_CARSVC_TS_DOMAIN_TOLERANCE_NS = 5_000_000_000L;
+    private static final long DILINK5_CARSVC_CHARGING_MAX_AGE_MS = 60_000L;
+    private static final long DILINK5_CARSVC_SOC_STALL_MS = 2 * 60 * 60_000L;
+    // Unreadable gun: the next rise is due within 4x the last rise interval, never under 10 min.
+    private static final long DILINK5_CARSVC_RISE_STALL_MIN_MS = 10 * 60_000L;
+    private static final long DILINK5_CARSVC_FLOW_GAP_MS = 60_000L;
+    // A producer quiet this long no longer vouches for the charged-energy counter it relays.
+    private static final long DILINK5_COUNTER_OUTAGE_MS = 2 * 60_000L;
+    // Covers a producer restart or ACC-off force-stop gap (35 s in the field) without an OFF edge.
+    private static final long DILINK5_PRODUCER_CHARGING_LEASE_MS = 60_000L;
+    private static final double DILINK5_CARSVC_MIN_CHARGING_KW = 0.3;
+    // Volatile so requestDiLink5CarSvcLockBurst can enqueue on it without the collector monitor.
+    private volatile java.util.concurrent.ScheduledExecutorService diLink5CarSvcChargingPoller;
+    // carsvc lock rail state (daemon). Burst deadline and settings mirror are volatile, written on
+    // the "DI5CarSvcCharging" thread (deadline also by requestDiLink5CarSvcLockBurst callers).
+    private volatile long diLink5CarSvcLockBurstUntilElapsedMs;
+    private volatile long lastDiLink5CarSvcSettingsReadAtElapsedMs;
+    private volatile boolean diLink5RemoteAccessEnabled;
+    private final java.util.concurrent.atomic.AtomicBoolean diLink5CarSvcLockBurstKickQueued =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean diLink5CarSvcCharging;
+    private volatile long diLink5CarSvcChargingAtElapsedMs;
+    private volatile long diLink5CarSvcSocRiseAtElapsedMs;
+    // Start of the interval that ended in the latest rise.
+    private volatile long diLink5CarSvcSocRiseFromElapsedMs;
+    private volatile long diLink5ProducerStopAtElapsedMs;
+    private volatile long diLink5ProducerBlindStopAtElapsedMs;
+    private volatile double diLink5CarSvcSocPercent = Double.NaN;
+    private volatile long diLink5CarSvcSocAtElapsedMs;
+    private volatile boolean loggedDiLink5ChargingAdapterUnbound;
+    // Poller thread only.
+    private long diLink5CarSvcFlowAtElapsedMs;
+    private long diLink5CarSvcLastFlowAtElapsedMs;
+    private boolean diLink5CarSvcGunSeen;
+    private double diLink5CarSvcSocHigh = Double.NaN;
+    private long diLink5CarSvcRiseIntervalMs;
+    private long diLink5BridgeQuietSinceElapsedMs;
+    private boolean diLink5CounterOutageNoted;
+    private double diLink5CarSvcAnySoc = Double.NaN;
+    private long diLink5CarSvcAnySocChangedAtElapsedMs;
+    private int diLink5CarSvcLastGun = -1;
+    private int diLink5CarSvcPendingStopGun = -1;
+    private long diLink5CarSvcPendingStopAtElapsedMs;
+    private boolean loggedDiLink5CarSvcGunUnreadable;
+    private String lastDiLink5CarSvcChargingLog;
+    // Stage 0 lock diagnostics throttle state (poller thread only).
+    private String lastDiLink5CarSvcLockTuple;
+    private long lastDiLink5CarSvcLockLogAtElapsedMs;
+    private long lastDiLink5CarSvcNoDumpLogAtElapsedMs;
+    private long lastDiLink5CarSvcDumpStatsLogAtElapsedMs;
+    // Guarded by diLink5IngressLock.
+    private String lastDiLink5BridgeChargingLog;
+    private boolean diLink5BridgedProducerStopped;
+    private boolean diLink5BridgedProducerCharging;
+    // Last relayed physical stop: 0 none, 1 unplugged, 5 exporting.
+    private int diLink5BridgedPhysicalStopKind;
+    private long diLink5OpinionSourceEpoch;
     private volatile boolean diLink5ProducerActive;
     private volatile boolean diLink5BridgeConsumer;
     private volatile long diLink5BridgeReceivedAtElapsedMs;
+    // Safety reads retain each SDK read's time; unrelated telemetry cannot renew closed doors.
+    private volatile DiLink5DoorSafetySnapshot diLink5BridgedDoorSafety =
+            DiLink5DoorSafetySnapshot.unknown();
+    private final DiLink5DoorSafetyCache diLink5DoorSafety = new DiLink5DoorSafetyCache();
     private volatile long diLink5DynamicsObservedAtElapsedMs;
+    // Edge-logging latch for the daemon-side cloud cabin fallback (withDiLink5CloudCabinFallback).
+    private volatile boolean diLink5CabinCloudFallback;
     private long diLink5TelemetrySourceEpoch;
     private long diLink5TelemetrySequence;
     private long diLink5EventSourceEpoch;
     private long diLink5EventSequence;
     private volatile int diLink5EnergyFeedback = -1;
     private volatile int diLink5DoorLockState;
+    // Producer: the actual typed-cabin read time, including UNKNOWN; written after the state.
+    private volatile long diLink5DoorLockReadAtElapsedMs;
+    private volatile int diLink5PublishedLockEventState;
+    private String lastDiLink5LockReadDiagnostic;
+    private long lastDiLink5LockReadDiagnosticAtElapsedMs;
+    // Daemon: per-rail lock evidence for CameraDaemon's lock gate. With the default enabled set
+    // (typed-cabin only) it is byte-for-byte the former single DiLink5LockSafetyCache.
+    private final DiLink5LockEvidenceLedger diLink5GateLock =
+            new DiLink5LockEvidenceLedger(logger::info);
+    // Daemon: carsvc rail HAL-event age bound (setting di5CarSvcLockMaxEventAgeSec, default 900 s).
+    private volatile long diLink5CarSvcLockMaxEventAgeNs =
+            DILINK5_CARSVC_LOCK_MAX_EVENT_AGE_DEFAULT_SEC * 1_000_000_000L;
+    // Stage 0 OTA lock probe (app producer). Binder calls happen only on the "DI5OtaLockProbe"
+    // thread; the fast-poll thread merely enqueues. Lock-free: no collector monitor involved.
+    private final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ExecutorService>
+            diLink5OtaLockProbeExecutor = new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicBoolean diLink5OtaProbeInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicBoolean diLink5OtaProbeStallLogged =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile long lastDiLink5OtaProbeAtElapsedMs;
+    private volatile long diLink5OtaProbeSubmittedAtElapsedMs;
+    // Latest "DI5 lock rails:" line; relayed to the daemon by Dilink5TelemetryBridge as lockDiag.
+    private volatile String lastDiLink5LockDiag;
+    private volatile long lastDiLink5LockDiagLogAtElapsedMs;
+    // App producer: the di5LockRails setting, re-read on the "DI5OtaLockProbe" thread at most every
+    // 30 s (RemoteAccessSettings.read() is config-file I/O; never on the fast-poll thread).
+    private static final long DILINK5_PRODUCER_SETTINGS_READ_MS = 30_000L;
+    private volatile java.util.Set<DiLink5LockRail> diLink5ProducerEnabledRails =
+            java.util.Collections.unmodifiableSet(java.util.EnumSet.of(DiLink5LockRail.TYPED_CABIN));
+    private volatile long lastDiLink5ProducerSettingsReadAtElapsedMs;
+    // App producer OTA lock rail (INACTIVE unless di5LockRails names "ota"): the debounced
+    // getLFDoorLockState reading, written only on the "DI5OtaLockProbe" thread, raw and state
+    // BEFORE time (publishAutomationSnapshot reads the time first, so a new time is never paired
+    // with an older state). Debounce state is probe-thread only.
+    private volatile int diLink5OtaLockState;
+    private volatile long diLink5OtaLockReadAtElapsedMs;
+    private volatile int diLink5OtaLockRaw = Integer.MIN_VALUE;
+    private final DiLink5OtaLockDebounce diLink5OtaLockDebounce = new DiLink5OtaLockDebounce();
+    // App producer: the typed-cabin raw (reading.nativeState) of the latest actual read, written in
+    // collectLockState before diLink5DoorLockState, for the lockReadings typed entry.
+    private volatile int diLink5DoorLockRaw = Integer.MIN_VALUE;
+    // Daemon: echo throttle for the producer's relayed lock diagnostic.
+    private volatile String lastDiLink5ProducerLockDiag;
+    private volatile long lastDiLink5ProducerLockDiagLogAtElapsedMs;
     private volatile long lastDiLink5ListenerEventElapsedMs;
     private volatile long lastDiLink5ListenerRecoveryElapsedMs;
     private final java.util.concurrent.atomic.AtomicBoolean diLink5WakeRecoveryRequested =
@@ -465,6 +604,12 @@ public class BydDataCollector {
                     if (collector.availableDevices.isEmpty()) {
                         logger.warn("DI5 telemetry initialized without SDK devices");
                     }
+                    // Boot with ACC already on produces no edge in setAccState: give the opt-in
+                    // assist-off profile its once-per-cycle run here (idempotent per cycle).
+                    if (Boolean.TRUE.equals(accOn) && collector.isDiLink5ProducerActive()) {
+                        com.overdrive.app.byd.assist.DiLink5AssistOffApplier
+                                .onProducerStarted(appContext);
+                    }
                     return;
                 }
             }
@@ -493,11 +638,29 @@ public class BydDataCollector {
     /** Get the latest vehicle data snapshot. Thread-safe. */
     public BydVehicleData getData() {
         BydVehicleData current = snapshot.get();
-        return isDiLink5BridgeConsumer()
-                && !isDiLink5AutomationSnapshotFresh(
-                        SystemClock.elapsedRealtime(),
-                        diLink5BridgeReceivedAtElapsedMs)
-                ? clearStaleDiLink5VehicleFields(current) : current;
+        if (!isDiLink5BridgeConsumer()) return current;
+        long nowElapsed = SystemClock.elapsedRealtime();
+        if (!isDiLink5AutomationSnapshotFresh(nowElapsed, diLink5BridgeReceivedAtElapsedMs)) {
+            return withDiLink5CarSvcCpd(
+                    withDiLink5CarSvcSoc(clearStaleDiLink5VehicleFields(current), nowElapsed));
+        }
+        return withDiLink5CarSvcCpd(current != null && !isUsablePolledSoc(current.socPercent, true)
+                ? withDiLink5CarSvcSoc(current, nowElapsed) : current);
+    }
+
+    /**
+     * When the producer is quiet (ACC-off force-stop) or has no SoC yet, SoC comes from the daemon's
+     * car_service read, floored to the whole percent the producer's SDK reports so a session never
+     * mixes the two.
+     */
+    private BydVehicleData withDiLink5CarSvcSoc(BydVehicleData data, long nowElapsedMs) {
+        double soc = diLink5CarSvcSocPercent;
+        long age = nowElapsedMs - diLink5CarSvcSocAtElapsedMs;
+        if (data == null || !isUsablePolledSoc(soc, true) || diLink5CarSvcSocAtElapsedMs <= 0L
+                || age < 0L || age > DILINK5_CARSVC_CHARGING_MAX_AGE_MS) {
+            return data;
+        }
+        return data.toBuilder().socPercent(Math.floor(soc)).buildPreservingTimestamp();
     }
 
     static BydVehicleData clearStaleDiLink5VehicleFields(BydVehicleData current) {
@@ -570,7 +733,50 @@ public class BydDataCollector {
             boolean charging,
             int energyFeedback,
             int doorLockState,
+            long doorLockObservedAtElapsedMs,
             int[] doorStates) {
+        return acceptDiLink5Telemetry(incoming, sourceEpoch, sequence, sentElapsedMs,
+                dynamicsObservedAtElapsedMs, charging, energyFeedback, doorLockState,
+                doorLockObservedAtElapsedMs, doorStates, null);
+    }
+
+    public boolean acceptDiLink5Telemetry(
+            BydVehicleData incoming,
+            long sourceEpoch,
+            long sequence,
+            long sentElapsedMs,
+            long dynamicsObservedAtElapsedMs,
+            boolean charging,
+            int energyFeedback,
+            int doorLockState,
+            long doorLockObservedAtElapsedMs,
+            int[] doorStates,
+            long[] doorStatesObservedAtElapsedMs) {
+        return acceptDiLink5Telemetry(incoming, sourceEpoch, sequence, sentElapsedMs,
+                dynamicsObservedAtElapsedMs, charging, energyFeedback, doorLockState,
+                doorLockObservedAtElapsedMs, doorStates, doorStatesObservedAtElapsedMs, null);
+    }
+
+    /**
+     * The SINGLE daemon ingress for one producer telemetry message. {@code lockReadings} (bridge key
+     * {@code lockReadings}, decoded by the server) carries per-rail lock readings; when it is present
+     * and non-empty the legacy {@code doorLockState}/{@code doorLockObservedAtElapsedMs} pair is
+     * ignored for the gate, otherwise that pair feeds the {@code TYPED_CABIN} rail as before. One
+     * {@code (sourceEpoch, sequence)} check and one {@code diLink5IngressLock} block per message.
+     */
+    public boolean acceptDiLink5Telemetry(
+            BydVehicleData incoming,
+            long sourceEpoch,
+            long sequence,
+            long sentElapsedMs,
+            long dynamicsObservedAtElapsedMs,
+            boolean charging,
+            int energyFeedback,
+            int doorLockState,
+            long doorLockObservedAtElapsedMs,
+            int[] doorStates,
+            long[] doorStatesObservedAtElapsedMs,
+            java.util.List<DiLink5LockReading> lockReadings) {
         if (incoming == null || !isDiLink5Vehicle() || isMainAppProcess()) return false;
         long nowElapsed = SystemClock.elapsedRealtime();
         if (!isDiLink5IngressFresh(nowElapsed, sentElapsedMs)) return false;
@@ -583,11 +789,20 @@ public class BydDataCollector {
                         && isDiLink5DynamicObservationFresh(
                                 nowElapsed, dynamicsObservedAtElapsedMs)
                         ? dynamicsObservedAtElapsedMs : 0L;
-        BydVehicleData acceptedIncoming =
+        BydVehicleData acceptedIncoming = withDiLink5CloudCabinFallback(
                 acceptedDynamicsObservedAt > 0L
-                        ? incoming : clearStaleDiLink5DrivingFields(incoming);
+                        ? incoming : clearStaleDiLink5DrivingFields(incoming));
         int[] normalizedDoorStates = normalizeDiLink5DoorStates(doorStates);
+        DiLink5DoorSafetySnapshot doorSafety = DiLink5DoorSafetySnapshot.fromBridge(
+                doorStates, doorStatesObservedAtElapsedMs, sampleElapsed, nowElapsed);
 
+        final boolean carSvcCharging;
+        final boolean effectiveCharging;
+        final boolean verdictKnown;
+        final long verdictMs;
+        final boolean physicalStopEdge;
+        final boolean physicalStopIsExport;
+        final boolean producerCharging;
         BydVehicleData previous;
         synchronized (diLink5IngressLock) {
             if (!isNewerDiLink5Message(
@@ -595,12 +810,71 @@ public class BydDataCollector {
                     sourceEpoch, sequence)) {
                 return false;
             }
+            if (sourceEpoch != diLink5TelemetrySourceEpoch
+                    || !isDiLink5AutomationSnapshotFresh(nowElapsed, diLink5BridgeReceivedAtElapsedMs)) {
+                // A returning producer reports afresh; edges that happened while it was gone were
+                // never relayed.
+                diLink5BridgedPhysicalStopKind = 0;
+                diLink5BridgedProducerStopped = false;
+            }
+            boolean producerExporting = acceptedIncoming.chargingGunState == 5
+                    || acceptedIncoming.vtolCharging;
+            boolean producerPhysicalStop =
+                    acceptedIncoming.chargingGunState == 1 || producerExporting;
+            boolean producerStopped = producerPhysicalStop
+                    || isTerminalChargingState(acceptedIncoming.chargingState);
+            boolean producerEvidence = producerStopped
+                    || acceptedIncoming.chargingState != BydVehicleData.UNAVAILABLE;
+            // A message that shows the cable out or exporting cannot also be a live charge.
+            producerCharging = charging && !producerPhysicalStop;
+            // A producer process that has not read the BMS yet has no verdict to send.
+            boolean producerOpinion = producerCharging || producerEvidence
+                    || sourceEpoch == diLink5OpinionSourceEpoch;
+            if (producerOpinion) diLink5OpinionSourceEpoch = sourceEpoch;
+            // The fence marks when the producer's own readings started saying "not charging".
+            if (acceptedIncoming.chargingState == 1 && !producerStopped) {
+                diLink5ProducerStopAtElapsedMs = 0L;
+            } else if (producerEvidence && !producerCharging
+                    && (diLink5ProducerStopAtElapsedMs <= 0L
+                        || diLink5BridgedProducerCharging
+                        || (producerStopped && !diLink5BridgedProducerStopped))) {
+                diLink5ProducerStopAtElapsedMs = sampleElapsed;
+            }
+            diLink5BridgedProducerStopped = producerStopped;
+            // A producer that stops without readings cannot fence, but car_service must then keep
+            // proving the charge with SoC rises.
+            if (producerCharging || producerEvidence) {
+                diLink5ProducerBlindStopAtElapsedMs = 0L;
+                diLink5BridgedProducerCharging = producerCharging;
+            } else if (diLink5BridgedProducerCharging && diLink5ProducerBlindStopAtElapsedMs <= 0L) {
+                diLink5ProducerBlindStopAtElapsedMs = sampleElapsed;
+            }
+            // The daemon has no plug input of its own; relay the producer's unplug/export edge.
+            int physicalStopKind = producerExporting ? 5 : producerPhysicalStop ? 1 : 0;
+            physicalStopEdge = physicalStopKind != 0
+                    && physicalStopKind != diLink5BridgedPhysicalStopKind;
+            physicalStopIsExport = producerExporting;
+            diLink5BridgedPhysicalStopKind = physicalStopKind;
+            carSvcCharging = isDiLink5CarSvcChargingAdmissible(nowElapsed);
+            effectiveCharging = producerCharging || carSvcCharging;
+            verdictKnown = producerOpinion || carSvcCharging;
+            // A charge outlives a producer restart or force-stop gap; car_service evidence keeps its
+            // own lease. Any newer producer verdict still replaces this at once.
+            long chargingLeaseMs = producerCharging ? DILINK5_PRODUCER_CHARGING_LEASE_MS : 0L;
+            if (carSvcCharging) {
+                chargingLeaseMs = Math.max(chargingLeaseMs, DILINK5_CARSVC_CHARGING_MAX_AGE_MS
+                        - (nowElapsed - diLink5CarSvcChargingAtElapsedMs));
+            }
+            verdictMs = Math.max(remainingMs, chargingLeaseMs);
             diLink5TelemetrySourceEpoch = sourceEpoch;
             diLink5TelemetrySequence = sequence;
             diLink5BridgeReceivedAtElapsedMs = sampleElapsed;
             diLink5DynamicsObservedAtElapsedMs = acceptedDynamicsObservedAt;
             previous = snapshot.getAndSet(acceptedIncoming);
+            observeDiLink5CabinCpd(acceptedIncoming, sampleElapsed);
             diLink5BridgeConsumer = true;
+            // Missing/invalid source times explicitly revoke the old safety snapshot.
+            diLink5BridgedDoorSafety = doorSafety;
             if (energyFeedback >= 0 && energyFeedback <= 2) {
                 diLink5EnergyFeedback = energyFeedback;
             }
@@ -608,7 +882,19 @@ public class BydDataCollector {
                     || doorLockState == DOOR_STATE_LOCK) {
                 diLink5DoorLockState = doorLockState;
             }
+            observeDiLink5BridgedLockReadings(diLink5GateLock, lockReadings, doorLockState,
+                    doorLockObservedAtElapsedMs, sampleElapsed, nowElapsed);
             initialized = true;
+            String chargingLog = "DI5 bridged charging: producer="
+                    + (producerOpinion ? String.valueOf(producerCharging) : "none")
+                    + " gun=" + acceptedIncoming.chargingGunState
+                    + " bms=" + acceptedIncoming.chargingState
+                    + " carSvc=" + carSvcCharging
+                    + " -> " + (effectiveCharging ? "CHARGING" : "not charging");
+            if (!chargingLog.equals(lastDiLink5BridgeChargingLog)) {
+                lastDiLink5BridgeChargingLog = chargingLog;
+                logger.info(chargingLog);
+            }
         }
 
         return com.overdrive.app.automation.Automations.withStateExpiry(
@@ -616,9 +902,17 @@ public class BydDataCollector {
                 () -> {
                     com.overdrive.app.monitor.ChargingDetector detector =
                             com.overdrive.app.monitor.ChargingDetector.getInstance();
-                    detector.acceptExternalVerdict(
-                            charging, "dilink5-telemetry",
-                            remainingMs);
+                    if (physicalStopEdge) {
+                        detector.updateConnectionState(
+                                physicalStopIsExport ? 5 : 1, physicalStopIsExport);
+                    }
+                    if (verdictKnown) {
+                        detector.acceptExternalVerdict(
+                                effectiveCharging,
+                                producerCharging ? "dilink5-telemetry" : carSvcCharging
+                                        ? "dilink5-carsvc" : "dilink5-telemetry",
+                                verdictMs);
+                    }
 
                     if (previous != null
                             && previous.chargingState
@@ -640,6 +934,588 @@ public class BydDataCollector {
                             energyFeedback, doorLockState, normalizedDoorStates);
                     return true;
                 });
+    }
+
+    private boolean isDiLink5CarSvcChargingAdmissible(long nowElapsedMs) {
+        long age = nowElapsedMs - diLink5CarSvcChargingAtElapsedMs;
+        long producerStopAt = diLink5ProducerStopAtElapsedMs;
+        return diLink5CarSvcCharging && diLink5CarSvcChargingAtElapsedMs > 0L
+                && age >= 0L && age <= DILINK5_CARSVC_CHARGING_MAX_AGE_MS
+                && (producerStopAt <= 0L
+                    || (diLink5CarSvcSocRiseAtElapsedMs > 0L
+                        && diLink5CarSvcSocRiseFromElapsedMs >= producerStopAt));
+    }
+
+    private void noteDiLink5BridgeOutage(long nowElapsedMs) {
+        if (isDiLink5AutomationSnapshotFresh(nowElapsedMs, diLink5BridgeReceivedAtElapsedMs)) {
+            diLink5BridgeQuietSinceElapsedMs = 0L;
+            diLink5CounterOutageNoted = false;
+            return;
+        }
+        if (diLink5BridgeQuietSinceElapsedMs <= 0L) diLink5BridgeQuietSinceElapsedMs = nowElapsedMs;
+        if (diLink5CounterOutageNoted
+                || nowElapsedMs - diLink5BridgeQuietSinceElapsedMs < DILINK5_COUNTER_OUTAGE_MS) {
+            return;
+        }
+        diLink5CounterOutageNoted = true;
+        com.overdrive.app.monitor.SocHistoryDatabase.getInstance().noteChargeCounterOutage();
+    }
+
+    private void resetDiLink5CarSvcFlow() {
+        diLink5CarSvcFlowAtElapsedMs = 0L;
+        diLink5CarSvcLastFlowAtElapsedMs = 0L;
+        diLink5CarSvcGunSeen = false;
+        diLink5CarSvcSocHigh = Double.NaN;
+        diLink5CarSvcRiseIntervalMs = 0L;
+        diLink5CarSvcSocRiseAtElapsedMs = 0L;
+        diLink5CarSvcSocRiseFromElapsedMs = 0L;
+    }
+
+    private synchronized void startDiLink5CarSvcChargingPoll() {
+        if (diLink5CarSvcChargingPoller != null) return;
+        resetDiLink5CarSvcFlow();
+        diLink5CarSvcChargingPoller =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "DI5CarSvcCharging");
+                    t.setDaemon(true);
+                    return t;
+                });
+        diLink5CarSvcChargingPoller.scheduleWithFixedDelay(() -> {
+            try {
+                pollDiLink5CarSvcCharging();
+            } catch (Throwable t) {
+                logger.debug("DI5 car_service charging poll error: " + t.getMessage());
+            }
+        }, DILINK5_CARSVC_CHARGING_POLL_MS, DILINK5_CARSVC_CHARGING_POLL_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+        // carsvc lock rail: fixed rate (not fixed delay) so a slow dump does not stretch the cadence
+        // the one-miss budget relies on; after a burst the backlog ticks each reuse the <= 2 s dump
+        // cache, so they cost at most one extra spawn. The tick is a no-op unless the rail is enabled.
+        diLink5CarSvcChargingPoller.scheduleAtFixedRate(() -> {
+            try {
+                pollDiLink5CarSvcLock();
+            } catch (Throwable t) {
+                logger.debug("DI5 car_service lock poll error: " + t.getMessage());
+            }
+        }, 0L, DILINK5_CARSVC_LOCK_POLL_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private synchronized void stopDiLink5CarSvcChargingPoll() {
+        if (diLink5CarSvcChargingPoller != null) {
+            diLink5CarSvcChargingPoller.shutdownNow();
+            diLink5CarSvcChargingPoller = null;
+        }
+        diLink5CarSvcCharging = false;
+        diLink5CarSvcChargingAtElapsedMs = 0L;
+        diLink5CarSvcSocAtElapsedMs = 0L;
+        diLink5CarSvcLockBurstUntilElapsedMs = 0L;
+        diLink5CarSvcLockBurstKickQueued.set(false);
+        lastDiLink5CarSvcSettingsReadAtElapsedMs = 0L;
+    }
+
+    // ---- carsvc lock rail (daemon) ------------------------------------------------------------
+
+    /** The LF lock row parsed from one dump, keyed by the dump's pre-spawn stamp (immutable). */
+    private static final class DiLink5CarSvcLockParse {
+        final long dumpObservedAtElapsedMs;
+        final CarSvcTelemetry.LockEvent lf;
+
+        DiLink5CarSvcLockParse(long dumpObservedAtElapsedMs, CarSvcTelemetry.LockEvent lf) {
+            this.dumpObservedAtElapsedMs = dumpObservedAtElapsedMs;
+            this.lf = lf;
+        }
+    }
+
+    private volatile DiLink5CarSvcLockParse diLink5CarSvcLockParse;
+
+    /** One evaluated car_service LF lock event: app-domain state, raw value and HAL timestamp. */
+    static final class DiLink5CarSvcLockObservation {
+        final int state;
+        final int raw;
+        final long halTimestampNs;
+
+        DiLink5CarSvcLockObservation(int state, int raw, long halTimestampNs) {
+            this.state = state;
+            this.raw = raw;
+            this.halTimestampNs = halTimestampNs;
+        }
+    }
+
+    /**
+     * Pure evaluator of the carsvc rail (the six rules, in order). INVALID unless the dump is at
+     * most {@link CarSvcTelemetry#DUMP_TTL_MS} old measured from its pre-spawn stamp (rule 1), the
+     * LF row exists (rule 6; callers pass the {@code 0x21404627} event only — rule 5), its
+     * {@code status} is exactly 0 (rule 2), its HAL timestamp is in the elapsed-realtime domain and
+     * at most {@code maxEventAgeNs} old (rule 3), and its value is {@link #CARSVC_LF_UNLOCKED} or
+     * {@link #CARSVC_LF_LOCKED} (rule 4). No debounce (rule 7 is deliberately not implemented:
+     * reject rather than smooth). Never throws.
+     */
+    static DiLink5CarSvcLockObservation evaluateDiLink5CarSvcLock(
+            CarSvcTelemetry.LockEvent lf,
+            long dumpObservedAtElapsedMs,
+            long nowElapsedMs,
+            long nowElapsedNs,
+            long maxEventAgeNs) {
+        int raw = lf != null && lf.getValue() != null ? lf.getValue() : Integer.MIN_VALUE;
+        long halTs = lf != null && lf.getTimestampNs() != null ? lf.getTimestampNs() : 0L;
+        long dumpAge = nowElapsedMs - dumpObservedAtElapsedMs;
+        if (dumpAge < 0L || dumpAge > CarSvcTelemetry.DUMP_TTL_MS) {
+            return new DiLink5CarSvcLockObservation(DOOR_STATE_INVALID, raw, halTs);
+        }
+        if (lf == null) {
+            return new DiLink5CarSvcLockObservation(DOOR_STATE_INVALID, raw, halTs);
+        }
+        if (lf.getStatus() == null || lf.getStatus() != 0) {
+            return new DiLink5CarSvcLockObservation(DOOR_STATE_INVALID, raw, halTs);
+        }
+        if (lf.getTimestampNs() == null) {
+            return new DiLink5CarSvcLockObservation(DOOR_STATE_INVALID, raw, halTs);
+        }
+        long eventAge = nowElapsedNs - halTs;
+        if (eventAge < 0L || eventAge > maxEventAgeNs) {
+            return new DiLink5CarSvcLockObservation(DOOR_STATE_INVALID, raw, halTs);
+        }
+        int state;
+        if (raw == CARSVC_LF_UNLOCKED) state = DOOR_STATE_UNLOCK;
+        else if (raw == CARSVC_LF_LOCKED) state = DOOR_STATE_LOCK;
+        else state = DOOR_STATE_INVALID;
+        return new DiLink5CarSvcLockObservation(state, raw, halTs);
+    }
+
+    /**
+     * Feeds one cached dump to the carsvc rail: parse and evaluate OUTSIDE every lock, then observe
+     * under {@code diLink5IngressLock} with {@code readAt} = the dump's pre-spawn stamp. A null dump
+     * (none, or older than its TTL) observes nothing — the rail simply ages out. Never spawns.
+     */
+    private void observeDiLink5CarSvcLock(
+            CarSvcTelemetry.CachedDump dump, long nowElapsedMs, long nowElapsedNs) {
+        if (dump == null) return;
+        // One parse per dump: gate-time refreshes of the same cached dump reuse the LF row.
+        DiLink5CarSvcLockParse memo = diLink5CarSvcLockParse;
+        CarSvcTelemetry.LockEvent lf;
+        if (memo != null && memo.dumpObservedAtElapsedMs == dump.getObservedAtElapsedMs()) {
+            lf = memo.lf;
+        } else {
+            lf = CarSvcTelemetry.parseLockEvent(dump.getText(), CarSvcTelemetry.LF_LOCK_PROP_ID);
+            diLink5CarSvcLockParse = new DiLink5CarSvcLockParse(dump.getObservedAtElapsedMs(), lf);
+        }
+        DiLink5CarSvcLockObservation o = evaluateDiLink5CarSvcLock(
+                lf, dump.getObservedAtElapsedMs(), nowElapsedMs, nowElapsedNs,
+                diLink5CarSvcLockMaxEventAgeNs);
+        synchronized (diLink5IngressLock) {
+            diLink5GateLock.observe(DiLink5LockRail.CARSVC, o.state, dump.getObservedAtElapsedMs(),
+                    nowElapsedMs, o.raw, o.halTimestampNs);
+        }
+    }
+
+    /**
+     * Pure: the 6 s lock poll (and its burst) runs only while the carsvc rail is enabled, ACC is not
+     * AUTHORITATIVELY on (an unknown ACC state polls — fail toward evidence) and the remote-access
+     * feature is enabled.
+     */
+    static boolean shouldPollDiLink5CarSvcLock(
+            java.util.Set<DiLink5LockRail> enabledRails,
+            boolean accAuthoritativelyOn,
+            boolean remoteAccessEnabled) {
+        return enabledRails != null && enabledRails.contains(DiLink5LockRail.CARSVC)
+                && !accAuthoritativelyOn && remoteAccessEnabled;
+    }
+
+    /** Pure: burst deadline for a request of {@code windowMs}, capped at 12 s. */
+    static long diLink5CarSvcLockBurstUntil(long nowElapsedMs, long windowMs) {
+        return nowElapsedMs + Math.max(0L, Math.min(windowMs, DILINK5_CARSVC_LOCK_BURST_MAX_MS));
+    }
+
+    /** Pure: a burst keeps re-dumping while now is before its deadline. */
+    static boolean shouldContinueDiLink5CarSvcLockBurst(long nowElapsedMs, long burstUntilElapsedMs) {
+        return burstUntilElapsedMs > 0L && nowElapsedMs < burstUntilElapsedMs;
+    }
+
+    /**
+     * Pure: how long a burst waits before its next dump — until the current dump's source TTL
+     * lapses (so the next {@code dumpsysText()} really spawns instead of reusing the cache), never
+     * past the deadline, never a hot loop (>= 100 ms). {@code dumpObservedAtElapsedMs <= 0} (no
+     * dump) waits a quarter TTL for the failure back-off.
+     */
+    static long diLink5CarSvcLockBurstPauseMs(
+            long nowElapsedMs, long dumpObservedAtElapsedMs, long burstUntilElapsedMs) {
+        long untilTtl = dumpObservedAtElapsedMs > 0L
+                ? dumpObservedAtElapsedMs + CarSvcTelemetry.DUMP_TTL_MS + 1L - nowElapsedMs
+                : CarSvcTelemetry.DUMP_TTL_MS / 4L;
+        long remaining = burstUntilElapsedMs - nowElapsedMs;
+        long pause = Math.min(Math.min(untilTtl, remaining), CarSvcTelemetry.DUMP_TTL_MS);
+        return Math.max(DILINK5_CARSVC_LOCK_BURST_MIN_PAUSE_MS, pause);
+    }
+
+    /**
+     * "DI5CarSvcCharging" thread: one fixed-rate tick of the carsvc lock rail. Re-reads the
+     * remote-access settings at most every 30 s (file I/O stays on this thread), then — only while
+     * {@link #shouldPollDiLink5CarSvcLock} holds — dumps car_service (the dump completes before any
+     * lock is taken) and observes the LF lock event; while a burst is requested it keeps re-dumping
+     * each time the previous dump's source TTL lapses, until the deadline.
+     */
+    private void pollDiLink5CarSvcLock() {
+        if (!isDiLink5BridgeConsumer()) return;
+        long now = SystemClock.elapsedRealtime();
+        refreshDiLink5CarSvcLockSettings(now);
+        if (!shouldPollDiLink5CarSvcLock(
+                diLink5GateLock.enabledRails(),
+                com.overdrive.app.monitor.AccMonitor.isAccStateAuthoritative()
+                        && com.overdrive.app.monitor.AccMonitor.isAccOn(),
+                diLink5RemoteAccessEnabled)) {
+            return;
+        }
+        while (!Thread.currentThread().isInterrupted() && isDiLink5BridgeConsumer()) {
+            // Spawns unless a <= 2 s dump cache exists; always finishes before the ingress lock.
+            CarSvcTelemetry.INSTANCE.dumpsysText();
+            CarSvcTelemetry.CachedDump dump = CarSvcTelemetry.cachedDump();
+            long nowMs = SystemClock.elapsedRealtime();
+            observeDiLink5CarSvcLock(dump, nowMs, SystemClock.elapsedRealtimeNanos());
+            long burstUntil = diLink5CarSvcLockBurstUntilElapsedMs;
+            if (!shouldContinueDiLink5CarSvcLockBurst(nowMs, burstUntil)) return;
+            long pause = diLink5CarSvcLockBurstPauseMs(
+                    nowMs, dump == null ? 0L : dump.getObservedAtElapsedMs(), burstUntil);
+            try {
+                Thread.sleep(pause);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /**
+     * "DI5CarSvcCharging" thread only: the daemon's own 30 s mirror of the remote-access settings
+     * for the lock poll guard (the HTTP handler applies the same setters on its own paths).
+     */
+    private void refreshDiLink5CarSvcLockSettings(long nowElapsedMs) {
+        if (lastDiLink5CarSvcSettingsReadAtElapsedMs > 0L
+                && nowElapsedMs - lastDiLink5CarSvcSettingsReadAtElapsedMs
+                        < DILINK5_CARSVC_SETTINGS_READ_MS) {
+            return;
+        }
+        lastDiLink5CarSvcSettingsReadAtElapsedMs = nowElapsedMs;
+        try {
+            org.json.JSONObject settings =
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings.read();
+            diLink5RemoteAccessEnabled = settings.optBoolean("enabled", false);
+            setDiLink5LockRails(
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings.di5LockRails(settings));
+            setDiLink5CarSvcLockMaxEventAgeSec(
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings
+                            .di5CarSvcLockMaxEventAgeSec(settings));
+            noteDiLink5LockSettingsFallback(
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings.di5PersistedFallbackDetail());
+        } catch (Throwable t) {
+            logger.debug("DI5 carsvc lock settings read failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Daemon: asks the carsvc rail to re-dump back-to-back (each time the previous dump's 2 s TTL
+     * lapses) for {@code windowMs}, capped at {@link #DILINK5_CARSVC_LOCK_BURST_MAX_MS}, starting
+     * now on the "DI5CarSvcCharging" thread. A no-op unless the carsvc rail is enabled; takes no
+     * lock, never spawns on the caller's thread.
+     */
+    public void requestDiLink5CarSvcLockBurst(long windowMs) {
+        if (!isDiLink5BridgeConsumer()
+                || !diLink5GateLock.enabledRails().contains(DiLink5LockRail.CARSVC)) {
+            return;
+        }
+        long until = diLink5CarSvcLockBurstUntil(SystemClock.elapsedRealtime(), windowMs);
+        if (until > diLink5CarSvcLockBurstUntilElapsedMs) diLink5CarSvcLockBurstUntilElapsedMs = until;
+        java.util.concurrent.ScheduledExecutorService poller = diLink5CarSvcChargingPoller;
+        if (poller == null || !diLink5CarSvcLockBurstKickQueued.compareAndSet(false, true)) return;
+        try {
+            poller.execute(() -> {
+                diLink5CarSvcLockBurstKickQueued.set(false);
+                try {
+                    pollDiLink5CarSvcLock();
+                } catch (Throwable t) {
+                    logger.debug("DI5 car_service lock burst error: " + t.getMessage());
+                }
+            });
+        } catch (Throwable rejected) {
+            diLink5CarSvcLockBurstKickQueued.set(false);
+            logger.debug("DI5 car_service lock burst not scheduled: " + rejected.getMessage());
+        }
+    }
+
+    /**
+     * Stage 0: log the four car_service door-lock properties from the dump the charging poll
+     * just took. Reads only {@link CarSvcTelemetry#cachedDump()} (never spawns), logs on any
+     * change of a property's (value, status, timestamp) tuple or every 60 s, "no dump" at most
+     * every 5 min, and the dump timing statistics every 5 min. Poller thread only.
+     */
+    private void logDiLink5CarSvcLockDiagnostics() {
+        long now = SystemClock.elapsedRealtime();
+        CarSvcTelemetry.CachedDump dump = CarSvcTelemetry.cachedDump();
+        if (dump == null) {
+            if (lastDiLink5CarSvcNoDumpLogAtElapsedMs == 0L
+                    || now - lastDiLink5CarSvcNoDumpLogAtElapsedMs
+                            >= DILINK5_CARSVC_LOCK_NO_DUMP_LOG_MS) {
+                lastDiLink5CarSvcNoDumpLogAtElapsedMs = now;
+                logger.info("DI5 car_service locks: no dump");
+            }
+        } else {
+            String tuple = diLink5CarSvcLockTupleKey(dump.getText());
+            if (!tuple.equals(lastDiLink5CarSvcLockTuple)
+                    || now - lastDiLink5CarSvcLockLogAtElapsedMs >= DILINK5_CARSVC_LOCK_LOG_MS) {
+                lastDiLink5CarSvcLockTuple = tuple;
+                lastDiLink5CarSvcLockLogAtElapsedMs = now;
+                logger.info(formatDiLink5CarSvcLockDiagnostics(
+                        dump.getText(),
+                        dump.getObservedAtElapsedMs(),
+                        dump.getDurationMs(),
+                        now,
+                        SystemClock.elapsedRealtimeNanos(),
+                        SystemClock.uptimeMillis() * 1_000_000L,
+                        System.currentTimeMillis()));
+            }
+        }
+        if (lastDiLink5CarSvcDumpStatsLogAtElapsedMs == 0L
+                || now - lastDiLink5CarSvcDumpStatsLogAtElapsedMs
+                        >= DILINK5_CARSVC_DUMP_STATS_LOG_MS) {
+            lastDiLink5CarSvcDumpStatsLogAtElapsedMs = now;
+            logger.info("DI5 car_service dump stats: " + CarSvcTelemetry.dumpStats());
+        }
+    }
+
+    /** `(value,status,ts)` of each of the four lock properties, for change detection. */
+    static String diLink5CarSvcLockTupleKey(String dumpText) {
+        int[] ids = {
+                CarSvcTelemetry.LF_LOCK_PROP_ID, CarSvcTelemetry.RF_LOCK_PROP_ID,
+                CarSvcTelemetry.LR_LOCK_PROP_ID, CarSvcTelemetry.RR_LOCK_PROP_ID };
+        StringBuilder sb = new StringBuilder();
+        for (int id : ids) {
+            CarSvcTelemetry.LockEvent e = CarSvcTelemetry.parseLockEvent(dumpText, id);
+            if (e == null) {
+                sb.append("absent");
+            } else {
+                sb.append(e.getValue()).append(',').append(e.getStatus()).append(',')
+                        .append(e.getTimestampNs());
+            }
+            sb.append('|');
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Pure formatter for the {@code DI5 car_service locks:} line. {@code lfMapped} applies the
+     * UNVERIFIED {@link #CARSVC_LF_LOCKED}/{@link #CARSVC_LF_UNLOCKED} encoding to the raw LF
+     * value; {@code tsDomain} names whichever of the three clocks the LF timestamp is within
+     * 5 s of ({@code elapsed}, {@code uptime}, {@code epoch}) or {@code unknown}.
+     */
+    static String formatDiLink5CarSvcLockDiagnostics(
+            String dumpText,
+            long dumpObservedAtElapsedMs,
+            long dumpDurationMs,
+            long nowElapsedMs,
+            long nowElapsedNs,
+            long nowUptimeNs,
+            long nowEpochMs) {
+        CarSvcTelemetry.LockEvent lf =
+                CarSvcTelemetry.parseLockEvent(dumpText, CarSvcTelemetry.LF_LOCK_PROP_ID);
+        String lfMapped = "INVALID";
+        if (lf != null && lf.getValue() != null) {
+            int v = lf.getValue();
+            if (v == CARSVC_LF_LOCKED) lfMapped = "LOCK";
+            else if (v == CARSVC_LF_UNLOCKED) lfMapped = "UNLOCK";
+        }
+        String tsDomain = "unknown";
+        if (lf != null && lf.getTimestampNs() != null) {
+            tsDomain = classifyDiLink5CarSvcTsDomain(
+                    lf.getTimestampNs(), nowElapsedNs, nowUptimeNs, nowEpochMs);
+        }
+        return "DI5 car_service locks: "
+                + CarSvcTelemetry.describeLockProperties(dumpText, nowElapsedNs)
+                + " lfMapped=" + lfMapped
+                + " tsDomain=" + tsDomain
+                + " dumpAgeMs=" + Math.max(0L, nowElapsedMs - dumpObservedAtElapsedMs)
+                + " dumpDurationMs=" + dumpDurationMs
+                + " nowElapsedNs=" + nowElapsedNs
+                + " nowUptimeNs=" + nowUptimeNs
+                + " nowEpochMs=" + nowEpochMs;
+    }
+
+    static String classifyDiLink5CarSvcTsDomain(
+            long ts, long nowElapsedNs, long nowUptimeNs, long nowEpochMs) {
+        if (Math.abs(ts - nowElapsedNs) <= DILINK5_CARSVC_TS_DOMAIN_TOLERANCE_NS) return "elapsed";
+        if (Math.abs(ts - nowUptimeNs) <= DILINK5_CARSVC_TS_DOMAIN_TOLERANCE_NS) return "uptime";
+        // Epoch stamps may be milliseconds or nanoseconds.
+        if (Math.abs(ts - nowEpochMs) <= DILINK5_CARSVC_TS_DOMAIN_TOLERANCE_NS / 1_000_000L) {
+            return "epoch";
+        }
+        long nowEpochNs = nowEpochMs * 1_000_000L;
+        if (Math.abs(ts - nowEpochNs) <= DILINK5_CARSVC_TS_DOMAIN_TOLERANCE_NS) return "epoch";
+        return "unknown";
+    }
+
+    private void pollDiLink5CarSvcCharging() {
+        CarSvcTelemetry.ChargingSignals s = CarSvcTelemetry.readChargingSignals();
+        // First, while the dump readChargingSignals() just took is still inside its cache window.
+        try {
+            noteDiLink5CpdDump(CarSvcTelemetry.cachedDump());
+        } catch (Throwable t) {
+            logger.debug("DI5 car_service CPD read error: " + t.getMessage());
+        }
+        // Stage 0 diagnostic on the dump readChargingSignals() just took: no extra spawn, and it
+        // runs even when the charging read yields nothing.
+        try {
+            logDiLink5CarSvcLockDiagnostics();
+        } catch (Throwable t) {
+            logger.debug("DI5 car_service lock diagnostics error: " + t.getMessage());
+        }
+        // A poll that outlived stopDiLink5CarSvcChargingPoll() must not publish.
+        if (s == null || Thread.currentThread().isInterrupted()) return;
+        long now = SystemClock.elapsedRealtime();
+        if (Double.isFinite(s.socPercent) && s.socPercent != diLink5CarSvcAnySoc) {
+            if (Double.isFinite(diLink5CarSvcAnySoc)) diLink5CarSvcAnySocChangedAtElapsedMs = now;
+            diLink5CarSvcAnySoc = s.socPercent;
+        }
+        // A status-0 SoC is published as is; any other line only while it is visibly moving.
+        boolean anySocLive = diLink5CarSvcAnySocChangedAtElapsedMs > 0L
+                && now - diLink5CarSvcAnySocChangedAtElapsedMs <= DILINK5_CARSVC_RISE_STALL_MIN_MS;
+        double publishedSoc = isUsablePolledSoc(s.healthySocPercent, true) ? s.healthySocPercent
+                : anySocLive && isUsablePolledSoc(s.socPercent, true) ? s.socPercent : Double.NaN;
+        if (Double.isFinite(publishedSoc)) {
+            diLink5CarSvcSocPercent = publishedSoc;
+            diLink5CarSvcSocAtElapsedMs = now;
+        }
+        noteDiLink5BridgeOutage(now);
+        // Raw car_service gun: 0 none, 1 AC, 2 DC, 3 AC+DC, 4 V2L, 5 OBC CC; -1 unreadable.
+        boolean gunConnected = s.rawGun >= 1 && s.rawGun <= 3;
+        boolean gunUnknown = s.rawGun < 0 || s.rawGun == 5;
+        boolean flowing = (gunConnected || gunUnknown) && !s.driving
+                && Double.isFinite(s.powerKw)
+                && s.powerKw >= DILINK5_CARSVC_MIN_CHARGING_KW;
+        // With the producer quiet, a readable unplug/export is the only physical stop the daemon sees.
+        boolean carSvcPhysicalStop = s.rawGun == 0 || s.rawGun == 4;
+        if (carSvcPhysicalStop && diLink5CarSvcLastGun >= 1 && diLink5CarSvcLastGun != s.rawGun) {
+            diLink5CarSvcPendingStopGun = s.rawGun;
+            diLink5CarSvcPendingStopAtElapsedMs = now;
+        } else if (s.rawGun >= 1 && s.rawGun != 4) {
+            diLink5CarSvcPendingStopGun = -1;
+        }
+        // Held until the producer's last sample goes stale; a producer still talking relays its own.
+        if (diLink5CarSvcPendingStopGun >= 0
+                && now - diLink5CarSvcPendingStopAtElapsedMs > DILINK5_PRODUCER_CHARGING_LEASE_MS) {
+            diLink5CarSvcPendingStopGun = -1;
+        } else if (diLink5CarSvcPendingStopGun >= 0
+                && !isDiLink5AutomationSnapshotFresh(now, diLink5BridgeReceivedAtElapsedMs)) {
+            boolean export = diLink5CarSvcPendingStopGun == 4;
+            diLink5CarSvcPendingStopGun = -1;
+            com.overdrive.app.monitor.ChargingDetector.getInstance().updateConnectionState(
+                    export ? 5 : 1, export);
+        }
+        if (s.rawGun >= 0) diLink5CarSvcLastGun = s.rawGun;
+        if (s.driving || carSvcPhysicalStop) {
+            resetDiLink5CarSvcFlow();
+        } else if (flowing) {
+            if (diLink5CarSvcFlowAtElapsedMs <= 0L) {
+                diLink5CarSvcFlowAtElapsedMs = now;
+                diLink5CarSvcSocHigh = s.socPercent;
+            } else if (Double.isFinite(s.socPercent)
+                    && (!Double.isFinite(diLink5CarSvcSocHigh)
+                        || s.socPercent > diLink5CarSvcSocHigh)) {
+                if (Double.isFinite(diLink5CarSvcSocHigh)) {
+                    // Flow can start mid-step, so only rise-to-rise is a full interval.
+                    long previousRise = diLink5CarSvcSocRiseAtElapsedMs;
+                    diLink5CarSvcRiseIntervalMs = previousRise > 0L ? now - previousRise : 0L;
+                    diLink5CarSvcSocRiseFromElapsedMs = previousRise > 0L
+                            ? previousRise : diLink5CarSvcFlowAtElapsedMs;
+                    diLink5CarSvcSocRiseAtElapsedMs = now;
+                }
+                diLink5CarSvcSocHigh = s.socPercent;
+            }
+            diLink5CarSvcLastFlowAtElapsedMs = now;
+            if (gunConnected) diLink5CarSvcGunSeen = true;
+        } else if (diLink5CarSvcFlowAtElapsedMs > 0L
+                && now - diLink5CarSvcLastFlowAtElapsedMs > DILINK5_CARSVC_FLOW_GAP_MS) {
+            resetDiLink5CarSvcFlow();
+        }
+        if (gunUnknown && flowing && !loggedDiLink5CarSvcGunUnreadable) {
+            loggedDiLink5CarSvcGunUnreadable = true;
+            logger.info("DI5 car_service gun unreadable while power flows: "
+                    + CarSvcTelemetry.describeChargingGun());
+        }
+        // Progress is a rise above the session's highest SoC. A connected gun gets 2 h (a ~1.3 kW
+        // granny charge on a large pack); an unreadable gun must keep rising at its own measured
+        // pace. No SoC never stalls.
+        boolean live = diLink5CarSvcFlowAtElapsedMs > 0L;
+        long riseAt = diLink5CarSvcSocRiseAtElapsedMs;
+        boolean gunTrusted = diLink5CarSvcGunSeen && diLink5ProducerBlindStopAtElapsedMs <= 0L;
+        boolean stalled;
+        if (!live || !Double.isFinite(s.socPercent)) {
+            stalled = false;
+        } else if (gunTrusted) {
+            stalled = now - Math.max(diLink5CarSvcFlowAtElapsedMs, riseAt)
+                    > DILINK5_CARSVC_SOC_STALL_MS;
+        } else {
+            long window = diLink5CarSvcRiseIntervalMs > 0L
+                    ? Math.min(DILINK5_CARSVC_SOC_STALL_MS, Math.max(
+                            DILINK5_CARSVC_RISE_STALL_MIN_MS, 4L * diLink5CarSvcRiseIntervalMs))
+                    : DILINK5_CARSVC_SOC_STALL_MS;
+            stalled = riseAt > 0L && now - riseAt > window;
+        }
+        boolean charging = live && !stalled && (gunTrusted || riseAt > 0L);
+        diLink5CarSvcCharging = charging;
+        diLink5CarSvcChargingAtElapsedMs = now;
+
+        String line = "DI5 car_service charging: gun=" + s.rawGun + " state=" + s.rawState
+                + " power=" + (Double.isFinite(s.powerKw) ? (s.powerKw > 0 ? ">0" : "0") : "n/a")
+                + " driving=" + s.driving + (stalled ? " soc-stalled" : "")
+                + (live && !stalled && !charging ? " awaiting-soc-rise" : "")
+                + " -> " + (charging ? "CHARGING" : "not charging");
+        if (!line.equals(lastDiLink5CarSvcChargingLog)) {
+            lastDiLink5CarSvcChargingLog = line;
+            logger.info(line + " (powerKw=" + s.powerKw + " soc=" + s.socPercent + ")");
+        }
+
+        // With a fresh bridge the ingest path merges this verdict; only a quiet bridge needs it here.
+        if (isDiLink5CarSvcChargingAdmissible(now)
+                && !isDiLink5AutomationSnapshotFresh(now, diLink5BridgeReceivedAtElapsedMs)) {
+            com.overdrive.app.monitor.ChargingDetector.getInstance().acceptExternalVerdict(
+                    true, "dilink5-carsvc", DILINK5_CARSVC_CHARGING_MAX_AGE_MS);
+        }
+    }
+
+    /**
+     * DI5 counterpart of mergeCloudData's cabin fallback: that merge runs in the app-process
+     * producer, which has no cloud client. Same gates; a live bridged sensor reading always wins.
+     */
+    private BydVehicleData withDiLink5CloudCabinFallback(BydVehicleData data) {
+        long now = System.currentTimeMillis();
+        com.overdrive.app.byd.cloud.VehicleCloudSnapshot cs = null;
+        boolean useCloud = false;
+        if (!isFreshDiLink5Observation(now, data.insideTempReadAt)) {
+            try {
+                com.overdrive.app.byd.cloud.BydCloudDataProvider provider =
+                        com.overdrive.app.byd.cloud.BydCloudDataProvider.getInstance();
+                cs = provider.isTelemetryFresh() ? provider.getSnapshot() : null;
+                useCloud = cs != null
+                        && cs.insideTempObservedAt > data.insideTempReadAt
+                        && cs.hasFreshInsideTemp()
+                        && isPlausibleCabinTempC((int) Math.round(cs.insideTempC))
+                        && com.overdrive.app.byd.cloud.BydCloudConfig.isCloudDataMergeEnabled();
+            } catch (Exception e) {
+                logger.debug("DI5 cloud cabin fallback error: " + e.getMessage());
+            }
+        }
+        if (useCloud != diLink5CabinCloudFallback) {
+            diLink5CabinCloudFallback = useCloud;
+            logger.info(useCloud
+                    ? "DI5 cabin temp: using cloud value (sensor last answered "
+                            + (data.insideTempReadAt > 0L
+                                    ? (now - data.insideTempReadAt) / 1000L + "s ago" : "never")
+                            + ")"
+                    : "DI5 cabin temp: cloud fallback ended");
+        }
+        return useCloud
+                ? data.toBuilder()
+                        .insideTempC(cs.insideTempC, cs.insideTempObservedAt)
+                        .buildPreservingTimestamp()
+                : data;
     }
 
     static int[] normalizeDiLink5DoorStates(int[] states) {
@@ -739,6 +1615,8 @@ public class BydDataCollector {
             case "lock":
                 if (value != DOOR_STATE_UNLOCK && value != DOOR_STATE_LOCK) return false;
                 diLink5DoorLockState = value;
+                // Automation events carry send time, not the native getter's original time.
+                // Only the signed snapshot's timed SDK reading may renew the safety gate.
                 com.overdrive.app.automation.Automations.update(
                         com.overdrive.app.automation.condition.BydEvent.LOCK,
                         value == DOOR_STATE_LOCK ? "locked" : "unlocked");
@@ -764,6 +1642,9 @@ public class BydDataCollector {
                         com.overdrive.app.automation.condition.BydEvent.OCCUPANT_DRIVER,
                         "occupied");
                 return true;
+            case com.overdrive.app.byd.dilink5.Dilink5RadarBridge.EVENT:
+                return com.overdrive.app.byd.dilink5.Dilink5RadarBridge.accept(
+                        area, value, sourceEpoch, sequence, remainingMs);
             default:
                 return false;
         }
@@ -816,8 +1697,186 @@ public class BydDataCollector {
         }
     }
 
+    /** One DiLink5 speed/pedal reading with the time its source observed it. */
+    public static final class DiLink5Dynamics {
+        public final double speedKmh;
+        public final int accelPercent;
+        public final int brakePercent;
+        public final long observedAtElapsedMs;
+
+        private DiLink5Dynamics(double speedKmh, int accelPercent,
+                int brakePercent, long observedAtElapsedMs) {
+            this.speedKmh = speedKmh;
+            this.accelPercent = accelPercent;
+            this.brakePercent = brakePercent;
+            this.observedAtElapsedMs = observedAtElapsedMs;
+        }
+    }
+
+    /**
+     * Daemon-side DiLink5 dynamics for trip and overlay sampling, read locally so that values whose
+     * car_service status is an error are always dropped (the app bridge does not filter them).
+     * Null without an observation; absent fields within one are NaN speed / -1 pedal.
+     */
+    public DiLink5Dynamics readDiLink5DynamicsNow() {
+        if (!isDiLink5Vehicle() || isMainAppProcess()) return null;
+        CarSvcTelemetry.DynamicObservation local =
+                CarSvcTelemetry.INSTANCE.currentHealthyDynamics();
+        if (local == null) return null;
+        long observedAt = observedAtFromAge(
+                SystemClock.elapsedRealtime(), local.ageMs);
+        if (observedAt <= 0L) return null;
+        return new DiLink5Dynamics(
+                local.speedKmh >= 0 ? local.speedKmh : Double.NaN,
+                local.accelPercent, local.brakePercent, observedAt);
+    }
+
     private boolean isDiLink5BridgeConsumer() {
         return diLink5BridgeConsumer && isDiLink5Vehicle() && !isMainAppProcess();
+    }
+
+    /**
+     * Feeds one message's lock readings to the gate ledger (caller holds {@code diLink5IngressLock}).
+     * A well-formed {@code lockReadings} list replaces the legacy pair for the gate; entries read
+     * after the message was sent are skipped (as the legacy pair always was). Without a list the
+     * legacy pair is the {@code TYPED_CABIN} rail, exactly as before. Pure: no clock, no I/O.
+     */
+    static void observeDiLink5BridgedLockReadings(
+            DiLink5LockEvidenceLedger ledger,
+            java.util.List<DiLink5LockReading> lockReadings,
+            int doorLockState,
+            long doorLockObservedAtElapsedMs,
+            long sampleElapsed,
+            long nowElapsed) {
+        if (lockReadings != null && !lockReadings.isEmpty()) {
+            for (DiLink5LockReading reading : lockReadings) {
+                if (reading == null || reading.observedElapsedMs > sampleElapsed) continue;
+                ledger.observe(reading.rail, reading.state, reading.observedElapsedMs, nowElapsed,
+                        reading.raw, 0L);
+            }
+            return;
+        }
+        if (doorLockObservedAtElapsedMs <= sampleElapsed) {
+            ledger.observe(DiLink5LockRail.TYPED_CABIN, doorLockState, doorLockObservedAtElapsedMs,
+                    nowElapsed, Integer.MIN_VALUE, 0L);
+        }
+    }
+
+    /**
+     * DI5 daemon: the driver-door lock state selected from the enabled local rails (typed cabin by
+     * default), or INVALID once every reading is older than {@link #DILINK5_AUTOMATION_MAX_AGE_MS},
+     * no rail holds a valid reading, or two enabled rails disagree. Memory only, never a Binder call.
+     * An explicit failed source read immediately retires that rail's previous known state.
+     */
+    public int readDiLink5GateDoorLockState() {
+        if (!isDiLink5Vehicle() || isMainAppProcess()) return DOOR_STATE_INVALID;
+        if (diLink5GateLock.enabledRails().contains(DiLink5LockRail.CARSVC)) {
+            // Gate-time refresh from the dump a poll already took: cachedDump() never spawns.
+            try {
+                observeDiLink5CarSvcLock(CarSvcTelemetry.cachedDump(),
+                        SystemClock.elapsedRealtime(), SystemClock.elapsedRealtimeNanos());
+            } catch (Throwable t) {
+                logger.debug("DI5 carsvc gate refresh error: " + t.getMessage());
+            }
+        }
+        synchronized (diLink5IngressLock) {
+            return diLink5BridgeConsumer
+                    ? diLink5GateLock.current(SystemClock.elapsedRealtime()) : DOOR_STATE_INVALID;
+        }
+    }
+
+    /**
+     * DI5 daemon: the gate's selected evidence (state, rail, read time, raw) for actuator scopes,
+     * {@code recordAction} details and logs; {@link DiLink5LockEvidence#unknown()} outside the daemon
+     * consumer. Same guards and lock as {@link #readDiLink5GateDoorLockState()}.
+     */
+    public DiLink5LockEvidence readDiLink5GateDoorLockEvidence() {
+        if (!isDiLink5Vehicle() || isMainAppProcess()) return DiLink5LockEvidence.unknown();
+        if (diLink5GateLock.enabledRails().contains(DiLink5LockRail.CARSVC)) {
+            // Same non-spawning gate-time refresh as readDiLink5GateDoorLockState().
+            try {
+                observeDiLink5CarSvcLock(CarSvcTelemetry.cachedDump(),
+                        SystemClock.elapsedRealtime(), SystemClock.elapsedRealtimeNanos());
+            } catch (Throwable t) {
+                logger.debug("DI5 carsvc gate refresh error: " + t.getMessage());
+            }
+        }
+        synchronized (diLink5IngressLock) {
+            return diLink5BridgeConsumer
+                    ? diLink5GateLock.evidence(SystemClock.elapsedRealtime())
+                    : DiLink5LockEvidence.unknown();
+        }
+    }
+
+    /**
+     * DI5 daemon: one rail's fresh valid evidence now (the actuation-rail preference reads the OTA
+     * rail with it), or null when the rail is disabled, INVALID or stale. Same guards and lock as
+     * {@link #readDiLink5GateDoorLockEvidence()}; no carsvc refresh here — callers read the selected
+     * evidence first, which refreshes.
+     */
+    public DiLink5LockEvidence readDiLink5GateDoorLockEvidenceFor(DiLink5LockRail rail) {
+        if (!isDiLink5Vehicle() || isMainAppProcess()) return null;
+        synchronized (diLink5IngressLock) {
+            return diLink5BridgeConsumer
+                    ? diLink5GateLock.evidenceFor(rail, SystemClock.elapsedRealtime()) : null;
+        }
+    }
+
+    /**
+     * Applies the {@code di5LockRails} setting to the gate ledger. Callers read settings (file I/O)
+     * BEFORE calling this and never hold {@code diLink5IngressLock}; lock order is
+     * {@code STATE → diLink5IngressLock → ledger}. A rail being disabled loses its held evidence.
+     */
+    public void setDiLink5LockRails(java.util.Set<DiLink5LockRail> rails) {
+        if (rails != null && rails.equals(diLink5GateLock.enabledRails())) return;
+        synchronized (diLink5IngressLock) {
+            diLink5GateLock.setEnabledRails(rails);
+        }
+    }
+
+    /** Applies the {@code di5CarSvcLockMaxEventAgeSec} setting (clamped to its valid range). */
+    public void setDiLink5CarSvcLockMaxEventAgeSec(long seconds) {
+        long clamped = Math.max(DILINK5_CARSVC_LOCK_MAX_EVENT_AGE_MIN_SEC,
+                Math.min(DILINK5_CARSVC_LOCK_MAX_EVENT_AGE_MAX_SEC, seconds));
+        diLink5CarSvcLockMaxEventAgeNs = clamped * 1_000_000_000L;
+    }
+
+    /**
+     * Daemon: one line (latched) when a persisted {@code di5LockRails} /
+     * {@code di5CarSvcLockMaxEventAgeSec} value was invalid and fell back to its default.
+     */
+    public void noteDiLink5LockSettingsFallback(String detail) {
+        if (detail == null || loggedDiLink5LockRailsFallback) return;
+        loggedDiLink5LockRailsFallback = true;
+        logger.warn("DI5 gate settings: persisted value fell back to default: " + detail);
+    }
+
+    private volatile boolean loggedDiLink5LockRailsFallback;
+
+    /**
+     * Stage 0: daemon echo of the producer's relayed "DI5 lock rails:" line (bridge key
+     * {@code lockDiag}) so the app's view of the typed/OTA rails lands in the daemon log export.
+     * Daemon only; non-String payloads are ignored; logged on change or every 60 s. Lock-free.
+     */
+    public void noteDiLink5ProducerLockDiag(Object lockDiag) {
+        if (!isDiLink5DaemonProcess()) return;
+        String text = sanitizeDiLink5LockDiag(lockDiag);
+        if (text == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (!text.equals(lastDiLink5ProducerLockDiag)
+                || now - lastDiLink5ProducerLockDiagLogAtElapsedMs >= 60_000L) {
+            lastDiLink5ProducerLockDiag = text;
+            lastDiLink5ProducerLockDiagLogAtElapsedMs = now;
+            logger.info("DI5 producer lock diag: " + text);
+        }
+    }
+
+    /** Re-sanitises a relayed diagnostic: String only, CR/LF removed, at most 200 chars. */
+    public static String sanitizeDiLink5LockDiag(Object lockDiag) {
+        if (!(lockDiag instanceof String)) return null;
+        String flat = ((String) lockDiag).replace("\r", "").replace("\n", " ").trim();
+        if (flat.isEmpty()) return null;
+        return flat.length() > 200 ? flat.substring(0, 200) : flat;
     }
 
     static boolean isDiLink5AutomationSnapshotFresh(long nowMs, long receivedAtMs) {
@@ -830,6 +1889,365 @@ public class BydDataCollector {
         long age = nowMs - observedAtMs;
         return observedAtMs > 0L && age >= 0L
                 && age <= DILINK5_AUTOMATION_MAX_AGE_MS;
+    }
+
+    /** Independent of the telemetry heartbeat; a failed actual read revokes a known lock. */
+    static final class DiLink5LockSafetyCache {
+        private int state;
+        private long observedAt;
+
+        synchronized void observe(int value, long readAt) {
+            if (readAt <= 0L || readAt < observedAt
+                    || (readAt == observedAt && value != DOOR_STATE_INVALID)
+                    || (value != DOOR_STATE_INVALID && value != DOOR_STATE_UNLOCK
+                        && value != DOOR_STATE_LOCK)) return;
+            state = value;
+            observedAt = readAt;
+        }
+
+        synchronized int current(long now) {
+            return isFreshDiLink5Observation(now, observedAt) ? state : DOOR_STATE_INVALID;
+        }
+
+        synchronized void clear() { state = DOOR_STATE_INVALID; observedAt = 0L; }
+    }
+
+    /**
+     * One rail's fresh, valid, in-domain lock reading as selected by the gate ledger, or
+     * {@link #unknown()} (state INVALID, rail null). Immutable; travels to the actuator scope,
+     * {@code recordAction} details and logs so every outcome is attributable to a rail.
+     */
+    public static final class DiLink5LockEvidence {
+        private static final DiLink5LockEvidence UNKNOWN =
+                new DiLink5LockEvidence(DOOR_STATE_INVALID, 0L, null, Integer.MIN_VALUE, 0L);
+        public final int state;
+        public final long observedAtElapsedMs;
+        public final DiLink5LockRail rail;
+        public final int raw;
+        public final long halTimestampNs;
+
+        public DiLink5LockEvidence(int state, long observedAtElapsedMs, DiLink5LockRail rail,
+                int raw, long halTimestampNs) {
+            this.state = state;
+            this.observedAtElapsedMs = observedAtElapsedMs;
+            this.rail = rail;
+            this.raw = raw;
+            this.halTimestampNs = halTimestampNs;
+        }
+
+        public static DiLink5LockEvidence unknown() { return UNKNOWN; }
+
+        public boolean known() {
+            return state == DOOR_STATE_UNLOCK || state == DOOR_STATE_LOCK;
+        }
+    }
+
+    /** One bridged lock reading ({@code lockReadings[]} entry) as decoded by the daemon ingress. */
+    public static final class DiLink5LockReading {
+        public final DiLink5LockRail rail;
+        public final int state;
+        public final int raw;
+        public final long observedElapsedMs;
+
+        public DiLink5LockReading(DiLink5LockRail rail, int state, int raw, long observedElapsedMs) {
+            this.rail = rail;
+            this.state = state;
+            this.raw = raw;
+            this.observedElapsedMs = observedElapsedMs;
+        }
+    }
+
+    /**
+     * Per-rail lock evidence for the DI5 daemon gate: one UNCHANGED {@link DiLink5LockSafetyCache}
+     * per {@link DiLink5LockRail} plus a fail-closed selector. With the default enabled set
+     * ({@code TYPED_CABIN} only) {@code current(now)} is byte-for-byte today's single cache for every
+     * sequence the ingress can produce (pinned by a randomised equivalence test).
+     *
+     * <p>Selector: candidates are the enabled rails whose cache is fresh and valid now; none → unknown;
+     * any two candidates that disagree → unknown (no inter-read-gap exception, values are never
+     * merged); otherwise the freshest read wins. INVALID is rail-scoped: a rail's failed read revokes
+     * only that rail's own evidence. A {@code readAt > now} observation is dropped here as well.
+     *
+     * <p>Leaf lock: while this monitor is held nothing but the injected log consumer is called. No
+     * I/O, no settings, no {@code SystemClock} — every time comes from the {@code now} argument.
+     * Enablement is a volatile unmodifiable snapshot swapped atomically by {@link #setEnabledRails}.
+     */
+    static final class DiLink5LockEvidenceLedger {
+        static final String EVIDENCE_LOG_PREFIX = "DI5 gate evidence: ";
+        static final long KNOWN_LOG_INTERVAL_MS = 10_000L;
+        static final long UNKNOWN_LOG_INTERVAL_MS = 30_000L;
+        private static final java.util.Set<DiLink5LockRail> DEFAULT_ENABLED =
+                java.util.Collections.unmodifiableSet(java.util.EnumSet.of(DiLink5LockRail.TYPED_CABIN));
+
+        private final java.util.function.Consumer<String> log;
+        private final java.util.EnumMap<DiLink5LockRail, DiLink5LockSafetyCache> caches =
+                new java.util.EnumMap<>(DiLink5LockRail.class);
+        private final java.util.EnumMap<DiLink5LockRail, int[]> raws =
+                new java.util.EnumMap<>(DiLink5LockRail.class);
+        private final java.util.EnumMap<DiLink5LockRail, long[]> halTimestamps =
+                new java.util.EnumMap<>(DiLink5LockRail.class);
+        private volatile java.util.Set<DiLink5LockRail> enabled = DEFAULT_ENABLED;
+        private long droppedDisabled;
+        private long droppedFuture;
+        private String lastLogKey;
+        private long lastLogAtMs;
+
+        DiLink5LockEvidenceLedger(java.util.function.Consumer<String> log) {
+            this.log = log;
+            for (DiLink5LockRail rail : DiLink5LockRail.values()) {
+                caches.put(rail, new DiLink5LockSafetyCache());
+                raws.put(rail, new int[]{Integer.MIN_VALUE});
+                halTimestamps.put(rail, new long[1]);
+            }
+        }
+
+        /**
+         * Forwards one reading to its rail's cache. Returns false when the ledger dropped it
+         * (rail disabled, or {@code readAt > now}); the cache's own acceptance rules are unchanged.
+         */
+        synchronized boolean observe(DiLink5LockRail rail, int state, long readAt, long now,
+                int raw, long halTimestampNs) {
+            if (rail == null || !enabled.contains(rail)) {
+                droppedDisabled++;
+                return false;
+            }
+            if (readAt > now) {
+                droppedFuture++;
+                return false;
+            }
+            DiLink5LockSafetyCache cache = caches.get(rail);
+            cache.observe(state, readAt);
+            if (cache.state == state && cache.observedAt == readAt) {
+                raws.get(rail)[0] = raw;
+                halTimestamps.get(rail)[0] = halTimestampNs;
+            }
+            maybeLogEvidence(now);
+            return true;
+        }
+
+        synchronized DiLink5LockEvidence evidence(long now) {
+            return select(now).evidence;
+        }
+
+        /** One rail's fresh valid evidence now, or null (disabled, INVALID or stale). */
+        synchronized DiLink5LockEvidence evidenceFor(DiLink5LockRail rail, long now) {
+            if (rail == null || !enabled.contains(rail)) return null;
+            return candidate(rail, now);
+        }
+
+        synchronized int current(long now) {
+            return select(now).evidence.state;
+        }
+
+        synchronized void clear() {
+            for (DiLink5LockRail rail : DiLink5LockRail.values()) {
+                caches.get(rail).clear();
+                raws.get(rail)[0] = Integer.MIN_VALUE;
+                halTimestamps.get(rail)[0] = 0L;
+            }
+            lastLogKey = null;
+            lastLogAtMs = 0L;
+        }
+
+        /**
+         * Replaces the enabled set and clears the evidence of every rail being disabled, so a
+         * setting flip is a rollback rather than a freeze. Null means no rail (fails closed).
+         */
+        synchronized void setEnabledRails(java.util.Set<DiLink5LockRail> rails) {
+            java.util.EnumSet<DiLink5LockRail> next = java.util.EnumSet.noneOf(DiLink5LockRail.class);
+            if (rails != null) {
+                for (DiLink5LockRail rail : rails) if (rail != null) next.add(rail);
+            }
+            java.util.Set<DiLink5LockRail> previous = enabled;
+            if (next.equals(previous)) return;
+            for (DiLink5LockRail rail : previous) {
+                if (!next.contains(rail)) {
+                    caches.get(rail).clear();
+                    raws.get(rail)[0] = Integer.MIN_VALUE;
+                    halTimestamps.get(rail)[0] = 0L;
+                }
+            }
+            enabled = java.util.Collections.unmodifiableSet(next);
+            lastLogKey = null;
+            log.accept("DI5 gate rails: " + DiLink5LockRail.toTags(enabled));
+        }
+
+        java.util.Set<DiLink5LockRail> enabledRails() { return enabled; }
+
+        synchronized long droppedDisabled() { return droppedDisabled; }
+
+        synchronized long droppedFuture() { return droppedFuture; }
+
+        private DiLink5LockEvidence candidate(DiLink5LockRail rail, long now) {
+            DiLink5LockSafetyCache cache = caches.get(rail);
+            int state = cache.current(now);
+            if (state != DOOR_STATE_UNLOCK && state != DOOR_STATE_LOCK) return null;
+            return new DiLink5LockEvidence(state, cache.observedAt, rail,
+                    raws.get(rail)[0], halTimestamps.get(rail)[0]);
+        }
+
+        private static final class Selection {
+            final DiLink5LockEvidence evidence;
+            /** {@code r1:s1@age,r2:s2@age} for the log line, or null when the candidates agree. */
+            final String disagreement;
+            /** {@code r1:s1,r2:s2} without ages, so the change key ignores mere ageing. */
+            final String disagreementKey;
+            final DiLink5LockEvidence[] perRail;
+
+            Selection(DiLink5LockEvidence evidence, String disagreement, String disagreementKey,
+                    DiLink5LockEvidence[] perRail) {
+                this.evidence = evidence;
+                this.disagreement = disagreement;
+                this.disagreementKey = disagreementKey;
+                this.perRail = perRail;
+            }
+        }
+
+        private Selection select(long now) {
+            DiLink5LockRail[] rails = DiLink5LockRail.values();
+            DiLink5LockEvidence[] perRail = new DiLink5LockEvidence[rails.length];
+            DiLink5LockEvidence best = null;
+            boolean disagree = false;
+            java.util.Set<DiLink5LockRail> enabledNow = enabled;
+            for (DiLink5LockRail rail : rails) {
+                if (!enabledNow.contains(rail)) continue;
+                DiLink5LockEvidence candidate = candidate(rail, now);
+                perRail[rail.ordinal()] = candidate;
+                if (candidate == null) continue;
+                if (best == null) {
+                    best = candidate;
+                } else if (candidate.state != best.state) {
+                    disagree = true;
+                } else if (candidate.observedAtElapsedMs > best.observedAtElapsedMs) {
+                    best = candidate;
+                }
+            }
+            if (!disagree) {
+                return new Selection(best == null ? DiLink5LockEvidence.unknown() : best,
+                        null, null, perRail);
+            }
+            StringBuilder line = new StringBuilder();
+            StringBuilder key = new StringBuilder();
+            for (DiLink5LockEvidence candidate : perRail) {
+                if (candidate == null) continue;
+                if (line.length() > 0) { line.append(','); key.append(','); }
+                line.append(candidate.rail.tag()).append(':').append(candidate.state)
+                        .append('@').append(now - candidate.observedAtElapsedMs);
+                key.append(candidate.rail.tag()).append(':').append(candidate.state);
+            }
+            return new Selection(DiLink5LockEvidence.unknown(), line.toString(), key.toString(), perRail);
+        }
+
+        private void maybeLogEvidence(long now) {
+            Selection selection = select(now);
+            DiLink5LockEvidence evidence = selection.evidence;
+            String key = evidence.state + "/" + (evidence.rail == null ? "none" : evidence.rail.tag())
+                    + "/" + (selection.disagreementKey == null ? "none" : selection.disagreementKey);
+            long interval = evidence.known() ? KNOWN_LOG_INTERVAL_MS : UNKNOWN_LOG_INTERVAL_MS;
+            if (key.equals(lastLogKey) && now - lastLogAtMs < interval) return;
+            lastLogKey = key;
+            lastLogAtMs = now;
+            log.accept(formatEvidenceLine(selection, now));
+        }
+
+        private String formatEvidenceLine(Selection selection, long now) {
+            DiLink5LockEvidence evidence = selection.evidence;
+            StringBuilder sb = new StringBuilder(EVIDENCE_LOG_PREFIX);
+            sb.append("state=").append(evidence.state)
+                    .append(" rail=").append(evidence.rail == null ? "none" : evidence.rail.tag())
+                    .append(" ageMs=").append(evidence.known() ? now - evidence.observedAtElapsedMs : -1L)
+                    .append(" raw=").append(evidence.known() && evidence.raw != Integer.MIN_VALUE
+                            ? String.valueOf(evidence.raw) : "n/a");
+            java.util.Set<DiLink5LockRail> enabledNow = enabled;
+            for (DiLink5LockRail rail : DiLink5LockRail.values()) {
+                sb.append(' ').append(railToken(rail)).append('=');
+                DiLink5LockEvidence perRail = selection.perRail[rail.ordinal()];
+                if (!enabledNow.contains(rail)) sb.append("off");
+                else if (perRail == null) sb.append("none");
+                else sb.append(perRail.state).append('@').append(now - perRail.observedAtElapsedMs);
+            }
+            sb.append(" disagree=").append(selection.disagreement == null ? "none" : selection.disagreement);
+            return sb.toString();
+        }
+
+        private static String railToken(DiLink5LockRail rail) {
+            switch (rail) {
+                case TYPED_CABIN: return "typed";
+                case OTA: return "ota";
+                default: return "carsvc";
+            }
+        }
+    }
+
+    /** An atomic per-area safety copy, separate from the door notification edge cache. */
+    static final class DiLink5DoorSafetySnapshot {
+        final int[] states;
+        final long[] observedAt;
+
+        private DiLink5DoorSafetySnapshot(int[] states, long[] observedAt) {
+            this.states = states.clone();
+            this.observedAt = observedAt.clone();
+        }
+
+        static DiLink5DoorSafetySnapshot unknown() {
+            int[] states = new int[7];
+            java.util.Arrays.fill(states, BydVehicleData.UNAVAILABLE);
+            return new DiLink5DoorSafetySnapshot(states, new long[7]);
+        }
+
+        static DiLink5DoorSafetySnapshot fromBridge(
+                int[] states, long[] readTimes, long sentAt, long now) {
+            if (states == null || states.length != 7
+                    || readTimes == null || readTimes.length != 7) return unknown();
+            int[] accepted = states.clone();
+            long[] observed = readTimes.clone();
+            for (int i = 0; i < accepted.length; i++) {
+                if (!isValidDoorOpenState(accepted[i]) || observed[i] > sentAt
+                        || !isFreshDiLink5Observation(now, observed[i])) {
+                    accepted[i] = BydVehicleData.UNAVAILABLE;
+                }
+            }
+            return new DiLink5DoorSafetySnapshot(accepted, observed);
+        }
+
+        int[] current(long now) {
+            int[] result = states.clone();
+            for (int i = 0; i < result.length; i++) {
+                if (!isFreshDiLink5Observation(now, observedAt[i])) {
+                    result[i] = BydVehicleData.UNAVAILABLE;
+                }
+            }
+            return result;
+        }
+    }
+
+    static final class DiLink5DoorSafetyCache {
+        private final int[] states = new int[7];
+        private final long[] observedAt = new long[7];
+
+        DiLink5DoorSafetyCache() { clear(); }
+
+        synchronized void observe(int area, int state, long readAt) {
+            if (area < 1 || area > states.length || readAt <= 0L
+                    || readAt < observedAt[area - 1]
+                    || (readAt == observedAt[area - 1]
+                        && states[area - 1] == BydVehicleData.UNAVAILABLE
+                        && isValidDoorOpenState(state))) return;
+            states[area - 1] = isValidDoorOpenState(state)
+                    ? state : BydVehicleData.UNAVAILABLE;
+            observedAt[area - 1] = readAt;
+        }
+
+        synchronized DiLink5DoorSafetySnapshot snapshot(long now) {
+            DiLink5DoorSafetySnapshot snapshot =
+                    new DiLink5DoorSafetySnapshot(states, observedAt);
+            return new DiLink5DoorSafetySnapshot(snapshot.current(now), observedAt);
+        }
+
+        synchronized void clear() {
+            java.util.Arrays.fill(states, BydVehicleData.UNAVAILABLE);
+            java.util.Arrays.fill(observedAt, 0L);
+        }
     }
 
     static long diLink5AutomationLeaseRemainingMs(long nowMs, long receivedAtMs) {
@@ -1232,6 +2650,7 @@ public class BydDataCollector {
             if (pollGeneration < lastPublishedChargingPollGeneration) {
                 return snapshot.get(); // a newer concurrent poll already won
             }
+            collected = withSettlingReadingLight(collected);
             BydVehicleData previous = snapshot.get();
             BydVehicleData merged = preserveNewerChargingEdges(
                     collected, previous,
@@ -1337,6 +2756,7 @@ public class BydDataCollector {
         if (candidate == null) return null;
         if (isDiLink5DaemonProcess()) return snapshot.get();
         synchronized (chargingEdgePublishLock) {
+            candidate = withSettlingReadingLight(candidate);
             BydVehicleData latest = snapshot.get();
             if (latest == null) {
                 snapshot.set(candidate);
@@ -1393,13 +2813,35 @@ public class BydDataCollector {
     private void publishAutomationSnapshot(BydVehicleData published) {
         if (published == null) return;
         if (isDiLink5ProducerActive()) {
+            // Read before the state: the writer stores the state first, so a new time is never
+            // paired with an older state. The same holds for the OTA rail's three volatiles.
+            long lockReadAt = diLink5DoorLockReadAtElapsedMs;
+            int lockState = diLink5DoorLockState;
+            int lockRaw = diLink5DoorLockRaw;
+            long otaReadAt = diLink5OtaLockReadAtElapsedMs;
+            int otaState = diLink5OtaLockState;
+            int otaRaw = diLink5OtaLockRaw;
+            org.json.JSONArray lockReadings = null;
+            try {
+                lockReadings = encodeDiLink5LockReadings(lockState, lockRaw, lockReadAt,
+                        diLink5ProducerEnabledRails.contains(DiLink5LockRail.OTA),
+                        otaState, otaRaw, otaReadAt);
+            } catch (Throwable t) {
+                logger.debug("DI5 lockReadings encode error: " + t.getMessage());
+            }
+            DiLink5DoorSafetySnapshot doorSafety =
+                    diLink5DoorSafety.snapshot(SystemClock.elapsedRealtime());
             com.overdrive.app.byd.dilink5.Dilink5TelemetryBridge.publish(
                     published,
                     diLink5DynamicsObservedAtElapsedMs,
                     com.overdrive.app.monitor.ChargingDetector.getInstance().isCharging(),
                     diLink5EnergyFeedback,
-                    diLink5DoorLockState,
-                    snapshotDiLink5DoorStates());
+                    lockState,
+                    lockReadAt,
+                    doorSafety.states,
+                    doorSafety.observedAt,
+                    lastDiLink5LockDiag,
+                    lockReadings);
             return;
         }
         if (isDiLink5Vehicle() && isMainAppProcess()) {
@@ -1410,16 +2852,6 @@ public class BydDataCollector {
         } catch (Throwable t) {
             logger.debug("Automation snapshot publish error: " + t.getMessage());
         }
-    }
-
-    private int[] snapshotDiLink5DoorStates() {
-        int[] states = new int[7];
-        java.util.Arrays.fill(states, BydVehicleData.UNAVAILABLE);
-        for (int area = 1; area <= states.length; area++) {
-            Integer state = lastPolledDoorState.get(area);
-            if (state != null) states[area - 1] = state;
-        }
-        return states;
     }
 
     /** Check if the collector has been initialized. */
@@ -1452,6 +2884,7 @@ public class BydDataCollector {
         diLink5BridgeConsumer = bridgeConsumer;
         diLink5ProducerActive = isDiLink5ProducerProcess();
         this.context = context;
+        if (bridgeConsumer) startDiLink5CarSvcChargingPoll();
         if (isDiLink5Vehicle()) {
             resetDiLink5TyreFreshness();
             com.overdrive.app.byd.dilink5.Dilink5SdkInjector.ensure(context);
@@ -1565,7 +2998,11 @@ public class BydDataCollector {
             lastNormalEcoDriveMode = -1;
             lastModeDiagnosticState = null;
         }
+        Object previousRadarDevice = radarDevice;
         radarDevice = initDevice("android.hardware.bydauto.radar.BYDAutoRadarDevice", "Radar");
+        if (radarDevice != previousRadarDevice && isDiLink5ProducerActive()) {
+            com.overdrive.app.byd.dilink5.Dilink5RadarBridge.resetProducer();
+        }
         Object previousSettingDevice = settingDevice;
         settingDevice = initDevice("android.hardware.bydauto.setting.BYDAutoSettingDevice", "Setting");
         if (settingDevice != previousSettingDevice) {
@@ -1674,7 +3111,13 @@ public class BydDataCollector {
         // registerAllListeners() consults registeredHandles and skips only the individual devices it
         // has already attached to successfully, so a failed device is retried on the next init and a
         // successful one is never doubled.
-        registerAllListeners();
+        try {
+            registerAllListeners();
+        } catch (LinkageError e) {
+            // R8 can hoist an SDK class literal above the helpers' own guards; a firmware without
+            // that class must still finish init.
+            logger.warn("Listener registration stopped: " + e);
+        }
 
         // Runtime receiver for power-cable plug edges. Manifest receiver
         // BootReceiver already covers cold-boot delivery, but Android
@@ -1705,6 +3148,8 @@ public class BydDataCollector {
         if (isDiLink5ProducerActive()) {
             startFastDynamicsPoll();
         }
+        com.overdrive.app.byd.cloud.BydCloudDataProvider.getInstance()
+                .addSnapshotListener(cloudCabinPollTrigger);
 
         long elapsed = System.currentTimeMillis() - start;
         logger.info("=== BYD Data Collector Ready (" + elapsed + "ms) ===");
@@ -1964,7 +3409,8 @@ public class BydDataCollector {
         return milesDisplayMode;
     }
 
-    private java.util.concurrent.ScheduledExecutorService pollScheduler;
+    // Volatile: onCloudSnapshotUpdated reads it from cloud threads; writes stay under the monitor.
+    private volatile java.util.concurrent.ScheduledExecutorService pollScheduler;
     /**
      * Upper bound on a RAW charging-rate reading whose unit is not yet known, in raw units.
      *
@@ -1979,7 +3425,13 @@ public class BydDataCollector {
     static final String SRC_PACK_SIDE_DIRECT = "__packSideDirect";
 
     private static final long POLL_INTERVAL_MS = 5000; // 5 seconds when ACC on
-    private static final long POLL_INTERVAL_PARKED_MS = 90000; // 90 seconds when ACC off — listener callbacks keep the snapshot fresh between polls
+    /**
+     * 90 seconds when ACC off. Public so consumers can size their staleness windows
+     * against it: listener callbacks top up most fields between polls, but 12V has no
+     * such top-up parked (the callback is change-driven and a parked rail is flat),
+     * so this is its true refresh rate.
+     */
+    public static final long POLL_INTERVAL_PARKED_MS = 90000;
 
     static long pollIntervalMs(boolean accOn, boolean diLink5Producer) {
         return accOn || diLink5Producer ? POLL_INTERVAL_MS : POLL_INTERVAL_PARKED_MS;
@@ -2234,6 +3686,8 @@ public class BydDataCollector {
                         refreshDiLink5AutomationSnapshot();
                         publishDiLink5FallbackEvents();
                     }
+                    // OTA lock rail (inactive unless enabled): enqueue only, 2 s cadence.
+                    if ((currentTick & 0x7L) == 0L) submitDiLink5OtaLockRead();
                     return;
                 }
 
@@ -2423,6 +3877,8 @@ public class BydDataCollector {
     public static final int RCTA_RIGHT_BIT = 0x8;
     public static final int DOW_LEFT_BIT = 0x10;
     public static final int DOW_RIGHT_BIT = 0x20;
+    /** A vehicle in a blind spot, side not reported: the BSD state alone (DiLink 3.0, where the side alarms read unavailable). */
+    public static final int BS_ANY_BIT = 0x40;
 
     // The per-side alert IDs. FL/FR are level-encoded; the rest are counters.
     private static final int[] BS_LEVEL_IDS_LEFT = { BydFeatureIds.ADAS_FL_BLIND_SPOT_ALARM };
@@ -2536,11 +3992,14 @@ public class BydDataCollector {
             // it whenever the level alarm was already asserting froze those baselines for as long as
             // a car sat in the blind spot, so the next genuine counter step was measured against a
             // stale value and re-fired as a phantom alert once the level alarm cleared.
-            boolean leftLevel = accOn && anyLevelActive(device, BS_LEVEL_IDS_LEFT, readOk);
+            // the side alarms answering at all decides whether the BSD state below is needed
+            boolean[] levelOk = new boolean[1];
+            boolean leftLevel = accOn && anyLevelActive(device, BS_LEVEL_IDS_LEFT, levelOk);
             boolean leftCounter = accOn
                     && anyCounterAdvanced(device, BS_COUNTER_IDS_LEFT, readOk);
             if (leftLevel || leftCounter) packed |= BS_LEFT_BIT;
-            boolean rightLevel = accOn && anyLevelActive(device, BS_LEVEL_IDS_RIGHT, readOk);
+            boolean rightLevel = accOn && anyLevelActive(device, BS_LEVEL_IDS_RIGHT, levelOk);
+            if (levelOk[0]) readOk[0] = true;
             boolean rightCounter = accOn
                     && anyCounterAdvanced(device, BS_COUNTER_IDS_RIGHT, readOk);
             if (rightLevel || rightCounter) packed |= BS_RIGHT_BIT;
@@ -2555,6 +4014,15 @@ public class BydDataCollector {
             }
             if (anyCounterAdvanced(device, DOW_COUNTER_IDS_RIGHT, readOk)) {
                 packed |= DOW_RIGHT_BIT;
+            }
+            // where the side alarms don't answer, the BSD state reads 2 while a vehicle is in a
+            // blind spot (proven on DiLink 3.0); a car whose side alarms work keeps to those
+            if (accOn && !isDiLink5Vehicle() && !levelOk[0]) {
+                int bsd = readAdasAlertRaw(device, BydFeatureIds.ADAS_BSD_STATE);
+                if (bsd != BydVehicleData.UNAVAILABLE) {
+                    readOk[0] = true;
+                    if (bsd == 2) packed |= BS_ANY_BIT;
+                }
             }
             // Exception: when every polled id is event-proven the poll deliberately reads nothing,
             // and that is a healthy state, not a dead device — the callback carries the alerts.
@@ -2639,10 +4107,59 @@ public class BydDataCollector {
         // An id this SDK does not publish is not sendable — the HAL would answer a sentinel that a
         // magnitude test could read as a real alert level.
         if (!BydFeatureIds.isResolved(id)) return BydVehicleData.UNAVAILABLE;
-        int single = sanitizeAdasAlert(BydDeviceHelper.callGetSingle(device, id));
-        if (single != BydVehicleData.UNAVAILABLE) return single;
-        return sanitizeAdasAlert(
-                BydDeviceHelper.getIntValue(BydDeviceHelper.callGet(device, id, Integer.TYPE)));
+        int rawSingle = BydDeviceHelper.callGetSingle(device, id);
+        int single = sanitizeAdasAlert(rawSingle);
+        if (single != BydVehicleData.UNAVAILABLE) {
+            AdasDiag.read(id, rawSingle, 0, false);
+            return single;
+        }
+        int rawArray = BydDeviceHelper.getIntValue(BydDeviceHelper.callGet(device, id, Integer.TYPE));
+        AdasDiag.read(id, rawSingle, rawArray, true);
+        return sanitizeAdasAlert(rawArray);
+    }
+
+    /** The ADAS handle as it is, without the re-acquire (and its warning) a missing one triggers. */
+    Object adasDeviceIfAny() {
+        return adasDevice;
+    }
+
+    // which ENGINE_POWER read answers on this car: 0 not known yet, 1 the feature id, 2 the getter
+    private volatile int drivePowerPath;
+
+    /**
+     * Net HV-bus power now for the live widgets, kW (+ drawing, − regen), or NaN: DiLink 5's pack
+     * reading, else the bus power read live, as collectEngine reads it. Battery-electric cars only on
+     * the legacy path: a plug-in hybrid's ENGINE_POWER feeds the widgets' engine flow instead.
+     */
+    public double readDrivePowerNowKw() {
+        if (isDiLink5Vehicle() || isDiLink5BridgeConsumer()) {
+            BydVehicleData vd = getData();
+            return vd != null ? vd.hvBatteryPowerKw : Double.NaN;
+        }
+        Object dev = engineDevice;
+        if (dev == null || !accIsOn || isPhevPublic()) return Double.NaN;
+        try {
+            if (drivePowerPath != 2) {
+                Object val = BydDeviceHelper.callGet(dev, BydFeatureIds.ENGINE_POWER, Double.class);
+                if (val != null) {
+                    double raw = BydDeviceHelper.getDoubleValue(val);
+                    double kw = scaleEnginePowerKw(raw);
+                    if (!Double.isNaN(raw) && raw >= -200.0 && raw <= 400.0 && !isEnginePowerSentinel(kw)) {
+                        drivePowerPath = 1;
+                        return kw;
+                    }
+                }
+            }
+            Object power = BydDeviceHelper.callGetter(dev, "getEnginePower");
+            if (power instanceof Number) {
+                double kw = ((Number) power).doubleValue();
+                if (kw >= -200.0 && kw <= 400.0 && !isEnginePowerSentinel(kw)) {
+                    if (drivePowerPath == 0) drivePowerPath = 2;
+                    return kw;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return Double.NaN;
     }
 
     /** Map a raw ADAS alert reading to itself, or UNAVAILABLE for a failure/unset sentinel. */
@@ -2921,6 +4438,21 @@ public class BydDataCollector {
         if (values != null && index >= 0 && index < values.length
                 && values[index] >= 0 && values[index] <= 2) {
             return values[index];
+        }
+        return BydVehicleData.UNAVAILABLE;
+    }
+
+    /** Live bodywork power level: 0=off, 1=ACC, 2=on, 3=OK, or UNAVAILABLE for any other answer. */
+    public int readPowerLevelNow() {
+        if (bodyworkDevice == null) return BydVehicleData.UNAVAILABLE;
+        try {
+            Object v = BydDeviceHelper.callGetter(bodyworkDevice, "getPowerLevel");
+            if (v instanceof Number) {
+                int level = ((Number) v).intValue();
+                if (level >= 0 && level <= 3) return level;
+            }
+        } catch (Throwable t) {
+            logger.debug("readPowerLevelNow error: " + t.getMessage());
         }
         return BydVehicleData.UNAVAILABLE;
     }
@@ -3207,10 +4739,20 @@ public class BydDataCollector {
             diLink5BridgeReceivedAtElapsedMs = 0L;
             diLink5DynamicsObservedAtElapsedMs = 0L;
             diLink5EnergyFeedback = -1;
+            diLink5DoorLockRaw = Integer.MIN_VALUE;
             diLink5DoorLockState = DOOR_STATE_INVALID;
+            diLink5DoorLockReadAtElapsedMs = 0L;
+            diLink5PublishedLockEventState = DOOR_STATE_INVALID;
+            lastDiLink5LockReadDiagnostic = null;
+            lastDiLink5LockReadDiagnosticAtElapsedMs = 0L;
+            diLink5GateLock.clear();
+            diLink5DoorSafety.clear();
+            diLink5BridgedDoorSafety = DiLink5DoorSafetySnapshot.unknown();
             lastPolledDoorState.clear();
             resetDiLink5TyreFreshness();
         }
+        stopDiLink5CarSvcChargingPoll();
+        stopDiLink5OtaLockProbe();
         diLink5WakeRecoveryRequested.set(false);
         lastDiLink5ListenerEventElapsedMs = 0L;
         lastDiLink5ListenerRecoveryElapsedMs = 0L;
@@ -3233,6 +4775,7 @@ public class BydDataCollector {
         if (stopDiLink5Bridge) {
             snapshot.set(null);
             com.overdrive.app.byd.dilink5.Dilink5TelemetryBridge.stop();
+            com.overdrive.app.byd.dilink5.Dilink5RadarBridge.resetProducer();
         }
     }
 
@@ -3461,6 +5004,45 @@ public class BydDataCollector {
     // ACC state: when off, skip polling speed/engine/gearbox (always 0 when parked)
     private volatile boolean accIsOn = true;
 
+    // Whether the latest poll's AC_TEMP_INSIDE read answered (the poll's cabinTempHalSucceeded).
+    private volatile boolean lastCabinTempHalSucceeded;
+    private final com.overdrive.app.byd.cloud.BydCloudDataProvider.CloudSnapshotListener
+            cloudCabinPollTrigger = this::onCloudSnapshotUpdated;
+
+    /**
+     * Parked polls run 90 s apart, so a newer cloud cabin reading could wait behind an expiring
+     * one. Run the regular poll early instead; mergeCloudData stays the only writer.
+     */
+    private void onCloudSnapshotUpdated() {
+        if (!initialized || accIsOn || isDiLink5Vehicle() || lastCabinTempHalSucceeded) return;
+        BydVehicleData current = snapshot.get();
+        com.overdrive.app.byd.cloud.VehicleCloudSnapshot cs =
+                com.overdrive.app.byd.cloud.BydCloudDataProvider.getInstance().getSnapshot();
+        if (current == null || cs == null
+                || cs.insideTempObservedAt <= current.insideTempReadAt
+                || !cs.hasFreshInsideTemp()
+                || !isPlausibleCabinTempC((int) Math.round(cs.insideTempC))
+                || !com.overdrive.app.byd.cloud.BydCloudConfig.isCloudDataMergeEnabled()) {
+            return;
+        }
+        java.util.concurrent.ScheduledExecutorService scheduler = pollScheduler;
+        if (scheduler == null || scheduler.isShutdown()) return;
+        long generation = pollSchedulerGeneration.get();
+        long delayMs = Math.max(0L,
+                MIN_COLLECT_INTERVAL_MS - (System.currentTimeMillis() - lastCoreCollectTime));
+        try {
+            scheduler.schedule(() -> {
+                try {
+                    collectAllFromScheduler(generation);
+                } catch (Throwable t) {
+                    logger.debug("Cloud-triggered poll error: " + t.getMessage());
+                }
+            }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // Replaced by an ACC edge, whose new scheduler polls immediately.
+        }
+    }
+
     /**
      * Threshold below which a post-ACC-OFF engine-power reading is treated
      * as plausible "current flowing into pack" (plug-in charging) rather
@@ -3540,6 +5122,7 @@ public class BydDataCollector {
                 instrumentDevice,
                 statisticDevice,
                 tyreDevice,
+                radarDevice,
                 settingDevice,
                 energyDevice)) {
             recoverDiLink5Listeners("incomplete listener refresh", false);
@@ -3568,6 +5151,7 @@ public class BydDataCollector {
                 instrumentDevice,
                 statisticDevice,
                 tyreDevice,
+                radarDevice,
                 settingDevice,
                 energyDevice);
         if (refreshed > 0) {
@@ -3617,19 +5201,15 @@ public class BydDataCollector {
         this.accIsOn = isOn;
 
         if (wasOn != isOn) {
+            if (isDiLink5ProducerActive()) {
+                // Radar states never carry across an ignition cycle.
+                com.overdrive.app.byd.dilink5.Dilink5RadarBridge.resetProducer();
+            }
             try (com.overdrive.app.monitor.ChargingDetector.PublicationMutation ignored =
                          com.overdrive.app.monitor.ChargingDetector.beginPublicationMutation()) {
                 // Notify the fused detector first so it can invalidate ACC-dependent signals
                 // before the corresponding collector value becomes externally stable.
                 com.overdrive.app.monitor.ChargingDetector.getInstance().updateAccState(isOn);
-
-                // ACC just turned ON: easy-entry's job is done (or never started) — disarm.
-                // Keeps a mid-poll episode from surviving into a drive if ACC comes on
-                // before the seat settles.
-                if (isOn && anyReferenced(com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY)) {
-                    stopEasyEntryPoll();
-                    publishEasyEntry("idle");
-                }
 
                 // ACC just transitioned OFF: also clear the snapshot's enginePowerKw so direct
                 // snapshot consumers cannot retain the last drive's value while parked.
@@ -3661,6 +5241,7 @@ public class BydDataCollector {
         } else {
             com.overdrive.app.monitor.ChargingDetector.getInstance().updateAccState(isOn);
         }
+        if (wasOn != isOn) onAccEdgeForFobSignals(isOn);
 
         if (!wasOn && isOn && isDiLink5ProducerActive()) {
             diLink5WakeRecoveryRequested.set(true);
@@ -3703,6 +5284,17 @@ public class BydDataCollector {
             }, 0, interval, java.util.concurrent.TimeUnit.MILLISECONDS);
             logger.info("BydDataPoll rate changed to " + (interval / 1000) + "s (ACC " + (isOn ? "ON" : "OFF") + ")");
         }
+        // Opt-in DiLink 5 assist-off profile: one generation-fenced run per ignition cycle, scheduled
+        // from the ACC edge once the poll scheduler holds its new generation. Gated and executed
+        // entirely in com.overdrive.app.byd.assist; returns at once off DiLink 5 or unconfirmed model.
+        if (wasOn != isOn && isDiLink5ProducerActive()) {
+            if (isOn) {
+                com.overdrive.app.byd.assist.DiLink5AssistOffApplier.onAccOn(
+                        context, pollSchedulerGeneration.get());
+            } else {
+                com.overdrive.app.byd.assist.DiLink5AssistOffApplier.onAccOff();
+            }
+        }
         if (isDiLink5ProducerActive()) startFastDynamicsPoll();
     }
 
@@ -3713,6 +5305,9 @@ public class BydDataCollector {
     private synchronized boolean collectAllFromScheduler(long schedulerGeneration) {
         if (!initialized || schedulerGeneration != pollSchedulerGeneration.get()) {
             return false;
+        }
+        if (isDiLink5ProducerActive()) {
+            com.overdrive.app.byd.dilink5.Dilink5RadarBridge.publishObservedLevels();
         }
         collectAll();
         return true;
@@ -3869,6 +5464,7 @@ public class BydDataCollector {
         // one observation, and the result tells cloud fallback whether the HAL answered now
         // rather than merely leaving a carried-forward value in the builder.
         boolean cabinTempHalSucceeded = collectCabinTemperature(b);
+        lastCabinTempHalSucceeded = cabinTempHalSucceeded;
 
         // Extended data consumed by ABRP/MQTT/trips
         collectStatisticExtended(b);   // SOH, driving time, key battery
@@ -3971,6 +5567,10 @@ public class BydDataCollector {
         if (isDiLink5Vehicle()) b.ambientEnabled(BydVehicleData.UNAVAILABLE);
         int ambientOn = getAmbientLightEnabled();
         if (ambientOn != BydVehicleData.UNAVAILABLE) b.ambientEnabled(ambientOn);
+        // Cabin light: same ungated readback, so the tile and the HA switch follow the car.
+        if (isDiLink5Vehicle()) b.readingLight(BydVehicleData.UNAVAILABLE);
+        int readingLightOn = getReadingLightState();
+        if (readingLightOn != BydVehicleData.UNAVAILABLE) b.readingLight(readingLightOn);
         // Steering-wheel heater — UNGATED, every poll, for the same reason as the ambient
         // switch above: its producer collectSettings() runs only in collectAllFull() at
         // daemon init, and no settings-HAL callback covers this id (onSettingsCallback
@@ -3987,16 +5587,26 @@ public class BydDataCollector {
         if (anyReferenced(com.overdrive.app.automation.condition.BydEvent.SLOPE)) {
             collectSensor(b);
         }
-        // Central-lock state (locked/unlocked) — OTA rail (getLFDoorLockState). Published
-        // here on the ALWAYS-ALIVE poll loop (both ACC-on and ACC-off) so a "when the car
-        // locks/unlocks" automation fires regardless of vehicle state. Previously the only
-        // publisher was CameraDaemon.applyLockEvent, which runs solely inside the ACC-off
-        // surveillance arm-gate AND early-returns while ACC is on — so the lock trigger was
-        // dead outside that narrow window (the reported "lock trigger doesn't fire" bug).
-        // Self-gated by anyReferenced so it costs nothing unless a rule keys off it.
+        // Central-lock state (locked/unlocked) — local rail: typed cabin on DiLink 5, OTA
+        // getLFDoorLockState on legacy firmware. Published here on the ALWAYS-ALIVE poll loop
+        // (both ACC-on and ACC-off) so a "when the car locks/unlocks" automation fires regardless
+        // of vehicle state. Previously the only publisher was CameraDaemon.applyLockEvent, which
+        // runs solely inside the ACC-off surveillance arm-gate AND early-returns while ACC is on
+        // — so the lock trigger was dead outside that narrow window (the reported "lock trigger
+        // doesn't fire" bug). On legacy firmware this stays self-gated by anyReferenced so it
+        // costs nothing unless a rule keys off it. On Di5 the typed read is also the proximity
+        // gate's safety feed, which must not depend on a user automation existing; the fast
+        // scheduler normally owns that read (diLink5FastRefresh), this covers a producer whose
+        // fast poll is not running.
         if (!diLink5FastRefresh
-                && anyReferenced(com.overdrive.app.automation.condition.BydEvent.LOCK)) {
+                && (isDiLink5ProducerActive()
+                    || anyReferenced(com.overdrive.app.automation.condition.BydEvent.LOCK))) {
             collectLockState();
+        }
+        if (!isDiLink5ProducerActive() && anyReferenced(
+                com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE,
+                com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY)) {
+            ensureFobUnlockChannel();
         }
         // Nearest radar obstacle (cm) — radar/PDC device (parked-radar dependent).
         if (anyReferenced(com.overdrive.app.automation.condition.BydEvent.RADAR_NEAREST)) {
@@ -4064,6 +5674,7 @@ public class BydDataCollector {
         // Read AC_TEMP_INSIDE exactly once for this poll and publish that one observation to
         // both legacy cabin fields.
         boolean cabinTempHalSucceeded = collectCabinTemperature(b);
+        lastCabinTempHalSucceeded = cabinTempHalSucceeded;
 
         // Display-only devices (normally listener-driven, polled here on-demand)
         collectAc(b);
@@ -4074,6 +5685,10 @@ public class BydDataCollector {
         if (isDiLink5Vehicle()) b.ambientEnabled(BydVehicleData.UNAVAILABLE);
         int ambientOn = getAmbientLightEnabled();
         if (ambientOn != BydVehicleData.UNAVAILABLE) b.ambientEnabled(ambientOn);
+        // Cabin light: same ungated readback, so the tile and the HA switch follow the car.
+        if (isDiLink5Vehicle()) b.readingLight(BydVehicleData.UNAVAILABLE);
+        int readingLightOn = getReadingLightState();
+        if (readingLightOn != BydVehicleData.UNAVAILABLE) b.readingLight(readingLightOn);
         collectAdas(b);
         collectSettings(b);
         collectPower(b);
@@ -5166,23 +6781,23 @@ public class BydDataCollector {
             if (b.hevMileageKm == BydVehicleData.UNAVAILABLE
                     && (hevMileageProbesLeft > 0 || hevMileagePresent)) {
                 try {
-                    // Manager tier first: on Di 3.0 it is the only path that answers
-                    // (see readMileageViaManager), and a hit here must count as a
-                    // success so the probe countdown below never retires the register.
+                    Object val = BydDeviceHelper.callGet(statisticDevice, BydFeatureIds.STAT_MILEAGE_HEV, Integer.class);
                     boolean got = false;
-                    int managerRaw = readMileageViaManager(BydFeatureIds.STAT_MILEAGE_HEV, diLink5);
-                    if (managerRaw != BydVehicleData.UNAVAILABLE) {
-                        b.hevMileageKm((int) Math.round(managerRaw * distanceFactor));
-                        got = true;
-                    }
-                    Object val = got ? null : BydDeviceHelper.callGet(
-                            statisticDevice, BydFeatureIds.STAT_MILEAGE_HEV, Integer.class);
                     if (val != null) {
                         int raw = BydDeviceHelper.getIntValue(val);
                         if (raw != BydFeatureIds.BMS_UNAVAILABLE && raw != BydFeatureIds.INVALID_VALUE
                             && raw != BydFeatureIds.INVALID_VALUE_2
                             && isUsableMileage(raw, diLink5)) {
                             b.hevMileageKm((int) Math.round(raw * distanceFactor));
+                            got = true;
+                        }
+                    }
+                    // Di 3.0 answers only through the manager tier; a hit there must also
+                    // count, or the probe countdown retires the register.
+                    if (!got) {
+                        int managerRaw = readMileageViaManager(BydFeatureIds.STAT_MILEAGE_HEV, diLink5);
+                        if (managerRaw != BydVehicleData.UNAVAILABLE) {
+                            b.hevMileageKm((int) Math.round(managerRaw * distanceFactor));
                             got = true;
                         }
                     }
@@ -5467,7 +7082,8 @@ public class BydDataCollector {
     }
 
     static boolean isUsableMileage(int value, boolean diLink5) {
-        return value >= (diLink5 ? 0 : 1) && value <= 2_000_000;
+        // 0xFFFFF is the statistic HAL's "not reported" value (e.g. EV/HEV split on a BEV).
+        return value >= (diLink5 ? 0 : 1) && value <= 2_000_000 && value != 1_048_575;
     }
 
     /**
@@ -5919,6 +7535,46 @@ public class BydDataCollector {
 
     static boolean isValidChargingGunState(int raw) {
         return raw >= 1 && raw <= 5;
+    }
+
+    /** DI5 gun states sit one below the legacy SDK (0 none … 4 V2L); 5 (OBC CC) has no legacy value. */
+    static int diLink5GunStateToLegacy(int raw) {
+        return raw >= 0 && raw <= 4 ? raw + 1 : BydVehicleData.UNAVAILABLE;
+    }
+
+    /** DI5 BMS 3 is GUN_CONNECTING, not the legacy DISCHARG. */
+    static int diLink5BmsStateToLegacy(int raw) {
+        return raw == 3 ? BydVehicleData.UNAVAILABLE : raw;
+    }
+
+    private int diLink5GunStateFromSdk(int raw) {
+        return raw == 0 && !isDiLink5ChargingZeroConfirmed("getChargingGunState")
+                ? BydVehicleData.UNAVAILABLE : diLink5GunStateToLegacy(raw);
+    }
+
+    private int diLink5BmsStateFromSdk(int raw) {
+        return raw == 0 && !isDiLink5ChargingZeroConfirmed("getBatteryManagementDeviceState")
+                ? BydVehicleData.UNAVAILABLE : diLink5BmsStateToLegacy(raw);
+    }
+
+    /**
+     * DI5 charging getters answer 0 while the adapter is unbound, and its events pass
+     * unavailable-status values through; trust a 0 only on a re-read between two bound checks.
+     */
+    private boolean isDiLink5ChargingZeroConfirmed(String getter) {
+        Object device = chargingDevice;
+        if (!BydDeviceHelper.isDiLink5AdapterReady(
+                context, device, "getChargingAdapterManager")) {
+            if (!loggedDiLink5ChargingAdapterUnbound) {
+                loggedDiLink5ChargingAdapterUnbound = true;
+                logger.info("DI5 charging adapter not bound; ignoring a 0 from " + getter);
+            }
+            return false;
+        }
+        Object again = BydDeviceHelper.callGetter(device, getter);
+        return again instanceof Number && ((Number) again).intValue() == 0
+                && BydDeviceHelper.isDiLink5AdapterReady(
+                        context, device, "getChargingAdapterManager");
     }
 
     /** Decode only the documented boolean encodings; non-zero HAL sentinels are unavailable. */
@@ -6764,6 +8420,7 @@ public class BydDataCollector {
             Object gunState = BydDeviceHelper.callGetter(chargingDevice, "getChargingGunState");
             if (gunState instanceof Number) {
                 int observedGun = ((Number) gunState).intValue();
+                if (isDiLink5Vehicle()) observedGun = diLink5GunStateFromSdk(observedGun);
                 if (observedGun >= 1 && observedGun <= 5) {
                     chargingObservationOrder.recordGunPoll(gunObservation);
                     b.chargingGunState(observedGun);
@@ -6841,6 +8498,9 @@ public class BydDataCollector {
                         evidence.bmsObservation = bmsObservation;
                     }
                 }
+            }
+            if (isDiLink5Vehicle() && observedChargingState != BydVehicleData.UNAVAILABLE) {
+                observedChargingState = diLink5BmsStateFromSdk(observedChargingState);
             }
             // The setter stamps only a real transition. Avoiding an intermediate UNAVAILABLE write is
             // what makes chargingStateAtMs the actual FINISHED boundary instead of "this poll".
@@ -7886,19 +9546,31 @@ public class BydDataCollector {
      * "cabin below 5 C" rule.
      */
     private int readCabinTempC() {
-        if (acDevice == null) return Integer.MIN_VALUE;
+        if (acDevice == null) return cabinReadFailed("no-device", "no AC device");
         Object val = BydDeviceHelper.callGet(acDevice, BydFeatureIds.AC_TEMP_INSIDE, Integer.class);
-        if (val == null) return Integer.MIN_VALUE;
+        if (val == null) return cabinReadFailed("no-answer", "AC_TEMP_INSIDE returned nothing");
         int raw = BydDeviceHelper.getIntValue(val);
         if (raw == 0) {
             double asDouble = BydDeviceHelper.getDoubleValue(val);
             if (!Double.isNaN(asDouble) && asDouble != 0.0) {
                 logger.debug("readCabinTempC: intValue=0 but doubleValue=" + asDouble
                         + " — type/field mismatch, discarding");
-                return Integer.MIN_VALUE;
+                return cabinReadFailed("type-mismatch", "intValue=0 doubleValue=" + asDouble);
             }
         }
-        return isPlausibleCabinTempC(raw) ? raw : Integer.MIN_VALUE;
+        return isPlausibleCabinTempC(raw) ? raw : cabinReadFailed("implausible", "raw=" + raw);
+    }
+
+    // Why the latest readCabinTempC() failed: a stable kind (the edge key) plus its detail.
+    private String cabinReadFailureKind;
+    private String cabinReadFailureDetail;
+    // Kind last logged by noteCabinReadFailure; null while the sensor answers.
+    private String loggedCabinReadFailureKind;
+
+    private int cabinReadFailed(String kind, String detail) {
+        cabinReadFailureKind = kind;
+        cabinReadFailureDetail = detail;
+        return Integer.MIN_VALUE;
     }
 
     /**
@@ -7909,13 +9581,29 @@ public class BydDataCollector {
     private boolean collectCabinTemperature(BydVehicleData.Builder b) {
         try {
             int raw = readCabinTempC();
-            if (raw == Integer.MIN_VALUE) return false;
+            if (raw == Integer.MIN_VALUE) {
+                noteCabinReadFailure(cabinReadFailureKind, cabinReadFailureDetail);
+                return false;
+            }
             b.insideTempC(raw, System.currentTimeMillis());
+            if (loggedCabinReadFailureKind != null) {
+                loggedCabinReadFailureKind = null;
+                logger.info("Cabin temp: sensor answering again (raw=" + raw + ")");
+            }
             return true;
         } catch (Exception e) {
             logger.debug("collectCabinTemperature error: " + e.getMessage());
+            noteCabinReadFailure("error", e.getClass().getSimpleName() + ": " + e.getMessage());
             return false;
         }
+    }
+
+    // One line per failure kind, so a sensor that sleeps while parked costs two lines a park.
+    private void noteCabinReadFailure(String kind, String detail) {
+        if (kind == null || kind.equals(loggedCabinReadFailureKind)) return;
+        loggedCabinReadFailureKind = kind;
+        logger.info("Cabin temp: sensor read failed (" + detail
+                + ", acc=" + (accIsOn ? "on" : "off") + ")");
     }
 
     // ── AC temperature SETPOINT (the dial), distinct from the measured cabin temp ────
@@ -8232,6 +9920,17 @@ public class BydDataCollector {
     private volatile int establishedDrivetrain = DRIVETRAIN_UNKNOWN;
     private volatile long lastDrivetrainProbeMs = 0;
     private static final long DRIVETRAIN_REPROBE_MS = 60_000;
+    // On DiLink 5 the fuel StatisticDevice can be permanently unavailable.
+    // The old ambiguous branch deliberately left the verdict uncached, which
+    // meant every telemetry accessor repeated reflection and emitted an info
+    // line (6k+ lines in a two-minute field-log window). Keep the conservative
+    // BEV/unknown verdict, but rate-limit only this inconclusive DiLink 5 probe.
+    // Legacy modes retain their exact immediate-reprobe behavior.
+    private volatile long lastDiLink5AmbiguousDrivetrainProbeMs = 0L;
+    static final long DILINK5_AMBIGUOUS_DRIVETRAIN_REPROBE_MS = 5_000L;
+    // Last inconclusive DiLink 5 verdict line; repeats are suppressed until a verdict or input changes.
+    // Guarded by drivetrainProbeLock.
+    private String lastDiLink5AmbiguousDrivetrainLog = null;
 
     private boolean isPhev(BydVehicleData.Builder b) {
         return computeIsPhev();
@@ -8277,6 +9976,12 @@ public class BydDataCollector {
             }
             return cachedDrivetrain == DRIVETRAIN_PHEV;
         }
+        if (shouldThrottleDiLink5AmbiguousDrivetrainProbe(
+                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected(),
+                now,
+                lastDiLink5AmbiguousDrivetrainProbeMs)) {
+            return false;
+        }
 
         // ── Pre-probe: capacity-based PHEV gate ────────────────────────────
         // If the daemon has already locked in a known small (<30 kWh) nominal
@@ -8303,6 +10008,8 @@ public class BydDataCollector {
             cachedDrivetrain = DRIVETRAIN_PHEV;
             establishedDrivetrain = DRIVETRAIN_PHEV;
             lastDrivetrainProbeMs = now;
+            lastDiLink5AmbiguousDrivetrainProbeMs = 0L;
+            lastDiLink5AmbiguousDrivetrainLog = null;
             logger.info("computeIsPhev → PHEV (capacity-gate, nominal="
                 + String.format("%.1f", knownNominal) + " kWh)");
             return true;
@@ -8348,6 +10055,8 @@ public class BydDataCollector {
             cachedDrivetrain = DRIVETRAIN_PHEV;
             establishedDrivetrain = DRIVETRAIN_PHEV;
             lastDrivetrainProbeMs = now;
+            lastDiLink5AmbiguousDrivetrainProbeMs = 0L;
+            lastDiLink5AmbiguousDrivetrainLog = null;
             logger.info("computeIsPhev → PHEV (fuelPct=" + fuelPctRaw
                 + ", fuelRange=" + fuelRangeRaw + ")");
             return true;
@@ -8360,6 +10069,8 @@ public class BydDataCollector {
                 establishedDrivetrain = DRIVETRAIN_BEV;
             }
             lastDrivetrainProbeMs = now;
+            lastDiLink5AmbiguousDrivetrainProbeMs = 0L;
+            lastDiLink5AmbiguousDrivetrainLog = null;
             logger.info("computeIsPhev → BEV (both fuel signals at sentinel: pct="
                 + fuelPctRaw + ", range=" + fuelRangeRaw + "; raw-power verdict="
                 + (establishedDrivetrain == DRIVETRAIN_BEV
@@ -8377,6 +10088,8 @@ public class BydDataCollector {
             // happened (DRIVETRAIN_REPROBE_MS - 5000) ms ago, so the next call
             // in >5s will re-probe.
             lastDrivetrainProbeMs = now - (DRIVETRAIN_REPROBE_MS - 5_000);
+            lastDiLink5AmbiguousDrivetrainProbeMs = 0L;
+            lastDiLink5AmbiguousDrivetrainLog = null;
             logger.info("computeIsPhev → PHEV (mixed signals: pct=" + fuelPctRaw
                 + ", range=" + fuelRangeRaw + ") — short TTL re-probe");
             return true;
@@ -8385,10 +10098,28 @@ public class BydDataCollector {
         // here only when nominal isn't known yet OR is >=30 (BEV-sized) — both
         // resolve to BEV verdict, deliberately uncached so the next probe can
         // re-evaluate once SohEstimator picks up a real nominal.
-        logger.info("computeIsPhev → BEV (no fuel signals, no small nominal: "
+        boolean diLink5 =
+                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        if (diLink5) {
+            lastDiLink5AmbiguousDrivetrainProbeMs = now;
+        }
+        String line = "computeIsPhev → BEV (no fuel signals, no small nominal: "
             + "pct=" + fuelPctRaw + ", range=" + fuelRangeRaw
-            + ", nominal=" + String.format("%.1f", knownNominal) + " kWh) — uncached");
+            + ", nominal=" + String.format("%.1f", knownNominal) + " kWh) — "
+            + (diLink5 ? "DiLink5 inconclusive; retry in 5s" : "uncached");
+        if (!diLink5 || !line.equals(lastDiLink5AmbiguousDrivetrainLog)) {
+            logger.info(line);
+        }
+        lastDiLink5AmbiguousDrivetrainLog = diLink5 ? line : null;
         return false;
+    }
+
+    static boolean shouldThrottleDiLink5AmbiguousDrivetrainProbe(
+            boolean diLink5, long nowMs, long lastAmbiguousProbeMs) {
+        if (!diLink5 || lastAmbiguousProbeMs <= 0L) return false;
+        long age = nowMs - lastAmbiguousProbeMs;
+        return age >= 0L
+                && age < DILINK5_AMBIGUOUS_DRIVETRAIN_REPROBE_MS;
     }
 
     private static boolean isBevFuelSentinel(int v) {
@@ -10562,7 +12293,15 @@ public class BydDataCollector {
      */
     public void pollDoorStatesNow() {
         if (isDiLink5BridgeConsumer()) return;
-        if (bodyworkDevice == null) return;
+        boolean diLink5 = isDiLink5ProducerActive();
+        if (bodyworkDevice == null) {
+            if (diLink5) {
+                long now = SystemClock.elapsedRealtime();
+                for (int area = 1; area <= 7; area++)
+                    diLink5DoorSafety.observe(area, BydVehicleData.UNAVAILABLE, now);
+            }
+            return;
+        }
         // DoorEvent is always registered as a callback listener. Gate on an actual rule/editor
         // reference instead, otherwise this fallback would perform seven HAL reads every core
         // telemetry cycle even on cars that never use door automations.
@@ -10570,8 +12309,11 @@ public class BydDataCollector {
                 && !com.overdrive.app.automation.condition.DoorEvent.shouldPoll()) return;
         boolean rightHandDrive = isRightHandDriveForDoorMapping();
         for (int area = 1; area <= 7; area++) {
+            // Stamp before the getter so a slow Binder call cannot hide the read's age.
+            long readAt = diLink5 ? SystemClock.elapsedRealtime() : 0L;
             try {
                 int raw = readDoorOpenState(area, rightHandDrive);
+                if (diLink5) diLink5DoorSafety.observe(area, raw, readAt);
                 // Only 0 (closed) / 1 (open) are meaningful; HAL sentinels are unavailable → skip so
                 // an unreadable area never manufactures a spurious "closed" edge.
                 if (!isValidDoorOpenState(raw)) continue;
@@ -10590,6 +12332,8 @@ public class BydDataCollector {
                 // caused the first later close/open transition to be lost as that silent seed.
                 notifyDoorStateListeners(area, raw);
             } catch (Exception ignored) {
+                if (diLink5)
+                    diLink5DoorSafety.observe(area, BydVehicleData.UNAVAILABLE, readAt);
                 // Getter absent on this trim → nothing to poll; leave to the callback path.
             }
         }
@@ -10676,11 +12420,13 @@ public class BydDataCollector {
      * Live open/close state for every door and lid, mapped to physical positions. Reads via the
      * manager channel (works parked, verified on Di 3.0) with the legacy {@code getDoorState}
      * fallback — the same read the poll/notifier use, so it stays consistent with door events.
+     * The DI5 daemon serves the last bridged snapshot instead, like {@link #pollDoorStatesNow}.
      *
      * @return {@code [lf, rf, lr, rr, hood, trunk, fuelCap]}; each 1=open, 0=closed, -1=unknown.
      */
     public int[] readAllDoorOpenStates() {
         boolean rhd = isRightHandDriveForDoorMapping();
+        if (isDiLink5BridgeConsumer()) return bridgedDoorOpenStates(rhd);
         // The front axis is by seat; doorFeatureForArea maps driver/passenger to the physical
         // L/R feature by drive side, so pick the seat-area that yields each physical door.
         int lf = normalizeDoorOpen(readDoorOpenState(
@@ -10693,6 +12439,35 @@ public class BydDataCollector {
         int trunk = normalizeDoorOpen(readDoorOpenState(BodyworkConstants.AREA_TRUNK, rhd));
         int fuelCap = normalizeDoorOpen(readDoorOpenState(BodyworkConstants.AREA_FUEL_CAP, rhd));
         return new int[] { lf, rf, lr, rr, hood, trunk, fuelCap };
+    }
+
+    /** Physical-order DI5 states, each expiring from its own SDK read time. */
+    private int[] bridgedDoorOpenStates(boolean rhd) {
+        int[] byArea = diLink5BridgedDoorSafety.current(SystemClock.elapsedRealtime());
+        int driver = normalizeDoorOpen(byArea[BodyworkConstants.AREA_FRONT_DRIVER - 1]);
+        int passenger = normalizeDoorOpen(byArea[BodyworkConstants.AREA_FRONT_PASSENGER - 1]);
+        return new int[] {
+                rhd ? passenger : driver,
+                rhd ? driver : passenger,
+                normalizeDoorOpen(byArea[BodyworkConstants.AREA_REAR_LEFT - 1]),
+                normalizeDoorOpen(byArea[BodyworkConstants.AREA_REAR_RIGHT - 1]),
+                normalizeDoorOpen(byArea[BodyworkConstants.AREA_HOOD - 1]),
+                normalizeDoorOpen(byArea[BodyworkConstants.AREA_TRUNK - 1]),
+                normalizeDoorOpen(byArea[BodyworkConstants.AREA_FUEL_CAP - 1]) };
+    }
+
+    /** DI5 daemon: a cabin door or the trunk is open in the fresh bridged snapshot. Memory only. */
+    public boolean isDiLink5DoorOrTrunkOpen() {
+        if (!isDiLink5Vehicle() || isMainAppProcess()) return false;
+        int[] byArea = diLink5BridgedDoorSafety.current(SystemClock.elapsedRealtime());
+        for (int area = BodyworkConstants.AREA_FRONT_DRIVER;
+                area <= BodyworkConstants.AREA_TRUNK; area++) {
+            if (area != BodyworkConstants.AREA_HOOD
+                    && byArea[area - 1] == BodyworkConstants.STATE_OPEN) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Map the raw door read (which uses MIN_VALUE for unavailable) to the API's 1/0/-1. */
@@ -10829,10 +12604,13 @@ public class BydDataCollector {
     }
 
     private void collectStatisticExtended(BydVehicleData.Builder b) {
-        if (statisticDevice == null && vehicleHealthDevice == null) return;
+        // A new collection must not publish a previous battery-health reading as current.
+        b.sohPercent(Double.NaN);
+        if (instrumentDevice == null && statisticDevice == null && vehicleHealthDevice == null) return;
 
-        // OEM SOH. This direct battery-health index is SohEstimator's authoritative
-        // source on every drivetrain; capacity-derived routes are fallbacks only.
+        // Read the direct instrument battery-health index first. Statistic and VehicleHealth
+        // reads remain fallbacks for firmware that does not expose the instrument property.
+        // OEM SOH is authoritative on every drivetrain; capacity-derived routes are fallbacks.
         //
         // 0 IS REJECTED THROUGHOUT, not just filtered at the far end. A battery is never 0%
         // healthy, so a 0 from this index means "no reading", and it is the value every failure
@@ -10845,28 +12623,35 @@ public class BydDataCollector {
         try {
             Integer sohValue = null;
             try {
-                Object result = BydDeviceHelper.callGetter(statisticDevice, "getStatisticBatteryHealthyIndex");
-                if (result instanceof Integer) {
-                    sohValue = (Integer) result;
-                } else if (result instanceof Double) {
-                    sohValue = (int) ((Double) result).doubleValue();
-                } else if (result instanceof Float) {
-                    sohValue = (int) ((Float) result).floatValue();
-                }
-            } catch (NoSuchMethodError nsme) {
-                // method missing — try feature ID below
+                Object result = BydDeviceHelper.callGetWithDeviceType(
+                        instrumentDevice, INSTRUMENT_SOH_DEVICE_TYPE, INSTRUMENT_SOH_FEATURE_ID);
+                if (result instanceof Integer) sohValue = (Integer) result;
             } catch (Exception e) {
-                if (!(e.getCause() instanceof NoSuchMethodError)) {
-                    logger.debug("SOH getter failed: " + e.getMessage());
+                logger.debug("SOH instrument property read failed: " + e.getMessage());
+            }
+
+            if (!isPlausibleOemSohPercent(sohValue)) {
+                try {
+                    Object result = BydDeviceHelper.callGetter(
+                            statisticDevice, "getStatisticBatteryHealthyIndex");
+                    if (result instanceof Integer) {
+                        sohValue = (Integer) result;
+                    } else if (result instanceof Double) {
+                        sohValue = (int) ((Double) result).doubleValue();
+                    } else if (result instanceof Float) {
+                        sohValue = (int) ((Float) result).floatValue();
+                    }
+                } catch (NoSuchMethodError nsme) {
+                    // method missing — try the feature ID below
+                } catch (Exception e) {
+                    if (!(e.getCause() instanceof NoSuchMethodError)) {
+                        logger.debug("SOH statistic getter failed: " + e.getMessage());
+                    }
                 }
             }
 
-            // TIER 2 — the get(deviceType, featureId) form, with the STATISTIC device type
-            // (1014). The OEM app tries exactly this pairing as its own second attempt when the
-            // named getter comes up empty, so it is the form known to answer on trims where
-            // that getter is absent. Our generic callGet prefers the get(int[], Class)
-            // signature and only falls back to (int,int) when the array form is missing
-            // entirely — so on a device exposing BOTH, this specific pairing was never tried.
+            // Try the Statistic get(deviceType, featureId) channel explicitly: the generic
+            // reader prefers get(int[], Class) when both overloads exist.
             if (!isPlausibleOemSohPercent(sohValue)) {
                 try {
                     Object r = BydDeviceHelper.callGetWithDeviceType(
@@ -10881,7 +12666,7 @@ public class BydDataCollector {
                 }
             }
 
-            // TIER 3 — the generic feature-ID read, probing primitive widths. Note this used
+            // Finally try the generic Statistic feature-ID read, probing primitive widths. This used
             // to pass the WRAPPER Integer.class, which the HAL does not match (it dispatches
             // on the exact primitive Class), so this tier could never produce a value.
             //
@@ -10925,7 +12710,7 @@ public class BydDataCollector {
                 } else {
                     outcome = sohValue + "%";
                 }
-                logger.info("OEM SOH (STATISTIC_BATTERY_HEALTHY_INDEX) first read -> " + outcome);
+                logger.info("OEM SOH first read -> " + outcome);
             }
 
             if (isPlausibleOemSohPercent(sohValue)) {
@@ -11723,6 +13508,7 @@ public class BydDataCollector {
             logger.info("  Adas listener registered (filtered — blind-spot warnings)");
             count++;
         }
+        if (adasDevice != null && !isDiLink5Vehicle()) AdasDiag.start(this);
         if (isDiLink5Vehicle()) {
             if (noteRegisterOk(settingDevice,
                     BydDeviceHelper.registerSettingListener(
@@ -11741,7 +13527,13 @@ public class BydDataCollector {
             logger.info("  Settings listener registered");
             count++;
         }
-        if (noteRegisterOk(radarDevice, BydDeviceHelper.registerListener(radarDevice, this::onGenericCallback))) {
+        if (isDiLink5ProducerActive()
+                && noteRegisterOk(radarDevice,
+                        BydDeviceHelper.registerRadarListener(
+                                radarDevice, this::onRadarCallback))) {
+            logger.info("  Radar listener registered (DiLink 5 typed)");
+            count++;
+        } else if (noteRegisterOk(radarDevice, BydDeviceHelper.registerListener(radarDevice, this::onGenericCallback))) {
             logger.info("  Radar listener registered");
             count++;
         }
@@ -11835,6 +13627,49 @@ public class BydDataCollector {
                 + " (tracked handles: " + registeredHandles.size() + ")");
     }
 
+    // Some legacy trims flip the typed passenger-belt callback every ~0.4 s with nobody seated.
+    // Changes are logged as before until 4 land within 2 s; then one summary per minute.
+    private static final int PASSENGER_BELT_LOG_BURST_CHANGES = 4;
+    private static final long PASSENGER_BELT_LOG_BURST_MS = 2_000L;
+    private static final long PASSENGER_BELT_LOG_SUMMARY_MS = 60_000L;
+    private final Object passengerBeltLogLock = new Object();
+    private final long[] passengerBeltChangeAtMs = new long[PASSENGER_BELT_LOG_BURST_CHANGES];
+    private long passengerBeltChangeCount;
+    private int passengerBeltUnloggedChanges;
+    private long passengerBeltSummaryAtMs = -PASSENGER_BELT_LOG_SUMMARY_MS;
+
+    private void logPassengerBeltCallbackChange(int passengerState) {
+        String state = passengerState == 1 ? "buckled" : "unbuckled";
+        long now = SystemClock.elapsedRealtime();
+        String line;
+        synchronized (passengerBeltLogLock) {
+            passengerBeltChangeAtMs[(int) (passengerBeltChangeCount
+                    % PASSENGER_BELT_LOG_BURST_CHANGES)] = now;
+            passengerBeltChangeCount++;
+            long oldest = passengerBeltChangeAtMs[(int) (passengerBeltChangeCount
+                    % PASSENGER_BELT_LOG_BURST_CHANGES)];
+            boolean flipping = passengerBeltChangeCount >= PASSENGER_BELT_LOG_BURST_CHANGES
+                    && now - oldest <= PASSENGER_BELT_LOG_BURST_MS;
+            if (!flipping) {
+                line = "onSafetyBeltStatusChanged: front passenger=" + state
+                        + (passengerBeltUnloggedChanges > 0
+                                ? " (" + passengerBeltUnloggedChanges + " rapid changes not logged)"
+                                : "");
+                passengerBeltUnloggedChanges = 0;
+            } else {
+                passengerBeltUnloggedChanges++;
+                if (now - passengerBeltSummaryAtMs < PASSENGER_BELT_LOG_SUMMARY_MS) return;
+                passengerBeltSummaryAtMs = now;
+                line = "onSafetyBeltStatusChanged: front passenger callback flipping ("
+                        + PASSENGER_BELT_LOG_BURST_CHANGES + "+ changes in "
+                        + PASSENGER_BELT_LOG_BURST_MS + " ms); "
+                        + passengerBeltUnloggedChanges + " changes not logged, latest=" + state;
+                passengerBeltUnloggedChanges = 0;
+            }
+        }
+        logger.info(line);
+    }
+
     private void onSafetyBeltCallback(Object sourceDevice, long generation, String method, Object[] args) {
         long lifecycleGeneration = callbackLifecycleGeneration.get();
         if (!isActiveSafetyBeltListener(sourceDevice, generation, lifecycleGeneration)) {
@@ -11849,8 +13684,7 @@ public class BydDataCollector {
                 boolean changed = passengerSeatbeltTracker.recordCallback(passengerState);
                 invalidateSeatbeltPairMemo();
                 if (changed) {
-                    logger.info("onSafetyBeltStatusChanged: front passenger="
-                            + (passengerState == 1 ? "buckled" : "unbuckled"));
+                    logPassengerBeltCallbackChange(passengerState);
                 }
                 try {
                     if (isDiLink5ProducerActive()) {
@@ -11955,21 +13789,6 @@ public class BydDataCollector {
 
     private void onBodyworkCallback(String method, Object[] args) {
         if (!initialized || isDiLink5DaemonProcess()) return;
-        // The generic channel is handled first and on its own, and returns before any collection.
-        //
-        // registerBodyworkListener subscribes to it for the fob unlock edge only, and the HAL
-        // ignores the id filter and delivers EVERY bodywork event through it — a steady stream
-        // while driving. Falling through to the full refresh below cost a whole round of blocking
-        // HAL getters (six window reads, doors, locks) per event, on the main looper, which is
-        // where the BYD device manager posts these. The app process was ANR-killed 1-2 minutes
-        // into every trip and every ~6.5 minutes after that, 14 of 22 main-thread dumps inside this
-        // path entered via onDataEventChanged (2026-09-23). Before that registration
-        // existed these events never reached here, so returning early restores the old snapshot
-        // behaviour exactly; the typed door/window callbacks still refresh it.
-        if ("onDataEventChanged".equals(method)) {
-            onBodyworkDataEvent(args);
-            return;
-        }
         BydVehicleData current = snapshot.get();
         if (current == null) return;
         BydVehicleData.Builder b = current.toBuilder();
@@ -11990,195 +13809,236 @@ public class BydDataCollector {
             int state = (args[1] instanceof Integer) ? (Integer) args[1] : -1;
             notifyDoorStateListeners(area, state);
         }
-
         notifyLockSnapshotListeners(updated);
     }
 
-    /**
-     * Unlock-source events. Arrive only on the generic channel (no typed callback exists) and only
-     * because registerBodyworkListener also registers the 2-arg overload. The HAL ignores its
-     * int[] filter and delivers EVERY bodywork event here, so only the mapped id is handled;
-     * everything else is dropped without logging and without touching the HAL. Runs on the main
-     * looper — keep it that cheap.
-     */
-    private void onBodyworkDataEvent(Object[] args) {
-        if (args != null && args.length >= 2) {
-            int eventId = (args[0] instanceof Integer) ? (Integer) args[0] : Integer.MIN_VALUE;
-            if (eventId == BydFeatureIds.BODYWORK_REMOTE_CONTROL_UNLOCK) {
-                int intValue = BydDeviceHelper.getIntValue(args[1]);
-                // Proven on-car (2026-09-03): fires intValue=1 then clears
-                // to a sentinel/0 after ~240ms. Only the transition INTO 1 is a
-                // real fob-button press; the clear-back must never re-arm.
-                boolean isPressEdge = intValue == 1 && lastFobRawIntValue != 1;
-                lastFobRawIntValue = intValue;
-                if (isPressEdge) {
-                    onFobUnlockEvent();
-                }
-            }
-            // BODYWORK_CARD_NFC_KEY_STATE (0x40334013) and BODYWORK_REMOTE_CONTROL_LOCK
-            // are declared in BydFeatureIds but deliberately not handled: the NFC event
-            // fires on both lock and unlock with the card (ambiguous without more logic),
-            // and app/keyless unlocks have no bodywork event at all.
-        }
-    }
+    // ==================== KEY FOB UNLOCK / EASY ENTRY ====================
+    // DiLink 3 only. The fob listener is registered on the first poll after an enabled rule
+    // references unlockSource or easyEntry, so other cars keep their registration unchanged.
+    // The signal state below is confined to the fobExecutor thread.
 
-    // ==================== UNLOCK SOURCE / EASY ENTRY ====================
-    // Two automation signals so the seat-on-unlock automation is config, not code:
-    // unlockSource (how the car was unlocked) and easyEntry (whether the driver
-    // seat's easy-entry motion has settled). Both self-gated by anyReferenced so
-    // they cost nothing unless an automation actually uses one.
-
-    /** Raw intValue last seen from BODYWORK_REMOTE_CONTROL_UNLOCK, for press-edge detection. */
-    private volatile int lastFobRawIntValue = -1;
-
-    private volatile java.util.concurrent.ScheduledExecutorService easyEntryScheduler;
-    // Timing verified on a BYD Seal (DiLink 3.0): a real easy-entry retract runs about
-    // 1.9 s with no gap between samples above ~95 ms, so three unchanged 200 ms reads
-    // after motion clear it with margin.
-    private static final long EASY_ENTRY_POLL_INTERVAL_MS = 200;
-    /** Consecutive unchanged reads AFTER motion has started before declaring "settled". */
+    private static final long UNLOCK_SOURCE_HOLD_MS = 120_000L;
+    private static final long EASY_ENTRY_POLL_INTERVAL_MS = 200L;
+    private static final long EASY_ENTRY_ARM_WINDOW_MS = 30_000L;
     private static final int EASY_ENTRY_STATIONARY_SAMPLES = 3;
-    /** Displacement from the pre-motion baseline required to call it real motion, not noise. */
     private static final double EASY_ENTRY_MOTION_THRESHOLD = 2.0;
-    /**
-     * Extra margin AFTER the stationary-samples threshold, before actually publishing settled.
-     *
-     * <p>Measured on the car with 1500 ms here (2026-10-05):
-     * easy entry stopped at 14:12:43.2 and the seat did not start towards the driver's position
-     * until 48.5. The stationary samples above already confirm the seat has stopped (3 x 200 ms),
-     * so 1.5 s on top was pure wait; 300 ms keeps a small margin for the BYD seat controller to
-     * finish its own easy-entry sequence before a new target is sent.
-     */
-    private static final long EASY_ENTRY_SETTLE_EXTRA_DELAY_MS = 300;
-    /** Disarm quietly if nothing ever settles (e.g. the door was never opened). */
-    private static final long EASY_ENTRY_ARM_WINDOW_MS = 30_000;
+    private static final long EASY_ENTRY_SETTLE_MARGIN_MS = 300L;
+    private static final long EASY_ENTRY_SETTLED_HOLD_MS = 60_000L;
+    private static final int FOB_CHANNEL_MAX_ATTEMPTS = 3;
 
-    /**
-     * Called from the bodywork listener on a fob-button press edge (see
-     * onBodyworkCallback). Verified on the car: it fires only on a real fob-button
-     * unlock, never on keyless entry. This is the only thing that arms easy entry.
-     * unlockSource is set directly, with no property read needed for this case.
-     */
-    private void onFobUnlockEvent() {
-        boolean referenced =
-                anyReferenced(com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE)
-                || anyReferenced(com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY);
-        if (!referenced) return;
-        publishUnlockSource("fob");
-        armEasyEntryPoll();
-    }
+    private final Object fobChannelLock = new Object();
+    private volatile Object fobChannelDevice;
+    private volatile java.util.concurrent.ScheduledExecutorService fobExecutor;
+    private Object fobChannelAttemptDevice;
+    private int fobChannelAttempts;
+    private final java.util.concurrent.atomic.AtomicInteger lastFobRawValue =
+            new java.util.concurrent.atomic.AtomicInteger(Integer.MIN_VALUE);
 
-    // unlockSource is only ever published as "fob", and there is no reset to "none" on
-    // lock. None is needed: easyEntry can only be armed by onFobUnlockEvent, so whenever a
-    // rule sees easyEntry reach "settled", unlockSource has just been set to "fob". The
-    // door-lock listener cannot serve as a trigger for other unlock sources — its callback
-    // does not fire on the firmware seen in the field (CameraDaemon polls lock state for
-    // the same reason).
+    private boolean unlockSourceFob;
+    private boolean unlockSourceDrive;
+    private java.util.concurrent.ScheduledFuture<?> unlockSourceReset;
+    private java.util.concurrent.ScheduledFuture<?> easyEntryTask;
+    private long easyEntryArmedAtMs;
+    private double easyEntryBaseline;
+    private double easyEntryLast;
+    private boolean easyEntryMoved;
+    private int easyEntryStillCount;
 
-    /**
-     * Arm the easy-entry poll: read {@code BODYWORK_SEAT_HORIZONTAL} at
-     * {@link #EASY_ENTRY_POLL_INTERVAL_MS}, in process (no HTTP), for up to
-     * {@link #EASY_ENTRY_ARM_WINDOW_MS}. Publishes "moving" once the value has
-     * moved more than {@link #EASY_ENTRY_MOTION_THRESHOLD} from the pre-motion
-     * baseline, then "settled" once {@link #EASY_ENTRY_STATIONARY_SAMPLES}
-     * consecutive reads come back unchanged AND a further
-     * {@link #EASY_ENTRY_SETTLE_EXTRA_DELAY_MS} has passed — but only after
-     * motion was observed at least once, so an unlock where the door is never
-     * opened (nobody getting in) stays idle and never fires the automation.
-     */
-    private synchronized void armEasyEntryPoll() {
-        stopEasyEntryPoll(); // restart cleanly on a fresh unlock edge
-        if (bodyworkDevice == null) return;
-        publishEasyEntry("idle");
-        final long armedAt = System.currentTimeMillis();
-        final double[] baseline = {Double.NaN};
-        final double[] lastValue = {Double.NaN};
-        final boolean[] hasMoved = {false};
-        final int[] stationaryCount = {0};
-        easyEntryScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "EasyEntryPoll");
-            t.setDaemon(true);
-            return t;
-        });
-        easyEntryScheduler.scheduleWithFixedDelay(() -> {
-            try {
-                if (System.currentTimeMillis() - armedAt > EASY_ENTRY_ARM_WINDOW_MS) {
-                    stopEasyEntryPoll();
-                    publishEasyEntry("idle");
-                    return;
-                }
-                Object raw = BydDeviceHelper.callGet(bodyworkDevice,
-                        BydFeatureIds.BODYWORK_SEAT_HORIZONTAL, Double.TYPE);
-                double v = raw != null ? BydDeviceHelper.getDoubleValue(raw) : Double.NaN;
-                if (Double.isNaN(v)) return; // unreadable tick, don't disturb state
-
-                if (Double.isNaN(baseline[0])) {
-                    baseline[0] = v;
-                    lastValue[0] = v;
-                    return; // first sample: establish the pre-motion baseline only
-                }
-
-                if (!hasMoved[0]) {
-                    // Displacement from the FIXED baseline. A per-step compare here would latch
-                    // "moving" on a single unit of read noise.
-                    if (Math.abs(v - baseline[0]) > EASY_ENTRY_MOTION_THRESHOLD) {
-                        hasMoved[0] = true;
-                        lastValue[0] = v;
-                        stationaryCount[0] = 0;
-                        publishEasyEntry("moving");
-                    }
-                    return;
-                }
-
-                // Already moving: track quiet vs changing against the PREVIOUS
-                // sample (exact compare).
-                if (v != lastValue[0]) {
-                    lastValue[0] = v;
-                    stationaryCount[0] = 0;
-                    return;
-                }
-                if (++stationaryCount[0] < EASY_ENTRY_STATIONARY_SAMPLES) return;
-
-                // Quiet for EASY_ENTRY_STATIONARY_SAMPLES ticks. Wait the small extra
-                // margin BEFORE publishing settled, not instead of it. Sleeping on this
-                // dedicated single-thread executor blocks nothing else; must run
-                // before stopEasyEntryPoll(), which self-interrupts this thread.
-                try {
-                    Thread.sleep(EASY_ENTRY_SETTLE_EXTRA_DELAY_MS);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-                publishEasyEntry("settled");
-                stopEasyEntryPoll();
-            } catch (Throwable t) {
-                logger.debug("Easy-entry poll error: " + t.getMessage());
+    private void ensureFobUnlockChannel() {
+        Object device = bodyworkDevice;
+        if (device == null || device == fobChannelDevice) return;
+        synchronized (fobChannelLock) {
+            if (device == fobChannelDevice) return;
+            if (device != fobChannelAttemptDevice) {
+                fobChannelAttemptDevice = device;
+                fobChannelAttempts = 0;
             }
-        }, 0, EASY_ENTRY_POLL_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (fobChannelAttempts >= FOB_CHANNEL_MAX_ATTEMPTS) return;
+            fobChannelAttempts++;
+            if (!BydDeviceHelper.registerBodyworkEventListener(device,
+                    BydFeatureIds.BODYWORK_REMOTE_CONTROL_UNLOCK, this::onFobChannelEvent)) {
+                logger.debug("Key fob unlock listener not registered (attempt "
+                        + fobChannelAttempts + ")");
+                return;
+            }
+            if (fobExecutor == null) {
+                fobExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "FobUnlockSignals");
+                    t.setDaemon(true);
+                    return t;
+                });
+            }
+            fobChannelDevice = device;
+        }
+        logger.info("Key fob unlock listener registered");
+        runOnFobExecutor(this::seedFobSignals);
     }
 
-    /** Stop the easy-entry poll if running (idempotent). */
-    private synchronized void stopEasyEntryPoll() {
-        if (easyEntryScheduler != null) {
-            easyEntryScheduler.shutdownNow();
-            easyEntryScheduler = null;
+    /** HAL callback thread: no HAL reads here, every other bodywork id is dropped. */
+    private void onFobChannelEvent(String method, Object[] args) {
+        if (!"onDataEventChanged".equals(method) || args == null || args.length < 2
+                || !(args[0] instanceof Integer)
+                || (Integer) args[0] != BydFeatureIds.BODYWORK_REMOTE_CONTROL_UNLOCK) {
+            return;
+        }
+        // The value latches 1 for ~240 ms and then clears; only the move into 1 is a press.
+        int value = BydDeviceHelper.getIntValue(args[1]);
+        if (lastFobRawValue.getAndSet(value) != 1 && value == 1) {
+            runOnFobExecutor(this::onFobUnlockPress);
         }
     }
 
-    private void publishUnlockSource(String word) {
+    private void runOnFobExecutor(Runnable task) {
+        java.util.concurrent.ScheduledExecutorService executor = fobExecutor;
+        if (executor == null) return;
         try {
-            com.overdrive.app.automation.Automations.update(
-                    com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE, word);
+            executor.execute(() -> runFobTask(task));
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+        }
+    }
+
+    private java.util.concurrent.ScheduledFuture<?> scheduleFobTask(Runnable task, long delayMs) {
+        return fobExecutor.schedule(() -> runFobTask(task), delayMs,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private void runFobTask(Runnable task) {
+        try {
+            task.run();
         } catch (Throwable t) {
-            logger.debug("publishUnlockSource failed: " + t.getMessage());
+            logger.debug("Key fob signal task failed: " + t.getMessage());
+        }
+    }
+
+    private void seedFobSignals() {
+        seedFobSignal(com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE, "none");
+        seedFobSignal(com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY, "idle");
+    }
+
+    private void seedFobSignal(com.overdrive.app.automation.condition.EventData key, String word) {
+        if (com.overdrive.app.automation.Automations.getStateValue(key) == null) {
+            publishFobSignal(key, word, false);
+        }
+    }
+
+    private void onFobUnlockPress() {
+        logger.info("Key fob unlock press");
+        if (anyReferenced(com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE)) {
+            if (unlockSourceReset != null) unlockSourceReset.cancel(false);
+            unlockSourceFob = true;
+            unlockSourceDrive = false;
+            publishFobSignal(com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE,
+                    "fob", true);
+            unlockSourceReset = scheduleFobTask(this::expireUnlockSource, UNLOCK_SOURCE_HOLD_MS);
+        }
+        if (anyReferenced(com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY)) {
+            startEasyEntry();
+        }
+    }
+
+    private void expireUnlockSource() {
+        if (unlockSourceFob && !unlockSourceDrive) clearUnlockSource();
+    }
+
+    private void clearUnlockSource() {
+        unlockSourceFob = false;
+        unlockSourceDrive = false;
+        publishFobSignal(com.overdrive.app.automation.condition.BydEvent.UNLOCK_SOURCE,
+                "none", false);
+    }
+
+    /** A drive started while "fob" is held keeps it until that drive ends; ACC on ends easy entry. */
+    private void onAccEdgeForFobSignals(boolean accOn) {
+        runOnFobExecutor(() -> {
+            if (accOn) {
+                if (unlockSourceFob) {
+                    unlockSourceDrive = true;
+                    if (unlockSourceReset != null) unlockSourceReset.cancel(false);
+                }
+                stopEasyEntry();
+            } else if (unlockSourceFob && unlockSourceDrive) {
+                clearUnlockSource();
+            }
+        });
+    }
+
+    private void startEasyEntry() {
+        cancelEasyEntryTask();
+        publishEasyEntry("idle");
+        easyEntryArmedAtMs = SystemClock.elapsedRealtime();
+        easyEntryBaseline = Double.NaN;
+        easyEntryLast = Double.NaN;
+        easyEntryMoved = false;
+        easyEntryStillCount = 0;
+        easyEntryTask = fobExecutor.scheduleWithFixedDelay(() -> runFobTask(this::pollEasyEntry),
+                0, EASY_ENTRY_POLL_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /** "moving" once the seat leaves its start position, "settled" once it then holds still. */
+    private void pollEasyEntry() {
+        if (SystemClock.elapsedRealtime() - easyEntryArmedAtMs > EASY_ENTRY_ARM_WINDOW_MS) {
+            stopEasyEntry();
+            return;
+        }
+        Object raw = BydDeviceHelper.callGet(fobChannelDevice,
+                BydFeatureIds.BODYWORK_SEAT_HORIZONTAL, Double.TYPE);
+        double position = raw != null ? BydDeviceHelper.getDoubleValue(raw) : Double.NaN;
+        if (Double.isNaN(position)) return;
+        if (Double.isNaN(easyEntryBaseline)) {
+            easyEntryBaseline = position;
+            easyEntryLast = position;
+            return;
+        }
+        if (!easyEntryMoved) {
+            // Measured from the fixed baseline so a single unit of read noise cannot start it.
+            if (Math.abs(position - easyEntryBaseline) <= EASY_ENTRY_MOTION_THRESHOLD) return;
+            easyEntryMoved = true;
+            easyEntryLast = position;
+            publishEasyEntry("moving");
+            return;
+        }
+        if (position != easyEntryLast) {
+            easyEntryLast = position;
+            easyEntryStillCount = 0;
+            return;
+        }
+        if (++easyEntryStillCount < EASY_ENTRY_STATIONARY_SAMPLES) return;
+        cancelEasyEntryTask();
+        easyEntryTask = scheduleFobTask(this::settleEasyEntry, EASY_ENTRY_SETTLE_MARGIN_MS);
+    }
+
+    private void settleEasyEntry() {
+        publishEasyEntry("settled");
+        easyEntryTask = scheduleFobTask(this::stopEasyEntry, EASY_ENTRY_SETTLED_HOLD_MS);
+    }
+
+    private void stopEasyEntry() {
+        cancelEasyEntryTask();
+        publishEasyEntry("idle");
+    }
+
+    private void cancelEasyEntryTask() {
+        if (easyEntryTask != null) {
+            easyEntryTask.cancel(false);
+            easyEntryTask = null;
         }
     }
 
     private void publishEasyEntry(String word) {
+        publishFobSignal(com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY, word, false);
+    }
+
+    private void publishFobSignal(com.overdrive.app.automation.condition.EventData key,
+                                  String word, boolean observedEdge) {
         try {
-            com.overdrive.app.automation.Automations.update(
-                    com.overdrive.app.automation.condition.BydEvent.EASY_ENTRY, word);
+            if (observedEdge) {
+                com.overdrive.app.automation.Automations.updateObservedEdge(key, word);
+            } else {
+                // Stored even while no rule is enabled, so a later rule never reads a stale "fob".
+                com.overdrive.app.automation.Automations.update(key, word, true);
+            }
         } catch (Throwable t) {
-            logger.debug("publishEasyEntry failed: " + t.getMessage());
+            logger.debug("Key fob signal publish failed: " + t.getMessage());
         }
     }
 
@@ -12284,6 +14144,20 @@ public class BydDataCollector {
         }
     }
 
+    private void onRadarCallback(String method, Object[] args) {
+        long radarGeneration =
+                com.overdrive.app.byd.dilink5.Dilink5RadarBridge.producerGeneration();
+        if (!initialized || !isDiLink5ProducerActive()) return;
+        if (!"onRadarProbeStateChanged".equals(method) || args == null || args.length < 2
+                || !(args[0] instanceof Number) || !(args[1] instanceof Number)) {
+            return;
+        }
+        noteDiLink5ListenerEvent();
+        com.overdrive.app.byd.dilink5.Dilink5RadarBridge.publishProbeState(
+                radarGeneration,
+                ((Number) args[0]).intValue(), ((Number) args[1]).intValue());
+    }
+
     private void onCollectDataCallback(String method, Object[] args) {
         if (!initialized || isDiLink5DaemonProcess()) return;
         if (!isDiLink5Vehicle() || args == null || args.length < 2
@@ -12343,7 +14217,7 @@ public class BydDataCollector {
         if ("onElecPercentageChanged".equals(method) && args != null && args.length > 0) {
             try {
                 double soc = ((Number) args[0]).doubleValue();
-                if (soc >= 0 && soc <= 100) {
+                if (isUsablePolledSoc(soc, isDiLink5Vehicle())) {
                     BydVehicleData current = snapshot.get();
                     if (current != null) {
                         publishNonChargingSnapshot(current.toBuilder().socPercent(soc).build());
@@ -12518,9 +14392,15 @@ public class BydDataCollector {
         }
         if ("onChargingGunStateChanged".equals(method) && args != null && args.length > 0) {
             try {
-                publishChargingGunEdge(
-                        null, -1L, lifecycleGeneration,
-                        ((Number) args[0]).intValue(), callbackObservation);
+                int gunState = ((Number) args[0]).intValue();
+                if (isDiLink5Vehicle()) gunState = diLink5GunStateFromSdk(gunState);
+                if (shouldConfirmGunOutCallback(gunState)) {
+                    scheduleGunOutConfirmation(
+                            null, -1L, lifecycleGeneration, callbackObservation);
+                } else {
+                    publishChargingGunEdge(
+                            null, -1L, lifecycleGeneration, gunState, callbackObservation);
+                }
             } catch (Exception e) { /* ignore */ }
             return;
         }
@@ -12589,8 +14469,10 @@ public class BydDataCollector {
     // single log capture rather than inferred from a missing number.
     private volatile boolean loggedOemSohOutcome = false;
 
+    private static final int INSTRUMENT_SOH_DEVICE_TYPE = 1000;
+    private static final int INSTRUMENT_SOH_FEATURE_ID = 0x44400028;
+
     // Device-type argument for the STATISTIC family's get(deviceType, featureId) overload.
-    // 1014 per the OEM app's own SOH read (its second-tier attempt).
     private static final int STATISTIC_DEVICE_TYPE = 1014;
 
     /**
@@ -12667,6 +14549,72 @@ public class BydDataCollector {
         }
     }
 
+    // The HAL emits a transient gun=1 (then gun=2) each time a parked, plugged car's network wakes.
+    // While plugged and idle, a gun-out callback is committed only if the level still reads 1.
+    private static final long GUN_OUT_CONFIRM_DELAY_MS = 5_000L;
+    private final Object gunOutConfirmExecutorLock = new Object();
+    private java.util.concurrent.ScheduledExecutorService gunOutConfirmExecutor;
+
+    /** Live sessions keep immediate terminal accounting; only an idle, plugged gun-out defers. */
+    private boolean shouldConfirmGunOutCallback(int gunState) {
+        if (gunState != 1 || isDiLink5Vehicle() || chargingDevice == null) return false;
+        BydVehicleData current = snapshot.get();
+        if (current == null) return false;
+        int gun = current.chargingGunState;
+        if (gun != 2 && gun != 3 && gun != 4) return false;
+        return current.chargingState != 1
+                && !com.overdrive.app.monitor.ChargingDetector.getInstance().isCharging();
+    }
+
+    private void scheduleGunOutConfirmation(Object sourceDevice, long generation,
+                                            long lifecycleGeneration, long callbackObservation) {
+        final long gunVersionAtDefer = gunEdgeVersion.get();
+        try {
+            java.util.concurrent.ScheduledExecutorService executor;
+            synchronized (gunOutConfirmExecutorLock) {
+                if (gunOutConfirmExecutor == null) {
+                    gunOutConfirmExecutor =
+                            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                                Thread t = new Thread(r, "ChargingGunConfirm");
+                                t.setDaemon(true);
+                                return t;
+                            });
+                }
+                executor = gunOutConfirmExecutor;
+            }
+            executor.schedule(() -> confirmDeferredGunOut(
+                            sourceDevice, generation, lifecycleGeneration, gunVersionAtDefer),
+                    GUN_OUT_CONFIRM_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (Throwable unavailable) {
+            publishChargingGunEdge(sourceDevice, generation, lifecycleGeneration, 1,
+                    callbackObservation);
+        }
+    }
+
+    private void confirmDeferredGunOut(Object sourceDevice, long generation,
+                                       long lifecycleGeneration, long gunVersionAtDefer) {
+        try {
+            if (gunEdgeVersion.get() != gunVersionAtDefer) {
+                logger.info("Charging gun-out callback superseded by a newer gun edge — ignored");
+                return;
+            }
+            long observation = chargingObservationOrder.begin();
+            Object device = chargingDevice;
+            Object level = device != null
+                    ? BydDeviceHelper.callGetter(device, "getChargingGunState") : null;
+            int gun = level instanceof Number ? ((Number) level).intValue()
+                    : BydVehicleData.UNAVAILABLE;
+            if (gun == 2 || gun == 3 || gun == 4) {
+                logger.info("Charging gun-out callback not confirmed (gun level " + gun
+                        + " after " + GUN_OUT_CONFIRM_DELAY_MS + " ms) — ignored as transient");
+                return;
+            }
+            publishChargingGunEdge(sourceDevice, generation, lifecycleGeneration, 1, observation);
+        } catch (Throwable t) {
+            logger.warn("Deferred gun-out confirmation failed: " + t.getMessage());
+        }
+    }
+
     private void onChargingCallback(Object sourceDevice, long generation,
                                     String method, Object[] args) {
         // Capture the lifecycle first so an init/stop barrier between callback entry and later
@@ -12699,8 +14647,15 @@ public class BydDataCollector {
         // Typed callbacks for real-time charging updates
         if ("onChargingGunStateChanged".equals(method) && args != null && args.length > 0) {
             try {
-                publishChargingGunEdge(sourceDevice, generation, lifecycleGeneration,
-                        ((Number) args[0]).intValue(), callbackObservation);
+                int gunState = ((Number) args[0]).intValue();
+                if (isDiLink5Vehicle()) gunState = diLink5GunStateFromSdk(gunState);
+                if (shouldConfirmGunOutCallback(gunState)) {
+                    scheduleGunOutConfirmation(sourceDevice, generation,
+                            lifecycleGeneration, callbackObservation);
+                } else {
+                    publishChargingGunEdge(sourceDevice, generation, lifecycleGeneration,
+                            gunState, callbackObservation);
+                }
             } catch (Exception e) { /* ignore */ }
             return;
         }
@@ -12708,6 +14663,7 @@ public class BydDataCollector {
         if ("onBatteryManagementDeviceStateChanged".equals(method) && args != null && args.length > 0) {
             try {
                 int state = ((Number) args[0]).intValue();
+                if (isDiLink5Vehicle()) state = diLink5BmsStateFromSdk(state);
                 if (state >= 0 && state <= 15) {
                     synchronized (chargingStateTransitionLock) {
                         int previous = BydVehicleData.UNAVAILABLE;
@@ -13235,6 +15191,7 @@ public class BydDataCollector {
 
     private void onAdasCallback(String method, Object[] args) {
         if (!initialized || isDiLink5DaemonProcess()) return;
+        AdasDiag.event(method, args);
         if ("onDataEventChanged".equals(method) && args != null && args.length >= 2) {
             try {
                 int eventId = ((Number) args[0]).intValue();
@@ -14025,6 +15982,10 @@ public class BydDataCollector {
     public boolean setAcFanLevel(int level) {
         try {
             if (level < 1 || level > 7) return false;
+            if (isDiLink5Vehicle()) {
+                // DiLink 5's feature-id fallback would report 0 even after a refusal.
+                return diLink5HvacWrite("setAcWindLevel", 0, level);
+            }
             // Primary: named SDK method acDevice.setAcWindLevel(0, level).
             Object result = BydDeviceHelper.callMethod(acDevice, "setAcWindLevel", 0, level);
             if (result instanceof Integer && ((Integer) result).intValue() == 0) return true;
@@ -14055,11 +16016,39 @@ public class BydDataCollector {
     }
 
     public boolean setFrontDefrost(boolean on) {
+        // DiLink 5: setSource 0, AC_DEFROST_AREA_FRONT 1, state 1=on/0=off.
+        if (isDiLink5Vehicle()) return diLink5HvacWrite("setAcDefrostState", 0, 1, on ? 1 : 0);
         return setDefrostFeature(BydFeatureIds.AC_DEFROST_FRONT_SET, on, "front");
     }
 
     public boolean setRearDefrost(boolean on) {
+        // DiLink 5: ELECTRIC_DEFROST_ON 1 / OFF 0.
+        if (isDiLink5Vehicle()) return diLink5HvacWrite("setElectricDefrostState", on ? 1 : 0);
         return setDefrostFeature(BydFeatureIds.AC_DEFROST_REAR_SET, on, "rear");
+    }
+
+    /**
+     * DiLink 5 HVAC write through a typed setter: the feature-id forms discard the HAL result.
+     * The setters also return 0 while the HVAC adapter is connecting, so that is checked first.
+     */
+    private boolean diLink5HvacWrite(String method, int... args) {
+        if (!BydDeviceHelper.isDiLink5AdapterReady(context, acDevice, "getHvacAdapterManager")) {
+            logger.warn(method + ": HVAC adapter is not ready");
+            return false;
+        }
+        Object result;
+        switch (args.length) {
+            case 1: result = BydDeviceHelper.callMethod(acDevice, method, args[0]); break;
+            case 2: result = BydDeviceHelper.callMethod(acDevice, method, args[0], args[1]); break;
+            case 3:
+                result = BydDeviceHelper.callMethod(acDevice, method, args[0], args[1], args[2]);
+                break;
+            default: return false;
+        }
+        boolean accepted = result instanceof Integer && ((Integer) result).intValue() == 0;
+        logger.info(method + java.util.Arrays.toString(args) + " -> " + result
+                + (accepted ? " ACCEPTED" : " REFUSED"));
+        return accepted;
     }
 
     /**
@@ -14085,6 +16074,8 @@ public class BydDataCollector {
     }
 
     public boolean setAcCycleMode(int mode) {
+        // DiLink 5: AC_CYCLEMODE_OUTLOOP 0 / INLOOP 1, same values as the feature id.
+        if (isDiLink5Vehicle()) return diLink5HvacWrite("setAcCycleMode", 0, mode);
         try {
             return BydDeviceHelper.sendSetCommand(acDevice, BydFeatureIds.AC_CYCLE_MODE_SET, mode);
         } catch (Exception e) {
@@ -14107,6 +16098,10 @@ public class BydDataCollector {
      * legacy write is attempted only when the runtime framework actually resolves it.
      */
     public boolean setAcAutoMode(boolean on) {
+        if (isDiLink5Vehicle()) {
+            return diLink5HvacWrite("setAcControlMode", AC_CTRL_SOURCE_UI_KEY,
+                    on ? AC_CTRLMODE_AUTO : AC_CTRLMODE_MANUAL);
+        }
         try {
             if (BydFeatureIds.isResolved(BydFeatureIds.AC_AUTO_MODE_SET)) {
                 if (on) {
@@ -14164,6 +16159,7 @@ public class BydDataCollector {
      * as {@code getAcCycleMode} in collectAc.
      */
     public boolean setAcRecirculation(boolean recirculate) {
+        if (isDiLink5Vehicle()) return diLink5HvacWrite("setAcCycleMode", 0, recirculate ? 1 : 0);
         try {
             return BydDeviceHelper.sendSetCommand(acDevice, BydFeatureIds.AC_CYCLE_MODE_SET,
                     recirculate ? 1 : 0);
@@ -14191,6 +16187,54 @@ public class BydDataCollector {
             return r instanceof Integer && ((Integer) r).intValue() == 0;
         } catch (Exception e) {
             logger.debug("setFanOnlyMode(2-arg) failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Max cooling on=1/off=0 via setAcMaxCoolingState; 1-arg form first, then (0, state). */
+    public boolean setAcMaxCooling(boolean on) {
+        int state = on ? 1 : 0;
+        try {
+            Object r = BydDeviceHelper.callMethod(acDevice, "setAcMaxCoolingState", state);
+            if (r instanceof Integer && ((Integer) r).intValue() == 0) return true;
+        } catch (Exception e) {
+            logger.debug("setAcMaxCooling(1-arg) failed: " + e.getMessage());
+        }
+        try {
+            Object r = BydDeviceHelper.callMethod(acDevice, "setAcMaxCoolingState", 0, state);
+            return r instanceof Integer && ((Integer) r).intValue() == 0;
+        } catch (Exception e) {
+            logger.debug("setAcMaxCooling(2-arg) failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Cabin air purification on=1/off=2 via setAutoCleanAirState. */
+    public boolean setAirPurify(boolean on) {
+        try {
+            Object r = BydDeviceHelper.callMethod(acDevice, "setAutoCleanAirState", on ? 1 : 2);
+            logger.info("setAirPurify(" + on + ") rc=" + r);
+            return r instanceof Integer && ((Integer) r).intValue() == 0;
+        } catch (Exception e) {
+            logger.debug("setAirPurify failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Close windows automatically when rain is sensed: on=1/off=2 via setRainCloseWindow. */
+    public boolean setRainCloseWindow(boolean on) {
+        if (isDiLink5Vehicle()) {
+            // DiLink 5 stubs setRainCloseWindow; setRainAutoLockWindowState values are unverified.
+            logger.warn("setRainCloseWindow: no verified rain auto-close control on DiLink 5");
+            logDiLink5CalibrationSnapshot();
+            return false;
+        }
+        try {
+            Object r = BydDeviceHelper.callMethod(bodyworkDevice, "setRainCloseWindow", on ? 1 : 2);
+            logger.info("setRainCloseWindow(" + on + ") rc=" + r);
+            return r instanceof Integer && ((Integer) r).intValue() == 0;
+        } catch (Exception e) {
+            logger.debug("setRainCloseWindow failed: " + e.getMessage());
             return false;
         }
     }
@@ -14277,12 +16321,11 @@ public class BydDataCollector {
         }
         try {
             if (isDiLink5Vehicle()) {
+                // No DiLink 5 feature-id fallback: its set() would return 0 for a refusal.
                 Object result = BydDeviceHelper.callMethod(
                         instrumentDevice, "setHeadlightControlMode", mode);
-                if (result instanceof Number
-                        && ((Number) result).intValue() == 0) {
-                    return true;
-                }
+                return result instanceof Number
+                        && ((Number) result).intValue() == 0;
             }
             return BydDeviceHelper.sendSetCommand(
                     instrumentDevice, BydFeatureIds.INSTRUMENT_HEADLIGHT_CONTROL_SET, mode);
@@ -14338,6 +16381,50 @@ public class BydDataCollector {
      * method is absent or fails.
      */
     public boolean setReadingLight(boolean on) {
+        boolean ok = applyReadingLight(on);
+        if (ok) noteReadingLightCommanded(on);
+        return ok;
+    }
+
+    // Last known cabin-light state: the last command, or the car's own answer once it gives one.
+    // Stands in when the trim cannot read the lamp, and while its feedback catches up after a write.
+    private volatile int readingLightLastKnown = BydVehicleData.UNAVAILABLE;
+    private volatile long readingLightCommandedAtMs;
+    private volatile long readingLightLastKnownAtMs;
+    private static final long READING_LIGHT_FEEDBACK_MS = 10_000L;
+    // An unconfirmed state goes stale: a lamp can switch itself off when the car is locked.
+    private static final long READING_LIGHT_UNCONFIRMED_MAX_MS = 10 * 60_000L;
+
+    private void noteReadingLightCommanded(boolean on) {
+        synchronized (chargingEdgePublishLock) {
+            long now = SystemClock.elapsedRealtime();
+            readingLightLastKnown = on ? 1 : 0;
+            readingLightLastKnownAtMs = now;
+            readingLightCommandedAtMs = now;
+            BydVehicleData current = snapshot.get();
+            if (current != null) {
+                publishNonChargingSnapshot(current.toBuilder().readingLight(on ? 1 : 0).build());
+            }
+        }
+    }
+
+    /** While a command settles, its state outranks a poll that read the lamp before it. */
+    private BydVehicleData withSettlingReadingLight(BydVehicleData candidate) {
+        long commandedAt = readingLightCommandedAtMs;
+        int lastKnown = readingLightLastKnown;
+        if (candidate == null || commandedAt == 0L || lastKnown == BydVehicleData.UNAVAILABLE
+                || candidate.readingLight == lastKnown
+                || SystemClock.elapsedRealtime() - commandedAt >= READING_LIGHT_FEEDBACK_MS) {
+            return candidate;
+        }
+        return candidate.toBuilder().readingLight(lastKnown).build();
+    }
+
+    private boolean applyReadingLight(boolean on) {
+        if (isDiLink5Vehicle()) {
+            // DiLink 5's turnOffInsideLight is a constant 0.
+            return setDiLink5CabinLight(on);
+        }
         // Tier 1 — settingDevice.turnOffInsideLight(on ? 2 : 1). callMethod returns null if
         // the method is absent (→ fall through to the feature-id write); a non-negative
         // Integer / any non-null return counts as accepted (same convention as the other
@@ -14348,6 +16435,7 @@ public class BydDataCollector {
                 boolean ok = !(r instanceof Integer) || ((Integer) r).intValue() >= 0;
                 if (ok) {
                     logger.info("setReadingLight(" + on + ") via turnOffInsideLight(" + (on ? 2 : 1) + ")");
+                    syncInsideLampFlag(on);
                     return true;
                 }
             }
@@ -14356,11 +16444,195 @@ public class BydDataCollector {
         }
         // Tier 2 — feature-id write on bodyworkDevice (on=1 / off=2).
         try {
-            return BydDeviceHelper.sendSetCommand(bodyworkDevice, BydFeatureIds.BODY_INSIDE_LIGHT_STATE_SET, on ? 1 : 2);
+            if (BydDeviceHelper.sendSetCommand(
+                    bodyworkDevice, BydFeatureIds.BODY_INSIDE_LIGHT_STATE_SET, on ? 1 : 2)) {
+                syncInsideLampFlag(on);
+                return true;
+            }
         } catch (Exception e) {
             logger.debug("setReadingLight fallback failed: " + e.getMessage());
+        }
+        // Tier 3 — the carsettings flag BYD's own settings UI keeps (confirmed writes only).
+        try {
+            return BydCarSettings.getInstance()
+                    .writeIntConfirmed(BydCarSettings.KEY_INSIDE_LAMP, on ? 1 : 0);
+        } catch (Exception e) {
+            logger.debug("setReadingLight tier3 (inside_lamp) failed: " + e.getMessage());
             return false;
         }
+    }
+
+    /** The inside_lamp flag is part of the readback, so a lamp switched by another tier updates it too. */
+    private static void syncInsideLampFlag(boolean on) {
+        try {
+            BydCarSettings.getInstance().writeInt(BydCarSettings.KEY_INSIDE_LAMP, on ? 1 : 0);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * Cabin (reading) light state: 1 on, 0 off, {@link BydVehicleData#UNAVAILABLE} when unknown.
+     * A command just sent stands while the lamp feedback catches up; after that the car's own
+     * answer wins, and an unreadable lamp falls back to the last known state.
+     */
+    public int getReadingLightState() {
+        int read = readReadingLightNow();
+        synchronized (chargingEdgePublishLock) {
+            long now = SystemClock.elapsedRealtime();
+            long commandedAt = readingLightCommandedAtMs;
+            boolean settling = commandedAt != 0L && now - commandedAt < READING_LIGHT_FEEDBACK_MS;
+            if (read != BydVehicleData.UNAVAILABLE && !settling) {
+                readingLightLastKnown = read;
+                readingLightLastKnownAtMs = now;
+            }
+            int lastKnown = readingLightLastKnown;
+            if (settling && lastKnown != BydVehicleData.UNAVAILABLE) return lastKnown;
+            if (read != BydVehicleData.UNAVAILABLE) return read;
+            return now - readingLightLastKnownAtMs < READING_LIGHT_UNCONFIRMED_MAX_MS
+                    ? lastKnown : BydVehicleData.UNAVAILABLE;
+        }
+    }
+
+    /** Legacy trims answer the set feature (1 on / 2 off), else the inside_lamp flag. */
+    private int readReadingLightNow() {
+        if (isDiLink5Vehicle()) return readDiLink5CabinLightState();
+        try {
+            int feature = BydDeviceHelper.callGetSingle(
+                    bodyworkDevice, BydFeatureIds.BODY_INSIDE_LIGHT_STATE_SET);
+            if (feature == 1) return 1;
+            if (feature == 2) return 0;
+            int flag = BydCarSettings.getInstance()
+                    .readInt(BydCarSettings.KEY_INSIDE_LAMP, Integer.MIN_VALUE);
+            if (flag == 0 || flag == 1) return flag;
+        } catch (Exception e) {
+            logger.debug("getReadingLightState failed: " + e.getMessage());
+        }
+        return BydVehicleData.UNAVAILABLE;
+    }
+
+    /**
+     * DI5 cabin light: the inside light (2 on / 1 off), else the front reading lamps, on when
+     * either reads 1 and off when both read 2. 0 is ambiguous on both.
+     */
+    private int readDiLink5CabinLightState() {
+        if (!isDiLink5ProducerProcess()) return BydVehicleData.UNAVAILABLE;
+        if (settingDevice != null && BydDeviceHelper.isDiLink5AdapterReady(
+                context, settingDevice, "getSettingAdapterManager")) {
+            Object inside = BydDeviceHelper.callGetter(settingDevice, "getInsideLightDoorState");
+            int state = inside instanceof Number
+                    ? ((Number) inside).intValue() : BydVehicleData.UNAVAILABLE;
+            if (state == 2) return 1;
+            if (state == 1) return 0;
+        }
+        if (lightDevice == null || !BydDeviceHelper.isDiLink5AdapterReady(
+                context, lightDevice, "getCarBodyManager")) {
+            return BydVehicleData.UNAVAILABLE;
+        }
+        Object left = BydDeviceHelper.callGetter(lightDevice, "getLeftFrontReadingLampStatus");
+        Object right = BydDeviceHelper.callGetter(lightDevice, "getRightFrontReadingLampStatus");
+        int l = left instanceof Number ? ((Number) left).intValue() : BydVehicleData.UNAVAILABLE;
+        int r = right instanceof Number ? ((Number) right).intValue() : BydVehicleData.UNAVAILABLE;
+        if (l == 1 || r == 1) return 1;
+        if (l == 2 && r == 2) return 0;
+        return BydVehicleData.UNAVAILABLE;
+    }
+
+    /**
+     * DiLink 5 cabin light: setInsideLightDoorState (OPEN=2 on, CLOSE=1 off, confirmed on a car),
+     * the call the SDK's own SET_INSIDE_LIGHT_STATE_SET dispatch makes. The front reading lamps
+     * (SET_ON=1 / SET_OFF=2) are tried only when it is refused.
+     */
+    private boolean setDiLink5CabinLight(boolean on) {
+        if (writeDiLink5InsideLightDoor(on ? 2 : 1)) return true;
+        boolean accepted = writeDiLink5ReadingLampsRaw(on ? 1 : 2);
+        if (!accepted) logDiLink5CalibrationSnapshot();
+        return accepted;
+    }
+
+    private boolean writeDiLink5InsideLightDoor(int value) {
+        return writeDiLink5Lamps(settingDevice, "getSettingAdapterManager", "insideLightDoor",
+                new String[]{"setInsideLightDoorState"},
+                new String[]{"getInsideLightDoorState"}, value);
+    }
+
+    /** One raw cabin-light candidate, for on-car calibration ({@code /api/debug/light/cabin}). */
+    public boolean probeDiLink5CabinLight(String api, int value) {
+        if (!isDiLink5Vehicle() || value < 0 || value > 3 || api == null) return false;
+        switch (api) {
+            case "inside":
+                return writeDiLink5InsideLight(value);
+            case "lamps":
+                return writeDiLink5ReadingLampsRaw(value);
+            case "rearLamps":
+                return writeDiLink5Lamps(lightDevice, "getCarBodyManager", "rearReadingLamps",
+                        new String[]{"setLeftMiddleRowSideRLightSwitchState",
+                                "setRightMiddleRowRLightSwitchState",
+                                "setLeftRearRLightSwitchState", "setRightRearRLightSwitchState"},
+                        new String[]{"getLeftMiddleRowSideRLightSwitch",
+                                "getRightMiddleRowRLightSwitch",
+                                "getLeftRearRLightSwitch", "getRightRearRLightSwitch"}, value);
+            case "insideDoor":
+                return writeDiLink5InsideLightDoor(value);
+            case "doorLight":
+                return writeDiLink5Lamps(lightDevice, "getCarBodyManager", "doorLight",
+                        new String[]{"setDoorLightState"}, new String[]{"getDoorLightState"}, value);
+            default:
+                return false;
+        }
+    }
+
+    /** {@code setInsideLightState} has no getter on DI5, so an accepted write stays unconfirmed. */
+    private boolean writeDiLink5InsideLight(int value) {
+        if (!awaitDiLink5Adapter(settingDevice, "getSettingAdapterManager", "inside light")) {
+            return false;
+        }
+        Object rc = BydDeviceHelper.callMethod(settingDevice, "setInsideLightState", value);
+        boolean accepted = rc instanceof Number && ((Number) rc).intValue() == 0;
+        logger.info("setInsideLightState(" + value + ") rc=" + rc + " lamps " + readDiLink5ReadingLamps()
+                + (accepted ? " ACCEPTED (no getter)" : " REFUSED"));
+        return accepted;
+    }
+
+    private boolean writeDiLink5ReadingLampsRaw(int state) {
+        return writeDiLink5Lamps(lightDevice, "getCarBodyManager", "readingLamps",
+                new String[]{"setLeftFrontReadingLampSwitchState", "setRightFrontReadingLampSwitchState"},
+                new String[]{"getLeftFrontReadingLampStatus", "getRightFrontReadingLampStatus"}, state);
+    }
+
+    /** Every setter takes the same raw value; accepted only when each answers 0. */
+    private boolean writeDiLink5Lamps(Object device, String adapterGetter, String label,
+            String[] setters, String[] getters, int value) {
+        if (!awaitDiLink5Adapter(device, adapterGetter, label)) return false;
+        String before = readDiLink5Raws(device, getters);
+        StringBuilder rcs = new StringBuilder();
+        boolean accepted = true;
+        for (String setter : setters) {
+            Object rc = BydDeviceHelper.callMethod(device, setter, value);
+            accepted &= rc instanceof Number && ((Number) rc).intValue() == 0;
+            rcs.append(rcs.length() > 0 ? "/" : "").append(rc);
+        }
+        String after = before;
+        for (int attempt = 0; attempt < 5 && accepted && after.equals(before)
+                && !VehicleActuatorBridge.isDiLink5RequestExpired(); attempt++) {
+            SystemClock.sleep(200L);
+            after = readDiLink5Raws(device, getters);
+        }
+        logger.info(label + " value=" + value + " rc=" + rcs + " status " + before + "->" + after
+                + (accepted ? " ACCEPTED" : " REFUSED"));
+        return accepted;
+    }
+
+    private String readDiLink5ReadingLamps() {
+        return readDiLink5Raws(lightDevice, new String[]{
+                "getLeftFrontReadingLampStatus", "getRightFrontReadingLampStatus"});
+    }
+
+    private static String readDiLink5Raws(Object device, String[] getters) {
+        StringBuilder raw = new StringBuilder();
+        for (String getter : getters) {
+            raw.append(raw.length() > 0 ? "/" : "").append(diLink5Raw(device, getter));
+        }
+        return raw.toString();
     }
 
     /**
@@ -14368,6 +16640,12 @@ public class BydDataCollector {
      * (Body.ATMOSPHERE_LIGHT_MUSIC_EXECUTE) on bodyworkDevice, value on=1 / off=2.
      */
     public boolean setAmbientMusicMode(boolean on) {
+        if (isDiLink5Vehicle()) {
+            // DiLink 5 has no id for this; its setAmbientMusicModeState values are unverified.
+            logger.warn("setAmbientMusicMode: no verified music-mode control on DiLink 5");
+            logDiLink5CalibrationSnapshot();
+            return false;
+        }
         try {
             return BydDeviceHelper.sendSetCommand(bodyworkDevice, BydFeatureIds.BODY_ATMOSPHERE_LIGHT_MUSIC, on ? 1 : 2);
         } catch (Exception e) {
@@ -14427,6 +16705,9 @@ public class BydDataCollector {
 
     private boolean writeSideWindowCommands(
             int lf, int rf, int lr, int rr, String reason) {
+        if (isDiLink5Vehicle()) {
+            return writeDiLink5SideWindowCommands(lf, rf, lr, rr, reason);
+        }
         Object result;
         synchronized (sideWindowHalCommandLock) {
             result = BydDeviceHelper.callMethod(
@@ -14442,6 +16723,96 @@ public class BydDataCollector {
                 + "] result=" + result
                 + (accepted ? " ACCEPTED" : " REFUSED"));
         return accepted;
+    }
+
+    // DiLink 5 ships setAllWindowState as a "Stub!" throw; the same [LF, RF, LR, RR] vector and
+    // 1=open/2=close/3=stop domain go through setWindowControlState(int[]).
+    private boolean writeDiLink5SideWindowCommands(
+            int lf, int rf, int lr, int rr, String reason) {
+        boolean adapterReady = isDiLink5BodyAdapterReady();
+        Object result = null;
+        if (adapterReady) {
+            synchronized (sideWindowHalCommandLock) {
+                result = BydDeviceHelper.callMethod(
+                        bodyworkDevice, "setWindowControlState", new int[] {lf, rf, lr, rr});
+            }
+        }
+        boolean accepted =
+                result instanceof Integer && ((Integer) result).intValue() == 0;
+        logger.info("setWindowControlState reason=" + reason
+                + " commands=[LF=" + lf
+                + ", RF=" + rf
+                + ", LR=" + lr
+                + ", RR=" + rr
+                + "] result=" + (adapterReady ? result : "body adapter not connected")
+                + (accepted ? " ACCEPTED" : " REFUSED"));
+        return accepted;
+    }
+
+    /** DiLink 5 position target: the body controller drives the pane to {@code percent} itself. */
+    private boolean writeDiLink5WindowPercent(int area, int percent, String reason) {
+        boolean adapterReady = isDiLink5BodyAdapterReady();
+        // setWindowOpenPercent returns 0 even when the adapter is disconnected.
+        Object result = adapterReady
+                ? BydDeviceHelper.callMethod(bodyworkDevice, "setWindowOpenPercent", area, percent)
+                : null;
+        boolean accepted =
+                result instanceof Integer && ((Integer) result).intValue() == 0;
+        logger.info("setWindowOpenPercent reason=" + reason
+                + " area=" + area + " target=" + percent + "% result="
+                + (adapterReady ? result : "body adapter not connected")
+                + (accepted ? " ACCEPTED" : " REFUSED"));
+        return accepted;
+    }
+
+    private boolean isDiLink5BodyAdapterReady() {
+        return BydDeviceHelper.isDiLink5AdapterReady(
+                context, bodyworkDevice, "getCarBodyManager");
+    }
+
+    // Short: the bridge worker holds one request at a time and queues only one more.
+    private static final long DILINK5_WINDOW_RESPONSE_TIMEOUT_MS = 700L;
+    private static final int DILINK5_WINDOW_RESPONSE_MIN_TRAVEL = 2;
+
+    /**
+     * The percent write returns 0 unconditionally, so success needs readback: each pane must
+     * reach the target or move toward it. A pane with no readback cannot be judged and is trusted.
+     */
+    private boolean awaitDiLink5WindowResponse(
+            int[] areas, int[] start, int target, int tolerance) {
+        boolean[] settled = new boolean[areas.length];
+        int[] last = start.clone();
+        int pending = 0;
+        for (int i = 0; i < areas.length; i++) {
+            settled[i] = start[i] < 0 || Math.abs(start[i] - target) <= tolerance;
+            if (!settled[i]) pending++;
+        }
+        long deadline = SystemClock.elapsedRealtime() + DILINK5_WINDOW_RESPONSE_TIMEOUT_MS;
+        while (pending > 0 && SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(100L);
+            for (int i = 0; i < areas.length; i++) {
+                if (settled[i]) continue;
+                int now = readWindowPercent(areas[i]);
+                if (now >= 0) last[i] = now;
+                boolean responded = now < 0
+                        || Math.abs(now - target) <= tolerance
+                        || (target > start[i]
+                                ? now - start[i] >= DILINK5_WINDOW_RESPONSE_MIN_TRAVEL
+                                : start[i] - now >= DILINK5_WINDOW_RESPONSE_MIN_TRAVEL);
+                if (responded) {
+                    settled[i] = true;
+                    pending--;
+                }
+            }
+        }
+        for (int i = 0; i < areas.length; i++) {
+            if (!settled[i]) {
+                logger.warn("Window " + areas[i] + ": setWindowOpenPercent(" + target
+                        + ") accepted but the pane did not move (" + start[i] + "% -> "
+                        + last[i] + "% in " + DILINK5_WINDOW_RESPONSE_TIMEOUT_MS + " ms)");
+            }
+        }
+        return pending == 0;
     }
 
     private boolean writeSideWindowCommandsWithRetry(
@@ -14691,6 +17062,21 @@ public class BydDataCollector {
         }
 
         if (!cancelAndStopSideWindowMotions()) return false;
+
+        if (isDiLink5Vehicle()) {
+            int[] areas = {1, 2, 3, 4};
+            int[] start = new int[4];
+            boolean allAccepted = true;
+            for (int area = 1; area <= 4; area++) {
+                start[area - 1] = readWindowPercent(area);
+                allAccepted &= writeDiLink5WindowPercent(
+                        area, targetPercent, "all-target-" + targetPercent);
+            }
+            return allAccepted
+                    && awaitDiLink5WindowResponse(
+                            areas, start, targetPercent,
+                            (targetPercent == 0 || targetPercent == 100) ? 0 : 2);
+        }
 
         int[] initial = new int[4];
         for (int area = 1; area <= 4; area++) {
@@ -15152,6 +17538,13 @@ public class BydDataCollector {
             return true;
         }
 
+        if (area <= 4 && isDiLink5Vehicle()) {
+            return writeDiLink5WindowPercent(
+                    area, target, "area-" + area + "-target-from-" + initial)
+                    && awaitDiLink5WindowResponse(
+                            new int[] {area}, new int[] {initial}, target, tolerance);
+        }
+
         // No position readback on this slot (common for sunroof/sunshade): closed-loop positioning
         // is impossible, because `reached` and the stall detector both sit inside `now >= 0` so the
         // only brake left is the 12s cap — and the direction would be GUESSED from an assumed
@@ -15333,28 +17726,141 @@ public class BydDataCollector {
 
     // --- Door lock state ---
 
-    /** Driver's-door lock states from {@code BYDAutoOtaDevice.getLFDoorLockState}. */
+    /** App-normalized driver's-door states; legacy OTA and Di5 cabin domains are mapped here. */
     public static final int DOOR_STATE_INVALID = 0;
     public static final int DOOR_STATE_UNLOCK = 1;
     public static final int DOOR_STATE_LOCK = 2;
 
     /**
-     * Read the driver's-door (LF) lock state via the OTA device.
+     * App process, per thread: the {@code Result.Outcome} name of the last DI5 lock/unlock on this
+     * thread, handed to the bridge Bundle by {@link #takeLastDiLink5LockOutcome()}.
+     */
+    private final ThreadLocal<String> lastDiLink5LockOutcome = new ThreadLocal<>();
+
+    /**
+     * DiLink 5 app-process central locking. The write path follows the gate rail the daemon
+     * selected and carried in the proximity scope (a manual command or an absent/typed rail takes
+     * today's typed path, unchanged): (A) typed cabin write and typed readback; (B) {@code ota}:
+     * typed write, OTA agreeing-pair readback; (C) {@code carsvc}: typed write authorised by the
+     * scope's fresh daemon evidence, confirmation delegated to the daemon's rail. Returns true for
+     * CONFIRMED and WRITTEN_UNCONFIRMED; the outcome itself travels to the daemon via the bridge.
+     */
+    public boolean setDiLink5AllDoorsLocked(boolean locked) {
+        if (!isDiLink5ProducerActive() || !RemoteKeyControl.isEnabled()) return false;
+        java.util.function.BooleanSupplier requestCurrent = () -> isDiLink5ProducerActive()
+                        && RemoteKeyControl.isEnabled()
+                        && !VehicleActuatorBridge.isDiLink5RequestExpired()
+                        && DrivingSafetyGuard.getActionBlockReason(
+                                 DrivingSafetyGuard.GUARD_DOOR_LOCKS) == null;
+        com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope scope =
+                VehicleActuatorBridge.currentDiLink5ProximityScope();
+        DiLink5LockRail gateRail = scope == null ? null : scope.gateRailOrNull();
+        DiLink5DoorLockControl.Result result;
+        switch (DiLink5DoorLockControl.selectDiLink5LockMode(gateRail, otaDevice != null)) {
+            case OTA:
+            case OTA_UNAVAILABLE: // fails closed inside: "typed door-lock rail unavailable (ota device missing)"
+                result = DiLink5DoorLockControl.setLockedViaOta(doorLockDevice, otaDevice, locked,
+                        requestCurrent, VehicleActuatorBridge::confirmProximityBeforeDiLink5Write);
+                break;
+            case DELEGATED_CARSVC:
+                result = DiLink5DoorLockControl.applyWithDelegatedEvidence(doorLockDevice, locked,
+                        scope.gateState, scope.gateObservedElapsedMs, requestCurrent,
+                        VehicleActuatorBridge::confirmProximityBeforeDiLink5Write);
+                break;
+            default:
+                result = DiLink5DoorLockControl.setLocked(
+                        doorLockDevice, locked, requestCurrent,
+                        VehicleActuatorBridge::confirmProximityBeforeDiLink5Write);
+                break;
+        }
+        logger.info("DI5 " + (locked ? "lock" : "unlock") + ": " + result.reason
+                + " outcome=" + result.outcome + " confirmed=" + result.confirmed);
+        lastDiLink5LockOutcome.set(result.outcome.name());
+        return result.outcome != DiLink5DoorLockControl.Result.Outcome.FAILED;
+    }
+
+    /** App process: the last DI5 lock/unlock outcome recorded on this thread, once (null when none). */
+    public String takeLastDiLink5LockOutcome() {
+        String outcome = lastDiLink5LockOutcome.get();
+        lastDiLink5LockOutcome.remove();
+        return outcome;
+    }
+
+    /** Newer default-mode firmware may expose the verified cabin SDK as well as the OTA getter. */
+    public boolean isLocalTypedDoorLockAvailable() {
+        return readLocalTypedDoorLockState() != DOOR_STATE_INVALID;
+    }
+
+    private boolean localTypedDoorLockSourceCurrent(Object device, String generation) {
+        int sdk = android.os.Build.VERSION.SDK_INT;
+        return sdk >= 31 && sdk <= 34 && !isDiLink5Vehicle()
+                && device != null && device == doorLockDevice
+                && com.overdrive.app.camera.dilink5.DiLink5Platform
+                        .matchesActiveModeGeneration(generation);
+    }
+
+    private int readLocalTypedDoorLockState() {
+        int sdk = android.os.Build.VERSION.SDK_INT;
+        if (sdk < 31 || sdk > 34 || isDiLink5Vehicle()) return DOOR_STATE_INVALID;
+        Object device = doorLockDevice;
+        String generation = com.overdrive.app.camera.dilink5.DiLink5Platform
+                .currentActiveModeGeneration();
+        if (!localTypedDoorLockSourceCurrent(device, generation)) return DOOR_STATE_INVALID;
+        return DiLink5DoorLockControl.readDriverLock(device,
+                () -> localTypedDoorLockSourceCurrent(device, generation)).state;
+    }
+
+    /** Uses only the already-verified cabin setter and requires matching native readbacks. */
+    public boolean setLocalTypedDoorsLocked(boolean locked) {
+        int sdk = android.os.Build.VERSION.SDK_INT;
+        if (sdk < 31 || sdk > 34 || isDiLink5Vehicle()) return false;
+        Object device = doorLockDevice;
+        String generation = com.overdrive.app.camera.dilink5.DiLink5Platform
+                .currentActiveModeGeneration();
+        java.util.function.BooleanSupplier current = () ->
+                localTypedDoorLockSourceCurrent(device, generation)
+                        && RemoteKeyControl.isEnabled()
+                        && DrivingSafetyGuard.getActionBlockReason(
+                                DrivingSafetyGuard.GUARD_DOOR_LOCKS) == null;
+        if (!current.getAsBoolean()) return false;
+        DiLink5DoorLockControl.Result result = DiLink5DoorLockControl.setLocked(
+                device, locked, current, current);
+        logger.info("Local cabin " + (locked ? "lock" : "unlock") + ": " + result.reason
+                + " outcome=" + result.outcome + " confirmed=" + result.confirmed);
+        return result.confirmed;
+    }
+
+    /** Metadata and live read-only state for diagnosing firmware-specific local controls. */
+    public org.json.JSONObject getLocalControlDiagnostics() {
+        return LocalVehicleControlDiagnostics.read(getRuntimeContext(),
+                bodyworkDevice, doorLockDevice, otaDevice, engineDevice, powerDevice,
+                readPowerLevelNow(), readDoorLockState());
+    }
+
+    /**
+     * Read the driver's-door (LF) lock state from the platform's local SDK.
      *
      * <p>This is the same local rail AccSentry/CameraDaemon use
      * ({@code BYDAutoOtaDevice.getLFDoorLockState}) — it works ACC=OFF with
-     * sub-second latency on DiLink 3.0. The legacy
+     * sub-second latency on DiLink 3.0. On those legacy DiLink 3 firmwares,
      * {@code BYDAutoDoorLockDevice.getDoorLockStatus(area)} path returns
-     * INVALID to user-UID processes on every field firmware and is not used.
+     * INVALID to user-UID processes and is not used for telemetry. DiLink 5's
+     * app producer uses the same readiness-checked typed cabin reader as its actuator,
+     * converting native LOCK=1 / UNLOCK=2 into the app's LOCK=2 / UNLOCK=1 domain.
+     * Newer default-mode firmware prefers that getter when its adapter is verified.
      *
      * @return {@link #DOOR_STATE_INVALID}(0), {@link #DOOR_STATE_UNLOCK}(1),
      *         or {@link #DOOR_STATE_LOCK}(2).
      */
     public int readDoorLockState() {
         if (isDiLink5BridgeConsumer()) {
-            return diLink5AutomationFallback() != null
-                    ? diLink5DoorLockState : DOOR_STATE_INVALID;
+            return readDiLink5GateDoorLockState();
         }
+        if (isDiLink5Vehicle()) {
+            return readDiLink5DriverLock().state;
+        }
+        int nativeState = readLocalTypedDoorLockState();
+        if (nativeState != DOOR_STATE_INVALID) return nativeState;
         if (otaDevice == null) return DOOR_STATE_INVALID;
         try {
             Object v = BydDeviceHelper.callGetter(otaDevice, "getLFDoorLockState");
@@ -15368,6 +17874,427 @@ public class BydDataCollector {
             logger.debug("readDoorLockState error: " + e.getMessage());
         }
         return DOOR_STATE_INVALID;
+    }
+
+    private DiLink5DoorLockControl.ReadResult readDiLink5DriverLock() {
+        Object sourceDevice = doorLockDevice;
+        String modeGeneration =
+                com.overdrive.app.camera.dilink5.DiLink5Platform.currentActiveModeGeneration();
+        DiLink5DoorLockControl.ReadResult result = DiLink5DoorLockControl.readDriverLock(
+                sourceDevice,
+                () -> isDiLink5ProducerActive() && doorLockDevice == sourceDevice
+                        && com.overdrive.app.camera.dilink5.DiLink5Platform
+                                .matchesActiveModeGeneration(modeGeneration));
+        String diagnostic = "source=typed-cabin raw=" + result.nativeState
+                + " state=" + result.state + " reason=" + result.reason;
+        long now = SystemClock.elapsedRealtime();
+        boolean typedLineJustLogged = false;
+        if (!diagnostic.equals(lastDiLink5LockReadDiagnostic)
+                || now - lastDiLink5LockReadDiagnosticAtElapsedMs >= 30_000L) {
+            lastDiLink5LockReadDiagnostic = diagnostic;
+            lastDiLink5LockReadDiagnosticAtElapsedMs = now;
+            typedLineJustLogged = true;
+            logger.info("DI5 driver lock: " + diagnostic + " sourceAgeMs="
+                    + Math.max(0L, now - result.observedAtElapsedMs));
+        }
+        try {
+            probeDiLink5OtaLock(result, typedLineJustLogged);
+        } catch (Throwable t) {
+            logger.debug("DI5 OTA lock probe error: " + t.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * Stage 0: enqueue one read-only probe of the OTA lock getter so the typed, OTA and
+     * car_service rails can be compared on the same tick. Never blocks the caller: the Binder
+     * call runs on the single "DI5OtaLockProbe" thread, single-flight, at most every 5 s. With no
+     * OTA device the line is logged synchronously (pure formatting, no executor).
+     */
+    private void probeDiLink5OtaLock(
+            DiLink5DoorLockControl.ReadResult typed, boolean typedLineJustLogged) {
+        if (!isDiLink5ProducerActive() || !initialized) return;
+        long now = SystemClock.elapsedRealtime();
+        if (!DiLink5OtaLockProbe.Throttle.shouldProbe(
+                now, lastDiLink5OtaProbeAtElapsedMs, typedLineJustLogged)) {
+            return;
+        }
+        DiLink5OtaLockProbe.TypedTokens tokens = new DiLink5OtaLockProbe.TypedTokens(
+                typed.nativeState, typed.state, typed.reason);
+        boolean appAcc = isAccOn();
+        Object device = otaDevice;
+        if (device == null) {
+            lastDiLink5OtaProbeAtElapsedMs = now;
+            logDiLink5LockRails(DiLink5OtaLockProbe.formatLine(
+                    tokens, DiLink5OtaLockProbe.nullDevice(), appAcc, now));
+            return;
+        }
+        if (!diLink5OtaProbeInFlight.compareAndSet(false, true)) {
+            if (diLink5OtaProbeStallLogged.compareAndSet(false, true)) {
+                logger.info("DI5 lock rails: ota probe still in flight after "
+                        + Math.max(0L, now - diLink5OtaProbeSubmittedAtElapsedMs) + " ms");
+            }
+            return;
+        }
+        lastDiLink5OtaProbeAtElapsedMs = now;
+        diLink5OtaProbeSubmittedAtElapsedMs = now;
+        try {
+            diLink5OtaLockProbeExecutor().execute(() -> {
+                try {
+                    refreshDiLink5ProducerLockSettings(SystemClock.elapsedRealtime());
+                    DiLink5OtaLockProbe.Snapshot snapshot = DiLink5OtaLockProbe.probe(device);
+                    logDiLink5LockRails(DiLink5OtaLockProbe.formatLine(
+                            tokens, snapshot, appAcc, SystemClock.elapsedRealtime()));
+                } catch (Throwable t) {
+                    logger.debug("DI5 OTA lock probe failed: " + t.getMessage());
+                } finally {
+                    diLink5OtaProbeStallLogged.set(false);
+                    diLink5OtaProbeInFlight.set(false);
+                }
+            });
+        } catch (Throwable rejected) {
+            diLink5OtaProbeInFlight.set(false);
+            logger.debug("DI5 OTA lock probe not scheduled: " + rejected.getMessage());
+        }
+    }
+
+    /**
+     * App producer, "DI5OtaLockProbe" thread only: re-reads the remote-access settings at most
+     * every 30 s into {@link #diLink5ProducerEnabledRails} (consumed by the OTA rail reader). Pure
+     * memory otherwise; a settings failure keeps the previous set. Never runs on the fast-poll thread.
+     */
+    private void refreshDiLink5ProducerLockSettings(long nowElapsedMs) {
+        if (nowElapsedMs - lastDiLink5ProducerSettingsReadAtElapsedMs < DILINK5_PRODUCER_SETTINGS_READ_MS
+                && lastDiLink5ProducerSettingsReadAtElapsedMs > 0L) {
+            return;
+        }
+        lastDiLink5ProducerSettingsReadAtElapsedMs = nowElapsedMs;
+        try {
+            org.json.JSONObject settings =
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings.read();
+            java.util.Set<DiLink5LockRail> rails =
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings.di5LockRails(settings);
+            if (!rails.equals(diLink5ProducerEnabledRails)) {
+                diLink5ProducerEnabledRails = rails;
+                logger.info("DI5 producer lock rails: " + DiLink5LockRail.toTags(rails));
+            }
+            noteDiLink5LockSettingsFallback(
+                    com.overdrive.app.remoteaccess.RemoteAccessSettings.di5PersistedFallbackDetail());
+        } catch (Throwable t) {
+            logger.debug("DI5 producer lock settings read failed: " + t.getMessage());
+        }
+    }
+
+    /** App producer: the rails the setting currently enables (volatile snapshot, no I/O). */
+    java.util.Set<DiLink5LockRail> diLink5ProducerEnabledRails() {
+        return diLink5ProducerEnabledRails;
+    }
+
+    private void logDiLink5LockRails(String line) {
+        long now = SystemClock.elapsedRealtime();
+        if (DiLink5OtaLockProbe.Throttle.shouldLog(
+                line, lastDiLink5LockDiag, now, lastDiLink5LockDiagLogAtElapsedMs)) {
+            lastDiLink5LockDiagLogAtElapsedMs = now;
+            logger.info(line);
+        }
+        lastDiLink5LockDiag = line;
+    }
+
+    private java.util.concurrent.ExecutorService diLink5OtaLockProbeExecutor() {
+        java.util.concurrent.ExecutorService existing = diLink5OtaLockProbeExecutor.get();
+        if (existing != null) return existing;
+        java.util.concurrent.ExecutorService created =
+                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "DI5OtaLockProbe");
+                    t.setDaemon(true);
+                    return t;
+                });
+        if (diLink5OtaLockProbeExecutor.compareAndSet(null, created)) return created;
+        created.shutdownNow();
+        return diLink5OtaLockProbeExecutor.get();
+    }
+
+    private void stopDiLink5OtaLockProbe() {
+        java.util.concurrent.ExecutorService executor = diLink5OtaLockProbeExecutor.getAndSet(null);
+        if (executor != null) executor.shutdownNow();
+        diLink5OtaProbeInFlight.set(false);
+        diLink5OtaProbeStallLogged.set(false);
+        lastDiLink5OtaProbeAtElapsedMs = 0L;
+        diLink5OtaProbeSubmittedAtElapsedMs = 0L;
+        lastDiLink5LockDiag = null;
+        lastDiLink5LockDiagLogAtElapsedMs = 0L;
+        lastDiLink5ProducerSettingsReadAtElapsedMs = 0L;
+        diLink5OtaLockDebounce.reset();
+        diLink5OtaLockRaw = Integer.MIN_VALUE;
+        diLink5OtaLockState = DOOR_STATE_INVALID;
+        diLink5OtaLockReadAtElapsedMs = 0L;
+    }
+
+    // ---- OTA lock rail (app producer) -----------------------------------------------------------
+
+    /**
+     * HAZARD, quoted from the recorded note on this very getter so the reason survives any
+     * refactor: "the OTA getLFDoorLockState rail emits transient/bluff DOOR_STATE_UNLOCK reads on
+     * this hardware, so a single one must NOT fire an 'unlocked' automation" (collectLockState's
+     * lockUnlockStreak comment; CameraDaemon's unlock poll carries the same note). The gate rail
+     * therefore debounces OTA in BOTH directions: a value reaches the ledger only after two
+     * consecutive identical raw reads, and the first read of any change — or any out-of-domain
+     * read (-1, 0, exception, failed fence) — publishes INVALID at that read's time, so a
+     * one-sample bluff can never enter the ledger and a real transition is INVALID for one read.
+     * Pure; the only state is the current streak.
+     */
+    static final class DiLink5OtaLockDebounce {
+        /** OTA getLFDoorLockState domain: 1 unlocked, 2 locked (app domain, identity mapping). */
+        static final int OTA_LF_UNLOCKED = 1;
+        static final int OTA_LF_LOCKED = 2;
+
+        /** What the producer publishes for one read: the app-domain state at this read's time. */
+        static final class Published {
+            final int state;
+            final long readAt;
+
+            Published(int state, long readAt) {
+                this.state = state;
+                this.readAt = readAt;
+            }
+        }
+
+        private int streakState = Integer.MIN_VALUE;
+        private int streakCount;
+
+        /** Pure mapping of one OTA raw value into the app domain (INVALID outside {1, 2}). */
+        static int mapOtaRaw(int otaRaw) {
+            if (otaRaw == OTA_LF_UNLOCKED) return DOOR_STATE_UNLOCK;
+            if (otaRaw == OTA_LF_LOCKED) return DOOR_STATE_LOCK;
+            return DOOR_STATE_INVALID;
+        }
+
+        /** Returns the value to PUBLISH for this read. */
+        synchronized Published next(int otaRaw, long readAt) {
+            if (mapOtaRaw(otaRaw) == DOOR_STATE_INVALID) {
+                streakState = Integer.MIN_VALUE;
+                streakCount = 0;
+                return new Published(DOOR_STATE_INVALID, readAt);
+            }
+            if (otaRaw == streakState) {
+                streakCount++;
+                return new Published(
+                        streakCount >= 2 ? mapOtaRaw(otaRaw) : DOOR_STATE_INVALID, readAt);
+            }
+            streakState = otaRaw;
+            streakCount = 1;
+            return new Published(DOOR_STATE_INVALID, readAt);
+        }
+
+        synchronized void reset() {
+            streakState = Integer.MIN_VALUE;
+            streakCount = 0;
+        }
+    }
+
+    /**
+     * Pure: the OTA rail reader is submitted only while the producer's di5LockRails names OTA, the
+     * producer is active and initialised, and the OTA device from init() exists.
+     */
+    static boolean shouldSubmitDiLink5OtaRead(
+            java.util.Set<DiLink5LockRail> producerEnabledRails,
+            boolean producerActive,
+            boolean initialized,
+            boolean deviceAvailable) {
+        return producerEnabledRails != null && producerEnabledRails.contains(DiLink5LockRail.OTA)
+                && producerActive && initialized && deviceAvailable;
+    }
+
+    /**
+     * Fast-poll thread, every 8th tick (2 s): enqueue one OTA lock read on the "DI5OtaLockProbe"
+     * thread, sharing the Stage 0 probe's single-flight flag (busy → this tick is skipped). Never
+     * blocks, never throws, never performs the Binder call here.
+     */
+    private void submitDiLink5OtaLockRead() {
+        try {
+            Object device = otaDevice;
+            if (!shouldSubmitDiLink5OtaRead(diLink5ProducerEnabledRails, isDiLink5ProducerActive(),
+                    initialized, device != null)) {
+                return;
+            }
+            if (!diLink5OtaProbeInFlight.compareAndSet(false, true)) return;
+            diLink5OtaProbeSubmittedAtElapsedMs = SystemClock.elapsedRealtime();
+            String modeGeneration =
+                    com.overdrive.app.camera.dilink5.DiLink5Platform.currentActiveModeGeneration();
+            try {
+                diLink5OtaLockProbeExecutor().execute(() -> {
+                    try {
+                        readDiLink5OtaLock(device, modeGeneration);
+                    } catch (Throwable t) {
+                        logger.debug("DI5 OTA lock read failed: " + t.getMessage());
+                    } finally {
+                        diLink5OtaProbeStallLogged.set(false);
+                        diLink5OtaProbeInFlight.set(false);
+                    }
+                });
+            } catch (Throwable rejected) {
+                diLink5OtaProbeInFlight.set(false);
+                logger.debug("DI5 OTA lock read not scheduled: " + rejected.getMessage());
+            }
+        } catch (Throwable t) {
+            logger.debug("DI5 OTA lock read submit error: " + t.getMessage());
+        }
+    }
+
+    /**
+     * "DI5OtaLockProbe" thread only: one OTA getLFDoorLockState read with the same mode-generation
+     * fence as the typed reader, checked before AND after the Binder call (a failed fence publishes
+     * INVALID), {@code readAt} stamped right after the getter returns, then the two-direction
+     * debounce and the three volatile writes (raw, state, then time). ready() is not probed per
+     * read; -1 / 0 / exception / missing getter all debounce to INVALID.
+     */
+    private void readDiLink5OtaLock(Object device, String modeGeneration) {
+        refreshDiLink5ProducerLockSettings(SystemClock.elapsedRealtime());
+        java.util.function.BooleanSupplier fence =
+                () -> isDiLink5ProducerActive() && otaDevice == device
+                        && com.overdrive.app.camera.dilink5.DiLink5Platform
+                                .matchesActiveModeGeneration(modeGeneration);
+        java.lang.reflect.Method getter = DiLink5OtaLockProbe.lockGetter(device.getClass());
+        int raw = Integer.MIN_VALUE;
+        if (getter != null && fence.getAsBoolean()) {
+            try {
+                Object value = getter.invoke(device);
+                raw = value instanceof Number ? ((Number) value).intValue() : Integer.MIN_VALUE;
+            } catch (Throwable t) {
+                raw = Integer.MIN_VALUE;
+            }
+        }
+        long readAt = SystemClock.elapsedRealtime();
+        if (!fence.getAsBoolean()) raw = Integer.MIN_VALUE;
+        DiLink5OtaLockDebounce.Published published = diLink5OtaLockDebounce.next(raw, readAt);
+        diLink5OtaLockRaw = raw;
+        diLink5OtaLockState = published.state;
+        diLink5OtaLockReadAtElapsedMs = published.readAt;
+    }
+
+    /**
+     * Pure: the additive {@code lockReadings} array for one bridge message — the typed-cabin entry
+     * whenever a typed read exists ({@code typedReadAt > 0}), the OTA entry only while the OTA rail
+     * is enabled and has a read; null when there is no entry (the daemon then uses the legacy pair).
+     */
+    public static org.json.JSONArray encodeDiLink5LockReadings(
+            int typedState, int typedRaw, long typedReadAt,
+            boolean otaEnabled, int otaState, int otaRaw, long otaReadAt) {
+        try {
+            org.json.JSONArray readings = new org.json.JSONArray();
+            if (typedReadAt > 0L) {
+                readings.put(encodeDiLink5LockReading(
+                        DiLink5LockRail.TYPED_CABIN, typedState, typedRaw, typedReadAt));
+            }
+            if (otaEnabled && otaReadAt > 0L) {
+                readings.put(encodeDiLink5LockReading(
+                        DiLink5LockRail.OTA, otaState, otaRaw, otaReadAt));
+            }
+            return readings.length() == 0 ? null : readings;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static org.json.JSONObject encodeDiLink5LockReading(
+            DiLink5LockRail rail, int state, int raw, long observedElapsedMs)
+            throws org.json.JSONException {
+        return new org.json.JSONObject()
+                .put("rail", rail.tag())
+                .put("state", state)
+                .put("raw", raw)
+                .put("observedElapsedMs", observedElapsedMs);
+    }
+
+    static final int DILINK5_LOCK_READINGS_MAX_ENTRIES = 4;
+    private static final java.util.concurrent.atomic.AtomicLong diLink5DroppedLockReadingEntries =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static volatile long lastDiLink5DroppedLockReadingLogAtElapsedMs;
+
+    /**
+     * Daemon decode of a bridged {@code lockReadings} array (M4, single ingress): at most the first
+     * four entries are considered; an entry needs a recognised {@code rail} tag, an exact-integer
+     * {@code state} in {0, 1, 2}, an exact-integer {@code raw} and an exact-integer
+     * {@code observedElapsedMs > 0}. A malformed entry is dropped (counted, debug-logged at most
+     * every 60 s) while the others land; a null, empty or wholly unusable array decodes to null so
+     * the ingress falls back to the legacy pair. Never throws.
+     */
+    public static java.util.List<DiLink5LockReading> decodeDiLink5LockReadings(
+            org.json.JSONArray array) {
+        int[] dropped = new int[1];
+        java.util.List<DiLink5LockReading> readings = decodeDiLink5LockReadings(array, dropped);
+        if (dropped[0] > 0) noteDiLink5DroppedLockReadingEntries(dropped[0]);
+        return readings;
+    }
+
+    /** Pure body of {@link #decodeDiLink5LockReadings(org.json.JSONArray)}; {@code droppedOut[0]} counts drops. */
+    static java.util.List<DiLink5LockReading> decodeDiLink5LockReadings(
+            org.json.JSONArray array, int[] droppedOut) {
+        if (array == null || array.length() == 0) return null;
+        java.util.List<DiLink5LockReading> readings = new java.util.ArrayList<>(
+                Math.min(array.length(), DILINK5_LOCK_READINGS_MAX_ENTRIES));
+        int limit = Math.min(array.length(), DILINK5_LOCK_READINGS_MAX_ENTRIES);
+        for (int i = 0; i < limit; i++) {
+            DiLink5LockReading reading = null;
+            try {
+                reading = decodeDiLink5LockReading(array.optJSONObject(i));
+            } catch (Throwable malformed) {
+                reading = null;
+            }
+            if (reading == null) {
+                if (droppedOut != null && droppedOut.length > 0) droppedOut[0]++;
+                continue;
+            }
+            readings.add(reading);
+        }
+        return readings.isEmpty() ? null : readings;
+    }
+
+    private static DiLink5LockReading decodeDiLink5LockReading(org.json.JSONObject entry) {
+        if (entry == null) return null;
+        Object railTag = entry.opt("rail");
+        DiLink5LockRail rail = railTag instanceof String
+                ? DiLink5LockRail.fromTag((String) railTag) : null;
+        if (rail == null) return null;
+        long state = exactDiLink5LockReadingValue(entry.opt("state"), Long.MIN_VALUE);
+        if (state != DOOR_STATE_INVALID && state != DOOR_STATE_UNLOCK && state != DOOR_STATE_LOCK) {
+            return null;
+        }
+        long raw = exactDiLink5LockReadingValue(entry.opt("raw"), Long.MIN_VALUE);
+        if (raw < Integer.MIN_VALUE || raw > Integer.MAX_VALUE) return null;
+        long observedElapsedMs = exactDiLink5LockReadingValue(entry.opt("observedElapsedMs"), 0L);
+        if (observedElapsedMs <= 0L) return null;
+        return new DiLink5LockReading(rail, (int) state, (int) raw, observedElapsedMs);
+    }
+
+    /** Exact integer decode (no truncation of fractions, no overflow), like the server's door reads. */
+    static long exactDiLink5LockReadingValue(Object encoded, long unavailable) {
+        if (!(encoded instanceof Number)) return unavailable;
+        try {
+            return new java.math.BigDecimal(encoded.toString()).longValueExact();
+        } catch (NumberFormatException | ArithmeticException malformed) {
+            return unavailable;
+        }
+    }
+
+    private static void noteDiLink5DroppedLockReadingEntries(int dropped) {
+        long total = diLink5DroppedLockReadingEntries.addAndGet(dropped);
+        try {
+            long now = SystemClock.elapsedRealtime();
+            if (lastDiLink5DroppedLockReadingLogAtElapsedMs == 0L
+                    || now - lastDiLink5DroppedLockReadingLogAtElapsedMs >= 60_000L) {
+                lastDiLink5DroppedLockReadingLogAtElapsedMs = now;
+                logger.debug("DI5 lockReadings: dropped " + dropped
+                        + " malformed entries (total " + total + ")");
+            }
+        } catch (Throwable ignored) {
+            // counting only; the clock is unavailable off-device
+        }
+    }
+
+    /** Total malformed {@code lockReadings} entries dropped by the daemon decode (diagnostic). */
+    static long diLink5DroppedLockReadingEntries() {
+        return diLink5DroppedLockReadingEntries.get();
     }
 
     // UNLOCK-direction debounce for collectLockState, mirroring CameraDaemon's unlock poll:
@@ -15384,7 +18311,7 @@ public class BydDataCollector {
 
     /**
      * Publish the central-lock state to the automation engine as a {@code locked}/
-     * {@code unlocked} word, sourced from the OTA rail ({@link #readDoorLockState}). Called
+     * {@code unlocked} word, sourced from the platform's local rail ({@link #readDoorLockState}). Called
      * from {@link #collectAll} on the always-alive poll loop when an automation references
      * {@link com.overdrive.app.automation.condition.BydEvent#LOCK}. {@code Automations.update}
      * is transition-gated + deduped, so a repeated same-state read no-ops; a genuine
@@ -15395,7 +18322,17 @@ public class BydDataCollector {
      * can't fire a spurious "unlocked" automation.
      */
     private synchronized void collectLockState() {
-        int state = readDoorLockState();
+        boolean diLink5Producer = isDiLink5ProducerActive();
+        DiLink5DoorLockControl.ReadResult reading =
+                diLink5Producer ? readDiLink5DriverLock() : null;
+        int state = reading != null ? reading.state : readDoorLockState();
+        if (reading != null) {
+            // Safety telemetry reflects every actual read. Event debounce cannot keep an old LOCK
+            // authoritative after the getter reports UNLOCK or fails. Raw, then state, then time.
+            diLink5DoorLockRaw = reading.nativeState;
+            diLink5DoorLockState = state;
+            diLink5DoorLockReadAtElapsedMs = reading.observedAtElapsedMs;
+        }
         boolean locked;
         if (state == DOOR_STATE_LOCK) {
             lockUnlockStreak = 0;
@@ -15405,12 +18342,13 @@ public class BydDataCollector {
             if (++lockUnlockStreak < 2) return;
             locked = false;
         } else {
-            return; // INVALID/unreadable → no false edge, and don't disturb the streak
+            if (diLink5Producer) lockUnlockStreak = 0;
+            return; // INVALID/unreadable → no false edge; legacy debounce keeps its old behavior.
         }
         try {
             if (isDiLink5ProducerActive()) {
-                if (state != diLink5DoorLockState) {
-                    diLink5DoorLockState = state;
+                if (state != diLink5PublishedLockEventState) {
+                    diLink5PublishedLockEventState = state;
                     com.overdrive.app.byd.dilink5.Dilink5TelemetryBridge.publishEvent(
                             "lock", 0, state);
                 }
@@ -15424,9 +18362,123 @@ public class BydDataCollector {
         }
     }
 
+    // LockEvent poll state, guarded by this monitor. UNLOCK must read steady this long: the rail
+    // emits one-sample bluff UNLOCK reads, and every other debounce of it spans at least 2 s.
+    private static final long LOCK_POLL_UNLOCK_HOLD_MS = 2_000L;
+    private long lockPollUnlockSinceElapsedMs;
+    private boolean lockPollSeedPending;
+
+    /**
+     * One tick of {@link com.overdrive.app.automation.condition.LockEvent}'s non-DiLink 5 poll, on
+     * the same rail as {@link #collectLockState}. The first word published after the poll starts
+     * is a silent seed. Synchronized with the other lock publishers so the last read wins.
+     */
+    public synchronized void pollLockStateNow() {
+        if (isDiLink5Vehicle()) return;
+        if (com.overdrive.app.automation.Automations.isSilentSeedActive()) {
+            lockPollSeedPending = true;
+            lockPollUnlockSinceElapsedMs = 0L;
+        }
+        int state = readDoorLockState();
+        if (state == DOOR_STATE_UNLOCK) {
+            long now = SystemClock.elapsedRealtime();
+            if (lockPollUnlockSinceElapsedMs == 0L) lockPollUnlockSinceElapsedMs = now;
+            if (now - lockPollUnlockSinceElapsedMs < LOCK_POLL_UNLOCK_HOLD_MS) return;
+        } else {
+            lockPollUnlockSinceElapsedMs = 0L;
+            if (state != DOOR_STATE_LOCK) return;
+        }
+        String word = state == DOOR_STATE_LOCK ? "locked" : "unlocked";
+        Runnable publish = () -> com.overdrive.app.automation.Automations.update(
+                com.overdrive.app.automation.condition.BydEvent.LOCK, word);
+        try {
+            if (lockPollSeedPending) {
+                com.overdrive.app.automation.Automations.runSilentSeed(publish);
+            } else {
+                publish.run();
+            }
+            lockPollSeedPending = false;
+        } catch (Throwable t) {
+            logger.debug("pollLockStateNow publish failed: " + t.getMessage());
+        }
+    }
+
+    private static final long LOCK_CONFIRM_POLL_MS = 350L;
+    private static final long LOCK_CONFIRM_WINDOW_MS = 8_000L;
+    private final java.util.concurrent.atomic.AtomicLong lockConfirmGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final Object lockConfirmExecutorLock = new Object();
+    private java.util.concurrent.ScheduledExecutorService lockConfirmExecutor;
+
+    /**
+     * After an accepted lock/unlock, publish the commanded word once the driver door reads it twice
+     * in a row; parked, the poll alone leaves it stale for up to 90 s. Never publishes the other word.
+     */
+    public void confirmLockStateAfterCommand(boolean locked) {
+        if (isDiLink5Vehicle()
+                || !anyReferenced(com.overdrive.app.automation.condition.BydEvent.LOCK)) {
+            return;
+        }
+        long generation = lockConfirmGeneration.incrementAndGet();
+        long deadline = SystemClock.elapsedRealtime() + LOCK_CONFIRM_WINDOW_MS;
+        try {
+            java.util.concurrent.ScheduledExecutorService executor;
+            synchronized (lockConfirmExecutorLock) {
+                if (lockConfirmExecutor == null) {
+                    lockConfirmExecutor =
+                            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                                Thread t = new Thread(r, "LockStateConfirm");
+                                t.setDaemon(true);
+                                return t;
+                            });
+                }
+                executor = lockConfirmExecutor;
+            }
+            executor.execute(() -> confirmLockState(executor, generation, locked, deadline, 0));
+        } catch (Throwable unavailable) {
+            logger.debug("Lock confirmation not scheduled: " + unavailable.getMessage());
+        }
+    }
+
+    /** Synchronized with collectLockState so the last read, not the last thread, wins. */
+    private synchronized void confirmLockState(
+            java.util.concurrent.ScheduledExecutorService executor, long generation,
+            boolean locked, long deadline, int matches) {
+        if (generation != lockConfirmGeneration.get()) return;
+        int state = readDoorLockState();
+        int run = state == (locked ? DOOR_STATE_LOCK : DOOR_STATE_UNLOCK) ? matches + 1 : 0;
+        if (run >= 2) {
+            if (locked) lockUnlockStreak = 0;
+            try {
+                com.overdrive.app.automation.Automations.update(
+                        com.overdrive.app.automation.condition.BydEvent.LOCK,
+                        locked ? "locked" : "unlocked");
+            } catch (Throwable t) {
+                logger.debug("Lock confirmation publish failed: " + t.getMessage());
+            }
+            return;
+        }
+        if (SystemClock.elapsedRealtime() >= deadline) {
+            logger.warn("Driver door still reads "
+                    + (state == DOOR_STATE_LOCK ? "locked"
+                            : state == DOOR_STATE_UNLOCK ? "unlocked" : "unreadable")
+                    + " " + (LOCK_CONFIRM_WINDOW_MS / 1000) + " s after an accepted "
+                    + (locked ? "lock" : "unlock") + "; lock state left to the poll");
+            return;
+        }
+        try {
+            executor.schedule(
+                    () -> confirmLockState(executor, generation, locked, deadline, run),
+                    LOCK_CONFIRM_POLL_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (Throwable rejected) {
+            logger.debug("Lock confirmation stopped: " + rejected.getMessage());
+        }
+    }
+
     // --- Tailgate ---
 
     public boolean openTailgate() {
+        if (isDiLink5Vehicle()) return diLink5BackDoorCommand(1, "open");
         // Method 1: SettingDevice.voiceCtlBackDoor(1)
         if (settingDevice != null) {
             if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_TRUNK)) return false;
@@ -15458,6 +18510,7 @@ public class BydDataCollector {
 
     public boolean closeTailgate() {
         // Values: 1=open, 2=stop, 3=close.
+        if (isDiLink5Vehicle()) return diLink5BackDoorCommand(3, "close");
 
         // Method 1: SettingDevice sendSetCommand with value 3 (close)
         if (settingDevice != null) {
@@ -15492,6 +18545,7 @@ public class BydDataCollector {
 
     public boolean stopTailgate() {
         // Values: 1=open, 2=stop, 3=close.
+        if (isDiLink5Vehicle()) return diLink5BackDoorCommand(2, "stop");
 
         // Method 1: SettingDevice sendSetCommand with value 2 (stop)
         if (settingDevice != null) {
@@ -15516,6 +18570,23 @@ public class BydDataCollector {
             logger.debug("stopTailgate BACK_DOOR_TRIGGER failed: " + e.getMessage());
             return false;
         }
+    }
+
+    // DiLink 5: the feature-id forms (530, BACK_DOOR_TRIGGER) discard the HAL result and always
+    // return 0, so only voiceCtlBackDoor's own code counts.
+    private boolean diLink5BackDoorCommand(int cmd, String action) {
+        if (settingDevice == null) return false;
+        if (cmd != 2 && drivingSafetyBlocked(DrivingSafetyGuard.GUARD_TRUNK)) return false;
+        if (!BydDeviceHelper.isDiLink5AdapterReady(
+                context, settingDevice, "getSettingAdapterManager")) {
+            logger.warn("tailgate " + action + ": setting adapter is not ready");
+            return false;
+        }
+        Object result = BydDeviceHelper.callMethod(settingDevice, "voiceCtlBackDoor", cmd);
+        boolean accepted = result instanceof Integer && ((Integer) result).intValue() == 0;
+        logger.info("tailgate " + action + ": voiceCtlBackDoor(" + cmd + ") -> " + result
+                + (accepted ? " ACCEPTED" : " REFUSED"));
+        return accepted;
     }
 
     // --- AVAS / Exterior Speaker ---
@@ -15629,12 +18700,12 @@ public class BydDataCollector {
     }
 
     // --- Charging ---
-    // The smart-charging schedule lives in BYD cloud, not the HAL. The Seal HAL
+    // The smart-charging schedule is cloud-first. The Seal HAL
     // exposes setChargeStop*/getChargeStop* methods that look like they should
     // work but: getChargeStopSupportConfig=0, getters return 0xFFFF, setters
     // silently return success-but-no-op. See feedback_byd_hal_unreliable_signals.
-    // All schedule reads/writes go through BydCloudClient smart-charging
-    // endpoints in VehicleControlApiHandler / VehicleCommandRouter.
+    // Schedule reads/writes go through BydCloudClient smart-charging endpoints;
+    // the only HAL write is the one-time fallback in saveChargingScheduleLocal.
 
     // Generic charge limit and PHEV SOC hold are distinct controls.
     //
@@ -15648,8 +18719,8 @@ public class BydDataCollector {
     // available only through the explicit SOC-hold commands below. It controls
     // PHEV driving behavior, not the generic charge-stop cutoff.
     //
-    // The smart-charging SCHEDULE (distinct from the cap) lives in BYD cloud,
-    // not the HAL — see BydCloudClient smart-charging endpoints.
+    // The smart-charging SCHEDULE (distinct from the cap) is cloud-first — see
+    // BydCloudClient smart-charging endpoints and saveChargingScheduleLocal.
 
     public static final int SOC_TARGET_MIN = 15;      // SET_DR_SOC_TARGET_MIN
     public static final int SOC_TARGET_MAX = 70;      // SET_DR_SOC_TARGET_MAX
@@ -15820,6 +18891,7 @@ public class BydDataCollector {
      * negative from a temporarily ambiguous drivetrain classification.
      */
     public AcChargingCurrentLimitStatus getAcChargingCurrentLimitStatus() {
+        if (isDiLink5Vehicle()) return getDiLink5AcChargingCurrentLimitStatus();
         int config = readSettingIntFeature(
                 BydFeatureIds.SETTING_AC_CHARGING_CURRENT_LIMIT_CONFIG_STATUS);
         boolean configAvailable = !isSettingFeatureUnavailable(config);
@@ -15837,6 +18909,76 @@ public class BydDataCollector {
                 : configAvailable && Boolean.FALSE.equals(supported);
         return new AcChargingCurrentLimitStatus(
                 supported, available, config, state);
+    }
+
+    /** DiLink 5 has no config id for this setting; a valid 1..5 typed readback proves it. */
+    private AcChargingCurrentLimitStatus getDiLink5AcChargingCurrentLimitStatus() {
+        int rawState = readDiLink5AcChargingLimit();
+        boolean valid = isValidAcChargingCurrentLimitState(rawState);
+        Boolean supported = resolveAcChargingCurrentLimitSupport(
+                BydVehicleData.UNAVAILABLE, rawState, acChargingCurrentLimitSupported);
+        if (valid) acChargingCurrentLimitSupported = supported;
+        return new AcChargingCurrentLimitStatus(
+                supported, valid, BydVehicleData.UNAVAILABLE,
+                valid ? rawState : BydVehicleData.UNAVAILABLE);
+    }
+
+    // Daemon cache: every bridge read starts the app's foreground service, and the UI polls 15 s.
+    private volatile int diLink5AcLimitCached = BydVehicleData.UNAVAILABLE;
+    private volatile long diLink5AcLimitCachedAtElapsedMs;
+
+    /** Raw DiLink 5 AC limit (same 1..5 domain); only the app process can read the SDK. */
+    public int readDiLink5AcChargingLimit() {
+        if (isDiLink5DaemonProcess()) {
+            long now = SystemClock.elapsedRealtime();
+            long cachedAt = diLink5AcLimitCachedAtElapsedMs;
+            if (cachedAt > 0L && now - cachedAt < 60_000L) return diLink5AcLimitCached;
+            int value = VehicleActuatorBridge.readDiLink5AcChargeLimit(getRuntimeContext());
+            diLink5AcLimitCached = value;
+            diLink5AcLimitCachedAtElapsedMs = now;
+            return value;
+        }
+        Object value = BydDeviceHelper.callGetter(chargingDevice, "getACChargingLimit");
+        return value instanceof Number
+                ? ((Number) value).intValue() : BydVehicleData.UNAVAILABLE;
+    }
+
+    /** A DI5 AC-limit command was sent; the next daemon read must ask the car again. */
+    public void invalidateDiLink5AcChargingLimit() {
+        diLink5AcLimitCachedAtElapsedMs = 0L;
+    }
+
+    /** DiLink 5: typed setter (STATE_AC_LIMIT_6A=1 … MAX=5), success only on matching readback. */
+    private boolean setDiLink5AcChargingCurrentLimit(int state) {
+        if (!isMainAppProcess() || chargingDevice == null) {
+            logger.warn("setAcChargingCurrentLimitState: DI5 charging device unavailable");
+            return false;
+        }
+        int before = readDiLink5AcChargingLimit();
+        if (!isValidAcChargingCurrentLimitState(before)) {
+            logger.warn("setAcChargingCurrentLimitState: DI5 limit unreadable (" + before + ")");
+            return false;
+        }
+        acChargingCurrentLimitSupported = Boolean.TRUE;
+        if (before == state) return true;
+        if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
+        Object rc = BydDeviceHelper.callMethod(chargingDevice, "setACChargingLimit", state);
+        if (!(rc instanceof Number) || ((Number) rc).intValue() < 0) {
+            logger.warn("setACChargingLimit(" + state + ") refused: rc=" + rc);
+            return false;
+        }
+        int readBack = BydVehicleData.UNAVAILABLE;
+        for (int attempt = 0; attempt < 10
+                && !VehicleActuatorBridge.isDiLink5RequestExpired(); attempt++) {
+            SystemClock.sleep(200L);
+            readBack = readDiLink5AcChargingLimit();
+            if (readBack == state) break;
+        }
+        boolean confirmed = readBack == state;
+        logger.info("DI5 AC charge current limit: requested=" + state
+                + " (" + acChargingCurrentLimitLabel(state) + ") rc=" + rc
+                + " before=" + before + " readBack=" + readBack + " confirmed=" + confirmed);
+        return confirmed;
     }
 
     public boolean isAcChargingCurrentLimitSupported() {
@@ -15859,6 +19001,7 @@ public class BydDataCollector {
             logger.warn("setAcChargingCurrentLimitState: invalid state " + state);
             return false;
         }
+        if (isDiLink5Vehicle()) return setDiLink5AcChargingCurrentLimit(state);
         AcChargingCurrentLimitStatus status = getAcChargingCurrentLimitStatus();
         if (!Boolean.TRUE.equals(status.supported)
                 || !status.available
@@ -15957,12 +19100,10 @@ public class BydDataCollector {
     //
     // Technique: the charging-schedule time family is written GROUPED via
     // set(int[], BYDAutoEventValue) and then the timing-enable flag is written.
-    // This is the sequence the OD Charge companion app uses, and every write here
-    // was confirmed accepted (result 0) live on a Sealion 6 DM-i. The per-id
-    // set(deviceType, id, value) form is silently dropped on this trim, so it is
-    // deliberately NOT used. Effectiveness of a local *time-window* schedule is
-    // best-effort and trim-dependent: the verify below only confirms the writes
-    // were accepted and reads back the schedule state for diagnostics.
+    // Every write here was confirmed accepted (result 0) live on a Sealion 6 DM-i.
+    // The per-id set(deviceType, id, value) form is silently dropped on this trim,
+    // so it is deliberately NOT used. Success is judged by the BMS state, never by
+    // write codes (see awaitBmsState).
 
     private static final int[] SCHEDULE_START_IDS = {
             BydFeatureIds.CHARGING_SCHEDULE_START_TIME_YEAR_SET,
@@ -16004,24 +19145,41 @@ public class BydDataCollector {
      * Save a charging schedule locally (SDK fallback for ChargeScheduleCommand).
      *
      * @param startHm  "HH:mm" local start time (required)
-     * @param endHm    "HH:mm" local end time, or "full"/null for charge-to-full
-     * @param chargeWay cloud day spec ("s" once, "e" daily, or "0,1,..6"); the
-     *                  local family expresses only a single next window, so the
-     *                  day-of-week set is not applied here (cloud keeps weekly
-     *                  precision). Accepted for signature parity.
+     * @param endHm    "HH:mm" local end time; "full" is refused locally
+     * @param chargeWay cloud day spec; only "s" (once) can be armed locally, since the
+     *                  local family holds a single next window — repeats are refused
      * @param enabled  arm (true) or clear (false) the schedule
-     * @return true when the register writes were accepted
+     * @return true only when the BMS confirmed the change
      */
     public boolean saveChargingScheduleLocal(String startHm, String endHm,
                                              String chargeWay, boolean enabled) {
         if (chargingDevice == null) return false;
         synchronized (chargingScheduleLock) {
+            boolean planWritten = false;
             try {
                 if (!enabled) {
                     return clearChargingScheduleLocal();
                 }
+                // One fixed next window can't express a repeat or charge-to-full; refuse
+                // rather than report a downgraded schedule as saved. Recurring is not
+                // achievable on-device at all: the weekly-timer HAL accepts writes but never
+                // stores them or defers (probe-verified 2026-10-01), so it stays cloud-only.
+                if (!"s".equals(chargeWay)) {
+                    logger.warn("saveChargingScheduleLocal: chargeWay='" + chargeWay
+                            + "' is recurring — not supported on-device (cloud-only); declining");
+                    return false;
+                }
+                if (endHm == null || "full".equalsIgnoreCase(endHm.trim())) {
+                    logger.warn("saveChargingScheduleLocal: charge-to-full not supported locally — refusing");
+                    return false;
+                }
+                // Without the arm flag the plan/window writes below could never take effect.
+                if (BydFeatureIds.CHARGING_TIMING_STATE_SET == BydFeatureIds.UNRESOLVED_ID) {
+                    logger.debug("saveChargingScheduleLocal: CHARGING_TIMING_STATE_SET unresolved on this trim");
+                    return false;
+                }
                 // Verified live on a Sealion 6 DM-i (Di 3.0), 2026-09-30: a local schedule
-                // arms ONLY through OD Charge's exact sequence — setCarPlan(...) FIRST, then
+                // arms ONLY through this exact sequence — setCarPlan(...) FIRST, then
                 // the appointment time family, then the timing-enable flag — and ONLY while
                 // the car is actively charging (BMS=1). Writes made without setCarPlan, or
                 // while unplugged/idle, are accepted (result 0) but silently dropped.
@@ -16033,64 +19191,41 @@ public class BydDataCollector {
                             + "writes are dropped by the firmware; not attempting");
                     return false;
                 }
-                // Recurring schedules are NOT achievable on-device on this gen: probe-verified
-                // (2026-10-01) that the weekly-timer HAL (setChargingTimerInfo /
-                // CHARGING_TIMER_CYCLE_* registers) accepts writes but never stores them and never
-                // defers — it's a cloud-only feature. The local path does ONE-TIME only. So a
-                // repeat request (chargeWay other than "s"/empty) is DECLINED here rather than
-                // silently armed as a misleading single window; CLOUD_FIRST routing sends it to
-                // cloud, and when cloud is unavailable the caller surfaces "recurring needs cloud".
-                if (chargeWay != null && !chargeWay.trim().isEmpty()
-                        && !"s".equalsIgnoreCase(chargeWay.trim())) {
-                    logger.warn("saveChargingScheduleLocal: chargeWay='" + chargeWay
-                            + "' is recurring — not supported on-device (cloud-only); declining");
-                    return false;
-                }
                 int[] hmStart = parseHm(startHm);
                 if (hmStart == null) {
                     logger.debug("saveChargingScheduleLocal: bad start '" + startHm + "'");
                     return false;
                 }
+                int[] hmEnd = parseHm(endHm);
+                if (hmEnd == null) {
+                    logger.debug("saveChargingScheduleLocal: bad end '" + endHm + "'");
+                    return false;
+                }
                 java.util.Calendar start = nextOccurrence(hmStart[0], hmStart[1]);
                 java.util.Calendar end = (java.util.Calendar) start.clone();
-                boolean full = endHm == null || "full".equalsIgnoreCase(endHm.trim());
-                if (full) {
-                    // No user end; leave a wide window so the schedule brackets the charge.
-                    end.add(java.util.Calendar.HOUR_OF_DAY, 12);
-                } else {
-                    int[] hmEnd = parseHm(endHm);
-                    if (hmEnd == null) {
-                        logger.debug("saveChargingScheduleLocal: bad end '" + endHm + "'");
-                        return false;
-                    }
-                    end.set(java.util.Calendar.HOUR_OF_DAY, hmEnd[0]);
-                    end.set(java.util.Calendar.MINUTE, hmEnd[1]);
-                    end.set(java.util.Calendar.SECOND, 0);
-                    if (!end.after(start)) end.add(java.util.Calendar.DAY_OF_MONTH, 1);
-                }
+                end.set(java.util.Calendar.HOUR_OF_DAY, hmEnd[0]);
+                end.set(java.util.Calendar.MINUTE, hmEnd[1]);
+                end.set(java.util.Calendar.SECOND, 0);
+                if (!end.after(start)) end.add(java.util.Calendar.DAY_OF_MONTH, 1);
                 int[] sf = dateTimeFields(start);
                 int[] ef = dateTimeFields(end);
-                // Step 1 (REQUIRED first): establish/arm the plan (mode 1). Target 100% = a pure
-                // time-window schedule with no SOC cap (charge-cap is a separate feature).
-                if (!setCarPlanLocal(1, 100)) {
+                // Step 1 (REQUIRED first): arm the plan, mode 1 (target: see localPlanTargetSoc).
+                if (!setCarPlanLocal(CAR_PLAN_MODE_ARM, localPlanTargetSoc())) {
                     logger.debug("saveChargingScheduleLocal: setCarPlan rejected");
                     return false;
                 }
-                // Step 2: write BOTH the appointment and schedule time families. Which one the
-                // firmware honours is trim-dependent: on the Sealion 6 DM-i (Di 3.0) the
-                // APPOINTMENT family is accepted (returns 0) but INEFFECTIVE, while the SCHEDULE
-                // family is the one that actually defers the pack — so gating the schedule write
-                // behind "appointment failed" (the old `if (!wrote)`) meant it was never written
-                // and BMS never moved to SCHEDULED(9). Writing both unconditionally arms reliably
-                // and stays correct on trims where appointment is the effective family.
-                // Verified on-car via the side-build apptest: appointment-only left BMS=1; adding
-                // the schedule family armed BMS->9.
+                planWritten = true;
+                // Step 2: write BOTH families. On the Sealion 6 DM-i (Di 3.0) the appointment
+                // family returns 0 but never defers; only the schedule family moves BMS to 9.
                 chargingGroupedSet(APPOINTMENT_START_IDS, sf);
                 chargingGroupedSet(APPOINTMENT_END_IDS, ef);
                 chargingGroupedSet(SCHEDULE_START_IDS, sf);
                 chargingGroupedSet(SCHEDULE_END_IDS, ef);
                 // Step 3: arm.
-                if (!setTimingStateLocal(true)) return false;
+                if (!setTimingStateLocal(true)) {
+                    clearChargingScheduleLocal();
+                    return false;
+                }
                 // Verify by the only honest signal on this trim: BMS -> SCHEDULED (9).
                 // ~3.6s budget: live it flips within ~2s.
                 boolean armed = awaitBmsState(9, true, 6);
@@ -16104,18 +19239,22 @@ public class BydDataCollector {
                 return armed;
             } catch (Exception e) {
                 logger.debug("saveChargingScheduleLocal failed: " + e.getMessage());
+                if (planWritten) clearChargingScheduleLocal();
                 return false;
             }
         }
     }
 
     /**
-     * Cancel any local plan and let the pack resume normal charging. Mirrors OD Charge's
-     * prepareMonitoring cancel (timing flag off), then blanks the appointment window and
-     * resets the plan target so no deferral or SOC cap remains. Verified 2026-09-30: BMS
-     * leaves SCHEDULED(9) within ~1s and the pack resumes charging.
+     * Cancel any local plan and let the pack resume normal charging: timing flag off, then
+     * blank the appointment window and reset the plan target. Verified 2026-09-30: BMS leaves
+     * SCHEDULED(9) within ~1s and the pack resumes charging.
+     *
+     * @return true only when a valid SCHEDULED(9) reading was seen to leave 9. Unplugged, these
+     *         writes are dropped and BMS is never 9, so "not 9" alone proves nothing.
      */
     private boolean clearChargingScheduleLocal() {
+        boolean wasScheduled = bmsStateLocal() == 9;
         setTimingStateLocal(false);
         // The arm can land on either family (appointment is rejected on some trims, schedule on
         // others), so blank BOTH — a clear that only sentineled the appointment family left the
@@ -16124,23 +19263,22 @@ public class BydDataCollector {
         chargingGroupedSet(APPOINTMENT_END_IDS, SCHEDULE_SENTINEL_FIELDS);
         chargingGroupedSet(SCHEDULE_START_IDS, SCHEDULE_SENTINEL_FIELDS);
         chargingGroupedSet(SCHEDULE_END_IDS, SCHEDULE_SENTINEL_FIELDS);
-        setCarPlanLocal(0, 100); // mode 0 = CANCEL the plan (mode 1 would re-arm the defer)
+        // Mode 0 CANCELS the plan; mode 1 here would re-arm the defer, so a disable never
+        // resumed charging (probe-verified 2026-10-01).
+        setCarPlanLocal(CAR_PLAN_MODE_CANCEL, localPlanTargetSoc());
         localScheduleStaged = false;
-        // Success = the pack is no longer deferring (BMS != SCHEDULED). Allow a few seconds —
-        // the pack can take ~several s to release the defer and spin charging back up.
-        boolean cleared = awaitBmsState(9, false, 8);
-        if (!cleared) {
-            // On the Sealion 6 DM-i (Di 3.0) the mode-0 cancel does NOT release the deferral —
-            // BMS stays SCHEDULED(9) and the pack never resumes (on-car verified). Fall back to
-            // arming a window that is ACTIVE NOW (started a few minutes ago), which forces the
-            // pack to start charging immediately. It's a one-time window that simply elapses.
+        // Releasing the defer and spinning charging back up can take several seconds.
+        boolean cleared = wasScheduled && awaitBmsState(9, false, 8);
+        if (wasScheduled && !cleared && bmsStateLocal() == 9) {
+            // Sealion 6 DM-i: a schedule-family defer survives the mode-0 cancel. Force
+            // charging with a one-time window that is already open.
             java.util.Calendar startCal = java.util.Calendar.getInstance();
             startCal.add(java.util.Calendar.MINUTE, -10);
             java.util.Calendar endCal = java.util.Calendar.getInstance();
             endCal.add(java.util.Calendar.HOUR_OF_DAY, 12);
             int[] nowStart = dateTimeFields(startCal);
             int[] nowEnd = dateTimeFields(endCal);
-            setCarPlanLocal(1, 100);
+            setCarPlanLocal(CAR_PLAN_MODE_ARM, localPlanTargetSoc());
             chargingGroupedSet(APPOINTMENT_START_IDS, nowStart);
             chargingGroupedSet(APPOINTMENT_END_IDS, nowEnd);
             chargingGroupedSet(SCHEDULE_START_IDS, nowStart);
@@ -16149,7 +19287,8 @@ public class BydDataCollector {
             cleared = awaitBmsState(9, false, 8);
             logScheduleState("clearChargingScheduleLocal now-window fallback cleared(BMS!=9)=" + cleared);
         }
-        logScheduleState("clearChargingScheduleLocal cleared(BMS!=9)=" + cleared);
+        logScheduleState("clearChargingScheduleLocal wasScheduled=" + wasScheduled
+                + " cleared(BMS 9->other)=" + cleared);
         return cleared;
     }
 
@@ -16169,15 +19308,15 @@ public class BydDataCollector {
     }
 
     /**
-     * Short, bounded BMS poll (no open-ended loop). Waits up to {@code maxTries} × ~600ms for a
-     * READABLE BMS to reach {@code target} (when {@code want}=true) or to leave it (when
-     * {@code want}=false). An unreadable BMS (MIN_VALUE) is never counted as satisfying the
-     * condition — otherwise a transient read failure would falsely confirm a clear.
+     * Short, bounded BMS poll (no open-ended loop). Waits up to {@code maxTries} × ~600ms for
+     * the BMS to reach {@code target} (when {@code want}=true) or to leave it (when
+     * {@code want}=false). Only a reading in the valid BMS domain counts, so an unreadable
+     * getter or a sentinel rail (65535, -10011) can never confirm a clear.
      */
     private boolean awaitBmsState(int target, boolean want, int maxTries) {
         for (int i = 0; i < maxTries; i++) {
             int b = bmsStateLocal();
-            if (b != Integer.MIN_VALUE && (b == target) == want) return true;
+            if (isValidChargingBmsState(b) && (b == target) == want) return true;
             try {
                 Thread.sleep(600L);
             } catch (InterruptedException ie) {
@@ -16186,15 +19325,25 @@ public class BydDataCollector {
             }
         }
         int b = bmsStateLocal();
-        return b != Integer.MIN_VALUE && (b == target) == want;
+        return isValidChargingBmsState(b) && (b == target) == want;
     }
 
-    /** setCarPlan(1, 2, targetSoc, 2127, 15, 0, 31, 63) — establishes the plan; result 0 = accepted. */
     /**
-     * setCarPlan(mode, 2, targetSoc, sentinel-date). Live-verified on a Sealion 6 DM-i:
-     * {@code mode=1} ESTABLISHES/arms the plan (and defers charging), {@code mode=0} CANCELS it.
-     * Using mode 1 inside a cancel would re-arm the defer — so clear uses mode 0.
+     * The car's active charge-stop limit when it reports one, else 100 (a plain time window).
+     * Whether the plan target shares a register with that limit is untested; writing the active
+     * limit leaves charging ending where the user set it either way.
      */
+    private int localPlanTargetSoc() {
+        int cap = readChargeStopCapacity();
+        return cap > 0 && readChargeStopSwitch() == 1 ? cap : 100;
+    }
+
+    /** setCarPlan mode: arm/establish the plan (and defer charging). */
+    private static final int CAR_PLAN_MODE_ARM = 1;
+    /** setCarPlan mode: cancel the plan. Live-verified; mode 1 in a cancel re-arms the defer. */
+    private static final int CAR_PLAN_MODE_CANCEL = 0;
+
+    /** setCarPlan(mode, 2, targetSoc, 2127, 15, 0, 31, 63); result 0 = accepted. */
     private boolean setCarPlanLocal(int mode, int targetSoc) {
         try {
             java.lang.reflect.Method m = chargingDevice.getClass().getMethod(
@@ -16694,6 +19843,8 @@ public class BydDataCollector {
      * 1=city hold, 2=long-distance hold. Returns null when the method is absent.
      */
     private Boolean trySetSocSaveSwitch(int mode) {
+        // DiLink 5's setSocSaveSwitch and getSocSaveSwitch are constant 0: treat as absent.
+        if (isDiLink5Vehicle()) return null;
         // Direct reflection (via the shared charging-setter judge), NOT callMethod:
         // callMethod collapses a VOID return into null, which applySocHold/
         // setSocHoldMode would read as "method absent" after the switch had
@@ -16720,6 +19871,11 @@ public class BydDataCollector {
     private boolean setChargeStopSwitchFallback(boolean enabled) {
         if (chargingDevice == null) {
             logger.warn("setChargeStopSwitchState: chargingDevice null");
+            return false;
+        }
+        if (isDiLink5Vehicle()) {
+            // DiLink 5's setter and its readback are both constant 0: an "off" would self-confirm.
+            logger.warn("setChargeStopSwitchState: no charge-stop switch on DiLink 5");
             return false;
         }
         if (chargeCapProbed && !chargeCapSupported) {
@@ -16792,18 +19948,30 @@ public class BydDataCollector {
      * call would let this method claim success when nothing moved.
      */
     public boolean setAmbientLightEnabled(boolean on) {
+        // DI5: only "on" has a verified value (1); its legacy tiers are all unhandled ids.
+        if (isDiLink5Vehicle()) {
+            return on && isDiLink5AmbientReady("setAmbientLightEnabled")
+                    && ensureDiLink5AmbientLit(new int[]{1, 2});
+        }
         boolean ok = false;
+        // Raw SDK codes per tier for the warn line: MIN_VALUE = no device / threw, other negatives
+        // = the HAL refused (-2147482648 is BYDAUTO_COMMAND_RESULT_FAILED).
+        int tier1 = Integer.MIN_VALUE;
+        int tier2 = Integer.MIN_VALUE;
+        String tier3 = "skipped";
         try {
-            ok = BydDeviceHelper.sendSetCommand(
+            tier1 = BydDeviceHelper.sendSetCommandRaw(
                     lightDevice, BydFeatureIds.LIGHT_ATMOSPHERE_MAIN_SWITCH_SET, on ? 1 : 0);
+            ok = tier1 >= 0;
         } catch (Exception e) {
             logger.debug("setAmbientLightEnabled tier1 (light main switch) failed: " + e.getMessage());
         }
         if (!ok) {
             try {
                 // on=1 / off=2 — an execute-style feature, NOT the 1/0 of tier 1.
-                ok = BydDeviceHelper.sendSetCommand(
+                tier2 = BydDeviceHelper.sendSetCommandRaw(
                         bodyworkDevice, BydFeatureIds.BODY_ATMOSPHERE_LIGHT_SWITCH, on ? 1 : 2);
+                ok = tier2 >= 0;
             } catch (Exception e) {
                 logger.debug("setAmbientLightEnabled tier2 (body execute) failed: " + e.getMessage());
             }
@@ -16812,14 +19980,27 @@ public class BydDataCollector {
             try {
                 ok = BydCarSettings.getInstance()
                         .writeIntConfirmed(BydCarSettings.KEY_ATMOSPHERE_LAMP, on ? 1 : 0);
+                tier3 = ok ? "ok" : "not confirmed";
             } catch (Exception e) {
+                tier3 = "threw";
                 logger.debug("setAmbientLightEnabled tier3 (atmosphere_lamp) failed: " + e.getMessage());
             }
         }
         if (!ok) {
-            logger.warn("setAmbientLightEnabled(" + on + ") failed across all three tiers");
+            logger.warn("setAmbientLightEnabled(" + on + ") failed across all three tiers"
+                    + " (light main switch=" + describeSdkCode(tier1, lightDevice != null)
+                    + ", body execute=" + describeSdkCode(tier2, bodyworkDevice != null)
+                    + ", atmosphere_lamp=" + tier3
+                    + ", reported state=" + getAmbientLightEnabled() + ")");
         }
         return ok;
+    }
+
+    /** One token for the warn line: no device, threw, or the raw HAL result code. */
+    private static String describeSdkCode(int code, boolean devicePresent) {
+        if (!devicePresent) return "no device";
+        if (code == Integer.MIN_VALUE) return "threw";
+        return String.valueOf(code);
     }
 
     /**
@@ -16833,6 +20014,8 @@ public class BydDataCollector {
      * that cannot report ambient state would publish a permanent, wrong "ambient off".
      */
     public int getAmbientLightEnabled() {
+        // DI5 has neither legacy tier (the feature-id get is a stub, there is no carsettings flag).
+        if (isDiLink5Vehicle()) return readDiLink5AmbientEnabled();
         try {
             int direct = BydDeviceHelper.callGetSingle(
                     lightDevice, BydFeatureIds.LIGHT_ATMOSPHERE_MAIN_SWITCH_STATUS);
@@ -16880,6 +20063,7 @@ public class BydDataCollector {
      */
     public boolean setAmbientLightEnabledZoned(String zone, boolean on) {
         int area = ambientZoneToArea(zone);
+        if (isDiLink5Vehicle()) return setDiLink5AmbientEnabled(zone, on);
         if (area == 3) return setAmbientLightEnabled(on);
         if (on) {
             // Restore the level this zone had before it was dimmed out, so off→on does not
@@ -16910,13 +20094,19 @@ public class BydDataCollector {
      *
      * <p>Deliberately in-memory only: a stale level persisted across a reboot could fight a
      * change the user made in the OEM UI meanwhile, and the live readback is preferred whenever
-     * the trim supports it.
+     * the trim supports it. DiLink 5 is the exception: its off writes level 0 into the car and
+     * the app process is restarted at ACC-off, so its copy is also kept in preferences.
      */
     private final java.util.Map<Integer, Integer> ambientZoneLevelMemory =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private static final String DILINK5_AMBIENT_LEVEL_PREFS = "overdrive_di5_ambient_levels";
 
     private void rememberAmbientZoneLevel(int area, int level) {
         if (level >= 1 && level <= 5) ambientZoneLevelMemory.put(area, level);
+        if (level >= 1 && level <= 5 && isDiLink5ProducerProcess() && context != null) {
+            context.getSharedPreferences(DILINK5_AMBIENT_LEVEL_PREFS, Context.MODE_PRIVATE)
+                    .edit().putInt("area" + area, level).apply();
+        }
     }
 
     /**
@@ -16931,6 +20121,11 @@ public class BydDataCollector {
         if (live >= 1 && live <= 5) return live;
         Integer remembered = ambientZoneLevelMemory.get(area);
         if (remembered != null && remembered >= 1 && remembered <= 5) return remembered;
+        if (isDiLink5ProducerProcess() && context != null) {
+            int persisted = context.getSharedPreferences(
+                    DILINK5_AMBIENT_LEVEL_PREFS, Context.MODE_PRIVATE).getInt("area" + area, 0);
+            if (persisted >= 1 && persisted <= 5) return persisted;
+        }
         return 5;
     }
 
@@ -16967,6 +20162,10 @@ public class BydDataCollector {
      */
     public boolean setAmbientBrightnessZoned(String zone, int percent) {
         if (percent < 0 || percent > 100) return false;
+        if (isDiLink5Vehicle()) {
+            int level = percent == 0 ? 0 : Math.max(1, Math.round(percent / 100f * 5f));
+            return setDiLink5AmbientBrightness(zone, level);
+        }
         int area = ambientZoneToArea(zone);
         int level = Math.round(percent / 100f * 5f); // percent → 0..5 SDK level
         boolean ok = applyIalBrightness(area, level);
@@ -17026,6 +20225,22 @@ public class BydDataCollector {
     }
 
     /**
+     * Keep consecutive legacy zone selections 150 ms apart: the HAL loses a zone write when the
+     * next selection follows it immediately (measured; same gap as AmbientProbe.settle).
+     */
+    private void spaceAmbientZoneSelect() {
+        synchronized (ambientZoneSpacingLock) {
+            long wait = lastAmbientZoneSelectMs + AMBIENT_ZONE_SPACING_MS - SystemClock.elapsedRealtime();
+            if (wait > 0) SystemClock.sleep(wait);
+            lastAmbientZoneSelectMs = SystemClock.elapsedRealtime();
+        }
+    }
+
+    private static final long AMBIENT_ZONE_SPACING_MS = 150L;
+    private final Object ambientZoneSpacingLock = new Object();
+    private long lastAmbientZoneSelectMs;
+
+    /**
      * Select an ambient zone before a write: {@code setIALArea(area, 0)}, falling back to the
      * legacy Light-device {@code ATMOSPHERE_ADJUST_AREA_SET} (written as {area} then {0}, per
      * the reference app) on trims that lack the SDK method. Returns whether the zone was
@@ -17033,6 +20248,7 @@ public class BydDataCollector {
      * SELECTED area, so writing them without a confirmed selection would hit the wrong zone.
      */
     private boolean prepareAmbientArea(int area) {
+        spaceAmbientZoneSelect();
         if (selectIalArea(settingDevice, area)) return true;
         // Legacy selection is defined for the PHYSICAL zones only. The reference app never
         // writes the synthetic "all" code (3) to this feature — it only ever selects FRONT or
@@ -17127,7 +20343,327 @@ public class BydDataCollector {
      */
     public boolean setAmbientLightZoned(String zone, int colour) {
         if (colour < 1 || colour > 31) return false;
+        if (isDiLink5Vehicle()) return setDiLink5AmbientColour(zone, colour);
         return applyIalColor(ambientZoneToArea(zone), colour);
+    }
+
+    /**
+     * Any RGB colour as the nearest colour in this car's palette, then the zoned palette write.
+     * Returns the 1-based colour written, or -1 when nothing was written.
+     */
+    public int setAmbientLightRgb(String zone, int rgb) {
+        boolean diLink5 = isDiLink5Vehicle();
+        // The collector's own handle: AmbientProbe.colourMax(context) reaches it by a field name
+        // that R8 renames, and its fallback swaps the shared device's context.
+        int count = diLink5 ? diLink5AmbientColourCount() : AmbientProbe.colourMaxFor(settingDevice);
+        if (count == BydVehicleData.UNAVAILABLE) {
+            count = com.overdrive.app.byd.light.LightConstants.AMBIENT_COLOURS.length;
+        }
+        String[] carPalette = diLink5 ? diLink5AmbientPalette(count) : null;
+        int colour = com.overdrive.app.byd.light.AmbientPalette.nearestIndex(rgb,
+                carPalette != null ? carPalette
+                        : com.overdrive.app.byd.light.AmbientPalette.paletteFor(count, diLink5));
+        String hex = com.overdrive.app.byd.light.AmbientPalette.toHex(rgb);
+        if (colour < 1) {
+            logger.warn("setAmbientLightRgb(" + hex + "): no palette colour to match on a car with "
+                    + count + " colours");
+            return -1;
+        }
+        logger.info("setAmbientLightRgb(" + hex + ") -> colour " + colour + " of " + count);
+        return setAmbientLightZoned(zone, colour) ? colour : -1;
+    }
+
+    // DiLink 5 ambient: the setting adapter's per-zone IAL calls, front=1 and rear=2, the way the
+    // SDK's own feature-id dispatch makes them. Runs in the app process (the adapter binds there).
+
+    /** Adapters bind asynchronously after the app process starts; wait briefly for one. */
+    private boolean awaitDiLink5Adapter(Object device, String adapterGetter, String op) {
+        for (int attempt = 0; device != null && attempt < 10; attempt++) {
+            if (BydDeviceHelper.isDiLink5AdapterReady(context, device, adapterGetter)) return true;
+            if (VehicleActuatorBridge.isDiLink5RequestExpired()) break;
+            SystemClock.sleep(200L);
+        }
+        logger.warn(op + ": DiLink 5 " + adapterGetter + " is not ready");
+        return false;
+    }
+
+    private boolean isDiLink5AmbientReady(String op) {
+        return awaitDiLink5Adapter(settingDevice, "getSettingAdapterManager", op);
+    }
+
+    /** DI5 ambient colour count from the car's own colour-support config (IAL_COLOR_*). */
+    public int diLink5AmbientColourCount() {
+        if (!isDiLink5AmbientReady("ambient colour count")) return BydVehicleData.UNAVAILABLE;
+        Object support = BydDeviceHelper.callGetter(settingDevice, "getAmbientLightColorSupport");
+        if (!(support instanceof Number)) return BydVehicleData.UNAVAILABLE;
+        switch (((Number) support).intValue()) {
+            case 4: return 31; // IAL_COLOR_THIRTYONE
+            case 3: return 7;  // IAL_COLOR_SEVEN
+            case 2: return 1;  // IAL_COLOR_ONE
+            case 1: return 0;  // IAL_COLOR_NONE
+            default: return BydVehicleData.UNAVAILABLE;
+        }
+    }
+
+    // DI5 numbers its colours differently from the DiLink 4 table; getAmbientColors(type) may hold
+    // the car's own. Probed at most once a minute until one fits, and logged by the daemon.
+    private final java.util.Map<Integer, String[]> diLink5AmbientPalettes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final Object diLink5AmbientPaletteLock = new Object();
+    private volatile String diLink5AmbientPaletteProbe;
+    private volatile long diLink5AmbientPaletteProbeAtMs;
+
+    /** The colour-support getters and getAmbientColors(0..4), for the daemon log; null until probed. */
+    public String diLink5AmbientPaletteProbe() {
+        return diLink5AmbientPaletteProbe;
+    }
+
+    /** The car's own palette as #RRGGBB when it reports one of exactly {@code count} colours, else null. */
+    public String[] diLink5AmbientPalette(int count) {
+        String[] palette = diLink5AmbientPalettes.get(count);
+        if (palette != null) return palette;
+        probeDiLink5AmbientPalette();
+        return diLink5AmbientPalettes.get(count);
+    }
+
+    private void probeDiLink5AmbientPalette() {
+        long at = diLink5AmbientPaletteProbeAtMs;
+        if (at != 0L && SystemClock.elapsedRealtime() - at < 60_000L) return;
+        synchronized (diLink5AmbientPaletteLock) {
+            long now = SystemClock.elapsedRealtime();
+            at = diLink5AmbientPaletteProbeAtMs;
+            if ((at != 0L && now - at < 60_000L) || lightDevice == null
+                    || !BydDeviceHelper.isDiLink5AdapterReady(context, lightDevice, "getCarBodyManager")) {
+                return;
+            }
+            diLink5AmbientPaletteProbeAtMs = now;
+            StringBuilder probe = new StringBuilder("support colour=")
+                    .append(diLink5Raw(settingDevice, "getAmbientLightColorSupport"))
+                    .append(" colours=").append(diLink5Raw(lightDevice, "getAmbientColorsSupport"))
+                    .append(" area=").append(diLink5Raw(settingDevice, "getAmbientAreaSupport"));
+            for (int type = 0; type <= 4; type++) {
+                Object raw = BydDeviceHelper.callGetter(lightDevice, "getAmbientColors", type);
+                int[] colours = raw instanceof int[] ? (int[]) raw : null;
+                StringBuilder hex = new StringBuilder();
+                if (colours != null) {
+                    for (int c : colours) hex.append(String.format("%06X", c & 0xFFFFFF));
+                }
+                probe.append(" | getAmbientColors(").append(type).append(")=")
+                        .append(colours == null ? "null" : colours.length + ":" + hex);
+                String[] palette = brightDistinctPalette(colours);
+                if (palette != null) diLink5AmbientPalettes.putIfAbsent(palette.length, palette);
+            }
+            diLink5AmbientPaletteProbe = probe.toString();
+        }
+    }
+
+    /** #RRGGBB for an array that looks like LED colours (every entry lit, mostly distinct), else null. */
+    static String[] brightDistinctPalette(int[] colours) {
+        if (colours == null || colours.length < 7) return null;
+        java.util.Set<Integer> distinct = new java.util.HashSet<>();
+        String[] palette = new String[colours.length];
+        for (int i = 0; i < colours.length; i++) {
+            int rgb = colours[i] & 0xFFFFFF;
+            int max = Math.max((rgb >> 16) & 0xFF, Math.max((rgb >> 8) & 0xFF, rgb & 0xFF));
+            if (max < 0x40) return null;
+            distinct.add(rgb);
+            palette[i] = com.overdrive.app.byd.light.AmbientPalette.toHex(rgb);
+        }
+        return distinct.size() * 2 >= colours.length ? palette : null;
+    }
+
+    private static int[] diLink5AmbientAreas(String zone) {
+        int area = ambientZoneToArea(zone);
+        return area == 3 ? new int[]{1, 2} : new int[]{area};
+    }
+
+    private boolean setDiLink5AmbientColour(String zone, int colour) {
+        if (!isDiLink5AmbientReady("setAmbientLight")) return false;
+        int count = diLink5AmbientColourCount();
+        int max = count == BydVehicleData.UNAVAILABLE ? 31 : count;
+        if (colour > max) {
+            logger.warn("setAmbientLight: colour " + colour + " is outside this car's 1.." + max);
+            return false;
+        }
+        int[] areas = diLink5AmbientAreas(zone);
+        boolean any = false;
+        boolean all = true;
+        for (int area : areas) {
+            boolean ok = writeDiLink5AmbientZone("setIALColor", "getIALColor", area, colour, max);
+            any |= ok;
+            all &= ok;
+        }
+        // "both" keeps the either-zone-landed rule of the legacy path.
+        return areas.length > 1 ? any : all;
+    }
+
+    /** A saved position's zone level, written as captured: it never switches the cabin on. */
+    public boolean restoreDiLink5AmbientLevel(String zone, int level) {
+        return isDiLink5Vehicle() && level >= 0 && level <= 5
+                && setDiLink5AmbientBrightness(zone, level, false);
+    }
+
+    /** BYD's main ambient switch as read now: 1 on, 2 off, else UNAVAILABLE. */
+    public int diLink5AmbientMainState() {
+        if (lightDevice == null || !BydDeviceHelper.isDiLink5AdapterReady(
+                context, lightDevice, "getCarBodyManager")) {
+            return BydVehicleData.UNAVAILABLE;
+        }
+        return readDiLink5AmbientMain();
+    }
+
+    private boolean setDiLink5AmbientBrightness(String zone, int level) {
+        return setDiLink5AmbientBrightness(zone, level, true);
+    }
+
+    private boolean setDiLink5AmbientBrightness(String zone, int level, boolean light) {
+        if (!isDiLink5AmbientReady("setAmbientBrightness")) return false;
+        int[] areas = diLink5AmbientAreas(zone);
+        if (light && level > 0 && !ensureDiLink5AmbientLit(areas)) return false;
+        boolean any = false;
+        boolean all = true;
+        for (int area : areas) {
+            if (level == 0) {
+                // Same as off: keep the level being replaced so a later "on" restores it.
+                int current = readIalBrightness(area);
+                if (current > 0) rememberAmbientZoneLevel(area, current);
+            }
+            rememberAmbientZoneLevel(area, level);
+            boolean ok = writeDiLink5AmbientZone("setIALBrightness", "getIALBrightness", area, level, 5);
+            any |= ok;
+            all &= ok;
+        }
+        return areas.length > 1 ? any : all;
+    }
+
+    /** Off dims each zone to 0; on restores its pre-off level, as the legacy zoned path does. */
+    private boolean setDiLink5AmbientEnabled(String zone, boolean on) {
+        if (!isDiLink5AmbientReady("setAmbientLightEnabled")) return false;
+        int[] areas = diLink5AmbientAreas(zone);
+        if (on && !ensureDiLink5AmbientLit(areas)) return false;
+        boolean any = false;
+        boolean all = true;
+        for (int area : areas) {
+            int level;
+            if (on) {
+                level = ambientZoneRestoreLevel(area);
+            } else {
+                int current = readIalBrightness(area);
+                if (current > 0) rememberAmbientZoneLevel(area, current);
+                level = 0;
+            }
+            boolean ok = writeDiLink5AmbientZone("setIALBrightness", "getIALBrightness", area, level, 5);
+            any |= ok;
+            all &= ok;
+        }
+        return areas.length > 1 ? any : all;
+    }
+
+    /**
+     * BYD's main ambient switch gates every zone. On when it reads 1, or when the write was accepted
+     * and the switch cannot be read. A single-zone request from a known-off cabin first dims the
+     * other zone, so switching on lights only the zone asked for.
+     */
+    private boolean ensureDiLink5AmbientLit(int[] areas) {
+        if (!awaitDiLink5Adapter(lightDevice, "getCarBodyManager", "ambient main switch")) {
+            return false;
+        }
+        int before = readDiLink5AmbientMain();
+        if (before == 1) return true;
+        if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
+        Object rc = BydDeviceHelper.callMethod(lightDevice, "setAmbientState", 1);
+        boolean accepted = rc instanceof Number && ((Number) rc).intValue() == 0;
+        int last = before;
+        for (int attempt = 0; accepted && last != 1 && attempt < 15
+                && !VehicleActuatorBridge.isDiLink5RequestExpired(); attempt++) {
+            SystemClock.sleep(100L);
+            int state = readDiLink5AmbientMain();
+            if (state != BydVehicleData.UNAVAILABLE) last = state;
+        }
+        // An unreadable switch is accepted only while the zones evidently report (domain unknown).
+        boolean judged = last != BydVehicleData.UNAVAILABLE;
+        boolean on = accepted && (judged ? last == 1 : isDiLink5AmbientReporting());
+        logger.info("setAmbientState(1) rc=" + rc + " state " + before + "->" + last
+                + (!on ? " REFUSED" : judged ? " CONFIRMED" : " UNCONFIRMED"));
+        if (!on) return false;
+        // The switch lights every zone at its stored level; keep the one not asked for dark.
+        if (before == 2 && areas.length == 1) {
+            int other = areas[0] == 1 ? 2 : 1;
+            int level = readIalBrightness(other);
+            if (level > 0) rememberAmbientZoneLevel(other, level);
+            if (!writeDiLink5AmbientZone("setIALBrightness", "getIALBrightness", other, 0, 5)) {
+                logger.warn("ambient main switch: zone " + other + " could not be kept dark");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** DI5 getters answer 0 while the car is asleep; a readable zone colour shows they are live. */
+    private boolean isDiLink5AmbientReporting() {
+        return readDiLink5AmbientZone("getIALColor", 1, 1, 31) != BydVehicleData.UNAVAILABLE
+                || readDiLink5AmbientZone("getIALColor", 2, 1, 31) != BydVehicleData.UNAVAILABLE;
+    }
+
+    /** Main switch: 1 on, 2 off, else UNAVAILABLE (0 is invalid, or off in a 1/0 domain). */
+    private int readDiLink5AmbientMain() {
+        Object state = BydDeviceHelper.callGetter(lightDevice, "getAmbientState");
+        if (!(state instanceof Number)) return BydVehicleData.UNAVAILABLE;
+        int v = ((Number) state).intValue();
+        return v == 1 || v == 2 ? v : BydVehicleData.UNAVAILABLE;
+    }
+
+    /** DI5 ambient on/off as setDiLink5AmbientEnabled drives it: the main switch, then the zone levels. */
+    private int readDiLink5AmbientEnabled() {
+        if (!isDiLink5ProducerProcess() || settingDevice == null || lightDevice == null
+                || !BydDeviceHelper.isDiLink5AdapterReady(
+                        context, settingDevice, "getSettingAdapterManager")
+                || !BydDeviceHelper.isDiLink5AdapterReady(
+                        context, lightDevice, "getCarBodyManager")) {
+            return BydVehicleData.UNAVAILABLE;
+        }
+        if (readDiLink5AmbientMain() == 2) return 0;
+        int front = readIalBrightness(1);
+        int rear = readIalBrightness(2);
+        if (front > 0 || rear > 0) return 1;
+        // A sleeping car also answers 0; that must not publish an "off" edge.
+        if ((front == 0 || rear == 0) && isDiLink5AmbientReporting()) return 0;
+        return BydVehicleData.UNAVAILABLE;
+    }
+
+    /**
+     * One DI5 zone write, confirmed only when the readback shows the target. A readback of 0 counts
+     * only for a 0 target while the getters evidently report, since 0 is also
+     * IAL_COLOR_INVALID / IAL_BRIGHTNESS_INVALID (what a sleeping car answers).
+     */
+    private boolean writeDiLink5AmbientZone(
+            String setter, String getter, int area, int value, int max) {
+        int min = value == 0 ? 0 : 1;
+        int before = readDiLink5AmbientZone(getter, area, min, max);
+        if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
+        Object rc = BydDeviceHelper.callMethod(settingDevice, setter, area, value, 0);
+        boolean accepted = rc instanceof Number && ((Number) rc).intValue() == 0;
+        int last = before;
+        for (int attempt = 0; accepted && last != value && attempt < 15
+                && !VehicleActuatorBridge.isDiLink5RequestExpired(); attempt++) {
+            SystemClock.sleep(100L);
+            int read = readDiLink5AmbientZone(getter, area, min, max);
+            if (read != BydVehicleData.UNAVAILABLE) last = read;
+        }
+        boolean confirmed = accepted && last == value
+                && (value != 0 || isDiLink5AmbientReporting());
+        logger.info(setter + "(" + area + ", " + value + ", 0) rc=" + rc + " readback "
+                + before + "->" + last + (confirmed ? " CONFIRMED"
+                        : accepted && last == BydVehicleData.UNAVAILABLE ? " UNREADABLE"
+                        : " REFUSED"));
+        return confirmed;
+    }
+
+    private int readDiLink5AmbientZone(String getter, int area, int min, int max) {
+        Object value = BydDeviceHelper.callGetter(settingDevice, getter, area);
+        if (!(value instanceof Number)) return BydVehicleData.UNAVAILABLE;
+        int v = ((Number) value).intValue();
+        return v >= min && v <= max ? v : BydVehicleData.UNAVAILABLE;
     }
 
     private boolean applyIalColor(int area, int colour) {
@@ -17180,6 +20716,10 @@ public class BydDataCollector {
             Object result = BydDeviceHelper.callMethod(settingDevice, "setSeatHeatingState", position, normalizedLevel);
             boolean accepted =
                     result instanceof Integer && ((Integer) result).intValue() == 0;
+            if (!accepted && dilink5) {
+                logger.warn("setSeatHeatingState(" + position + ", " + normalizedLevel
+                        + ") returned " + result + " (expected 0)");
+            }
             if (!accepted || !dilink5) return accepted;
             return confirmSeatClimateWrite(true, position, normalizedLevel - 1);
         } catch (Exception e) {
@@ -17267,7 +20807,8 @@ public class BydDataCollector {
             if (actualLevel == BydVehicleData.UNAVAILABLE) {
                 if (dilink5) {
                     logger.warn("Seat ventilation readback unavailable after accepted write; "
-                            + "reporting failure for position=" + position);
+                            + "reporting failure for position=" + position
+                            + diLink5SeatClimateRawReadback(false, position));
                     return false;
                 }
                 logger.info("Seat ventilation readback unavailable after accepted write; "
@@ -17275,7 +20816,8 @@ public class BydDataCollector {
                 return true;
             }
             logger.warn("Seat ventilation write was accepted but did not take: position="
-                + position + " requested=" + requestedLevel + " actual=" + actualLevel);
+                + position + " requested=" + requestedLevel + " actual=" + actualLevel
+                + (dilink5 ? diLink5SeatClimateRawReadback(false, position) : ""));
             return false;
         } catch (Exception e) {
             logger.debug("setSeatVentilation failed: " + e.getMessage());
@@ -17293,8 +20835,27 @@ public class BydDataCollector {
         }
         logger.warn("Seat " + (heat ? "heating" : "ventilation")
                 + " write did not take: position=" + position
-                + " requested=" + requestedLevel + " actual=" + actualLevel);
+                + " requested=" + requestedLevel + " actual=" + actualLevel
+                + diLink5SeatClimateRawReadback(heat, position));
         return false;
+    }
+
+    /** DiLink 5 failure diagnostics: the passenger state lives on one of several trim signals. */
+    private String diLink5SeatClimateRawReadback(boolean heat, int position) {
+        if (!isDiLink5Vehicle() || settingDevice == null) return "";
+        StringBuilder raw = new StringBuilder(" raw[plain=")
+                .append(BydDeviceHelper.callGetter(settingDevice,
+                        heat ? "getSeatHeatingState" : "getSeatVentilatingState", position));
+        if (position == 2) {
+            raw.append(", notL1P=").append(BydDeviceHelper.callGetter(settingDevice,
+                    heat ? "getSeatHeatingNotL1PState" : "getSeatVentilatingNotL1PState"));
+            raw.append(", 3ca=").append(BydDeviceHelper.callGetter(settingDevice,
+                    heat ? "getPassengerSeatHeating3caState"
+                            : "getPassengerSeatVentilating3caState"));
+            raw.append(", 5lvl=").append(diLink5Raw(settingDevice,
+                    heat ? "get5LevelSeatHeatingState" : "get5LevelSeatVentilatingState", 2));
+        }
+        return raw.append(']').toString();
     }
 
     /**
@@ -17499,6 +21060,7 @@ public class BydDataCollector {
 
     public boolean setChildPresenceDetection(int value) {
         DiLink5Confirmation confirmation = null;
+        lastDiLink5CpdCabinSwitchAbsent.remove();
         try {
             if (!isChildPresenceDetectionValue(value)) return false;
             if (!isDiLink5Vehicle()) {
@@ -17518,21 +21080,34 @@ public class BydDataCollector {
                 logger.warn("setChildPresenceDetection: another operation is pending");
                 return false;
             }
+            boolean cabinSwitchSeen = isChildPresenceDetectionValue(
+                    readDiLink5ChildPresenceDetection());
             Object result = BydDeviceHelper.callMethod(
                     settingDevice, "setCpdImsSwitchState", value);
             if (!(result instanceof Number)
                     || ((Number) result).intValue() < 0) {
+                noteDiLink5CpdCabinSwitch(cabinSwitchSeen);
                 return false;
             }
 
+            long requestDeadline = VehicleActuatorBridge.currentDiLink5RequestDeadline();
             long timeoutMs = diLink5CommandConfirmationTimeoutMs(
-                    VehicleActuatorBridge.currentDiLink5RequestDeadline(),
-                    SystemClock.elapsedRealtime());
+                    requestDeadline, SystemClock.elapsedRealtime());
             long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+            // Near the request deadline, answer early so the daemon can still try DiPilot.
+            long noteBy = requestDeadline > 0L
+                    ? requestDeadline - DILINK5_CPD_ANSWER_MARGIN_MS : Long.MAX_VALUE;
             do {
-                if (readDiLink5ChildPresenceDetection() == value) return true;
-                long remaining = deadline - SystemClock.elapsedRealtime();
-                if (remaining <= 0L) return false;
+                if (Thread.currentThread().isInterrupted()) return false;
+                int current = readDiLink5ChildPresenceDetection();
+                if (current == value) return true;
+                if (isChildPresenceDetectionValue(current)) cabinSwitchSeen = true;
+                long now = SystemClock.elapsedRealtime();
+                long remaining = deadline - now;
+                if (remaining <= 0L || (!cabinSwitchSeen && now >= noteBy)) {
+                    noteDiLink5CpdCabinSwitch(cabinSwitchSeen);
+                    return false;
+                }
                 if (confirmation.await(Math.min(75L, remaining))) {
                     return confirmation.code == 0;
                 }
@@ -17546,6 +21121,273 @@ public class BydDataCollector {
             }
         }
         return false;
+    }
+
+    /**
+     * App process: the cabin-camera CPD write ran to its end without the switch ever reading back,
+     * so the trim has none (Sealion 7). Handed to the bridge Bundle by
+     * {@link #takeDiLink5CpdCabinSwitchAbsent()}; an expired request never counts.
+     */
+    private final ThreadLocal<Boolean> lastDiLink5CpdCabinSwitchAbsent = new ThreadLocal<>();
+
+    private static final long DILINK5_CPD_ANSWER_MARGIN_MS = 500L;
+
+    private void noteDiLink5CpdCabinSwitch(boolean seen) {
+        if (!seen && !VehicleActuatorBridge.isDiLink5RequestExpired()
+                && !Thread.currentThread().isInterrupted()) {
+            lastDiLink5CpdCabinSwitchAbsent.set(Boolean.TRUE);
+        }
+    }
+
+    /** App process: whether the last CPD write on this thread found no cabin-camera switch, once. */
+    public boolean takeDiLink5CpdCabinSwitchAbsent() {
+        Boolean absent = lastDiLink5CpdCabinSwitchAbsent.get();
+        lastDiLink5CpdCabinSwitchAbsent.remove();
+        return Boolean.TRUE.equals(absent);
+    }
+
+    /** DiPilot CPD status in car_service (ID_CPD_STATUS_NEW_R); the Sealion 7 reports 1 on, 2 off. */
+    static final int DILINK5_DIPILOT_CPD_STATUS_PROP_ID = 0x21403880;
+    private static final long DILINK5_DIPILOT_CPD_CONFIRM_TIMEOUT_MS = 6_000L;
+    private static final java.util.concurrent.locks.ReentrantLock DILINK5_DIPILOT_CPD_LOCK =
+            new java.util.concurrent.locks.ReentrantLock(true);
+    /** Daemon: this much driving in one unbroken run of snapshots without cabin CPD proves it absent. */
+    private static final long DILINK5_CPD_CABIN_ABSENT_EVIDENCE_MS = 5L * 60_000L;
+    private static final double DILINK5_CPD_EVIDENCE_MIN_SPEED_KMH = 3.0;
+    private static final double DILINK5_CPD_EVIDENCE_MAX_SPEED_KMH = 300.0;
+    private static volatile long diLink5CabinCpdMovingMs = 0L;
+    private static volatile long diLink5CabinCpdLastSampleElapsedMs = 0L;
+    private static volatile boolean diLink5CabinCpdLastSampleMoving = false;
+    private static volatile boolean diLink5CabinCpdAbsentProven = false;
+
+    /** Newest healthy car_service row of the DiPilot CPD status, or UNAVAILABLE. */
+    static int readDiLink5DiPilotCpdStatus(String dumpText) {
+        CarSvcTelemetry.LockEvent event = CarSvcTelemetry.parseLockEvent(
+                dumpText, DILINK5_DIPILOT_CPD_STATUS_PROP_ID);
+        if (event == null || event.getValue() == null
+                || (event.getStatus() != null && event.getStatus() != 0)) {
+            return BydVehicleData.UNAVAILABLE;
+        }
+        int value = event.getValue();
+        return isChildPresenceDetectionValue(value) ? value : BydVehicleData.UNAVAILABLE;
+    }
+
+    /** One parsed DiPilot CPD row and the start of the dump it came from, swapped as a unit. */
+    private static final class DiLink5CpdObservation {
+        final long observedAtElapsedMs;
+        final int value;
+
+        DiLink5CpdObservation(long observedAtElapsedMs, int value) {
+            this.observedAtElapsedMs = observedAtElapsedMs;
+            this.value = value;
+        }
+    }
+
+    /** The 20 s charging poll re-reads it, so it outlives the 2 s dump cache. */
+    private static final long DILINK5_CPD_OBSERVATION_MAX_AGE_MS = 45_000L;
+    private static final AtomicReference<DiLink5CpdObservation> diLink5CpdObservation =
+            new AtomicReference<>();
+    /** Daemon: the app process has read a cabin-camera CPD value, so this trim never uses DiPilot CPD. */
+    private static volatile boolean diLink5CabinCpdSeen = false;
+
+    /** Daemon: parses the CPD row of a dump newer than the last one parsed. */
+    private static void noteDiLink5CpdDump(CarSvcTelemetry.CachedDump dump) {
+        if (dump == null || diLink5CabinCpdSeen) return;
+        DiLink5CpdObservation seen = diLink5CpdObservation.get();
+        if (seen != null && seen.observedAtElapsedMs >= dump.getObservedAtElapsedMs()) return;
+        DiLink5CpdObservation next = new DiLink5CpdObservation(
+                dump.getObservedAtElapsedMs(), readDiLink5DiPilotCpdStatus(dump.getText()));
+        while (!diLink5CpdObservation.compareAndSet(seen, next)) {
+            seen = diLink5CpdObservation.get();
+            if (seen != null && seen.observedAtElapsedMs >= next.observedAtElapsedMs) return;
+        }
+    }
+
+    /** Daemon: each app snapshot is evidence for or against a cabin-camera CPD switch. */
+    private static void observeDiLink5CabinCpd(BydVehicleData incoming, long sampleElapsedMs) {
+        if (incoming == null || sampleElapsedMs <= 0L) return;
+        if (isChildPresenceDetectionValue(incoming.childPresenceDetection)) {
+            diLink5CabinCpdSeen = true;
+            return;
+        }
+        // A cabin camera may not answer with ACC off: an ACC-off or unknown snapshot restarts the run.
+        if (!com.overdrive.app.monitor.AccMonitor.isAccStateAuthoritative()
+                || !com.overdrive.app.monitor.AccMonitor.isAccOn()) {
+            diLink5CabinCpdLastSampleElapsedMs = 0L;
+            diLink5CabinCpdLastSampleMoving = false;
+            diLink5CabinCpdMovingMs = 0L;
+            return;
+        }
+        long last = diLink5CabinCpdLastSampleElapsedMs;
+        if (last > 0L && sampleElapsedMs <= last) return;   // out of order: no time to credit
+        diLink5CabinCpdLastSampleElapsedMs = sampleElapsedMs;
+        boolean movingNow = Double.isFinite(incoming.speedKmh)
+                && incoming.speedKmh >= DILINK5_CPD_EVIDENCE_MIN_SPEED_KMH
+                && incoming.speedKmh <= DILINK5_CPD_EVIDENCE_MAX_SPEED_KMH;
+        boolean movingBefore = diLink5CabinCpdLastSampleMoving;
+        diLink5CabinCpdLastSampleMoving = movingNow;
+        // A gap past the snapshot freshness window (producer stopped or stalled) restarts the run.
+        if (last <= 0L || sampleElapsedMs - last > DILINK5_AUTOMATION_MAX_AGE_MS) {
+            diLink5CabinCpdMovingMs = 0L;
+            return;
+        }
+        // Only intervals moving at both ends count: the cabin systems are certainly awake then.
+        if (movingNow && movingBefore) {
+            long moving = diLink5CabinCpdMovingMs + (sampleElapsedMs - last);
+            diLink5CabinCpdMovingMs = moving;
+            if (moving >= DILINK5_CPD_CABIN_ABSENT_EVIDENCE_MS) diLink5CabinCpdAbsentProven = true;
+        }
+    }
+
+    /** Daemon: never a cabin value, and once 5 minutes of driving in one run of snapshots without one. */
+    private static boolean isDiLink5CabinCpdProvenAbsent() {
+        return diLink5CabinCpdAbsentProven && !diLink5CabinCpdSeen;
+    }
+
+    /** Daemon: CPD the app process could not read, from the newest parsed car_service dump. */
+    private static BydVehicleData withDiLink5CarSvcCpd(BydVehicleData data) {
+        if (data == null) return null;
+        if (isChildPresenceDetectionValue(data.childPresenceDetection)) {
+            diLink5CabinCpdSeen = true;
+            return data;
+        }
+        if (!isDiLink5CabinCpdProvenAbsent()) return data;
+        noteDiLink5CpdDump(CarSvcTelemetry.cachedDump());
+        DiLink5CpdObservation cpd = diLink5CpdObservation.get();
+        if (cpd == null || cpd.value == BydVehicleData.UNAVAILABLE
+                || SystemClock.elapsedRealtime() - cpd.observedAtElapsedMs
+                        > DILINK5_CPD_OBSERVATION_MAX_AGE_MS) {
+            return data;
+        }
+        return data.toBuilder().childPresenceDetection(cpd.value).buildPreservingTimestamp();
+    }
+
+    /** CPD-request dumps run here: dumpsysText() swallows an interrupt, then backs off every reader. */
+    private static final class DiLink5CpdDumpThread {
+        static final java.util.concurrent.ExecutorService EXECUTOR =
+                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "DI5CpdDump");
+                    t.setDaemon(true);
+                    return t;
+                });
+    }
+
+    /**
+     * Daemon: a car_service dump whose read began at or after {@code minObservedAtElapsedMs}, or
+     * null at the deadline or on interrupt. dumpsysText() re-reads once the cached dump is past its TTL.
+     */
+    private static CarSvcTelemetry.CachedDump diLink5DumpObservedAfter(
+            long minObservedAtElapsedMs, long deadlineElapsedMs) {
+        java.util.concurrent.Callable<String> dumpTask = CarSvcTelemetry.INSTANCE::dumpsysText;
+        while (!Thread.currentThread().isInterrupted()) {
+            java.util.concurrent.Future<String> read = DiLink5CpdDumpThread.EXECUTOR.submit(dumpTask);
+            try {
+                read.get(Math.max(1L, deadlineElapsedMs - SystemClock.elapsedRealtime()),
+                        java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException interrupted) {
+                read.cancel(false);
+                Thread.currentThread().interrupt();
+                return null;
+            } catch (java.util.concurrent.TimeoutException timedOut) {
+                read.cancel(false);
+            } catch (java.util.concurrent.ExecutionException failed) {
+                logger.debug("DI5 DiPilot CPD dump failed: " + failed.getMessage());
+            }
+            CarSvcTelemetry.CachedDump dump = CarSvcTelemetry.cachedDump();
+            if (dump != null && dump.getObservedAtElapsedMs() >= minObservedAtElapsedMs) {
+                noteDiLink5CpdDump(dump);
+                return dump;
+            }
+            if (SystemClock.elapsedRealtime() >= deadlineElapsedMs) return null;
+            try {
+                Thread.sleep(250L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Daemon side, after the app found no cabin-camera CPD switch: trims like the Sealion 7 keep
+     * CPD on DiPilot. Only on/off away from a car_service state read for this request is written,
+     * so a reversed value convention leaves the state unchanged; success needs a post-write read.
+     */
+    public boolean setDiLink5ChildPresenceViaDiPilot(
+            android.content.Context runtimeContext, int value) {
+        if (!isDiLink5Vehicle()) return false;
+        if (!isDiLink5CabinCpdProvenAbsent()) {
+            logger.warn("DI5 DiPilot CPD: a cabin-camera CPD switch is not proven absent on this "
+                    + "trim; not writing");
+            return false;
+        }
+        try {
+            DILINK5_DIPILOT_CPD_LOCK.lockInterruptibly();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        try {
+            // A cabin value may have arrived while this request queued.
+            if (!isDiLink5CabinCpdProvenAbsent()) return false;
+            long startedAt = SystemClock.elapsedRealtime();
+            CarSvcTelemetry.CachedDump first = diLink5DumpObservedAfter(
+                    startedAt, startedAt + DILINK5_DIPILOT_CPD_CONFIRM_TIMEOUT_MS);
+            int before = first != null
+                    ? readDiLink5DiPilotCpdStatus(first.getText()) : BydVehicleData.UNAVAILABLE;
+            if (before == BydVehicleData.UNAVAILABLE) {
+                logger.warn("DI5 DiPilot CPD: car_service has no CPD state; not writing");
+                return false;
+            }
+            if (before == value) return true;
+            if ((value != 1 && value != 2) || (before != 1 && before != 2)) {
+                logger.warn("DI5 DiPilot CPD: not writing " + value + " over state " + before
+                        + " (on/off only)");
+                return false;
+            }
+            if (Thread.currentThread().isInterrupted()
+                    || !isDiLink5CabinCpdProvenAbsent()) {
+                return false;
+            }
+            if (!VehicleActuatorBridge.dispatchDiLink5Command(runtimeContext,
+                    new com.overdrive.app.byd.routing.VehicleCommandRouter
+                            .DiLink5DiPilotCpdCommand(value))) {
+                return false;
+            }
+            long writtenAt = SystemClock.elapsedRealtime();
+            long deadline = writtenAt + DILINK5_DIPILOT_CPD_CONFIRM_TIMEOUT_MS;
+            long minObservedAt = writtenAt;
+            int after = BydVehicleData.UNAVAILABLE;
+            while (after != value) {
+                CarSvcTelemetry.CachedDump dump = diLink5DumpObservedAfter(minObservedAt, deadline);
+                if (dump == null) break;
+                int read = readDiLink5DiPilotCpdStatus(dump.getText());
+                if (read != BydVehicleData.UNAVAILABLE) after = read;
+                minObservedAt = dump.getObservedAtElapsedMs() + 1L;
+            }
+            logger.info("DI5 DiPilot CPD " + value + ": before=" + before + " after=" + after
+                    + " confirmed=" + (after == value));
+            return after == value;
+        } finally {
+            DILINK5_DIPILOT_CPD_LOCK.unlock();
+        }
+    }
+
+    /** App process half of {@link #setDiLink5ChildPresenceViaDiPilot}. */
+    public boolean writeDiLink5DiPilotCpd(int value) {
+        if (!isDiLink5Vehicle() || (value != 1 && value != 2)) return false;
+        Object dp = ensureDiLink5DiPilotDevice();
+        if (dp == null || !BydDeviceHelper.isDiLink5AdapterReady(
+                context, dp, "getCarAssistAdapterManager")) {
+            logger.warn("setCpdStatus: DiPilot assist adapter is not ready");
+            return false;
+        }
+        if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
+        Object rc = BydDeviceHelper.callMethod(dp, "setCpdStatus", value);
+        logger.info("DiPilot setCpdStatus(" + value + ") rc=" + rc
+                + " getCpdStatus=" + diLink5Raw(dp, "getCpdStatus"));
+        return rc instanceof Number && ((Number) rc).intValue() >= 0;
     }
 
     /** Legacy capability cache. DiLink 5 uses the HVAC trim configuration below. */
@@ -17711,12 +21553,11 @@ public class BydDataCollector {
         if (lightDevice == null) return false;
         try {
             if (isDiLink5Vehicle()) {
+                // No DiLink 5 feature-id fallback: its set() would return 0 for a refusal.
                 Object result = BydDeviceHelper.callMethod(
                         lightDevice, "setTurnLightsFlashState",
                         diLink5HazardCommand(enable));
-                if (result instanceof Number && ((Number) result).intValue() == 0) {
-                    return true;
-                }
+                return result instanceof Number && ((Number) result).intValue() == 0;
             }
             int code = BydDeviceHelper.sendSetCommandRaw(
                     lightDevice, HazardLightProbe.LIGHT_CMD_DOUBLE_FLASH, enable ? 1 : 2);
@@ -17727,6 +21568,42 @@ public class BydDataCollector {
             logger.debug("setHazardLights failed: " + e.getMessage());
         }
         return false;
+    }
+
+    public static final int TURN_SIGNAL_LEFT = 4;
+    public static final int TURN_SIGNAL_RIGHT = 5;
+
+    /**
+     * Drive one turn indicator. {@code postEvent(side, on, 0, null)} on the light device,
+     * where side is {@link #TURN_SIGNAL_LEFT}/{@link #TURN_SIGNAL_RIGHT}. Reflected directly so
+     * an absent method stays distinguishable from a refusal; accepted = TRUE or code 0.
+     * Unconfirmed on this firmware — a refusing HAL returns false rather than silently passing.
+     */
+    public boolean setTurnSignal(int side, boolean on) {
+        if (lightDevice == null) return false;
+        if (side != TURN_SIGNAL_LEFT && side != TURN_SIGNAL_RIGHT) return false;
+        if (isDiLink5Vehicle()) {
+            // DiLink 5's postEvent is a constant false; setTurnLightsFlashState values are unverified.
+            logger.warn("setTurnSignal: no verified turn-signal control on DiLink 5");
+            logDiLink5CalibrationSnapshot();
+            return false;
+        }
+        try {
+            java.lang.reflect.Method m = lightDevice.getClass().getMethod(
+                    "postEvent", int.class, int.class, int.class, Object.class);
+            Object r = m.invoke(lightDevice, side, on ? 1 : 0, 0, null);
+            boolean accepted = (r instanceof Boolean && ((Boolean) r).booleanValue())
+                    || (r instanceof Number && ((Number) r).intValue() == 0);
+            logger.info("setTurnSignal(side=" + side + ", on=" + on + ") rc=" + r
+                    + " accepted=" + accepted);
+            return accepted;
+        } catch (NoSuchMethodException e) {
+            logger.debug("setTurnSignal: postEvent absent on light device");
+            return false;
+        } catch (Exception e) {
+            logger.debug("setTurnSignal failed: " + e.getMessage());
+            return false;
+        }
     }
 
     // --- ADAS ---
@@ -17776,6 +21653,7 @@ public class BydDataCollector {
      * writing to a dead device.
      */
     public boolean setLaneAssistMode(int mode) {
+        if (refuseDiLink5AdasNoOp("setLKSMode")) return false;
         if (ensureAdasDevice() == null) {
             logger.warn("setLaneAssistMode: adasDevice unavailable");
             return false;
@@ -17875,6 +21753,7 @@ public class BydDataCollector {
         if (device != null) {
             adasDevice = device;
             logger.info("ensureAdasDevice: ADAS device re-acquired on demand (was null at init)");
+            if (!isDiLink5Vehicle()) AdasDiag.start(this);
         } else {
             logger.warn("ensureAdasDevice: ADAS device still unavailable on re-acquire");
         }
@@ -17883,6 +21762,12 @@ public class BydDataCollector {
 
     /** Generic ADAS feature-id write on the ADAS device. False if device unavailable. */
     private boolean setAdasFeature(int featureId, int value) {
+        if (isDiLink5Vehicle()) {
+            // DiLink 5's ADAS-device set() is a stub; the DiPilot write values are unverified.
+            logger.warn("setAdasFeature(id=" + featureId + "): not supported on DiLink 5");
+            logDiLink5CalibrationSnapshot();
+            return false;
+        }
         if (ensureAdasDevice() == null) {
             logger.warn("setAdasFeature: adasDevice unavailable (id=" + featureId + ")");
             return false;
@@ -17912,6 +21797,7 @@ public class BydDataCollector {
      * invoke is a real failure.
      */
     private boolean setAdasReflection(String method, int value) {
+        if (refuseDiLink5AdasNoOp(method)) return false;
         if (ensureAdasDevice() == null) {
             logger.warn(method + ": adasDevice unavailable");
             return false;
@@ -17929,6 +21815,202 @@ public class BydDataCollector {
         } catch (Exception e) {
             logger.warn(method + "(" + value + ") failed: " + e.getMessage());
             return false;
+        }
+    }
+
+    /** DiLink 5's ADAS-device setters are constant-0 no-ops; the real controls are on DiPilot. */
+    private boolean refuseDiLink5AdasNoOp(String method) {
+        if (!isDiLink5Vehicle()) return false;
+        logger.warn(method + ": not supported on DiLink 5 (ADAS device setter is a no-op)");
+        logDiLink5CalibrationSnapshot();
+        return true;
+    }
+
+    private static final String DILINK5_DIPILOT_DEVICE_CLASS =
+            "android.hardware.bydauto.dipilot.BYDAutoDiPilotDevice";
+    private volatile Object diLink5DiPilotDevice;
+    private volatile long diLink5CalibrationLoggedAtElapsedMs;
+
+    /**
+     * DiLink 5 calibration: raw states of the controls whose write values are unverified, so a
+     * log taken after toggling each in the BYD menus maps on/off to values. Reaches the daemon
+     * log through the bridge's failure detail (last 8 lines), hence 3 compact lines.
+     */
+    private void logDiLink5CalibrationSnapshot() {
+        if (!isDiLink5ProducerProcess()) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now - diLink5CalibrationLoggedAtElapsedMs < 2_000L) return;
+        diLink5CalibrationLoggedAtElapsedMs = now;
+        String[] groups = diLink5CalibrationGroups();
+        logger.info("DI5 cal adas: " + groups[0]);
+        logger.info("DI5 cal body: " + groups[1]);
+        logger.info("DI5 cal seat: " + groups[2]);
+    }
+
+    /** Same raw states as space-separated key=value tokens, for the daemon's calibration recorder. */
+    public String readDiLink5CalibrationSnapshot() {
+        if (!isDiLink5ProducerProcess()) return null;
+        return String.join(" ", diLink5CalibrationGroups());
+    }
+
+    private Object ensureDiLink5DiPilotDevice() {
+        Object dp = diLink5DiPilotDevice;
+        if (dp == null && context != null) {
+            dp = BydDeviceHelper.getDevice(DILINK5_DIPILOT_DEVICE_CLASS, context);
+            diLink5DiPilotDevice = dp;
+        }
+        return dp;
+    }
+
+    /**
+     * DiPilot device for the opt-in assist-off profile ({@code byd.assist}). Null unless this
+     * process is the active DiLink 5 producer, so a stopped producer ends a run instead of writing.
+     */
+    public Object diLink5DiPilotDeviceForAssistOff() {
+        return isDiLink5ProducerActive() ? ensureDiLink5DiPilotDevice() : null;
+    }
+
+    /**
+     * Best-effort car_service echo of the DiPilot CPD status ({@code 0x21403880}) from the dump
+     * already cached in this process; UNAVAILABLE when none. Diagnostic for the assist-off
+     * profile — the SDK getter is authoritative.
+     */
+    public int readDiLink5DiPilotCpdStatusForAssistOff() {
+        CarSvcTelemetry.CachedDump dump = CarSvcTelemetry.cachedDump();
+        return dump == null ? BydVehicleData.UNAVAILABLE
+                : readDiLink5DiPilotCpdStatus(dump.getText());
+    }
+
+    /**
+     * DiLink 5 DiPilot on/off write. Setters take SET_OFF=1/SET_ON=2; the getters report 0=off/1=on
+     * (on-car calibration). A disconnected adapter also reads 0, so readiness gates the read too.
+     */
+    private boolean setDiLink5DiPilotSwitch(String setter, String getter, boolean on) {
+        Object dp = ensureDiLink5DiPilotDevice();
+        if (dp == null || !BydDeviceHelper.isDiLink5AdapterReady(
+                context, dp, "getCarAssistAdapterManager")) {
+            logger.warn(setter + ": DiPilot assist adapter is not ready");
+            return false;
+        }
+        int want = on ? 1 : 0;
+        int before = readDiLink5DiPilotSwitch(dp, getter);
+        if (before == want) return true;
+        if (before != 0 && before != 1) {
+            logger.warn(setter + ": unexpected state " + before + "; not writing");
+            return false;
+        }
+        if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
+        Object rc = BydDeviceHelper.callMethod(dp, setter, on ? 2 : 1);
+        if (!(rc instanceof Number) || ((Number) rc).intValue() < 0) {
+            logger.warn(setter + "(" + (on ? 2 : 1) + ") refused: rc=" + rc);
+            return false;
+        }
+        int after = before;
+        for (int attempt = 0; attempt < 10 && after != want
+                && !VehicleActuatorBridge.isDiLink5RequestExpired(); attempt++) {
+            SystemClock.sleep(200L);
+            after = readDiLink5DiPilotSwitch(dp, getter);
+        }
+        boolean confirmed = after == want;
+        logger.info(setter + "(" + (on ? 2 : 1) + ") rc=" + rc + " before=" + before
+                + " after=" + after + " confirmed=" + confirmed);
+        return confirmed;
+    }
+
+    private static int readDiLink5DiPilotSwitch(Object dp, String getter) {
+        Object value = BydDeviceHelper.callGetter(dp, getter);
+        return value instanceof Number
+                ? ((Number) value).intValue() : BydVehicleData.UNAVAILABLE;
+    }
+
+    /** [adas, body, seat] raw getter values as key=value tokens. */
+    private String[] diLink5CalibrationGroups() {
+        Object dp = ensureDiLink5DiPilotDevice();
+        // Signals that did not move in the first calibration are read with their per-trim variants.
+        String adas = "bsd=" + diLink5Raw(dp, "getBlindMonitorState")
+                + "/" + diLink5Raw(dp, "getBlindMonitorState1")
+                + "/" + diLink5Raw(dp, "getBlindMonitorState2")
+                + "/" + diLink5Raw(dp, "getBSISEnable")
+                + " aeb=" + diLink5Raw(dp, "getAiEmergencyBrakeState")
+                + " tsr=" + diLink5Raw(dp, "getTrafficSignRecognizeState")
+                + "/" + diLink5Raw(dp, "getTrafficSignRecognize2B4State")
+                + "/" + diLink5Raw(dp, "getTrafficSignRecognize2D5State")
+                + "/" + diLink5Raw(dp, "getTrafficSignRecognize316State")
+                + "/" + diLink5Raw(dp, "getTSRLitSpdChgSwitchState")
+                + " rcta=" + diLink5Raw(dp, "getRearTrafficCrossAlertState")
+                + " rctb=" + diLink5Raw(dp, "getRearTrafficBrakeAlertState")
+                + " fcta=" + diLink5Raw(dp, "getFrontTrafficCrossAlertState")
+                + " fctb=" + diLink5Raw(dp, "getFrontTrafficBrakeAlertState")
+                + " dow=" + diLink5Raw(dp, "getOpenDoorAlertState")
+                + " rcw=" + diLink5Raw(dp, "getRearCrashAlertState")
+                + " elka=" + diLink5Raw(dp, "getEmergencyLaneAssistanceState")
+                + "/" + diLink5Raw(dp, "getEmergencyLaneAssistance2F0State")
+                + "/" + diLink5Raw(dp, "getEmergencyLaneAssistance32FState")
+                + " isla=" + diLink5Raw(dp, "getIntelligentSpeedLimitAlertState")
+                + "/" + diLink5Raw(dp, "getIntelligentSpeedLimitAlert2B4State")
+                + "/" + diLink5Raw(dp, "getIntelligentSpeedLimitAlert2D5State")
+                + " islc=" + diLink5Raw(dp, "getIntelligentSpeedLimitControlState")
+                + "/" + diLink5Raw(dp, "getIntelligentSpeedLimitControl2D5State")
+                + "/" + diLink5Raw(dp, "getIntelligentSpeedLimitControl32FState")
+                + " fcw=" + diLink5Raw(dp, "getPredictCrashAlertState")
+                + "/" + diLink5Raw(dp, "getPredictCrashAlert138Mode")
+                + "/" + diLink5Raw(dp, "getPredictCrashAlert32DMode")
+                + " esp=" + diLink5Raw(dp, "getElecCarBodyStablySysState")
+                + " lka=" + diLink5Raw(dp, "getLaneAssistType")
+                + " tlr=" + diLink5Raw(dp, "getTrafficLightRecognizeState")
+                + " cpd=" + diLink5Raw(dp, "getCpdStatus")
+                + "/" + diLink5Raw(dp, "getCpdDelayStatus");
+        String body = "rain=" + diLink5Raw(settingDevice, "getRainAutoLockWindowState")
+                + " readL=" + diLink5Raw(lightDevice, "getLeftFrontReadingLampStatus")
+                + " readR=" + diLink5Raw(lightDevice, "getRightFrontReadingLampStatus")
+                + " inDoor=" + diLink5Raw(settingDevice, "getInsideLightDoorState")
+                + " doorLight=" + diLink5Raw(lightDevice, "getDoorLightState")
+                + " readRear=" + readDiLink5Raws(lightDevice, new String[]{
+                        "getLeftMiddleRowSideRLightSwitch", "getRightMiddleRowRLightSwitch",
+                        "getLeftRearRLightSwitch", "getRightRearRLightSwitch"})
+                + " ial=" + diLink5Raw(settingDevice, "getIALColor", 1)
+                + "/" + diLink5Raw(settingDevice, "getIALColor", 2)
+                + " ialB=" + diLink5Raw(settingDevice, "getIALBrightness", 1)
+                + "/" + diLink5Raw(settingDevice, "getIALBrightness", 2)
+                + " ambOn=" + diLink5Raw(lightDevice, "getAmbientState")
+                + " music=" + diLink5Raw(lightDevice, "getAmbientMusicModeState", 1)
+                + "/" + diLink5Raw(lightDevice, "getAmbientMusicModeState", 2)
+                + "/" + diLink5Raw(lightDevice, "getAmbientMusicModeState", 3)
+                + " musicMode=" + diLink5Raw(lightDevice, "getAmbientMusicMode", 1)
+                + " flash=" + diLink5Raw(lightDevice, "getTurnLightFlashState")
+                + " turn=" + diLink5Raw(lightDevice, "getTurnLightState");
+        String seat = "pHeat=" + diLink5Raw(settingDevice, "getSeatHeatingState", 2)
+                + "/" + diLink5Raw(settingDevice, "getSeatHeatingNotL1PState")
+                + "/" + diLink5Raw(settingDevice, "getPassengerSeatHeating3caState")
+                + "/" + diLink5Raw(settingDevice, "get5LevelSeatHeatingState", 2)
+                + " pVent=" + diLink5Raw(settingDevice, "getSeatVentilatingState", 2)
+                + "/" + diLink5Raw(settingDevice, "getSeatVentilatingNotL1PState")
+                + "/" + diLink5Raw(settingDevice, "getPassengerSeatVentilating3caState")
+                + "/" + diLink5Raw(settingDevice, "get5LevelSeatVentilatingState", 2)
+                + " dHeat=" + diLink5Raw(settingDevice, "getSeatHeatingState", 1)
+                + "/" + diLink5Raw(settingDevice, "getDriverSeatHeating437State")
+                + " dVent=" + diLink5Raw(settingDevice, "getSeatVentilatingState", 1)
+                + "/" + diLink5Raw(settingDevice, "getDriverSeatVentilating437State");
+        return new String[] {adas, body, seat};
+    }
+
+    /** Silent raw getter read for calibration logs: "-" absent, "P" permission denied, "E" threw. */
+    private static String diLink5Raw(Object device, String getter, int... args) {
+        if (device == null) return "-";
+        Class<?>[] types = new Class<?>[args.length];
+        Object[] values = new Object[args.length];
+        for (int i = 0; i < args.length; i++) {
+            types[i] = int.class;
+            values[i] = args[i];
+        }
+        try {
+            return String.valueOf(device.getClass().getMethod(getter, types).invoke(device, values));
+        } catch (NoSuchMethodException e) {
+            return "-";
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            return e.getCause() instanceof SecurityException ? "P" : "E";
+        } catch (Exception e) {
+            return "E";
         }
     }
 
@@ -17951,6 +22033,9 @@ public class BydDataCollector {
         if (!enabled) {
             logger.warn("setEmergencyBraking: refusing to DISABLE AEB — enable-only safety control");
             return false;
+        }
+        if (isDiLink5Vehicle()) {
+            return setDiLink5DiPilotSwitch("setAiEmergencyBrakeState", "getAiEmergencyBrakeState", true);
         }
         return setAdasReflection("setAEBState", 1);
     }
@@ -17995,11 +22080,17 @@ public class BydDataCollector {
 
     /** Open-Door Warning on/off (DOW id, on=1/off=0). */
     public boolean setOpenDoorWarning(boolean enabled) {
+        if (isDiLink5Vehicle()) {
+            return setDiLink5DiPilotSwitch("setOpenDoorAlertState", "getOpenDoorAlertState", enabled);
+        }
         return setAdasFeature(BydFeatureIds.ADAS_DOW_STATE_SET, enabled ? 1 : 0);
     }
 
     /** Rear Collision Warning on/off (RCW id, on=1/off=0). */
     public boolean setRearCollisionWarning(boolean enabled) {
+        if (isDiLink5Vehicle()) {
+            return setDiLink5DiPilotSwitch("setRearCrashAlertState", "getRearCrashAlertState", enabled);
+        }
         return setAdasFeature(BydFeatureIds.ADAS_RCW_STATE_SET, enabled ? 1 : 0);
     }
 
@@ -18046,6 +22137,7 @@ public class BydDataCollector {
      * (wrong device + guessed id + wrong polarity — it was effectively inert/inverted).
      */
     public boolean setEspState(boolean enabled) {
+        if (refuseDiLink5AdasNoOp("setESPState")) return false;
         if (ensureAdasDevice() == null) {
             logger.warn("setEspState: adasDevice unavailable");
             return false;
@@ -18138,6 +22230,11 @@ public class BydDataCollector {
      * is why the toggle appeared to do nothing.
      */
     public boolean setItacState(boolean enabled) {
+        if (isDiLink5Vehicle()) {
+            // DiLink 5 accepts SET_ITAC_STATE_SET without handling it.
+            logger.warn("setItacState: not supported on DiLink 5");
+            return false;
+        }
         try {
             return BydDeviceHelper.sendSetCommand(settingDevice, BydFeatureIds.SETTING_ITAC_STATE_SET, enabled ? 1 : 2);
         } catch (Exception e) {
@@ -18373,6 +22470,8 @@ public class BydDataCollector {
      */
     public boolean setDriverDisplayBrightness(int level) {
         if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_BRIGHTNESS)) return false;
+        // DiLink 5 has no setting-HAL cluster setter; only the instrument device applies.
+        if (isDiLink5Vehicle()) return setInstrumentBacklightBrightness(level);
         boolean primary = setBrightnessViaMethod("setDriverDisplayBrightness", level);
         Object systemDevice = getSystemContextSettingDevice();
         if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_BRIGHTNESS)) return primary;
@@ -18399,6 +22498,19 @@ public class BydDataCollector {
             Method m = instrumentDevice.getClass().getMethod("setBacklightBrightness", int.class);
             if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_BRIGHTNESS)) return false;
             if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
+            if (isDiLink5Vehicle()) {
+                // DiLink 5 returns a real code, but 0 while the cabin adapter is connecting.
+                if (!BydDeviceHelper.isDiLink5AdapterReady(
+                        context, instrumentDevice, "getCarCabinAdapterManager")) {
+                    logger.warn("setBacklightBrightness: cabin adapter is not ready");
+                    return false;
+                }
+                Object result = m.invoke(instrumentDevice, gear);
+                boolean accepted = result instanceof Integer && ((Integer) result).intValue() == 0;
+                logger.info("setBacklightBrightness(" + gear + ") -> " + result
+                        + (accepted ? " ACCEPTED" : " REFUSED") + " (from " + level + "%)");
+                return accepted;
+            }
             m.invoke(instrumentDevice, gear);
             logger.info("setBacklightBrightness(" + gear + ") invoked (from " + level + "%)");
             return true;
@@ -18476,6 +22588,19 @@ public class BydDataCollector {
     public boolean setHudPower(boolean on) {
         if (!on && drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_POWER)) return false;
         int val = on ? 1 : 2; // OEM contract: 1=on, 2=off
+        if (isDiLink5Vehicle()) {
+            // DiLink 5 routes SET_HUD_SWITCH_SET to setHudState but drops its result.
+            if (!BydDeviceHelper.isDiLink5AdapterReady(
+                    context, settingDevice, "getSettingAdapterManager")) {
+                logger.warn("setHudPower: setting adapter is not ready");
+                return false;
+            }
+            Object result = BydDeviceHelper.callMethod(settingDevice, "setHudState", val);
+            boolean accepted = result instanceof Integer && ((Integer) result).intValue() == 0;
+            logger.info("setHudPower: setHudState(" + val + ") -> " + result
+                    + (accepted ? " ACCEPTED" : " REFUSED"));
+            return accepted;
+        }
         boolean daemonOk = false;
         try {
             daemonOk = BydDeviceHelper.sendSetCommand(settingDevice, BydFeatureIds.SETTING_HUD_SWITCH_SET, val);
@@ -18510,7 +22635,7 @@ public class BydDataCollector {
                 + "settings put system screen_brightness " + v255;
         try {
             if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_BRIGHTNESS)) return false;
-            Process p = new ProcessBuilder("sh", "-c", script)
+            Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(script))
                     .redirectErrorStream(true).start();
             // Drain + bound so the child can't wedge on a full pipe or outlive the call.
             final java.io.InputStream is = p.getInputStream();
@@ -18670,7 +22795,7 @@ public class BydDataCollector {
                 + "input keyevent " + keyevent;
         try {
             if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_POWER)) return false;
-            Process p = new ProcessBuilder("sh", "-c", script)
+            Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(script))
                     .redirectErrorStream(true).start();
             final java.io.InputStream is = p.getInputStream();
             Thread drain = new Thread(() -> {
@@ -18706,7 +22831,8 @@ public class BydDataCollector {
             return false;
         }
         int settingValue = BydConstants.mirrorFoldCommand(folded);
-        if (isDiLink5Vehicle() && setDiLink5MirrorsFolded(settingValue, folded)) return true;
+        // DiLink 5 does not handle the setting-device fold id; its set() would still return 0.
+        if (isDiLink5Vehicle()) return setDiLink5MirrorsFolded(settingValue, folded);
         if (setMirrorsFoldedOnSettingDevice(settingValue, folded)) return true;
         if (folded && drivingSafetyBlocked(DrivingSafetyGuard.GUARD_MIRROR_FOLD)) {
             return false;
@@ -18876,8 +23002,15 @@ public class BydDataCollector {
         if (folded && drivingSafetyBlocked(DrivingSafetyGuard.GUARD_MIRROR_FOLD)) {
             return false;
         }
-        Object result = BydDeviceHelper.callMethod(
-                mirrorDevice, "setAutoExternalRearMirrorFoldState", value);
+        // The mirror device returns 0 while its cabin adapter is still connecting.
+        Object result = null;
+        if (BydDeviceHelper.isDiLink5AdapterReady(
+                context, mirrorDevice, "getCarCabinAdapterManager")) {
+            result = BydDeviceHelper.callMethod(
+                    mirrorDevice, "setAutoExternalRearMirrorFoldState", value);
+        } else {
+            logger.warn("setMirrorsFolded: cabin adapter is not ready — trying bodywork");
+        }
         if (result instanceof Number && ((Number) result).intValue() == 0) {
             logManualMirrorReadback(value);
             return true;
@@ -19016,7 +23149,8 @@ public class BydDataCollector {
      * must not be substituted for power-state mirror behavior.
      */
     public boolean setAutoExternalRearMirrorFollowUp(boolean enabled) {
-        final int value = enabled ? 1 : 0; // BYDAutoSettingDevice.SET_ON / SET_OFF
+        // BYDAutoSettingDevice.SET_ON / SET_OFF; DiLink 5 defines SET_OFF as 2, not 0.
+        final int value = enabled ? 1 : (isDiLink5Vehicle() ? 2 : 0);
         if (setAutoExternalRearMirrorFollowUpOn(settingDevice, value, "daemon")) return true;
 
         Object systemDevice = getSystemContextSettingDevice();
@@ -21949,6 +26083,7 @@ public class BydDataCollector {
      */
     public boolean setBrakeFootSense(int appLevel) {
         if (appLevel != 0 && appLevel != 1) return false;
+        if (refuseDiLink5AdasNoOp("setBrakeFootSenseState")) return false;
         Object device = ensureAdasDevice();
         if (device == null) {
             logger.warn("setBrakeFootSense: adasDevice unavailable");

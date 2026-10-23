@@ -255,6 +255,8 @@ public class OemDashcamPipeline {
     // Lifecycle / state
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean recording = new AtomicBoolean(false);
+    private volatile long cameraAttachedAtMs = 0L;   // elapsedRealtime; 0 = not attached
+    private volatile boolean cameraFrameSeen = false;
     // True when the in-flight clip was opened by the surveillance EVENT path
     // (tryStartIfIdle), as opposed to the continuous / resolver path
     // (startRecording). The trigger-lifecycle resolver must NOT finalize a
@@ -476,6 +478,7 @@ public class OemDashcamPipeline {
                 requireStartCurrent(
                     cameraStartEpoch, lifecycleOwnerCurrent, "post-camera open");
                 installFrameCallback();
+                cameraAttachedAtMs = SystemClock.elapsedRealtime();
                 requireStartCurrent(
                     cameraStartEpoch, lifecycleOwnerCurrent, "pre-render loop");
                 startRenderLoop();
@@ -706,6 +709,14 @@ public class OemDashcamPipeline {
         HardwareEventRecorderGpu.VideoUploadPolicy uploadPolicy = uploadPolicyFor(eventOwned);
         boolean ok = encoder != null
                 && encoder.triggerEventRecording(path, clampedPost, uploadPolicy);
+        if (!ok && encoder != null && reportWriteFaultFor(path)) {
+            // The card refuses writes: the path now resolves to internal — retry this clip once.
+            String internalPath = generateOutputPath();
+            if (!internalPath.equals(path)) {
+                logger.warn("OEM clip refused by a card that refuses writes — retrying on " + internalPath);
+                ok = encoder.triggerEventRecording(internalPath, clampedPost, uploadPolicy);
+            }
+        }
         if (!ok) {
             synchronized (recordingStateLock) {
                 recording.set(false);
@@ -1016,11 +1027,14 @@ public class OemDashcamPipeline {
             // extension.
             HardwareEventRecorderGpu enc = encoder;
             if (enc != null) {
+                String abortedPath = enc.getCurrentOutputPath();
                 try {
                     enc.stopEventRecording(true, 0);
                 } catch (Throwable t) {
                     logger.warn("OEM stopEventRecording during abort failed: " + t.getMessage());
                 }
+                // A card that began refusing writes: latch it so the next clip goes to internal.
+                if (abortedPath != null) reportWriteFaultFor(abortedPath);
             }
             // Drop telemetry polling now that recording is logically over;
             // the encoder GL thread will continue to push frames into the
@@ -1350,7 +1364,12 @@ public class OemDashcamPipeline {
                     "H265".equals(panoCodec)
                         ? com.overdrive.app.surveillance.GpuPipelineConfig.VideoCodec.H265
                         : com.overdrive.app.surveillance.GpuPipelineConfig.VideoCodec.H264;
-                panoBps = q.getBitrateForCodec(c);
+                // Same axis fps the pano encoder scales its tier bitrate by.
+                int panoDriveFps = cam == null ? 15 : cam.optInt("targetFps", 15);
+                int panoFps = surveillanceAxis && cam != null
+                    ? cam.optInt("surveillanceTargetFps", panoDriveFps)
+                    : panoDriveFps;
+                panoBps = q.getBitrateForCodec(c, panoFps);
             } catch (Throwable t) {
                 // Defensive: fall back to the local table if the canonical
                 // enum lookup fails for any reason.
@@ -1645,6 +1664,10 @@ public class OemDashcamPipeline {
             logger.info("DiLink 5 uses the primary QCarCam pipeline; skipping AVMCamera DVR.");
             return;
         }
+        if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            logger.info("camera2 mode records the 360 camera only; skipping AVMCamera DVR.");
+            return;
+        }
         if (!AvcHalWarmup.warmupBeforeColdOpen(
                 () -> running.get()
                     && isStartAdmissionCurrent(
@@ -1813,11 +1836,26 @@ public class OemDashcamPipeline {
         // imageReaderThread). Body must be cheap — the ImageReaderHandler
         // dispatch is the only reason this thread exists.
         cameraSurfaceTexture.setOnFrameAvailableListener(st -> {
+            cameraFrameSeen = true;
             synchronized (frameSync) {
                 imagePending = true;
                 frameSync.notify();
             }
         }, irHandler);
+    }
+
+    /** True once the camera has delivered at least one frame since start(). */
+    public boolean hasDeliveredFrame() {
+        return cameraFrameSeen;
+    }
+
+    /** Ms since the camera attached with no frame yet; -1 if streamed, stopped or not attached. */
+    public long getNoFrameSinceAttachMs() {
+        long attachedAt = cameraAttachedAtMs;
+        if (!running.get() || attachedAt <= 0L || cameraFrameSeen) {
+            return -1L;
+        }
+        return SystemClock.elapsedRealtime() - attachedAt;
     }
 
     private final AtomicInteger drawSequence = new AtomicInteger(0);
@@ -2200,6 +2238,17 @@ public class OemDashcamPipeline {
         }
         File f = new File(dir, "dvr_" + stamp + ".mp4");
         return f.getAbsolutePath();
+    }
+
+    /** StorageManager.reportWriteFault for the clip's dir; true once its card is latched. */
+    private boolean reportWriteFaultFor(String clipPath) {
+        try {
+            return com.overdrive.app.storage.StorageManager.getInstance()
+                .reportWriteFault(new File(clipPath).getParentFile());
+        } catch (Throwable t) {
+            logger.warn("write-fault check failed: " + t.getMessage());
+            return false;
+        }
     }
 
     private void runOnGlThreadAndWait(Runnable r) throws Exception {

@@ -47,7 +47,7 @@
         list = list.filter(function (w) { return typeof w === 'string' && w; });
         if (!list.length) return '';
         return '<div class="bk-warn">' + list.map(function (w) {
-            return '<div class="bk-row"><span class="bk-icon">⚠️</span><div>' + escapeHtml(w) + '</div></div>';
+            return '<div class="bk-row"><span class="bk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div>' + escapeHtml(w) + '</div></div>';
         }).join('') + '</div>';
     }
 
@@ -62,7 +62,8 @@
         .bk-warn { background:#1a1f28; border:1px solid #2a3340; border-radius:10px; padding:4px 14px; margin-bottom:6px; }
         .bk-row { display:flex; gap:12px; align-items:flex-start; padding:12px 0; font-size:13px; line-height:1.5; }
         .bk-row + .bk-row { border-top:1px solid #232a35; }
-        .bk-row .bk-icon { font-size:18px; flex:none; line-height:1.2; }
+        .bk-row .bk-icon { flex:none; display:flex; width:20px; height:20px; color:var(--warning); }
+        .bk-row .bk-icon svg { width:20px; height:20px; }
         .bk-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:18px; }
         .bk-btn { padding:10px 20px; border-radius:8px; font-weight:600; font-size:13px; border:0; cursor:pointer; font-family:inherit; }
         .bk-btn-cancel { background:transparent; color:#cdd6e0; }

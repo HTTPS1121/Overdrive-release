@@ -92,7 +92,7 @@ public final class AdasBlindSpotProbe {
      * none of these — it reads six fabricated ids instead. Resolved by NAME at runtime, so an
      * absent one is reported rather than guessed at.
      */
-    private static final String[] CANDIDATE_FIELDS = {
+    static final String[] CANDIDATE_FIELDS = {
         "ADAS_BSD_STATE", "ADAS_BSD_STATE_HAL", "ADAS_BSD_CONFIG",
         "ADAS_BLIND_SPOT_DETECTION_GRAY",
         "ADAS_BSIS_FUNC_STATUS", "ADAS_BSIS_ENABLE_STATUS", "ADAS_BSIS_GRAY_STATUS",

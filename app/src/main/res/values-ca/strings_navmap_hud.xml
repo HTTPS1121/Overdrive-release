@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Continueu</item>
+        <item>Comenceu la ruta</item>
+        <item>Arribada a la destinació</item>
+        <item>Destinació a la dreta</item>
+        <item>Destinació a l\'esquerra</item>
+        <item>Lleugerament a la dreta</item>
+        <item>Gireu a la dreta</item>
+        <item>Gir tancat a la dreta</item>
+        <item>Feu un canvi de sentit</item>
+        <item>Gir tancat a l\'esquerra</item>
+        <item>Gireu a l\'esquerra</item>
+        <item>Lleugerament a l\'esquerra</item>
+        <item>Agafeu l\'enllaç</item>
+        <item>Agafeu la sortida</item>
+        <item>Continueu recte</item>
+        <item>Manteniu-vos a la dreta</item>
+        <item>Manteniu-vos a l\'esquerra</item>
+        <item>Incorporeu-vos</item>
+        <item>Incorporeu-vos per la dreta</item>
+        <item>Incorporeu-vos per l\'esquerra</item>
+        <item>Entreu a la rotonda</item>
+        <item>Sortiu de la rotonda</item>
+        <item>Agafeu el ferri</item>
+        <item>Baixeu del ferri</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Continueu per</item>
+        <item>Sortiu per</item>
+        <item>Destinació:</item>
+        <item>Destinació a la dreta:</item>
+        <item>Destinació a l\'esquerra:</item>
+        <item>Lleugerament a la dreta per</item>
+        <item>Gireu a la dreta per</item>
+        <item>Gir tancat a la dreta per</item>
+        <item>Feu un canvi de sentit per</item>
+        <item>Gir tancat a l\'esquerra per</item>
+        <item>Gireu a l\'esquerra per</item>
+        <item>Lleugerament a l\'esquerra per</item>
+        <item>Agafeu l\'enllaç cap a</item>
+        <item>Agafeu la sortida cap a</item>
+        <item>Continueu recte per</item>
+        <item>Manteniu-vos a la dreta per</item>
+        <item>Manteniu-vos a l\'esquerra per</item>
+        <item>Incorporeu-vos a</item>
+        <item>Entreu per la dreta a</item>
+        <item>Entreu per l\'esquerra a</item>
+        <item>A la rotonda, agafeu</item>
+        <item>Sortiu de la rotonda per</item>
+        <item>Agafeu el ferri:</item>
+        <item>Baixeu del ferri i agafeu</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1a</item>
+        <item>2a</item>
+        <item>3a</item>
+        <item>4a</item>
+        <item>5a</item>
+        <item>6a</item>
+        <item>7a</item>
+        <item>8a</item>
+        <item>9a</item>
+        <item>10a</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Agafeu la %1$s sortida</string>
+    <string name="nav_hud_roundabout_exit_onto">Agafeu la %1$s sortida cap a</string>
+    <string name="nav_hud_towards">Direcció</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Sortida %1$s</string>
+    <string name="nav_hud_then">Després</string>
+    <string name="nav_hud_arrive">Arribada</string>
+    <string name="nav_hud_recenter">Torna a centrar</string>
+    <string name="nav_hud_end">Finalitza</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Silencia les indicacions de veu</string>
+    <string name="nav_hud_cd_unmute">Activa les indicacions de veu</string>
+    <string name="nav_hud_cd_overview">Mostra tota la ruta</string>
+    <string name="nav_hud_cd_overview_exit">Torna a la vista de conducció</string>
+    <string name="nav_hud_cd_end">Finalitza la navegació</string>
+    <string name="nav_hud_cd_recenter">Torna a centrar en el cotxe</string>
+    <string name="nav_hud_cd_compass_heading_up">Brúixola: direcció de marxa a dalt. Toqueu per posar el nord a dalt</string>
+    <string name="nav_hud_cd_compass_north_up">Brúixola: nord a dalt. Toqueu per posar la direcció de marxa a dalt</string>
+    <string name="nav_hud_cd_back">Surt del mapa</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Després, d\'aquí a %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Arribada a les %1$s, queden %2$s i %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">%1$s de retard per trànsit</string>
+</resources>

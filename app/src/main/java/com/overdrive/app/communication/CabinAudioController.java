@@ -34,7 +34,7 @@ public final class CabinAudioController {
 
     private static void exec(String command) {
         try {
-            Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+            Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(command)});
         } catch (Throwable t) {
             logger.warn("Cabin audio service command failed: " + t.getMessage());
         }

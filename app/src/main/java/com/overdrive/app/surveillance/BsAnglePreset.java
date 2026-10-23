@@ -43,7 +43,7 @@ public final class BsAnglePreset {
     public static final float PRESENT_ASPECT = 16f / 9f;
 
     /** Left camera: keep the left half, mirror, turn 310°. */
-    public static final BsAnglePreset LEFT = new BsAnglePreset(
+    public static final BsAnglePreset LEFT = new BsAnglePreset("LEFT-310",
             310f,
             0f, 0f, 0.5f, 0f,       // crop: drop the right half
             true, false,            // mirror horizontally
@@ -51,13 +51,14 @@ public final class BsAnglePreset {
             -15f / 480f, -30f / 540f);
 
     /** Right camera: keep the right half, mirror, turn 40°. */
-    public static final BsAnglePreset RIGHT = new BsAnglePreset(
+    public static final BsAnglePreset RIGHT = new BsAnglePreset("RIGHT-40",
             40f,
             0.5f, 0f, 0f, 0f,       // crop: drop the left half
             true, false,
             1.4f,
             0f, -30f / 540f);
 
+    private final String label;
     public final float rotationDeg;
     public final float cropLeft;
     public final float cropTop;
@@ -69,10 +70,11 @@ public final class BsAnglePreset {
     public final float translateXFrac;
     public final float translateYFrac;
 
-    private BsAnglePreset(float rotationDeg,
+    private BsAnglePreset(String label, float rotationDeg,
                           float cropLeft, float cropTop, float cropRight, float cropBottom,
                           boolean flipHorizontal, boolean flipVertical,
                           float zoom, float translateXFrac, float translateYFrac) {
+        this.label = label;
         this.rotationDeg = rotationDeg;
         this.cropLeft = cropLeft;
         this.cropTop = cropTop;
@@ -96,19 +98,22 @@ public final class BsAnglePreset {
         return d == 40 || d == 310;
     }
 
-    /**
-     * The framing for an angle, or null if it is not a preset angle.
-     *
-     * <p>Looked up by ANGLE, not by side. The angle is what the driver picked and what
-     * the config stores, so a driver who puts 310 on the right camera gets the 310
-     * framing there — surprising perhaps, but it is what they asked for, and it keeps
-     * the setting meaning one thing everywhere it appears.
-     */
+    /** The framing an angle was measured as, or null if it is not a preset angle. */
     public static BsAnglePreset forAngle(int deg) {
         int d = ((deg % 360) + 360) % 360;
         if (d == 310) return LEFT;
         if (d == 40) return RIGHT;
         return null;
+    }
+
+    /**
+     * The framing to render when a preset angle is picked for a view (8 = right camera,
+     * anything else = left), or null for a non-preset angle. Keyed by camera: each
+     * framing crops its own camera's rear half, so the other side's shows the front.
+     */
+    public static BsAnglePreset forView(int deg, int viewMode) {
+        if (!isPresetAngle(deg)) return null;
+        return (viewMode == 8) ? RIGHT : LEFT;
     }
 
     /** Fraction of the source width kept after cropping. */
@@ -133,11 +138,32 @@ public final class BsAnglePreset {
         return (cropTop + 1f - cropBottom) * 0.5f;
     }
 
-    /** Short name for logs. Named after the camera each framing was measured for,
-     *  which is not necessarily the camera it gets applied to — framings are keyed by
-     *  angle, so the log prints this and the actual view side separately. */
+    /**
+     * This framing with a driver's per-side adjustment applied, or this same instance
+     * when every adjustment is neutral (or not finite). Mirror keeps the other half and
+     * toggles the horizontal flip, which exactly undoes a horizontally mirrored feed.
+     */
+    public BsAnglePreset adjusted(boolean mirror, float angleDeg, float zoomScale,
+                                  float panXFrac, float panYFrac) {
+        if (!Float.isFinite(angleDeg)) angleDeg = 0f;
+        if (!Float.isFinite(zoomScale) || zoomScale <= 0f) zoomScale = 1f;
+        if (!Float.isFinite(panXFrac)) panXFrac = 0f;
+        if (!Float.isFinite(panYFrac)) panYFrac = 0f;
+        if (!mirror && angleDeg == 0f && zoomScale == 1f && panXFrac == 0f && panYFrac == 0f) {
+            return this;
+        }
+        return new BsAnglePreset(label + "*",
+                rotationDeg + angleDeg,
+                mirror ? cropRight : cropLeft, cropTop,
+                mirror ? cropLeft : cropRight, cropBottom,
+                flipHorizontal != mirror, flipVertical,
+                zoom * zoomScale,
+                translateXFrac + panXFrac, translateYFrac + panYFrac);
+    }
+
+    /** Short name for logs, after the camera the framing was measured for; adjusted ones end in '*'. */
     public String name() {
-        return (this == RIGHT) ? "RIGHT-40" : "LEFT-310";
+        return label;
     }
 
     @Override

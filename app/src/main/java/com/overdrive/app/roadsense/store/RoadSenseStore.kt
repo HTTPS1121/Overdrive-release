@@ -72,7 +72,7 @@ class RoadSenseStore private constructor() {
          * `/data/local/tmp` is the daemon-writable (UID 2000) location the
          * project already uses for its H2 stores.
          */
-        private val DB_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_roadsense_h2")
+        private val DB_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("overdrive_roadsense_h2")
 
         /**
          * JDBC URL — identical flag set to SocHistoryDatabase:
@@ -87,9 +87,11 @@ class RoadSenseStore private constructor() {
          */
         // AUTO_COMPACT_FILL_RATE=50: idle-CPU tuning shared by all seven H2
         // stores (see SocHistoryDatabase.JDBC_URL for the rationale).
-        private val JDBC_URL =
+        // WRITE_DELAY=5000: H2 housekeeps every WRITE_DELAY/10 ms. Detections may lose the
+        // last 5 s on a kill; user verdicts and clears checkpoint at once.
+        private val JDBC_URL: String get() =
             "jdbc:h2:file:$DB_PATH;FILE_LOCK=SOCKET;TRACE_LEVEL_FILE=0;DB_CLOSE_ON_EXIT=FALSE" +
-                ";AUTO_COMPACT_FILL_RATE=50"
+                ";AUTO_COMPACT_FILL_RATE=50;WRITE_DELAY=5000"
 
         private const val TABLE = "roadsense_hazards"
 
@@ -674,6 +676,7 @@ class RoadSenseStore private constructor() {
                         val n = ps.executeUpdate()
                         logger.info("Rejected hazard $id via Calibration Mode (deleted $n)")
                     }
+                    checkpointLocked()
                     return
                 }
 
@@ -694,10 +697,20 @@ class RoadSenseStore private constructor() {
                     val n = ps.executeUpdate()
                     logger.info("Human-verified hazard $id (sevΔ=$correctedSeverity typeΔ=$correctedType, updated $n)")
                 }
+                checkpointLocked()
             } catch (e: Exception) {
                 logger.error("markHumanVerified failed: " + e.message, e)
                 reconnect()
             }
+        }
+    }
+
+    /** Writes committed user actions to disk now rather than within WRITE_DELAY. Caller holds [lock]. */
+    private fun checkpointLocked() {
+        try {
+            connection?.createStatement()?.use { it.execute("CHECKPOINT") }
+        } catch (e: Exception) {
+            logger.warn("checkpoint failed (persists within WRITE_DELAY): " + e.message)
         }
     }
 
@@ -865,6 +878,7 @@ class RoadSenseStore private constructor() {
                 connection!!.createStatement().use { stmt ->
                     val n = stmt.executeUpdate("DELETE FROM $TABLE;")
                     logger.info("deleteAllLocal: cleared $n hazards")
+                    checkpointLocked()
                     return n.toLong()
                 }
             } catch (e: Exception) {

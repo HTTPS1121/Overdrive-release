@@ -24,6 +24,9 @@ public class TcpCommandServer {
     private ServerSocket serverSocket;
     private volatile boolean running = true;
 
+    /** Consecutive bind failures, reset on a successful bind. */
+    private int bindFailures;
+
     public TcpCommandServer(int port) {
         this.port = port;
     }
@@ -39,6 +42,7 @@ public class TcpCommandServer {
                 
                 serverSocket = new ServerSocket(port, 5, InetAddress.getByName("127.0.0.1"));
                 serverSocket.setReuseAddress(true);
+                bindFailures = 0;
                 CameraDaemon.log("TCP server listening on 127.0.0.1:" + port);
 
                 while (running && CameraDaemon.isRunning() && !serverSocket.isClosed()) {
@@ -61,6 +65,11 @@ public class TcpCommandServer {
                 
             } catch (java.net.BindException e) {
                 CameraDaemon.log("ERROR: TCP port " + port + " in use, retrying...");
+                // A second failure is not TIME_WAIT — name the holder once per episode.
+                if (++bindFailures == 2) {
+                    CameraDaemon.log("ERROR: TCP port " + port + " held by "
+                            + PortOwner.describe(port));
+                }
                 try { Thread.sleep(5000); } catch (InterruptedException ie) {}
             } catch (Exception e) {
                 CameraDaemon.log("ERROR: TCP server error: " + e.getMessage());
@@ -283,7 +292,7 @@ public class TcpCommandServer {
                     catch (Throwable ignored) {}
                 }
                 response.put("status", "ok");
-                response.put("deferred", accOn);
+                response.put("deferred", accOn || !CameraDaemon.isAccOffAdmitted());
                 response.put("surveillance", CameraDaemon.getSurveillanceStatus());
                 break;
             }
@@ -430,7 +439,7 @@ public class TcpCommandServer {
                 String bitrate = "MEDIUM";
                 String codec = "H264";
                 try {
-                    java.io.File unifiedFile = new java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json"));
+                    java.io.File unifiedFile = new java.io.File(com.overdrive.app.util.ScratchRoot.path("overdrive_config.json"));
                     if (unifiedFile.exists()) {
                         java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(unifiedFile));
                         StringBuilder sb = new StringBuilder();
@@ -474,44 +483,15 @@ public class TcpCommandServer {
                 response.put("message", "Auth cache invalidated");
                 break;
 
-            case "shell":
-                // Execute shell command (used by SentryDaemon to run commands as UID 2000)
-                String shellCmd = cmd.optString("command", "");
-                CameraDaemon.log("Shell command received: " + shellCmd);
-                if (!shellCmd.isEmpty()) {
-                    try {
-                        Process process = Runtime.getRuntime().exec(new String[]{"sh", "-c", shellCmd});
-                        int exitCode = process.waitFor();
-                        java.io.BufferedReader reader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(process.getInputStream()));
-                        StringBuilder output = new StringBuilder();
-                        String outputLine;
-                        while ((outputLine = reader.readLine()) != null) {
-                            output.append(outputLine).append("\n");
-                        }
-                        // Also read stderr
-                        java.io.BufferedReader errReader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(process.getErrorStream()));
-                        StringBuilder errOutput = new StringBuilder();
-                        while ((outputLine = errReader.readLine()) != null) {
-                            errOutput.append(outputLine).append("\n");
-                        }
-                        
-                        response.put("status", "ok");
-                        response.put("output", output.toString().trim());
-                        response.put("stderr", errOutput.toString().trim());
-                        response.put("exitCode", exitCode);
-                        CameraDaemon.log("Shell command completed: exitCode=" + exitCode + ", output=" + output.toString().trim());
-                    } catch (Exception e) {
-                        CameraDaemon.log("Shell command failed: " + e.getMessage());
-                        response.put("status", "error");
-                        response.put("message", "Shell exec failed: " + e.getMessage());
-                    }
-                } else {
-                    response.put("status", "error");
-                    response.put("message", "No command specified");
-                }
+            case "telenavUse":
+                // Sent by the app before it launches or binds Telenav; replies once tracking is armed.
+                com.overdrive.app.telenav.DeferredNavManager.noteTelenavUse();
+                response.put("status", "ok");
                 break;
+
+            // REMOVED: "shell" — ran an arbitrary command as UID 2000 with no auth on
+            // this port. The legacy SentryDaemon caller it was written for is gone, so
+            // nothing in-tree sent it; it now falls through to "Unknown command".
 
             default:
                 response.put("status", "error");

@@ -10,11 +10,12 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <link rel="stylesheet" href="../shared/leaflet.css">
     <script src="../shared/leaflet.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
 </head>
 <body class="dashboard-page">
     <div class="app-layout">
@@ -27,17 +28,37 @@
                         <line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>
                     </svg>
                 </button>
-                <div class="brand"><span class="brand-name" style="font-size:16px;">OverDrive</span></div>
+                <span style="font-weight:600;" data-i18n="dashboard.heading">Dashboard</span>
                 <div style="width:40px;"></div>
             </div>
 
             <div class="dashboard-page-body">
+                <div class="dash-hero-copy" data-theme-dock>
+                    <h1 data-i18n="dashboard.heading">Dashboard</h1>
+                    <p id="dashHeroSubtitle" data-i18n="dashboard.subtitle">Vehicle status, position and main controls.</p>
+                </div>
+
+                <!-- Bento grid. The hero and the AI insight come first and carry
+                     no data-card-id, so the reorder controller below never moves
+                     them; the remaining cards carry data-card-id for layout
+                     persistence. -->
+                <section class="dash-grid" id="dashCards">
                 <section class="dash-hero">
+                    <!--
+                      Vehicle glance panel. Replaces the decorative hero GLB
+                      (the sidebar EV-card still renders the 3D model) with
+                      live state: a top-down schematic annotated with per-door
+                      lock pills + per-corner tyre PSI from /api/vehicle/state
+                      (polled every 6s by refreshVehicleState), an SoC ring +
+                      range fed by /api/status, and glance rows for climate /
+                      windows / tyres. When a charge session is live the panel
+                      gains a charging strip (power · time-to-full · kWh) —
+                      the "what matters right now" takeover. The drive state
+                      and status chips live here too, so the schematic sits
+                      beside them in one grid.
+                    -->
+                    <div class="dash-glance" id="dashGlance">
                     <div class="dash-hero-main">
-                        <div class="dash-hero-copy">
-                            <h1 data-i18n="dashboard.heading">Dashboard</h1>
-                            <p id="dashHeroSubtitle" data-i18n="dashboard.subtitle">Vehicle status, position and main controls.</p>
-                        </div>
                         <div class="dash-drive-state is-pending" id="dashDriveState"
                              role="status" aria-live="polite" aria-atomic="true">
                             <div class="dash-drive-icon" aria-hidden="true">
@@ -68,26 +89,18 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="dash-hero-status">
-                            <span class="dash-chip" id="dashConnChip" data-i18n="dashboard.chip_device_pending">Device --</span>
-                            <span class="dash-chip" id="dashSurvChip" data-i18n="dashboard.chip_surveillance_pending">Surveillance --</span>
-                            <span class="dash-chip" id="dashGpsChip" data-i18n="dashboard.chip_gps_pending">GPS --</span>
-                        </div>
                     </div>
-                    <!--
-                      Vehicle glance panel. Replaces the decorative hero GLB
-                      (the sidebar EV-card still renders the 3D model) with
-                      live state: a top-down schematic annotated with per-door
-                      lock pills + per-corner tyre PSI from /api/vehicle/state
-                      (polled every 6s by refreshVehicleState), an SoC ring +
-                      range fed by /api/status, and glance rows for climate /
-                      windows / tyres. When a charge session is live the panel
-                      gains a charging strip (power · time-to-full · kWh) —
-                      the "what matters right now" takeover.
-                    -->
-                    <div class="dash-glance" id="dashGlance">
-                        <div class="dash-glance-car" aria-hidden="true">
+                        <div class="dash-glance-car" id="dashGlanceCar" aria-hidden="true">
+                            <span class="dash-car-ripple"></span><span class="dash-car-ripple r2"></span>
                             <svg class="dash-car-svg" viewBox="0 0 150 260" preserveAspectRatio="xMidYMid meet">
+                                <defs>
+                                    <linearGradient id="dashCarBodyShade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="dash-car-edge"/><stop offset="0.5" class="dash-car-mid"/><stop offset="1" class="dash-car-edge"/></linearGradient>
+                                    <linearGradient id="dashCarGlassShade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="dash-car-glass-a"/><stop offset="1" class="dash-car-glass-b"/></linearGradient>
+                                    <radialGradient id="dashCarGlowShade" cx="0.5" cy="0.5" r="0.5"><stop offset="0" class="dash-car-glow-a"/><stop offset="1" class="dash-car-glow-b"/></radialGradient>
+                                </defs>
+                                <ellipse class="dash-car-glow" cx="75" cy="131" rx="86" ry="128" fill="url(#dashCarGlowShade)"/>
+                                <path class="dash-car-cable" d="M122 206C137 210 147 222 165 234"/>
+                                <circle class="dash-car-port-ring" cx="121" cy="206" r="4"/>
                                 <!-- wheels — coloured by tyre pressure state -->
                                 <rect id="glTyreFL" class="dash-car-tyre" x="18" y="46" width="13" height="34" rx="5"/>
                                 <rect id="glTyreFR" class="dash-car-tyre" x="119" y="46" width="13" height="34" rx="5"/>
@@ -108,6 +121,10 @@
                                 <text id="glPsiFR" class="dash-car-psi" x="126" y="36" text-anchor="middle">--</text>
                                 <text id="glPsiRL" class="dash-car-psi" x="24" y="240" text-anchor="middle">--</text>
                                 <text id="glPsiRR" class="dash-car-psi" x="126" y="240" text-anchor="middle">--</text>
+                                <path class="dash-car-light dash-car-head" d="M44 30Q52 20 64 17"/>
+                                <path class="dash-car-light dash-car-head" d="M106 30Q98 20 86 17"/>
+                                <path class="dash-car-light dash-car-tail" d="M50 238Q75 246 100 238"/>
+                                <circle class="dash-car-port" cx="121" cy="206" r="3.5"/>
                                 <!-- centre lock glyph -->
                                 <g id="glLockGlyph" class="dash-car-lock" transform="translate(75,142)">
                                     <path id="glLockShackle" d="M-4 -3 v-3 a4 4 0 0 1 8 0 v3" fill="none"/>
@@ -126,6 +143,28 @@
                                     <span id="dashHeroRange">--</span>
                                 </div>
                             </div>
+                            <div class="dash-soc-bar" aria-hidden="true"><i id="dashSocBarFill"></i></div>
+                            <div class="dash-range-intel" id="dashRangeIntel" hidden aria-live="polite">
+                                <div class="dash-range-values">
+                                    <div class="dash-range-value dash-range-value--personalized">
+                                        <span data-i18n="trip.card.personalized_range">Personalized Range</span>
+                                        <strong id="dashPersonalizedRange">--</strong>
+                                    </div>
+                                    <div class="dash-range-value dash-range-value--vehicle">
+                                        <span data-i18n="dashboard.kicker_vehicle">Vehicle</span>
+                                        <strong id="dashVehicleRange">--</strong>
+                                    </div>
+                                </div>
+                                <div class="dash-range-tracks" aria-hidden="true">
+                                    <div><i id="dashPersonalizedTrack"></i></div>
+                                    <div><i id="dashVehicleTrack"></i></div>
+                                </div>
+                                <div class="dash-range-meta">
+                                    <span id="dashRangeConfidence"></span>
+                                    <span id="dashRangeSamples"></span>
+                                    <span id="dashRangeLegs"></span>
+                                </div>
+                            </div>
                             <!-- PHEV-only fuel gauge — hidden unless /api/status
                                  emits range.fuelPercent (the server gates that
                                  field on nominal capacity, so BEVs never see it). -->
@@ -134,53 +173,38 @@
                                 <div class="dash-fuel-bar"><i id="dashFuelBarFill"></i></div>
                                 <span id="dashGlanceFuelText">--</span>
                             </div>
-                            <div class="dash-glance-rows">
-                                <div class="dash-glance-row">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-                                    <span data-i18n="dashboard.metric_lock">Lock</span>
-                                    <strong id="glLockText">--</strong>
-                                </div>
-                                <div class="dash-glance-row">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M4.2 6l15.6 12M4.2 18 19.8 6"/></svg>
-                                    <span data-i18n="dashboard.glance_climate">Climate</span>
-                                    <strong id="glClimateText">--</strong>
-                                </div>
-                                <div class="dash-glance-row">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 12h18"/></svg>
-                                    <span data-i18n="dashboard.glance_windows">Windows</span>
-                                    <strong id="glWindowsText">--</strong>
-                                </div>
-                                <div class="dash-glance-row">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/></svg>
-                                    <span data-i18n="dashboard.glance_tyres">Tyres</span>
-                                    <strong id="glTyresText">--</strong>
-                                </div>
-                                <div class="dash-glance-row">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/></svg>
-                                    <span data-i18n="dashboard.glance_sentry">Sentry</span>
-                                    <strong id="glSentryText">--</strong>
-                                </div>
-                            </div>
                         </div>
-                        <div class="dash-range-intel" id="dashRangeIntel" hidden aria-live="polite">
-                            <div class="dash-range-values">
-                                <div class="dash-range-value dash-range-value--personalized">
-                                    <span data-i18n="trip.card.personalized_range">Personalized Range</span>
-                                    <strong id="dashPersonalizedRange">--</strong>
-                                </div>
-                                <div class="dash-range-value dash-range-value--vehicle">
-                                    <span data-i18n="dashboard.kicker_vehicle">Vehicle</span>
-                                    <strong id="dashVehicleRange">--</strong>
-                                </div>
+                        <div class="dash-hero-status">
+                            <a class="dash-chip" id="dashSurvChip" href="surveillance.html" data-ico="shield"><span class="dash-chip-text" data-i18n="dashboard.chip_surveillance_pending">Surveillance --</span></a>
+                            <a class="dash-chip alert is-live" id="dashRecChip" href="events.html" hidden><span class="dash-chip-text" data-i18n="dashboard.chip_recording">Recording</span></a>
+                            <span class="dash-chip" id="dashGpsChip" data-ico="nav"><span class="dash-chip-text" data-i18n="dashboard.chip_gps_pending">GPS --</span></span>
+                            <a class="dash-chip" id="dashConnChip" href="network.html" data-ico="wifi"><span class="dash-chip-text" data-i18n="dashboard.chip_network_pending">Network --</span></a>
+                        </div>
+                        <div class="dash-glance-rows">
+                            <div class="dash-glance-row">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                                <span data-i18n="dashboard.metric_lock">Lock</span>
+                                <strong id="glLockText">--</strong>
                             </div>
-                            <div class="dash-range-tracks" aria-hidden="true">
-                                <div><i id="dashPersonalizedTrack"></i></div>
-                                <div><i id="dashVehicleTrack"></i></div>
+                            <div class="dash-glance-row">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M4.2 6l15.6 12M4.2 18 19.8 6"/></svg>
+                                <span data-i18n="dashboard.glance_climate">Climate</span>
+                                <strong id="glClimateText">--</strong>
                             </div>
-                            <div class="dash-range-meta">
-                                <span id="dashRangeConfidence"></span>
-                                <span id="dashRangeSamples"></span>
-                                <span id="dashRangeLegs"></span>
+                            <div class="dash-glance-row">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 12h18"/></svg>
+                                <span data-i18n="dashboard.glance_windows">Windows</span>
+                                <strong id="glWindowsText">--</strong>
+                            </div>
+                            <div class="dash-glance-row">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/></svg>
+                                <span data-i18n="dashboard.glance_tyres">Tyres</span>
+                                <strong id="glTyresText">--</strong>
+                            </div>
+                            <div class="dash-glance-row">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/></svg>
+                                <span data-i18n="dashboard.glance_sentry">Sentry</span>
+                                <strong id="glSentryText">--</strong>
                             </div>
                         </div>
                         <div class="dash-glance-charge" id="dashGlanceCharge" hidden>
@@ -215,31 +239,6 @@
                     </svg>
                 </button>
 
-                <!-- Reorderable card grid. Dashboard + vehicle now live in
-                     the unified hero above; the remaining cards carry
-                     data-card-id for layout persistence. -->
-                <section class="dash-grid" id="dashCards">
-                    <article class="dash-card dash-location-card" data-card-id="location">
-                        <div class="dash-card-head">
-                            <div>
-                                <span class="dash-card-kicker" data-i18n="dashboard.kicker_position">Position</span>
-                                <h2 data-i18n="dashboard.card_location">Vehicle location</h2>
-                            </div>
-                            <button class="dash-card-grip" type="button" aria-label="Drag to reorder" tabindex="-1">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></svg>
-                            </button>
-                        </div>
-                        <div class="dash-location-map">
-                            <div id="mapContainer"></div>
-                        </div>
-                        <div class="dash-action-row">
-                            <button class="dash-primary-btn" type="button" onclick="BYD.dashboard.openDirections()">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11 22 2l-9 19-2-8-8-2Z"/><path d="m11 13 4-4"/></svg>
-                                <span data-i18n="dashboard.directions">Navigate to car</span>
-                            </button>
-                        </div>
-                    </article>
-
                     <article class="dash-card dash-actions-card" data-card-id="commands">
                         <div class="dash-card-head">
                             <div>
@@ -250,7 +249,7 @@
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></svg>
                             </button>
                         </div>
-                        <div class="dash-command-grid">
+                        <div class="dash-command-grid dash-command-grid-main">
                             <button class="dash-command" type="button" onclick="BYD.dashboard.command(this, '/api/vehicle/lock')">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
                                 <span data-i18n="dashboard.cmd_lock">Lock</span>
@@ -276,27 +275,100 @@
                                 <span data-i18n="dashboard.cmd_trunk_close">Close trunk</span>
                             </button>
                         </div>
-                        <!-- User-defined buttons (GET /api/quick-controls). Rendered into its
-                             own grid so the built-in commands above are never reordered or
-                             replaced; stays display:none until at least one button exists. -->
-                        <div class="dash-command-grid" id="dashCustomCommands" style="display:none"></div>
-                        <div class="dash-command-grid dash-command-grid-media">
-                            <a class="dash-command" href="live-view.html">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 0 8 8"/><circle cx="2" cy="12" r="2"/></svg>
-                                <span data-i18n="dashboard.cmd_live">Live</span>
-                            </a>
-                            <a class="dash-command" href="events.html">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
-                                <span data-i18n="dashboard.cmd_recordings">Recordings</span>
-                            </a>
-                            <a class="dash-command" href="trips.html">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17h2v-7l4 4 4-4 4 4 4-4v7h2"/><path d="M4 5h16"/></svg>
-                                <span data-i18n="dashboard.cmd_trips">Trips</span>
-                            </a>
-                            <a class="dash-command" href="parking.html">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></svg>
-                                <span data-i18n="dashboard.cmd_parking">Parking</span>
-                            </a>
+                        <div class="dash-pills" id="dashPills">
+                            <!-- Vehicle power. Local rail only; stays display:none until
+                                 /api/vehicle/cloud-status confirms that rail exists on this car. -->
+                            <div class="dash-command-grid dash-command-grid-power" id="dashPowerCommands" style="display:none">
+                                <button class="dash-command" type="button" onclick="BYD.dashboard.powerCommand(this, true)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
+                                    <span data-i18n="vehicle.power_on">Power on</span>
+                                </button>
+                                <button class="dash-command" type="button" onclick="BYD.dashboard.powerCommand(this, false)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64A9 9 0 0 1 20.77 15"/><path d="M6.16 6.16a9 9 0 1 0 12.68 12.68"/><path d="M12 2v4"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                                    <span data-i18n="vehicle.power_off">Power off</span>
+                                </button>
+                            </div>
+                            <!-- User-defined buttons (GET /api/quick-controls). Rendered into its
+                                 own grid so the built-in commands above are never reordered or
+                                 replaced; stays display:none until at least one button exists. -->
+                            <div class="dash-command-grid" id="dashCustomCommands" style="display:none"></div>
+                            <div class="dash-command-grid dash-command-grid-media">
+                                <a class="dash-command" href="live-view.html">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 0 8 8"/><circle cx="2" cy="12" r="2"/></svg>
+                                    <span data-i18n="dashboard.cmd_live">Live</span>
+                                </a>
+                                <a class="dash-command" href="events.html">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+                                    <span data-i18n="dashboard.cmd_recordings">Recordings</span>
+                                </a>
+                                <a class="dash-command" href="trips.html">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+                                    <span data-i18n="dashboard.cmd_trips">Trips</span>
+                                </a>
+                                <a class="dash-command" href="parking.html">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></svg>
+                                    <span data-i18n="dashboard.cmd_parking">Parking</span>
+                                </a>
+                            </div>
+                            <button type="button" class="dash-pills-more" id="dashPillsMore" hidden aria-expanded="false" aria-controls="dashPills"><span data-i18n="common.more">More</span></button>
+                        </div>
+                    </article>
+
+                    <!-- Charging card — live plug/charge state + key metrics,
+                         tap-through to the full charging.html history page. -->
+                    <article class="dash-card dash-info-card dash-charge-card" data-card-id="charging">
+                        <div class="dash-card-head">
+                            <span class="dash-tile-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L4 14 h7 l-1 8 9-12 h-7 z"/></svg>
+                            </span>
+                            <div>
+                                <span class="dash-card-kicker" data-i18n="charge.kicker">Energy</span>
+                                <h2 data-i18n="charge.card_title">Charging</h2>
+                            </div>
+                            <button class="dash-card-grip" type="button" aria-label="Drag to reorder" tabindex="-1">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></svg>
+                            </button>
+                        </div>
+                        <div class="dash-charge-chip" id="dashChargeChip">
+                            <span class="ic_status_dot dot-idle" id="dashChargeDot"></span>
+                            <span id="dashChargeState" data-i18n="charge.state_idle">Idle</span>
+                        </div>
+                        <div class="dash-charge-big">
+                            <strong id="dashChargeTtf">--</strong>
+                            <span data-i18n="charge.metric_ttf">Time to full</span>
+                        </div>
+                        <div class="dash-mini-bar" aria-hidden="true"><i id="dashChargeSocBar"></i></div>
+                        <div class="dash-metric-grid dash-metric-grid--4">
+                            <div class="dash-metric"><span data-i18n="charge.metric_soc">SoC</span><strong id="dashChargeSoc">--</strong></div>
+                            <div class="dash-metric"><span data-i18n="charge.metric_power">Power</span><strong id="dashChargePower">--</strong></div>
+                            <div class="dash-metric"><span data-i18n="charge.metric_session">Session</span><strong id="dashChargeKwh">--</strong></div>
+                        </div>
+                        <div class="dash-action-row">
+                            <button class="dash-primary-btn dash-tile-link" type="button" onclick="location.href='charging.html'">
+                                <span data-i18n="charge.open">Charging details</span>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                            </button>
+                        </div>
+                    </article>
+
+                    <article class="dash-card dash-location-card" data-card-id="location">
+                        <div class="dash-card-head">
+                            <div>
+                                <span class="dash-card-kicker" data-i18n="dashboard.kicker_position">Position</span>
+                                <h2 data-i18n="dashboard.card_location">Vehicle location</h2>
+                            </div>
+                            <button class="dash-card-grip" type="button" aria-label="Drag to reorder" tabindex="-1">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></svg>
+                            </button>
+                        </div>
+                        <div class="dash-location-map">
+                            <div id="mapContainer"></div>
+                        </div>
+                        <div class="dash-action-row">
+                            <button class="dash-primary-btn" type="button" onclick="BYD.dashboard.openDirections()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11 22 2l-9 19-2-8-8-2Z"/><path d="m11 13 4-4"/></svg>
+                                <span data-i18n="dashboard.directions">Navigate to car</span>
+                            </button>
                         </div>
                     </article>
 
@@ -310,52 +382,32 @@
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></svg>
                             </button>
                         </div>
-                        <div class="dash-metric-grid" id="dashInfoGrid">
-                            <div class="dash-metric"><span data-i18n="dashboard.metric_battery">Battery</span><strong id="dashSoc">--</strong></div>
+                        <div class="dash-metric-grid has-connectivity" id="dashInfoGrid">
+                            <div class="dash-metric"><span data-i18n="dashboard.metric_battery"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2"/></svg>Battery</span><strong id="dashSoc">--</strong></div>
                             <!-- On PHEVs the strong shows TOTAL range and the small
                                  carries the EV + fuel breakdown; on BEVs the small
                                  stays hidden and strong = electric range. -->
-                            <div class="dash-metric"><span id="dashRangeLabel" data-i18n="dashboard.metric_range">Range</span><strong id="dashRange">--</strong><small id="dashRangeBreakdown" style="display:none"></small></div>
+                            <div class="dash-metric"><span id="dashRangeLabel" data-i18n="dashboard.metric_range"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M9 19h4a4 4 0 0 0 0-8H9a4 4 0 0 1 0-8h2"/></svg>Range</span><strong id="dashRange">--</strong><small id="dashRangeBreakdown" style="display:none"></small></div>
                             <!-- PHEV-only; unhidden when /api/status carries range.fuelPercent -->
-                            <div class="dash-metric" id="dashFuelMetric" style="display:none"><span data-i18n="vehicle.fuel">Fuel</span><strong id="dashFuel">--</strong></div>
-                            <div class="dash-metric"><span>12V</span><strong id="dash12v">--</strong></div>
-                            <div class="dash-metric"><span data-i18n="dashboard.metric_power">Power</span><strong id="dashAcc">--</strong></div>
-                            <!-- Value = SSID / Mobile Data / Ethernet; small = IPv4 when known -->
-                            <div class="dash-metric"><span data-i18n="dashboard.metric_network">Network</span><strong id="dashNetwork">--</strong><small id="dashNetworkIp" style="display:none"></small></div>
-                            <div class="dash-metric"><span data-i18n="dashboard.metric_lock">Lock</span><strong id="dashLock">--</strong></div>
+                            <div class="dash-metric" id="dashFuelMetric" style="display:none"><span data-i18n="vehicle.fuel"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M2 22h12"/><path d="M13 10h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V9l-3-3"/><path d="M5 8h6"/></svg>Fuel</span><strong id="dashFuel">--</strong></div>
+                            <div class="dash-metric"><span><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>12V</span><strong id="dash12v">--</strong></div>
+                            <div class="dash-metric" id="dashPowerMetric"><span data-i18n="dashboard.metric_power"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Power</span><strong id="dashAcc">--</strong></div>
+                            <div class="dash-connectivity-metrics">
+                                <!-- Value = SSID / Mobile Data / Ethernet; small = IPv4 when known -->
+                                <div class="dash-metric"><span data-i18n="dashboard.metric_network"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20h.01M7 20v-4M12 20v-8M17 20V8M22 20V4"/></svg>Network</span><strong id="dashNetwork">--</strong><small id="dashNetworkIp" style="display:none"></small></div>
+                                <div class="dash-metric dash-bluetooth-metric" id="dashBluetoothMetric" data-state="unknown">
+                                    <span><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10-5 4V3l5 4L7 17"/></svg>Bluetooth</span>
+                                    <strong class="dash-radio-value" id="dashBluetoothValue" role="status" aria-live="polite" aria-label="Vehicle Bluetooth: Unknown">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 7l10 10-5 4V3l5 4L7 17"/></svg>
+                                        <span id="dashBluetooth">Unknown</span>
+                                    </strong>
+                                    <small id="dashBluetoothDetail">Vehicle radio</small>
+                                </div>
+                            </div>
+                            <div class="dash-metric" id="dashLockMetric"><span data-i18n="dashboard.metric_lock"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Lock</span><strong id="dashLock">--</strong></div>
                             <!-- Hidden until /api/vehicle/state carries odometer.totalKm;
                                  small = EV/HEV split when the vehicle reports it (DM-i). -->
-                            <div class="dash-metric" id="dashOdoMetric" style="display:none"><span data-i18n="charge.detail_odometer">Odometer</span><strong id="dashOdo">--</strong><small id="dashOdoSplit" style="display:none"></small></div>
-                        </div>
-                    </article>
-
-                    <!-- Charging card — live plug/charge state + key metrics,
-                         tap-through to the full charging.html history page. -->
-                    <article class="dash-card dash-info-card" data-card-id="charging">
-                        <div class="dash-card-head">
-                            <div>
-                                <span class="dash-card-kicker" data-i18n="charge.kicker">Energy</span>
-                                <h2 data-i18n="charge.card_title">Charging</h2>
-                            </div>
-                            <button class="dash-card-grip" type="button" aria-label="Drag to reorder" tabindex="-1">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></svg>
-                            </button>
-                        </div>
-                        <div class="dash-charge-chip" id="dashChargeChip">
-                            <span class="ic_status_dot dot-idle" id="dashChargeDot"></span>
-                            <span id="dashChargeState" data-i18n="charge.state_idle">Idle</span>
-                        </div>
-                        <div class="dash-metric-grid dash-metric-grid--4">
-                            <div class="dash-metric"><span data-i18n="charge.metric_soc">SoC</span><strong id="dashChargeSoc">--</strong></div>
-                            <div class="dash-metric"><span data-i18n="charge.metric_power">Power</span><strong id="dashChargePower">--</strong></div>
-                            <div class="dash-metric"><span data-i18n="charge.metric_session">Session</span><strong id="dashChargeKwh">--</strong></div>
-                            <div class="dash-metric"><span data-i18n="charge.metric_ttf">Time to full</span><strong id="dashChargeTtf">--</strong></div>
-                        </div>
-                        <div class="dash-action-row">
-                            <button class="dash-primary-btn" type="button" onclick="location.href='charging.html'">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L4 14 h7 l-1 8 9-12 h-7 z"/></svg>
-                                <span data-i18n="charge.open">Charging details</span>
-                            </button>
+                            <div class="dash-metric" id="dashOdoMetric" style="display:none"><span data-i18n="charge.detail_odometer"><svg class="dash-metric-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></svg>Odometer</span><strong id="dashOdo">--</strong><small id="dashOdoSplit" style="display:none"></small></div>
                         </div>
                     </article>
                 </section>
@@ -376,165 +428,230 @@
                landscape height after a portrait rotation. */
             min-height: 100vh;
             min-height: calc(var(--vh, 1vh) * 100);
-            background: var(--bg-base);
         }
 
         .dashboard-page-body {
             box-sizing: border-box;
             width: 100%;
-            max-width: 1180px;
+            max-width: 1440px;
             /* Centering needs explicit auto cross-axis margins AND
                align-self because .main-content is display:flex column.
                Auto-margins alone leave the body left-aligned on some
                older WebViews. */
-            margin-left: auto;
+            margin-left: 0;
             margin-right: auto;
-            align-self: center;
-            padding: 22px;
-            padding-bottom: calc(28px + var(--safe-bottom));
+            align-self: flex-start;
+            padding: 20px 24px;
+            padding-bottom: calc(32px + var(--safe-bottom));
+        }
+
+        /* Page title above the bento (mock top bar). */
+        .dash-hero-copy {
+            min-width: 0;
+            margin: 4px 0 20px;
+        }
+        .dash-hero-copy h1 {
+            margin: 0;
+            color: var(--on-surface);
+            font-size: var(--fs-display);
+            font-weight: 700;
+            line-height: 1.15;
+            letter-spacing: 0;
+            overflow-wrap: break-word;
+        }
+        .dash-hero-copy p {
+            margin: 4px 0 0;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            line-height: 1.4;
+            overflow-wrap: break-word;
+        }
+
+        /* ── Bento grid ──────────────────────────────────────────────
+           One grid holds the hero, the AI insight and the reorderable
+           cards. Spans sit on classes (the drag ghost copies the card's
+           className) and dense auto-flow keeps every row full in any
+           saved order:
+             3 columns  hero 2x2; AI, location, charging 1; commands 2;
+                        main info full width, or 1 while the AI tile is
+                        hidden (it then fills the ninth cell)
+             2 columns  hero full width; every card 1; main info full
+                        width while the AI tile is shown
+             1 column   phones */
+        .dash-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-auto-flow: row dense;
+            grid-gap: 16px;
+            align-items: stretch;
+        }
+        .dash-grid > * { min-width: 0; }
+        .dash-grid > .dash-hero { grid-column: span 2; grid-row: span 2; }
+        .dash-grid > .dash-actions-card { grid-column: span 2; }
+        .dash-grid > .dash-info-card { grid-column: 1 / -1; }
+        .dash-grid > .dash-charge-card,
+        #dashAiInsight[hidden] ~ .dash-info-card { grid-column: auto; }
+
+        /* Tiles (mock .tile): hero and cards; the AI insight button below. */
+        .dash-hero,
+        .dash-card {
+            position: relative;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            padding: 20px;
+            border: 0;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
         }
 
         .dash-hero {
-            display: grid;
-            grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
-            align-items: stretch;
-            gap: 18px;
-            padding: 20px;
-            background:
-                radial-gradient(80% 60% at 18% 12%,
-                    rgba(0, 212, 170, 0.16) 0%,
-                    rgba(0, 212, 170, 0.04) 40%,
-                    transparent 70%),
-                radial-gradient(60% 40% at 50% 100%,
-                    rgba(0, 212, 170, 0.08) 0%,
-                    transparent 65%),
-                linear-gradient(135deg,
-                    var(--bg-elevated) 0%,
-                    var(--bg-surface) 60%,
-                    var(--bg-base) 100%);
-            border: 1px solid var(--border-subtle);
-            border-radius: 8px;
             overflow: hidden;
+            background-image:
+                radial-gradient(380px 320px at 80% 42%, var(--primary-soft), rgba(0, 0, 0, 0) 72%),
+                linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
         }
-        .dash-hero-copy {
-            min-width: 0;
+        [dir="rtl"] .dash-hero {
+            background-image:
+                radial-gradient(380px 320px at 20% 42%, var(--primary-soft), rgba(0, 0, 0, 0) 72%),
+                linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
         }
 
         .dash-hero-main {
+            grid-area: main;
             min-width: 0;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            gap: 18px;
-            padding: 4px 0 4px 4px;
         }
 
-        .dash-hero h1,
         .dash-card h2 {
             margin: 0;
-            color: var(--text-primary);
+            color: var(--on-surface);
+            font-size: var(--fs-title);
+            font-weight: 600;
+            line-height: 1.25;
             letter-spacing: 0;
+            overflow-wrap: break-word;
         }
 
-        .dash-hero h1 {
-            font-size: 32px;
-            line-height: 1.1;
-        }
-
-        .dash-hero p {
-            margin-top: 8px;
-            color: var(--text-secondary);
-            font-size: 15px;
-        }
-
+        /* AI insight tile (mock "brief"): tertiary icon chip beside the
+           kicker and title, the text full width below, the expand chevron
+           in the corner. A block box, so it lays out the same in engines
+           that cannot make a <button> a grid. */
         .dash-ai-insight {
             position: relative;
-            display: grid;
-            grid-template-columns: 44px minmax(0, 1fr) 24px;
-            align-items: center;
-            gap: 14px;
+            display: block;
+            box-sizing: border-box;
             width: 100%;
-            margin-top: 16px;
-            padding: 16px 18px;
+            min-width: 0;
+            margin: 0;
+            padding: 20px;
             color: inherit;
             font: inherit;
             text-align: left;
-            border: 1px solid var(--border-subtle);
+            border: 0;
             overflow: hidden;
-            border-radius: var(--radius-lg, 16px);
-            background:
-                linear-gradient(110deg, rgba(0, 135, 108, 0.13), transparent 55%),
-                var(--bg-surface);
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image:
+                radial-gradient(320px 220px at 100% 0%, var(--tertiary-soft), rgba(0, 0, 0, 0) 70%),
+                linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
             cursor: pointer;
-            transition: border-color 0.15s ease, transform 0.15s ease,
-                box-shadow 0.15s ease;
+            transition: transform var(--duration-fast) var(--easing-standard),
+                box-shadow var(--duration-fast) var(--easing-standard);
         }
         .dash-ai-insight::before {
             content: "";
             position: absolute;
-            inset: 0 auto 0 0;
+            top: 0;
+            bottom: 0;
+            left: 0;
             width: 3px;
             background: linear-gradient(
-                180deg, var(--brand-primary), var(--tertiary));
+                180deg, var(--primary), var(--tertiary));
         }
         [dir="rtl"] .dash-ai-insight::before {
-            inset: 0 0 0 auto;
+            left: auto;
+            right: 0;
         }
-        [dir="rtl"] .dash-ai-insight { text-align: right; }
+        [dir="rtl"] .dash-ai-insight {
+            text-align: right;
+            background-image:
+                radial-gradient(320px 220px at 0% 0%, var(--tertiary-soft), rgba(0, 0, 0, 0) 70%),
+                linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+        }
         .dash-ai-insight[hidden] { display: none; }
-        .dash-ai-insight:hover {
-            border-color: var(--brand-primary);
-            transform: translateY(-1px);
-            box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
+        @media (hover: hover) {
+            .dash-ai-insight:hover {
+                transform: translateY(-1px);
+                box-shadow: var(--tile-shadow), 0 0 0 1px var(--tertiary);
+            }
         }
         .dash-ai-insight:focus-visible {
-            outline: 2px solid var(--brand-primary);
+            outline: 2px solid var(--primary);
             outline-offset: 3px;
         }
         .dash-ai-insight:active {
             transform: translateY(0);
         }
         .dash-ai-insight-icon {
+            position: absolute;
+            top: 20px;
+            left: 20px;
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 44px;
-            height: 44px;
+            width: 40px;
+            height: 40px;
             border-radius: 12px;
-            color: var(--brand-primary);
-            background: var(--brand-primary-container);
-            border: 1px solid rgba(0, 135, 108, .2);
+            color: var(--tertiary);
+            background: var(--tertiary-soft);
         }
-        .dash-ai-insight-icon svg { width: 23px; height: 23px; }
+        [dir="rtl"] .dash-ai-insight-icon { left: auto; right: 20px; }
+        .dash-ai-insight-icon svg { width: 22px; height: 22px; }
         .dash-ai-insight-copy {
             min-width: 0;
             display: flex;
             flex-direction: column;
         }
+        /* Kicker and title clear the icon chip and the chevron. */
+        .dash-ai-insight-kicker,
+        .dash-ai-insight-copy strong {
+            margin-left: 52px;
+            margin-right: 32px;
+        }
+        [dir="rtl"] .dash-ai-insight-kicker,
+        [dir="rtl"] .dash-ai-insight-copy strong {
+            margin-left: 32px;
+            margin-right: 52px;
+        }
         .dash-ai-insight-kicker {
-            color: var(--brand-primary);
-            font-size: 10px;
-            font-weight: 750;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.35;
         }
         .dash-ai-insight-copy strong {
-            margin-top: 2px;
-            color: var(--text-primary);
-            font-size: 16px;
+            margin-top: 1px;
+            color: var(--on-surface);
+            font-size: var(--fs-title);
+            font-weight: 600;
+            line-height: 1.25;
             overflow-wrap: anywhere;
         }
         .dash-ai-insight-text {
             display: -webkit-box;
-            margin-top: 5px;
+            margin-top: 14px;
             overflow: hidden;
-            color: var(--text-secondary);
-            font-size: 13px;
-            line-height: 1.45;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-body);
+            line-height: 1.55;
             white-space: pre-line;
             overflow-wrap: anywhere;
             -webkit-box-orient: vertical;
-            -webkit-line-clamp: 3;
+            -webkit-line-clamp: 4;
         }
         .dash-ai-insight.is-expanded .dash-ai-insight-text {
             display: block;
@@ -542,39 +659,23 @@
             white-space: pre-wrap;
             -webkit-line-clamp: unset;
         }
-        .dash-ai-insight.is-expanded { align-items: start; }
-        .dash-ai-insight.is-expanded .dash-ai-insight-icon,
-        .dash-ai-insight.is-expanded .dash-ai-insight-arrow {
-            margin-top: 4px;
-        }
         .dash-ai-insight-copy small {
-            margin-top: 6px;
-            color: var(--text-muted);
-            font-size: 11px;
+            margin-top: 10px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
         }
         .dash-ai-insight-arrow {
+            position: absolute;
+            top: 30px;
+            right: 20px;
             width: 20px;
             height: 20px;
-            color: var(--text-muted);
-            transition: transform 0.16s ease;
+            color: var(--on-surface-variant);
+            transition: transform var(--duration-fast) var(--easing-standard);
         }
+        [dir="rtl"] .dash-ai-insight-arrow { right: auto; left: 20px; }
         .dash-ai-insight.is-expanded .dash-ai-insight-arrow {
             transform: rotate(180deg);
-        }
-        @media (max-width: 900px) {
-            .dash-ai-insight {
-                grid-template-columns: 40px minmax(0, 1fr) 20px;
-                gap: 12px;
-                margin-top: 12px;
-                padding: 14px;
-            }
-            .dash-ai-insight-icon {
-                width: 40px;
-                height: 40px;
-                border-radius: 11px;
-            }
-            .dash-ai-insight-copy strong { font-size: 15px; }
-            .dash-ai-insight-text { -webkit-line-clamp: 4; }
         }
         @media (prefers-reduced-motion: reduce) {
             .dash-ai-insight,
@@ -585,42 +686,40 @@
            power and motion state lead, while gear and speed keep fixed-width
            readouts so live updates never shift the surrounding hero layout. */
         .dash-drive-state {
-            --drive-accent: var(--text-muted);
+            --drive-accent: var(--on-surface-variant);
             position: relative;
             display: grid;
             grid-template-columns: 54px minmax(0, 1fr) auto;
             align-items: center;
-            gap: 12px;
-            min-height: 76px;
-            padding: 13px 0;
-            border-top: 1px solid var(--border-subtle);
-            border-bottom: 1px solid var(--border-subtle);
+            grid-column-gap: 12px;
+            min-height: 56px;
         }
         .dash-drive-state::before {
             content: '';
             position: absolute;
-            top: 14px;
-            bottom: 14px;
-            left: -4px;
+            top: 6px;
+            bottom: 6px;
+            left: 0;
             width: 3px;
             border-radius: 2px;
             background: var(--drive-accent);
         }
+        [dir="rtl"] .dash-drive-state::before { left: auto; right: 0; }
         .dash-drive-icon {
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 38px;
-            height: 38px;
+            width: 42px;
+            height: 42px;
             margin-left: 12px;
-            border-radius: 50%;
+            border-radius: 14px;
             color: var(--drive-accent);
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
+            background: var(--well);
         }
+        [dir="rtl"] .dash-drive-icon { margin-left: 0; margin-right: 12px; }
         .dash-drive-icon svg {
-            width: 19px;
-            height: 19px;
+            width: 20px;
+            height: 20px;
         }
         .dash-drive-copy {
             min-width: 0;
@@ -628,29 +727,27 @@
         .dash-drive-copy > span {
             display: block;
             color: var(--drive-accent);
-            font-size: 10px;
-            font-weight: 800;
-            text-transform: uppercase;
+            font-size: var(--fs-caption);
+            font-weight: 600;
+            line-height: 1.3;
+            overflow-wrap: break-word;
         }
         .dash-drive-copy > strong {
             display: block;
-            margin-top: 3px;
-            overflow: hidden;
-            color: var(--text-primary);
-            font-size: 24px;
-            line-height: 1.05;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            margin-top: 2px;
+            color: var(--on-surface);
+            font-size: var(--fs-headline);
+            font-weight: 700;
+            line-height: 1.2;
+            overflow-wrap: break-word;
         }
         .dash-drive-copy > small {
             display: block;
-            margin-top: 5px;
-            overflow: hidden;
-            color: var(--text-muted);
-            font-size: 11px;
-            font-weight: 600;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            margin-top: 2px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            line-height: 1.35;
+            overflow-wrap: break-word;
         }
         .dash-drive-readouts {
             display: grid;
@@ -661,300 +758,308 @@
             display: flex;
             min-width: 0;
             padding-left: 12px;
-            border-left: 1px solid var(--border-subtle);
+            border-left: 1px solid var(--hairline);
             flex-direction: column;
             justify-content: center;
         }
+        [dir="rtl"] .dash-drive-readout {
+            padding-left: 0;
+            padding-right: 12px;
+            border-left: 0;
+            border-right: 1px solid var(--hairline);
+        }
         .dash-drive-readout > span {
-            color: var(--text-muted);
-            font-size: 9px;
-            font-weight: 800;
-            text-transform: uppercase;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.3;
         }
         .dash-drive-readout strong {
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
+            color: var(--on-surface);
             font-weight: 700;
+            font-variant-numeric: tabular-nums;
         }
         .dash-drive-gear strong {
             margin-top: 2px;
-            font-size: 30px;
+            font-size: var(--fs-headline);
             line-height: 1;
         }
         .dash-drive-speed > div {
             display: flex;
             align-items: baseline;
-            gap: 4px;
             min-width: 0;
-            margin-top: 3px;
+            margin-top: 2px;
         }
         .dash-drive-speed strong {
-            font-size: 20px;
+            font-size: var(--fs-headline);
             line-height: 1;
         }
         .dash-drive-speed small {
+            margin-left: 4px;
             overflow: hidden;
-            color: var(--text-muted);
-            font-size: 9px;
-            font-weight: 700;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 600;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        [dir="rtl"] .dash-drive-speed small { margin-left: 0; margin-right: 4px; }
 
         .dash-drive-state.is-ready,
         .dash-drive-state.is-driving {
-            --drive-accent: var(--brand-primary);
+            --drive-accent: var(--primary);
         }
         .dash-drive-state.is-reverse,
         .dash-drive-state.is-neutral,
         .dash-drive-state.is-plugged {
-            --drive-accent: #f5a623;
+            --drive-accent: var(--warning);
         }
         .dash-drive-state.is-charging {
-            --drive-accent: #0ea5e9;
+            --drive-accent: var(--tertiary);
         }
         .dash-drive-state.is-fault {
-            --drive-accent: #e74c3c;
+            --drive-accent: var(--danger);
         }
         .dash-drive-state.is-ready .dash-drive-icon,
         .dash-drive-state.is-driving .dash-drive-icon {
-            background: rgba(0, 212, 170, 0.10);
-            border-color: rgba(0, 212, 170, 0.30);
+            background: var(--primary-soft);
         }
         .dash-drive-state.is-reverse .dash-drive-icon,
         .dash-drive-state.is-neutral .dash-drive-icon,
         .dash-drive-state.is-plugged .dash-drive-icon {
-            background: rgba(245, 166, 35, 0.10);
-            border-color: rgba(245, 166, 35, 0.30);
+            background: var(--warning-soft);
         }
         .dash-drive-state.is-charging .dash-drive-icon {
-            background: rgba(14, 165, 233, 0.10);
-            border-color: rgba(14, 165, 233, 0.30);
+            background: var(--tertiary-soft);
         }
         .dash-drive-state.is-fault .dash-drive-icon {
-            background: rgba(231, 76, 60, 0.10);
-            border-color: rgba(231, 76, 60, 0.30);
+            background: var(--danger-soft);
         }
 
-        .dash-hero-status,
+        /* The tile's way onward sits at its foot, however tall the row. */
         .dash-action-row {
             display: flex;
-            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: auto;
+            padding-top: 16px;
         }
-        /* When an action row follows a metric grid (the Charging card), the grid
-           has no bottom margin, so add space above the button. Other cards put a
-           map / command-grid (already margin-bottom'd) before their action row,
-           so this adjacent-sibling rule only affects the metric-grid case. */
-        .dash-metric-grid + .dash-action-row { margin-top: 16px; }
 
         /* Charging card live-state chip + status dot. The dot colour maps to
            the charge state (idle/plugged/charging/full/fault). */
         .dash-charge-chip {
             display: inline-flex;
             align-items: center;
-            gap: 8px;
+            align-self: flex-start;
+            box-sizing: border-box;
+            max-width: 100%;
+            min-height: 32px;
             margin-bottom: 14px;
-            padding: 7px 12px;
-            border-radius: 999px;
-            background: var(--bg-elevated);
-            font-size: 13px;
+            padding: 6px 12px;
+            border-radius: var(--radius-full);
+            background: var(--well);
+            font-size: var(--fs-label);
             font-weight: 600;
-            color: var(--text-secondary);
+            color: var(--on-surface-variant);
         }
+        .dash-charge-chip .ic_status_dot { margin-right: 8px; }
+        [dir="rtl"] .dash-charge-chip .ic_status_dot { margin-right: 0; margin-left: 8px; }
         .ic_status_dot {
             width: 9px;
             height: 9px;
             border-radius: 50%;
-            background: var(--text-tertiary, #9aa0a6);
+            background: var(--outline);
             flex: 0 0 auto;
         }
-        .ic_status_dot.dot-idle   { background: var(--text-tertiary, #9aa0a6); }
-        .ic_status_dot.dot-warn   { background: #f5a623; }
+        .ic_status_dot.dot-idle   { background: var(--outline); }
+        .ic_status_dot.dot-warn   { background: var(--warning); }
         .ic_status_dot.dot-active {
-            background: #0ea5e9;
-            box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.6);
-            animation: dashChargePulse 1.8s ease-out infinite;
+            background: var(--tertiary);
+            animation: dashChargePulse 1.8s ease-in-out infinite;
         }
-        .ic_status_dot.dot-good   { background: #2ecc71; }
-        .ic_status_dot.dot-danger { background: #e74c3c; }
+        .ic_status_dot.dot-good   { background: var(--status-success); }
+        .ic_status_dot.dot-danger { background: var(--danger); }
         @keyframes dashChargePulse {
-            0%   { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.55); }
-            70%  { box-shadow: 0 0 0 7px rgba(14, 165, 233, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0); }
+            0%, 100% { opacity: 1; }
+            50%      { opacity: 0.4; }
         }
 
+        /* Status chips (mock .chip): they wrap rather than scroll sideways. */
         .dash-hero-status {
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            padding-bottom: 2px;
-            scrollbar-width: none;
+            display: flex;
+            flex-wrap: wrap;
+            margin: 14px -8px -8px 0;
         }
-
-        .dash-hero-status::-webkit-scrollbar { display: none; }
-
-        .dash-action-row { flex-wrap: wrap; }
+        [dir="rtl"] .dash-hero-status { margin: 14px 0 -8px -8px; }
 
         .dash-chip {
-            padding: 8px 11px;
-            border-radius: 999px;
-            background: var(--bg-elevated);
-            color: var(--text-secondary);
-            border: 1px solid var(--border-subtle);
-            font-size: 12px;
-            font-weight: 700;
-            white-space: nowrap;
-            /* Cap chip width so a verbose locale (long device-id, long
-               GPS-cached label, etc.) can't push the chip row past the
-               hero card boundary. Ellipsis kicks in only past the cap;
-               normal-length chips render unchanged. */
-            max-width: 180px;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            display: inline-flex;
+            align-items: center;
+            box-sizing: border-box;
+            max-width: 100%;
+            min-height: 32px;
+            margin: 0 8px 8px 0;
+            padding: 6px 12px;
+            border-radius: var(--radius-full);
+            background: var(--well);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            font-weight: 500;
+            line-height: 1.25;
+            overflow-wrap: break-word;
         }
+        [dir="rtl"] .dash-chip { margin: 0 0 8px 8px; }
 
-        .dash-chip.good { color: var(--brand-primary); border-color: rgba(0, 212, 170, 0.35); }
-        .dash-chip.warn { color: #f59e0b; border-color: rgba(245, 158, 11, 0.35); }
-        .dash-chip.alert { color: #ef4444; border-color: rgba(239, 68, 68, 0.35); }
+        .dash-chip.good { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+        .dash-chip.warn { background: var(--warning-soft); color: var(--warning); font-weight: 600; }
+        .dash-chip.alert { background: var(--danger-soft); color: var(--danger); font-weight: 600; }
 
-        /* ── Vehicle glance panel ────────────────────────────────────
-           Hero right column: top-down schematic + SoC ring + glance
-           rows, followed by learned-range intelligence and an optional
-           charging strip. */
+        /* ── Vehicle glance (the hero's content) ─────────────────────
+           Mock hero: drive state and chips, then SoC and learned range
+           on the left, the top-down schematic on the right, the five
+           status tiles across the bottom, then the charging strip.
+           Optional blocks space themselves with margins, not row gaps,
+           so a hidden one leaves no trace. */
         .dash-glance {
             display: grid;
-            grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1.1fr);
-            grid-template-rows: 1fr auto;
-            gap: 6px 14px;
-            width: 100%;
-            min-height: 270px;
-            height: 100%;
-            box-sizing: border-box;
-            padding: 6px 4px;
-        }
-        .dash-glance.has-range {
-            grid-template-rows: 1fr auto auto;
+            flex: 1 1 auto;
+            grid-template-columns: minmax(0, 1fr) 220px;
+            grid-template-rows: auto 1fr auto auto auto;
+            grid-template-areas:
+                "main   car"
+                "soc    car"
+                "range  car"
+                "rows   rows"
+                "charge charge";
+            grid-column-gap: 20px;
+            min-width: 0;
         }
 
         .dash-glance-car {
-            grid-row: 1;
+            grid-area: car;
             display: flex;
             align-items: center;
             justify-content: center;
+            min-width: 0;
             min-height: 0;
         }
 
+        /* The schematic scales with its column (viewBox, meet). */
         .dash-car-svg {
-            height: 100%;
-            max-height: 280px;
+            display: block;
             width: 100%;
+            height: auto;
+            max-height: 420px;
+            overflow: visible;
         }
 
-        /* Schematic palette — theme vars keep it legible in light mode. */
+        /* Schematic palette from tokens, legible in both themes. */
         .dash-car-body {
-            fill: var(--bg-elevated);
-            stroke: var(--border-default);
+            fill: var(--well);
+            stroke: var(--outline-variant);
             stroke-width: 1.5;
         }
-        .dash-car-glass { fill: rgba(0, 212, 170, 0.10); stroke: transparent; transition: stroke .25s ease; }
+        .dash-car-glass { fill: var(--primary); fill-opacity: 0.12; stroke: transparent; transition: stroke .25s ease; }
         .dash-car-roof {
-            fill: var(--bg-surface);
-            stroke: var(--border-subtle);
+            fill: var(--tile);
+            stroke: var(--hairline);
             stroke-width: 1;
         }
         /* AC on → glass picks up a cool tint so climate reads at a glance. */
-        .dash-glance.ac-on .dash-car-glass { fill: rgba(14, 165, 233, 0.22); }
+        .dash-glance.ac-on .dash-car-glass { fill: var(--tertiary); fill-opacity: 0.28; }
         .dash-glance.vehicle-ready .dash-car-body,
         .dash-glance.vehicle-driving .dash-car-body {
-            stroke: var(--brand-primary);
+            stroke: var(--primary);
         }
         .dash-glance.vehicle-reverse .dash-car-body,
         .dash-glance.vehicle-neutral .dash-car-body,
         .dash-glance.vehicle-plugged .dash-car-body {
-            stroke: #f5a623;
+            stroke: var(--warning);
         }
-        .dash-glance.vehicle-charging .dash-car-body { stroke: #0ea5e9; }
-        .dash-glance.vehicle-fault .dash-car-body { stroke: #e74c3c; }
+        .dash-glance.vehicle-charging .dash-car-body { stroke: var(--tertiary); }
+        .dash-glance.vehicle-fault .dash-car-body { stroke: var(--danger); }
         .dash-glance.vehicle-parked .dash-car-svg { opacity: 0.74; }
 
         .dash-car-door {
-            fill: var(--text-tertiary, #9aa0a6); opacity: 0.5;
+            fill: var(--outline); opacity: 0.5;
             transition: fill .25s ease, opacity .25s ease, transform .25s ease;
         }
-        .dash-car-door.locked   { fill: var(--brand-primary); opacity: 1; }
-        .dash-car-door.unlocked { fill: #f5a623; opacity: 1; }
+        .dash-car-door.locked   { fill: var(--primary); opacity: 1; }
+        .dash-car-door.unlocked { fill: var(--warning); opacity: 1; }
         /* An OPEN door outranks lock state — warn amber (door-open is WARN severity,
            the same tier as "unlocked"), and nudged ajar (outward). */
-        .dash-car-door.open { fill: #f5a623; opacity: 1; }
+        .dash-car-door.open { fill: var(--warning); opacity: 1; }
         .dash-car-door.open.lf, .dash-car-door.open.lr { transform: translateX(-3px); }
         .dash-car-door.open.rf, .dash-car-door.open.rr { transform: translateX(3px); }
 
         /* Trunk/hood open → outline the rear/front windshield in warn amber. Uses stroke,
            so it never clashes with the AC fill tint on the same glass. */
-        .dash-car-glass.open { stroke: #f5a623; stroke-width: 2.5; }
+        .dash-car-glass.open { stroke: var(--warning); stroke-width: 2.5; }
 
-        .dash-car-tyre { fill: var(--border-default); }
-        .dash-car-tyre.normal { fill: var(--brand-primary); opacity: 0.75; }
-        .dash-car-tyre.warn   { fill: #f5a623; }
-        .dash-car-tyre.alert  { fill: #e74c3c; }
+        .dash-car-tyre { fill: var(--outline-variant); }
+        .dash-car-tyre.normal { fill: var(--primary); opacity: 0.75; }
+        .dash-car-tyre.warn   { fill: var(--warning); }
+        .dash-car-tyre.alert  { fill: var(--danger); }
 
         .dash-car-psi {
-            fill: var(--text-muted);
+            fill: var(--on-surface-variant);
             font-size: 11px;
             font-weight: 700;
             font-family: inherit;
         }
-        .dash-car-psi.warn  { fill: #f5a623; }
-        .dash-car-psi.alert { fill: #e74c3c; }
+        .dash-car-psi.warn  { fill: var(--warning); }
+        .dash-car-psi.alert { fill: var(--danger); }
 
         .dash-car-lock rect,
-        .dash-car-lock path { stroke: var(--text-muted); stroke-width: 1.6; }
-        .dash-car-lock rect { fill: var(--bg-surface); }
+        .dash-car-lock path { stroke: var(--on-surface-variant); stroke-width: 1.6; }
+        .dash-car-lock rect { fill: var(--tile); }
         .dash-car-lock.locked rect,
-        .dash-car-lock.locked path { stroke: var(--brand-primary); }
+        .dash-car-lock.locked path { stroke: var(--primary); }
         .dash-car-lock.unlocked rect,
-        .dash-car-lock.unlocked path { stroke: #f5a623; }
+        .dash-car-lock.unlocked path { stroke: var(--warning); }
         /* Unlocked → open shackle (swing it off the body). */
         .dash-car-lock.unlocked #glLockShackle,
         .dash-car-lock.unlocked path { transform: translateX(3px) rotate(14deg); }
 
         .dash-glance-side {
-            grid-row: 1;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 12px;
+            grid-area: soc;
+            align-self: center;
             min-width: 0;
+            margin-top: 18px;
         }
 
-        /* SoC donut. stroke-dasharray = circumference (2π·41 ≈ 257.6);
-           JS drives stroke-dashoffset. */
+        /* SoC (mock big numerals): a compact ring gauge beside the figure.
+           stroke-dasharray = circumference (2π·41 ≈ 257.6); JS drives
+           stroke-dashoffset. */
         .dash-soc-ring {
             position: relative;
-            width: 108px;
-            height: 108px;
-            align-self: center;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
         }
         .dash-soc-ring svg {
-            width: 100%;
-            height: 100%;
+            flex: 0 0 auto;
+            width: 64px;
+            height: 64px;
+            margin-right: 16px;
             transform: rotate(-90deg);
         }
+        [dir="rtl"] .dash-soc-ring svg { margin-right: 0; margin-left: 16px; }
         .dash-ring-track {
             fill: none;
-            stroke: var(--bg-elevated);
-            stroke-width: 7;
+            stroke: var(--well-2);
+            stroke-width: 9;
         }
         .dash-ring-fill {
             fill: none;
-            stroke: var(--brand-primary);
-            stroke-width: 7;
+            stroke: var(--primary);
+            stroke-width: 9;
             stroke-linecap: round;
             stroke-dasharray: 257.6;
             stroke-dashoffset: 257.6;
             transition: stroke-dashoffset 0.6s cubic-bezier(0.2, 0, 0, 1), stroke 0.3s ease;
         }
-        .dash-soc-ring.soc-mid .dash-ring-fill { stroke: #f5a623; }
-        .dash-soc-ring.soc-low .dash-ring-fill { stroke: #e74c3c; }
+        .dash-soc-ring.soc-mid .dash-ring-fill { stroke: var(--warning); }
+        .dash-soc-ring.soc-low .dash-ring-fill { stroke: var(--danger); }
         .dash-glance.charging .dash-ring-fill { animation: dashRingCharge 1.6s ease-in-out infinite; }
         @keyframes dashRingCharge {
             0%, 100% { stroke-opacity: 1; }
@@ -962,155 +1067,179 @@
         }
 
         .dash-ring-text {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-        }
-        .dash-ring-text strong {
-            color: var(--text-primary);
-            font-size: 21px;
-            line-height: 1.1;
-        }
-        .dash-ring-text span {
-            color: var(--text-muted);
-            font-size: 11px;
-            font-weight: 700;
-        }
-
-        .dash-glance-rows {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-        .dash-glance-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 7px 10px;
-            border-radius: 8px;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            font-size: 12px;
             min-width: 0;
         }
+        .dash-ring-text strong {
+            display: block;
+            color: var(--on-surface);
+            font-size: var(--fs-hero);
+            font-weight: 700;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .dash-ring-text span {
+            display: block;
+            margin-top: 6px;
+            color: var(--on-surface);
+            font-size: var(--fs-headline);
+            font-weight: 600;
+            line-height: 1.15;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Status tiles (mock glance): icon, label, value. */
+        .dash-glance-rows {
+            grid-area: rows;
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-gap: 8px;
+            margin-top: 18px;
+        }
+        .dash-glance-row {
+            position: relative;
+            z-index: 0;
+            min-width: 0;
+            padding: 12px;
+            border-radius: var(--radius-md);
+            background: var(--well);
+        }
         .dash-glance-row svg {
-            width: 15px;
-            height: 15px;
-            flex: 0 0 auto;
-            color: var(--text-muted);
+            display: block;
+            width: 18px;
+            height: 18px;
+            color: var(--on-surface-variant);
         }
         .dash-glance-row span {
-            color: var(--text-muted);
-            font-weight: 700;
+            display: block;
+            margin-top: 8px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.3;
+            overflow-wrap: break-word;
         }
         .dash-glance-row strong {
-            margin-left: auto;
-            color: var(--text-primary);
-            font-weight: 700;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            display: block;
+            margin-top: 2px;
+            color: var(--on-surface);
+            font-size: var(--fs-body);
+            font-weight: 600;
+            line-height: 1.25;
+            overflow-wrap: break-word;
         }
-        .dash-glance-row strong.warn { color: #f5a623; }
-        .dash-glance-row strong.alert { color: #e74c3c; }
-        .dash-glance-row strong.good { color: var(--brand-primary); }
+        .dash-glance-row strong.warn { color: var(--warning); }
+        .dash-glance-row strong.alert { color: var(--danger); }
+        .dash-glance-row strong.good { color: var(--primary); }
+        /* Warn / alert also tint the tile; the value's class is the only hook. */
+        .dash-glance-row strong.warn::after,
+        .dash-glance-row strong.alert::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            z-index: -1;
+            border-radius: var(--radius-md);
+            background: var(--warning-soft);
+        }
+        .dash-glance-row strong.alert::after { background: var(--danger-soft); }
 
-        /* PHEV fuel gauge under the SoC ring: pump icon + level bar + "62% · 410 km". */
+        /* PHEV fuel gauge under the SoC: pump icon + level bar + "62% · 410 km". */
         .dash-glance-fuel {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 7px 10px;
-            border-radius: 8px;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            font-size: 12px;
-            font-weight: 700;
-            color: var(--text-primary);
+            margin-top: 12px;
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            background: var(--well);
+            font-size: var(--fs-label);
+            font-weight: 600;
+            color: var(--on-surface);
         }
         .dash-glance-fuel[hidden] { display: none; }
         .dash-glance-fuel svg {
-            width: 15px;
-            height: 15px;
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
             flex: 0 0 auto;
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
         }
-        .dash-glance-fuel span { white-space: nowrap; }
+        .dash-glance-fuel span { min-width: 0; overflow-wrap: break-word; }
         .dash-fuel-bar {
             flex: 1 1 auto;
             height: 6px;
-            border-radius: 999px;
-            background: var(--bg-base);
+            margin-right: 8px;
+            border-radius: var(--radius-full);
+            background: var(--well-2);
             overflow: hidden;
             min-width: 30px;
         }
+        [dir="rtl"] .dash-glance-fuel svg,
+        [dir="rtl"] .dash-fuel-bar { margin-right: 0; margin-left: 8px; }
         .dash-fuel-bar i {
             display: block;
             height: 100%;
             width: 0;
             border-radius: inherit;
-            background: #FBBF24;
+            background: var(--primary);
             transition: width 0.5s cubic-bezier(0.2, 0, 0, 1), background 0.3s ease;
         }
-        .dash-glance-fuel.fuel-warn i { background: #F59E0B; }
-        .dash-glance-fuel.fuel-low i  { background: #EF4444; }
+        .dash-glance-fuel.fuel-warn i { background: var(--warning); }
+        .dash-glance-fuel.fuel-low i  { background: var(--danger); }
 
-        /* Learned-vs-vehicle range comparison. This is an unframed band
-           within the hero rather than a nested card: two explicit values,
-           proportional tracks, then confidence/sample context. */
+        /* Learned-vs-vehicle range comparison (mock range line + bar):
+           two explicit values, proportional tracks, then confidence /
+           sample context. */
         .dash-range-intel {
-            grid-column: 1 / -1;
-            grid-row: 2;
+            grid-area: range;
             min-width: 0;
-            padding: 12px 2px 4px;
-            border-top: 1px solid var(--border-subtle);
+            margin-top: 16px;
         }
         .dash-range-intel[hidden] { display: none; }
         .dash-range-values {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 16px;
+            grid-gap: 16px;
         }
         .dash-range-value {
             min-width: 0;
         }
         .dash-range-value span {
             display: block;
-            color: var(--text-muted);
-            font-size: 11px;
-            font-weight: 700;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.3;
+            overflow-wrap: break-word;
         }
         .dash-range-value strong {
             display: block;
-            margin-top: 3px;
-            color: var(--text-primary);
-            font-size: 20px;
-            line-height: 1.1;
+            margin-top: 2px;
+            color: var(--on-surface);
+            font-size: var(--fs-title);
+            font-weight: 600;
+            line-height: 1.2;
+            font-variant-numeric: tabular-nums;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
         .dash-range-value--personalized strong {
-            color: var(--brand-primary);
-            font-size: 24px;
+            color: var(--primary);
+            font-size: var(--fs-headline);
         }
         .dash-range-tracks {
             display: grid;
-            gap: 4px;
-            margin-top: 9px;
+            grid-row-gap: 6px;
+            margin-top: 12px;
         }
         .dash-range-tracks > div {
-            height: 3px;
+            height: 6px;
             overflow: hidden;
-            border-radius: 999px;
-            background: var(--border-subtle);
+            border-radius: var(--radius-full);
+            background: var(--well-2);
         }
         .dash-range-tracks i {
             display: block;
@@ -1119,64 +1248,58 @@
             border-radius: inherit;
             transition: width 0.55s cubic-bezier(0.2, 0, 0, 1);
         }
-        #dashPersonalizedTrack { background: var(--brand-primary); }
-        #dashVehicleTrack { background: var(--text-muted); opacity: 0.65; }
+        #dashPersonalizedTrack { background: linear-gradient(90deg, var(--primary), var(--tertiary)); }
+        [dir="rtl"] #dashPersonalizedTrack { background: linear-gradient(270deg, var(--primary), var(--tertiary)); }
+        #dashVehicleTrack { background: var(--outline); opacity: 0.7; }
         .dash-range-meta {
             display: flex;
             flex-wrap: wrap;
-            gap: 4px 12px;
             margin-top: 8px;
-            color: var(--text-muted);
-            font-size: 10px;
-            font-weight: 700;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
             line-height: 1.35;
         }
+        .dash-range-meta span { margin-right: 12px; }
+        [dir="rtl"] .dash-range-meta span { margin-right: 0; margin-left: 12px; }
         .dash-range-meta span:empty { display: none; }
 
-        /* Charging takeover strip — spans both columns when visible. */
+        /* Charging takeover strip — full width under the status tiles. */
         .dash-glance-charge {
-            grid-column: 1 / -1;
-            grid-row: 2;
+            grid-area: charge;
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 9px 12px;
-            border-radius: 8px;
-            background: rgba(14, 165, 233, 0.12);
-            border: 1px solid rgba(14, 165, 233, 0.35);
-            color: #0ea5e9;
-            font-size: 13px;
-            font-weight: 700;
+            margin-top: 12px;
+            padding: 10px 14px;
+            border-radius: var(--radius-md);
+            background: var(--tertiary-soft);
+            color: var(--tertiary);
+            font-size: var(--fs-label);
+            font-weight: 600;
+            line-height: 1.3;
         }
-        .dash-glance.has-range .dash-glance-charge { grid-row: 3; }
         .dash-glance-charge[hidden] { display: none; }
         .dash-glance-charge svg {
-            width: 15px;
-            height: 15px;
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
             flex: 0 0 auto;
             animation: dashBoltPulse 1.4s ease-in-out infinite;
         }
+        [dir="rtl"] .dash-glance-charge svg { margin-right: 0; margin-left: 8px; }
         @keyframes dashBoltPulse {
             0%, 100% { opacity: 1; }
             50%      { opacity: 0.45; }
         }
 
-        .dash-grid {
-            display: grid;
-            grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.2fr);
-            gap: 16px;
-            margin-top: 16px;
+        /* Location tile: the map runs edge to edge across its top. */
+        .dash-location-card {
+            padding: 0;
+            overflow: hidden;
         }
+        .dash-location-card > .dash-card-head { margin: 0; padding: 16px 20px 0; }
+        .dash-location-card > .dash-action-row { padding: 16px 20px 20px; }
 
-        .dash-card {
-            background: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: 8px;
-            padding: 18px;
-        }
-
-        .dash-info-card { grid-column: 1 / -1; }
         /* ── Drag-reorder handle ─────────────────────────────────────
            Six-dot grip sitting in the card head (or top-right corner
            for cards without a head). Wide hit target for thumb drag;
@@ -1188,24 +1311,31 @@
             display: none;
             align-items: center;
             justify-content: center;
-            width: 32px;
-            height: 32px;
+            width: 40px;
+            height: 40px;
+            margin: -8px -10px -8px 12px;
             padding: 0;
             border: 0;
             background: transparent;
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
             cursor: grab;
-            border-radius: 8px;
+            border-radius: var(--radius-full);
             touch-action: none;
             -webkit-user-select: none;
             user-select: none;
-            transition: background 0.15s ease, color 0.15s ease;
+            transition: background-color 0.15s ease, color 0.15s ease;
             flex: 0 0 auto;
         }
+        [dir="rtl"] .dash-card-grip { margin: -8px 12px -8px -10px; }
+        @media (pointer: coarse) {
+            .dash-card-grip { width: 44px; height: 44px; }
+        }
         .dash-cards-ready .dash-card-grip { display: inline-flex; }
-        .dash-card-grip:hover {
-            background: var(--bg-elevated);
-            color: var(--text-primary);
+        @media (hover: hover) {
+            .dash-card-grip:hover {
+                background: var(--state-hover);
+                color: var(--on-surface);
+            }
         }
         .dash-card-grip:active { cursor: grabbing; }
         .dash-card-grip svg { width: 18px; height: 18px; }
@@ -1216,16 +1346,16 @@
         .dash-card.dash-card-dragging {
             cursor: grabbing;
             opacity: 0.96;
-            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45),
-                        0 0 0 1px var(--brand-primary);
+            box-shadow: var(--shadow-lg), 0 0 0 2px var(--primary);
             transform: scale(1.01);
             z-index: 10;
             transition: box-shadow 0.18s ease, transform 0.18s ease;
         }
         .dash-card-ghost {
-            outline: 2px dashed rgba(0, 212, 170, 0.5);
+            outline: 2px dashed var(--primary);
             outline-offset: -4px;
-            background: rgba(0, 212, 170, 0.06);
+            background: var(--primary-soft);
+            box-shadow: none;
             /* Hide ghost children — only the placeholder shape matters. */
         }
         .dash-card-ghost > * { visibility: hidden; }
@@ -1235,302 +1365,1441 @@
             transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
         }
 
+        /* Tile head (mock .tile-head): kicker over title, grip at the end. */
         .dash-card-head {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 12px;
             margin-bottom: 16px;
         }
+        .dash-card-head > div { min-width: 0; }
 
         .dash-card-kicker {
             display: block;
-            color: var(--text-muted);
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            margin-bottom: 3px;
-        }
-
-        .dash-card h2 {
-            font-size: 18px;
-            line-height: 1.2;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.3;
+            margin-bottom: 1px;
         }
 
         .dash-icon-btn,
         .dash-primary-btn,
         .dash-secondary-btn,
         .dash-command {
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-elevated);
-            color: var(--text-primary);
-            border-radius: 8px;
-            transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+            border: 0;
+            background: var(--well);
+            color: var(--on-surface);
+            font: inherit;
+            transition: background-color var(--duration-fast) var(--easing-standard),
+                box-shadow var(--duration-fast) var(--easing-standard),
+                transform var(--duration-fast) var(--easing-standard);
         }
 
         .dash-icon-btn {
-            width: 38px;
-            height: 38px;
+            width: 40px;
+            height: 40px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            border-radius: var(--radius-full);
         }
 
         .dash-icon-btn svg { width: 20px; height: 20px; }
 
+        /* Filled primary pill: the tile's main action. */
         .dash-primary-btn {
-            min-height: 44px;
+            box-sizing: border-box;
+            min-height: 48px;
             width: 100%;
-            padding: 0 15px;
+            padding: 8px 20px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 9px;
-            font-weight: 800;
-            font-size: 13px;
-            background: var(--brand-primary);
-            border-color: var(--brand-primary);
-            color: #001f1a;
+            border-radius: var(--radius-full);
+            font-weight: 600;
+            font-size: var(--fs-body);
+            line-height: 1.25;
+            text-align: center;
+            background: var(--primary);
+            color: var(--on-primary);
+            cursor: pointer;
         }
 
         .dash-primary-btn svg {
             width: 18px;
             height: 18px;
+            margin-right: 8px;
             flex: 0 0 auto;
+        }
+        [dir="rtl"] .dash-primary-btn svg { margin-right: 0; margin-left: 8px; }
+
+        /* Charging details leads elsewhere rather than acting: tonal. */
+        .dash-charge-card .dash-primary-btn {
+            background: var(--primary-soft);
+            color: var(--primary);
         }
 
         .dash-secondary-btn {
-            min-height: 38px;
-            padding: 0 13px;
+            min-height: 40px;
+            padding: 0 16px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            font-weight: 700;
-            font-size: 13px;
+            border-radius: var(--radius-full);
+            font-weight: 600;
+            font-size: var(--fs-label);
         }
 
-        .dash-icon-btn:hover,
-        .dash-primary-btn:hover,
-        .dash-secondary-btn:hover,
-        .dash-command:hover {
-            background: rgba(0, 212, 170, 0.10);
-            border-color: rgba(0, 212, 170, 0.35);
-            color: var(--brand-primary);
+        @media (hover: hover) {
+            .dash-icon-btn:hover,
+            .dash-secondary-btn:hover,
+            .dash-command:hover,
+            .dash-charge-card .dash-primary-btn:hover {
+                box-shadow: inset 0 0 0 999px var(--state-hover);
+            }
+            .dash-location-card .dash-primary-btn:hover {
+                box-shadow: 0 8px 22px var(--primary-glow);
+            }
         }
-
-        .dash-primary-btn:hover {
-            background: #00f0c0;
-            border-color: #00f0c0;
-            color: #001f1a;
-        }
+        .dash-command:active,
+        .dash-primary-btn:active { transform: scale(0.98); }
 
         .dash-command.pending {
             opacity: 0.55;
             pointer-events: none;
         }
 
+        /* Map tile chrome: full bleed under the tile's rounded top, Leaflet's
+           zoom pair on the bar surface. Fixed heights only: Leaflet
+           re-measures on window resize, not when a grid row grows. */
         .dash-location-map {
-            border-radius: 8px;
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-elevated);
+            order: -1;
             overflow: hidden;
-            margin-bottom: 14px;
+            background: var(--well);
         }
 
         .dash-location-map #mapContainer {
             width: 100%;
-            height: 180px;
+            height: 200px;
+        }
+        .dash-location-map .leaflet-container {
+            background: var(--well);
+            font: inherit;
+        }
+        .dash-location-map .leaflet-bar {
+            border: 0;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+        }
+        .dash-location-map .leaflet-bar a {
+            width: 36px;
+            height: 36px;
+            line-height: 36px;
+            border-bottom: 1px solid var(--hairline);
+            background: var(--bar);
+            color: var(--on-surface);
+        }
+        .dash-location-map .leaflet-bar a:last-child { border-bottom: 0; }
+        @media (pointer: coarse) {
+            .dash-location-map .leaflet-bar a {
+                width: 44px;
+                height: 44px;
+                line-height: 44px;
+            }
         }
 
+        /* Quick controls (mock .ctl tiles): icon chip over the label. */
         .dash-command-grid {
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
+            grid-gap: 10px;
         }
 
-        /* Recordings/Trips/Live live in their own grid below the vehicle controls.
-           Always 3 columns regardless of viewport — only 3 items, never wraps. */
+        /* Live/Recordings/Trips/Parking get their own grid below the vehicle controls. */
         .dash-command-grid-media {
             margin-top: 10px;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
         }
 
         #dashCustomCommands {
             margin-top: 10px;
         }
 
+        /* Power on/off always pair 2-up so the two never split across rows. */
+        .dash-command-grid-power {
+            margin-top: 10px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
         .dash-command {
-            min-height: 78px;
+            position: relative;
+            box-sizing: border-box;
+            min-width: 0;
+            min-height: 92px;
+            padding: 14px;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            font-weight: 700;
-            font-size: 13px;
+            align-items: flex-start;
+            justify-content: space-between;
+            border-radius: var(--radius-md);
+            font-weight: 600;
+            font-size: var(--fs-body);
+            line-height: 1.2;
+            text-align: left;
+            text-decoration: none;
+            cursor: pointer;
         }
+        [dir="rtl"] .dash-command { text-align: right; }
 
         .dash-command svg {
-            width: 23px;
-            height: 23px;
+            box-sizing: border-box;
+            width: 36px;
+            height: 36px;
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 12px;
+            background: var(--well-2);
             flex: 0 0 auto;
         }
+        .dash-command span {
+            display: block;
+            max-width: 100%;
+            overflow-wrap: break-word;
+        }
+        /* Shortcuts to other pages read as compact row tiles. */
+        .dash-command-grid-media .dash-command {
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 56px;
+            padding: 10px 12px;
+            font-size: var(--fs-label);
+        }
+        .dash-command-grid-media .dash-command svg { margin: 0 10px 0 0; }
+        [dir="rtl"] .dash-command-grid-media .dash-command svg { margin: 0 0 0 10px; }
 
+        /* Main info + charging readings (mock .metric tiles). */
         .dash-metric-grid {
             display: grid;
             grid-template-columns: repeat(6, minmax(0, 1fr));
-            gap: 10px;
+            grid-gap: 8px;
         }
 
-        /* Charging card has 4 metrics, not 6 — give them their own 4-up track
-           so they fill the full-width card evenly instead of leaving two empty
-           trailing columns. The ≤980px media rule below still collapses this to
-           2-up (same specificity, declared later wins inside the breakpoint). */
+        /* The charging card is always a one-column bento tile, so its four
+           readings sit 2 x 2. */
         .dash-metric-grid--4 {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        /* Keep the two connectivity readings together, including when optional
+           fuel or odometer readings are present. */
+        .dash-metric-grid.has-connectivity,
+        .dash-metric-grid.has-fuel,
+        .dash-metric-grid.has-odo {
             grid-template-columns: repeat(4, minmax(0, 1fr));
         }
 
-        /* PHEV: the Fuel metric makes 7 cells — a 6-up track would strand the
-           seventh alone on a second row, so re-track to 4-up (4 + 3) while the
-           fuel cell is visible. The ≤980px rules still collapse to 2-up. */
-        .dash-metric-grid.has-fuel {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+        .dash-connectivity-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-column: span 2;
+            min-width: 0;
+            grid-gap: 8px;
         }
 
         .dash-metric {
-            min-height: 76px;
-            padding: 13px;
-            border-radius: 8px;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-        }
-
-        .dash-metric span,
-        .dash-metric strong {
-            display: block;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            min-width: 0;
+            padding: 12px 14px;
+            border-radius: var(--radius-md);
+            background: var(--well);
         }
 
         .dash-metric span {
-            color: var(--text-muted);
-            font-size: 12px;
-            font-weight: 700;
-            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            margin-bottom: 4px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.3;
+            overflow-wrap: break-word;
         }
 
         .dash-metric strong {
-            color: var(--text-primary);
-            font-size: 20px;
-            line-height: 1.1;
+            display: block;
+            color: var(--on-surface);
+            font-size: var(--fs-headline);
+            font-weight: 600;
+            line-height: 1.15;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: break-word;
+        }
+
+        .dash-metric .dash-radio-value {
+            display: flex;
+            align-items: center;
+        }
+
+        .dash-radio-value svg {
+            width: 18px;
+            height: 18px;
+            margin-right: 6px;
+            flex: 0 0 auto;
+            opacity: .6;
+        }
+        [dir="rtl"] .dash-radio-value svg { margin-right: 0; margin-left: 6px; }
+
+        .dash-metric .dash-radio-value span {
+            min-width: 0;
+            color: inherit;
+            font-size: inherit;
+            font-weight: inherit;
+            line-height: inherit;
+            margin: 0;
+        }
+
+        .dash-bluetooth-metric[data-state="on"] .dash-radio-value {
+            color: var(--primary);
+        }
+
+        .dash-bluetooth-metric[data-state="on"] .dash-radio-value svg {
+            opacity: 1;
+        }
+
+        .dash-bluetooth-metric[data-state="turning_on"] .dash-radio-value,
+        .dash-bluetooth-metric[data-state="turning_off"] .dash-radio-value,
+        .dash-bluetooth-metric[data-state="unavailable"] .dash-radio-value {
+            font-size: var(--fs-body);
+        }
+
+        .dash-bluetooth-metric[data-state="stale"] .dash-radio-value,
+        .dash-bluetooth-metric[data-state="unknown"] .dash-radio-value,
+        .dash-bluetooth-metric[data-state="unavailable"] .dash-radio-value {
+            color: var(--on-surface-variant);
         }
 
         /* PHEV range breakdown line ("150 km EV · 260 km fuel") under the total. */
         .dash-metric small {
             display: block;
             margin-top: 4px;
-            color: var(--text-muted);
-            font-size: 11px;
-            font-weight: 700;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 1.3;
+            overflow-wrap: break-word;
         }
 
-        /* The 260px sidebar leaves the 638px hero grid enough room only
-           from a 984px viewport upward. */
-        @media (max-width: 983px) {
-            .dash-hero { grid-template-columns: 1fr; }
+        /* ── Responsive ──────────────────────────────────────────────
+           Three bento columns from 1024px (the schematic column narrows
+           until the full sidebar returns at 1280px), two from 600px,
+           one on phones. */
+        @media (min-width: 1600px) {
+            .dash-glance { grid-template-columns: minmax(0, 1fr) 240px; }
+        }
+        @media (min-width: 1024px) and (max-width: 1279px) {
+            html:not([data-android-embed="1"]) .dash-glance { grid-template-columns: minmax(0, 1fr) 170px; }
         }
 
-        @media (max-width: 980px) {
-            .dash-grid,
-            .dash-metric-grid,
-            .dash-metric-grid.has-fuel {
+        @media (max-width: 1023px) {
+            .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dash-grid > .dash-hero { grid-column: 1 / -1; grid-row: auto; }
+            .dash-grid > .dash-actions-card { grid-column: auto; }
+            .dash-glance { grid-template-columns: minmax(0, 1fr) 200px; }
+            /* Quick controls are a one-column tile from here down. */
+            .dash-command-grid,
+            .dash-command-grid-media { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            /* A tile left alone on its row spans both columns. */
+            #dashCustomCommands > .dash-command:last-child:nth-child(odd) { grid-column: 1 / -1; }
+        }
+
+        /* Main info as a one-column tile (AI tile hidden): two readings per
+           row, a reading left alone spans the row. */
+        @media (min-width: 600px) {
+            #dashAiInsight[hidden] ~ .dash-info-card .dash-metric-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
-            .dash-metric-grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .dash-info-card { grid-column: auto; }
+            #dashAiInsight[hidden] ~ .dash-info-card #dashInfoGrid:not(.has-odo) > #dashLockMetric,
+            #dashAiInsight[hidden] ~ .dash-info-card #dashInfoGrid.has-fuel > #dashPowerMetric {
+                grid-column: 1 / -1;
+            }
         }
 
         @media (max-width: 768px) {
             .dashboard-page-body {
-                padding: 14px;
+                padding: 12px 16px;
                 padding-bottom: calc(96px + var(--safe-bottom));
             }
-            .dash-hero {
-                padding: 18px;
-            }
-            .dash-hero h1 { font-size: 27px; }
+            .dash-hero-copy { margin: 4px 0 16px; }
+            .dash-hero-copy h1 { font-size: var(--fs-headline); }
             .dash-drive-state {
                 grid-template-columns: 50px minmax(0, 1fr);
                 min-height: 0;
-                gap: 10px;
+                grid-column-gap: 10px;
             }
             .dash-drive-icon {
-                width: 34px;
-                height: 34px;
+                width: 38px;
+                height: 38px;
+                border-radius: 12px;
             }
-            .dash-drive-copy > strong { font-size: 22px; }
             .dash-drive-readouts {
                 grid-column: 1 / -1;
                 grid-template-columns: repeat(2, minmax(0, 1fr));
                 min-height: 52px;
-                border-top: 1px solid var(--border-subtle);
+                margin-top: 12px;
+                border-top: 1px solid var(--hairline);
             }
-            .dash-drive-readout {
+            .dash-drive-readout,
+            [dir="rtl"] .dash-drive-readout {
                 align-items: center;
                 padding: 9px 8px 0;
                 border-left: 0;
+                border-right: 0;
                 text-align: center;
             }
             .dash-drive-readout + .dash-drive-readout {
-                border-left: 1px solid var(--border-subtle);
+                border-left: 1px solid var(--hairline);
             }
-            /* Portrait phones: the glance keeps its two inner columns
-               (schematic | ring + rows) but relaxes the height so the
-               hero doesn't dominate the scroll. */
-            .dash-glance {
-                min-height: 0;
-                padding: 2px 0;
+            [dir="rtl"] .dash-drive-readout + .dash-drive-readout {
+                border-left: 0;
+                border-right: 1px solid var(--hairline);
             }
-            .dash-car-svg { max-height: 210px; }
-            .dash-soc-ring { width: 92px; height: 92px; }
-            .dash-ring-text strong { font-size: 18px; }
-            .dash-range-value--personalized strong { font-size: 21px; }
-            .dash-range-value strong { font-size: 18px; }
-            .dash-grid,
-            .dash-command-grid,
             .dash-metric-grid,
-            .dash-metric-grid.has-fuel {
-                grid-template-columns: 1fr 1fr;
+            .dash-metric-grid.has-connectivity,
+            .dash-metric-grid.has-fuel,
+            .dash-metric-grid.has-odo {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }
-            .dash-metric-grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            /* Media tiles (Live / Recordings / Trips) stay 3 across so the
-               row never widows a single tile on a second line. */
-            .dash-command-grid-media {
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-                gap: 8px;
-            }
-            .dash-command-grid-media .dash-command {
-                min-height: 64px;
-                font-size: 12px;
-            }
-            .dash-location-card,
-            .dash-actions-card,
-            .dash-info-card {
+            /* A tile left alone on its row spans both columns. */
+            #dashInfoGrid:not(.has-odo) > #dashLockMetric,
+            #dashInfoGrid.has-fuel > #dashPowerMetric {
                 grid-column: 1 / -1;
             }
+        }
+
+        /* Phones: one column. The hero stacks the head, then the SoC beside
+           a smaller schematic, then the status tiles 3 + 2 (mock). */
+        @media (max-width: 599px) {
+            .dash-grid {
+                grid-template-columns: minmax(0, 1fr);
+                grid-gap: 12px;
+            }
+            .dash-hero,
+            .dash-card,
+            .dash-ai-insight { padding: 16px; }
+            .dash-location-card { padding: 0; }
+            .dash-location-card > .dash-card-head { padding: 14px 16px 0; }
+            .dash-location-card > .dash-action-row { padding: 14px 16px 16px; }
+            .dash-location-map #mapContainer { height: 180px; }
+            .dash-ai-insight-icon { top: 16px; left: 16px; }
+            [dir="rtl"] .dash-ai-insight-icon { left: auto; right: 16px; }
+            .dash-ai-insight-arrow { top: 26px; right: 16px; }
+            [dir="rtl"] .dash-ai-insight-arrow { right: auto; left: 16px; }
+            .dash-glance {
+                grid-template-columns: minmax(0, 1fr) 104px;
+                grid-column-gap: 14px;
+                grid-template-areas:
+                    "main   main"
+                    "soc    car"
+                    "range  range"
+                    "rows   rows"
+                    "charge charge";
+            }
+            .dash-glance-side,
+            .dash-glance-car { margin-top: 16px; }
+            .dash-soc-ring svg { width: 44px; height: 44px; margin-right: 12px; }
+            [dir="rtl"] .dash-soc-ring svg { margin-right: 0; margin-left: 12px; }
+            .dash-ring-text strong { font-size: 44px; }
+            .dash-ring-text span { font-size: var(--fs-title); }
+            /* Tyre figures stay at 12px or more on the small schematic. */
+            .dash-car-psi { font-size: 19px; }
+            .dash-glance-rows {
+                grid-template-columns: repeat(6, minmax(0, 1fr));
+                margin-top: 16px;
+            }
+            .dash-glance-row { grid-column: span 2; }
+            .dash-glance-row:nth-child(n+4) { grid-column: span 3; }
+        }
+
+        @media (max-width: 480px) {
+            .dash-glance {
+                grid-template-columns: minmax(0, 1fr) 96px;
+                grid-column-gap: 12px;
+            }
+            .dash-soc-ring svg { width: 40px; height: 40px; }
+            .dash-ring-text strong { font-size: 40px; }
+        }
+
+        /* Landscape phones: keep the hero closer to one screen. */
+        @media (max-height: 500px) {
+            .dash-car-svg { max-height: 240px; }
+        }
+
+        /* ── Mock layout ─────────────────────────────────────────────
+           Four columns: the hero 2x2, then charging and the AI insight,
+           quick controls under them, location and main info below.
+           Two columns from 600px (hero, controls, charging + AI,
+           location, main info), one on phones in the same order. The AI
+           insight is placed explicitly (it is not a reorderable card);
+           saved card orders still apply and dense flow fills the gaps. */
+        .dash-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .dash-grid > .dash-hero { grid-column: span 2; grid-row: span 2; }
+        .dash-grid > #dashAiInsight { grid-column: 4; grid-row: 1; }
+        .dash-grid > .dash-actions-card,
+        .dash-grid > .dash-location-card,
+        .dash-grid > .dash-info-card,
+        .dash-grid > #dashAiInsight[hidden] ~ .dash-info-card { grid-column: span 2; }
+        .dash-grid > .dash-charge-card { grid-column: auto; }
+        .dash-grid > #dashAiInsight[hidden] ~ .dash-charge-card { grid-column: span 2; }
+
+        .dash-hero,
+        .dash-card,
+        .dash-ai-insight { border-radius: 24px; }
+
+        /* Title row: the theme picker docks at its end (theme.js). */
+        .dash-hero-copy {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            grid-column-gap: 16px;
+            align-items: center;
+        }
+        .dash-hero-copy > h1,
+        .dash-hero-copy > p { grid-column: 1; }
+        .dash-hero-copy > #bydThemePicker { grid-column: 2; grid-row: 1 / span 2; }
+
+        /* Hero: head, SoC, range and chips on the left, the car beside
+           them, the status tiles across the bottom. */
+        .dash-glance {
+            --dash-soc-size: 76px;
+            --dash-car-edge: #1F2523;
+            --dash-car-mid: #3A4440;
+            --dash-car-line: rgba(255, 255, 255, 0.10);
+            --dash-car-glass-a: #0A1412;
+            --dash-car-glass-b: #1C2B30;
+            --dash-car-roof: #121917;
+            --dash-car-tyre: #060908;
+            grid-template-columns: minmax(0, 1fr) 240px;
+            grid-template-rows: auto 1fr auto auto auto;
+            grid-template-areas:
+                "main   main"
+                "soc    car"
+                "chips  car"
+                "rows   rows"
+                "charge charge";
+            grid-column-gap: 20px;
+        }
+        :root[data-theme="light"] .dash-glance {
+            --dash-car-edge: #BFC8C4;
+            --dash-car-mid: #F4F7F5;
+            --dash-car-line: rgba(24, 28, 26, 0.12);
+            --dash-car-glass-a: #8EA4AD;
+            --dash-car-glass-b: #C3D3DA;
+            --dash-car-roof: #9DB0B8;
+            --dash-car-tyre: #2E3431;
+        }
+
+        /* Head (mock gear chip + title): the gear letter sits in the state
+           chip; speed stays as a compact readout at the end. */
+        .dash-drive-state {
+            grid-template-columns: 48px minmax(0, 1fr) auto;
+            grid-column-gap: 14px;
+            min-height: 48px;
+        }
+        .dash-drive-state::before { display: none; }
+        .dash-drive-icon,
+        [dir="rtl"] .dash-drive-icon {
+            width: 48px;
+            height: 48px;
+            margin: 0;
+            border-radius: 14px;
+        }
+        .dash-drive-icon svg { display: none; }
+        .dash-drive-readouts {
+            grid-column: auto;
+            grid-template-columns: auto;
+            align-self: center;
+            min-height: 0;
+            margin-top: 0;
+            border-top: 0;
+        }
+        .dash-drive-readout.dash-drive-gear,
+        [dir="rtl"] .dash-drive-readout.dash-drive-gear {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 48px;
+            height: 48px;
+            margin-top: -24px;
+            padding: 0;
+            border: 0;
+            align-items: center;
+            justify-content: center;
+        }
+        [dir="rtl"] .dash-drive-readout.dash-drive-gear { left: auto; right: 0; }
+        .dash-drive-gear > span {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+        }
+        .dash-drive-gear strong {
+            margin: 0;
+            color: var(--drive-accent);
+            font-size: 19px;
+            font-weight: 800;
+            line-height: 1;
+        }
+        .dash-drive-state.is-pending .dash-drive-gear strong,
+        .dash-drive-state.is-parked .dash-drive-gear strong { color: var(--on-surface); }
+        .dash-drive-readout.dash-drive-speed,
+        [dir="rtl"] .dash-drive-readout.dash-drive-speed {
+            align-items: flex-end;
+            padding: 0;
+            border: 0;
+            text-align: right;
+        }
+        [dir="rtl"] .dash-drive-readout.dash-drive-speed { align-items: flex-start; text-align: left; }
+        .dash-drive-speed strong { font-size: var(--fs-title); }
+        .dash-drive-copy > span { font-weight: 500; }
+        .dash-drive-copy > strong { font-size: var(--fs-headline); }
+        .dash-drive-copy > strong,
+        .dash-drive-copy > small { overflow-wrap: normal; }
+
+        /* SoC (mock big numerals over a level bar). */
+        .dash-glance-side { margin-top: 20px; }
+        .dash-soc-ring { display: block; }
+        .dash-soc-ring svg { display: none; }
+        .dash-ring-text strong {
+            font-size: var(--dash-soc-size);
+            line-height: 0.95;
+        }
+        .dash-ring-text span {
+            margin-top: 8px;
+            font-size: var(--fs-headline);
+        }
+        .dash-ring-text strong > span,
+        .dash-ring-text span > span { display: inline; margin: 0; font-size: inherit; font-weight: inherit; color: inherit; }
+        .dash-fig-unit {
+            margin-left: 4px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            font-weight: 500;
+        }
+        [dir="rtl"] .dash-fig-unit { margin-left: 0; margin-right: 4px; }
+        .dash-ring-text strong .dash-fig-unit {
+            margin-left: 2px;
+            font-size: 0.37em;
+            font-weight: 600;
+        }
+        [dir="rtl"] .dash-ring-text strong .dash-fig-unit { margin-left: 0; margin-right: 2px; }
+        .dash-soc-ring.soc-mid .dash-ring-text strong { color: var(--warning); }
+        .dash-soc-ring.soc-low .dash-ring-text strong { color: var(--danger); }
+        .dash-soc-bar {
+            position: relative;
+            height: 10px;
+            margin-top: 18px;
+            overflow: hidden;
+            border-radius: 5px;
+            background: var(--well-2);
+        }
+        .dash-soc-bar i {
+            position: relative;
+            display: block;
+            width: 0;
+            height: 100%;
+            overflow: hidden;
+            border-radius: inherit;
+            background: linear-gradient(90deg, var(--primary), var(--tertiary));
+            transition: width 0.6s cubic-bezier(0.2, 0, 0, 1);
+        }
+        [dir="rtl"] .dash-soc-bar i { margin-right: 0; margin-left: auto; background: linear-gradient(270deg, var(--primary), var(--tertiary)); }
+        .dash-soc-ring.soc-mid + .dash-soc-bar i { background: var(--warning); }
+        .dash-soc-ring.soc-low + .dash-soc-bar i { background: var(--danger); }
+        .dash-glance.charging .dash-soc-bar i::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: -40%;
+            width: 40%;
+            background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0));
+            animation: dashSocSheen 2.4s ease-in-out infinite;
+        }
+        @keyframes dashSocSheen {
+            from { transform: translateX(0); }
+            to { transform: translateX(350%); }
+        }
+        .dash-glance-fuel { margin-top: 14px; }
+
+        /* Learned range under the bar: the two values, slim tracks, context. */
+        .dash-range-intel { margin-top: 14px; }
+        .dash-range-values { grid-gap: 12px; }
+        .dash-range-value strong { font-size: var(--fs-title); }
+        .dash-range-value--personalized strong { font-size: var(--fs-title); }
+        .dash-range-tracks { margin-top: 10px; grid-row-gap: 4px; }
+        .dash-range-tracks > div { height: 4px; }
+
+        /* Chips (mock .chip): neutral pills with a leading icon; the
+           surveillance state leads, filled with a live dot while it is on.
+           Icons are masks so the JS can keep writing the chip text. */
+        .dash-chip {
+            height: 32px;
+            min-height: 32px;
+            padding: 0 12px;
+            white-space: nowrap;
+        }
+        .dash-chip::before {
+            content: "";
+            flex: 0 0 auto;
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            background-color: currentColor;
+            -webkit-mask: var(--dash-chip-ico) center / contain no-repeat;
+            mask: var(--dash-chip-ico) center / contain no-repeat;
+        }
+        [dir="rtl"] .dash-chip::before { margin-right: 0; margin-left: 6px; }
+        .dash-chip[data-ico="shield"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="shield-off"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3Cpath d='m3 3 18 18'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="home"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/%3E%3Cpath d='M9 22V12h6v10'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="nav"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 11 22 2l-9 19-2-8-8-2z'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="nav-off"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 11 22 2l-9 19-2-8-8-2z'/%3E%3Cpath d='m2 2 20 20'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="wifi"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h.01'/%3E%3Cpath d='M2 8.82a15 15 0 0 1 20 0'/%3E%3Cpath d='M5 12.86a10 10 0 0 1 14 0'/%3E%3Cpath d='M8.5 16.43a5 5 0 0 1 7 0'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="wifi-mid"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h.01'/%3E%3Cpath d='M5 12.86a10 10 0 0 1 14 0'/%3E%3Cpath d='M8.5 16.43a5 5 0 0 1 7 0'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="wifi-low"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h.01'/%3E%3Cpath d='M8.5 16.43a5 5 0 0 1 7 0'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="wifi-off"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h.01'/%3E%3Cpath d='M8.5 16.43a5 5 0 0 1 7 0'/%3E%3Cpath d='M5 12.86a10 10 0 0 1 5.17-2.69'/%3E%3Cpath d='M19 12.86a10 10 0 0 0-2.01-1.52'/%3E%3Cpath d='M2 8.82a15 15 0 0 1 4.18-2.64'/%3E%3Cpath d='M22 8.82a15 15 0 0 0-11.29-3.76'/%3E%3Cpath d='m2 2 20 20'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="signal"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 20h.01'/%3E%3Cpath d='M7 20v-4'/%3E%3Cpath d='M12 20v-8'/%3E%3Cpath d='M17 20V8'/%3E%3Cpath d='M22 4v16'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="ethernet"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15 20 3-3h2a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2l3 3z'/%3E%3Cpath d='M6 8v1M10 8v1M14 8v1M18 8v1'/%3E%3C/svg%3E"); }
+        .dash-chip[data-ico="clock"] { --dash-chip-ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E"); }
+        .dash-chip[hidden] { display: none; }
+        .dash-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .dash-chip.good {
+            background: var(--primary-soft);
+            color: var(--primary);
+            font-weight: 600;
+        }
+        /* Live states (armed, recording): a pulsing dot replaces the icon. */
+        .dash-chip.is-live::before {
+            width: 8px;
+            height: 8px;
+            margin-right: 8px;
+            border-radius: 50%;
+            -webkit-mask: none;
+            mask: none;
+            animation: dashLiveDot 2s ease-out infinite;
+        }
+        [dir="rtl"] .dash-chip.is-live::before { margin-right: 0; margin-left: 8px; }
+        a.dash-chip {
+            text-decoration: none;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            transition: background-color 0.15s ease, box-shadow 0.15s ease;
+        }
+        a.dash-chip:hover { box-shadow: inset 0 0 0 1px currentColor; }
+        a.dash-chip:active { -webkit-transform: scale(0.97); transform: scale(0.97); }
+        a.dash-chip:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+        @media (pointer: coarse) {
+            .dash-chip { height: 40px; min-height: 40px; padding: 0 14px; }
+        }
+        /* Mouse layouts: the chips share the column beside the car, so keep them
+           compact enough for two per row before they wrap. */
+        @media (pointer: fine) {
+            .dash-chip { height: 30px; min-height: 30px; margin: 0 6px 6px 0; padding: 0 10px; font-size: 13px; }
+            [dir="rtl"] .dash-chip { margin: 0 0 6px 6px; }
+            .dash-chip::before { width: 14px; height: 14px; }
+            .dash-hero-status { margin-right: -6px; margin-bottom: -6px; }
+            [dir="rtl"] .dash-hero-status { margin-right: 0; margin-left: -6px; }
+        }
+        @keyframes dashLiveDot {
+            0% { box-shadow: 0 0 0 0 currentColor; }
+            70%, 100% { box-shadow: 0 0 0 6px rgba(0, 0, 0, 0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .dash-chip.is-live::before { animation: none; }
+        }
+
+        .dash-hero-status {
+            grid-area: chips;
+            align-content: flex-start;
+            margin: 18px -8px -8px 0;
+        }
+        [dir="rtl"] .dash-hero-status { margin: 18px 0 -8px -8px; }
+
+        /* The car (mock twin): shaded body and glass over a soft glow; the
+           cable and port show while a charge runs. */
+        .dash-car-svg { max-height: 440px; }
+        .dash-car-edge { stop-color: var(--dash-car-edge); }
+        .dash-car-mid { stop-color: var(--dash-car-mid); }
+        .dash-car-glass-a { stop-color: var(--dash-car-glass-a); }
+        .dash-car-glass-b { stop-color: var(--dash-car-glass-b); }
+        .dash-car-glow-a { stop-color: var(--primary); stop-opacity: 0.30; }
+        .dash-car-glow-b { stop-color: var(--primary); stop-opacity: 0; }
+        .dash-car-body {
+            fill: url(#dashCarBodyShade);
+            stroke: var(--dash-car-line);
+            stroke-width: 1;
+        }
+        .dash-car-glass { fill: url(#dashCarGlassShade); fill-opacity: 1; }
+        .dash-glance.ac-on .dash-car-glass { fill: var(--tertiary); fill-opacity: 0.45; }
+        .dash-car-roof {
+            fill: var(--dash-car-roof);
+            stroke: var(--dash-car-line);
+        }
+        .dash-car-tyre { fill: var(--dash-car-tyre); }
+        .dash-car-tyre.normal { fill: var(--dash-car-tyre); opacity: 1; }
+        .dash-glance.vehicle-parked .dash-car-svg { opacity: 1; }
+        .dash-glance.vehicle-ready .dash-car-body,
+        .dash-glance.vehicle-driving .dash-car-body { stroke: var(--primary); }
+        .dash-car-lock rect { fill: var(--on-surface); fill-opacity: 0.85; stroke: none; }
+        .dash-car-lock path { stroke: var(--on-surface); stroke-width: 2; stroke-linecap: round; opacity: 0.85; }
+        .dash-car-lock.locked rect { fill: var(--primary); fill-opacity: 1; }
+        .dash-car-lock.locked path { stroke: var(--primary); opacity: 1; }
+        .dash-car-lock.unlocked rect { fill: var(--warning); fill-opacity: 1; }
+        .dash-car-lock.unlocked path { stroke: var(--warning); opacity: 1; }
+        .dash-car-psi { font-size: 10px; font-weight: 600; }
+        .dash-car-glow { opacity: 0.8; }
+        .dash-car-cable,
+        .dash-car-port,
+        .dash-car-port-ring { display: none; }
+        .dash-glance.charging .dash-car-cable {
+            display: inline;
+            fill: none;
+            stroke: var(--primary);
+            stroke-width: 3;
+            stroke-linecap: round;
+            stroke-dasharray: 3 7;
+            animation: dashCableFlow 0.9s linear infinite;
+        }
+        .dash-glance.charging .dash-car-port { display: inline; fill: var(--primary); }
+        .dash-glance.charging .dash-car-port-ring {
+            display: inline;
+            fill: none;
+            stroke: var(--primary);
+            animation: dashPortPulse 1.8s ease-out infinite;
+        }
+        @keyframes dashCableFlow { to { stroke-dashoffset: -20; } }
+        @keyframes dashPortPulse {
+            0% { stroke-width: 0; stroke-opacity: 0.8; }
+            100% { stroke-width: 16; stroke-opacity: 0; }
+        }
+        .dash-glance-car { position: relative; }
+
+        /* Motion (mock): tiles rise in one after another, the car glow
+           breathes, Flash and Find play on the car, a running command shows a
+           spinner. The global reduced-motion rules switch all of it off. */
+        .dash-grid > * { animation: dashRise 0.42s cubic-bezier(0.2, 0, 0, 1) backwards; }
+        .dash-grid > *:nth-child(2) { animation-delay: 40ms; }
+        .dash-grid > *:nth-child(3) { animation-delay: 80ms; }
+        .dash-grid > *:nth-child(4) { animation-delay: 120ms; }
+        .dash-grid > *:nth-child(5) { animation-delay: 160ms; }
+        .dash-grid > *:nth-child(n+6) { animation-delay: 200ms; }
+        .dash-cards-dragging > *,
+        .dash-grid > .dash-card-ghost { animation: none; }
+        @keyframes dashRise {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: none; }
+        }
+        .dash-car-glow { animation: dashGlowBreathe 3.2s ease-in-out infinite; }
+        @keyframes dashGlowBreathe {
+            0%, 100% { opacity: 0.55; }
+            50% { opacity: 1; }
+        }
+        .dash-car-light {
+            fill: none;
+            stroke-width: 2.4;
+            stroke-linecap: round;
+            transition: stroke 0.2s ease;
+        }
+        .dash-car-head { stroke: var(--on-surface); opacity: 0.55; }
+        .dash-car-tail { stroke: var(--danger); opacity: 0.6; }
+        .dash-glance-car.is-flashing .dash-car-light {
+            stroke: var(--warning);
+            animation: dashLightBlink 0.45s ease-in-out 4;
+        }
+        @keyframes dashLightBlink {
+            0%, 100% { opacity: 0.35; }
+            50% { opacity: 1; }
+        }
+        .dash-car-ripple {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 150px;
+            height: 150px;
+            margin: -75px 0 0 -75px;
+            border: 2px solid var(--primary);
+            border-radius: 50%;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .dash-glance-car.is-finding .dash-car-ripple { animation: dashRipple 1.3s cubic-bezier(0.2, 0, 0, 1) 2; }
+        .dash-glance-car.is-finding .dash-car-ripple.r2 { animation-delay: 0.3s; }
+        @keyframes dashRipple {
+            0% { transform: scale(0.5); opacity: 0.9; }
+            100% { transform: scale(1.9); opacity: 0; }
+        }
+        .dash-command.pending { opacity: 0.8; cursor: progress; }
+        .dash-command.pending::after {
+            content: "";
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            width: 18px;
+            height: 18px;
+            box-sizing: border-box;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: dashSpin 0.8s linear infinite;
+        }
+        [dir="rtl"] .dash-command.pending::after { right: auto; left: 14px; }
+        @keyframes dashSpin { to { transform: rotate(360deg); } }
+
+        /* Status tiles: the icon takes the value's tone (mock glance). */
+        .dash-glance-rows { margin-top: 20px; }
+        .dash-glance-row svg { color: var(--on-surface-variant); }
+        .dash-glance-row[data-tone="good"] svg { color: var(--primary); }
+        .dash-glance-row[data-tone="warn"] svg { color: var(--warning); }
+        .dash-glance-row[data-tone="alert"] svg { color: var(--danger); }
+        .dash-glance-row strong.good { color: var(--on-surface); }
+        .dash-glance-row { padding: 12px; }
+        .dash-glance-charge { margin-top: 12px; }
+
+
+        /* Hero as the mock draws it: the state title, then one quiet line
+           ("Vehicle off · Charging at 7.2 kW"); the speed only while moving;
+           the learned range as one caption under the bar; the charging
+           strip lives in the Energy tile. */
+        .dash-drive-copy {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+        }
+        .dash-drive-copy > strong {
+            order: 0;
+            flex: 0 0 100%;
+            margin-top: 0;
+        }
+        .dash-drive-copy > span,
+        .dash-drive-copy > small {
+            order: 1;
+            margin-top: 2px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            font-weight: 400;
+            line-height: 1.35;
+        }
+        .dash-drive-copy > small { order: 2; }
+        .dash-drive-copy > small::before {
+            content: "\00B7";
+            margin: 0 6px;
+        }
+        .dash-drive-state:not(.has-speed) .dash-drive-speed { display: none; }
+        .dash-range-tracks { display: none; }
+        .dash-range-values {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+        }
+        .dash-range-value {
+            display: flex;
+            align-items: baseline;
+            margin-right: 14px;
+        }
+        [dir="rtl"] .dash-range-value { margin-right: 0; margin-left: 14px; }
+        .dash-range-value span { margin-right: 6px; }
+        [dir="rtl"] .dash-range-value span { margin-right: 0; margin-left: 6px; }
+        .dash-range-value strong,
+        .dash-range-value--personalized strong {
+            margin-top: 0;
+            color: var(--on-surface);
+            font-size: var(--fs-label);
+            font-weight: 600;
+        }
+        .dash-range-meta { margin-top: 2px; }
+        .dash-glance-charge,
+        .dash-glance-charge[hidden] { display: none; }
+
+        /* Main info (mock .metric): the value with its qualifier inline and
+           smaller ("HomeNet-5G 192.168.1.47", "Stale Last reported: ON"). */
+        .dash-metric strong {
+            display: inline-block;
+            max-width: 100%;
+            vertical-align: baseline;
+        }
+        .dash-metric .dash-radio-value { display: inline-flex; vertical-align: baseline; }
+        .dash-metric small {
+            display: inline;
+            margin: 0 0 0 6px;
+            font-size: var(--fs-label);
+        }
+        [dir="rtl"] .dash-metric small { margin: 0 6px 0 0; }
+        .dash-metric > span { margin-bottom: 6px; }
+
+        /* Energy tile (mock .mini-bar) and readings with small units. */
+        .dash-mini-bar {
+            position: relative;
+            height: 8px;
+            margin: 14px 0 0;
+            overflow: hidden;
+            border-radius: 4px;
+            background: var(--well-2);
+        }
+        .dash-mini-bar i {
+            display: block;
+            width: 0;
+            height: 100%;
+            border-radius: inherit;
+            background: var(--primary);
+            transition: width 0.6s cubic-bezier(0.2, 0, 0, 1);
+        }
+        [dir="rtl"] .dash-mini-bar i { margin-left: auto; }
+        .dash-charge-big strong .dash-fig-unit {
+            margin: 0 6px 0 2px;
+            font-size: 0.5em;
+            font-weight: 600;
+        }
+        .dash-metric strong .dash-fig-unit {
+            margin-left: 3px;
+            font-size: var(--fs-label);
+            font-weight: 500;
+        }
+        [dir="rtl"] .dash-metric strong .dash-fig-unit { margin-left: 0; margin-right: 3px; }
+        .dash-charge-chip {
+            min-height: 28px;
+            padding: 0 10px;
+            font-size: var(--fs-caption);
+            font-weight: 700;
+            background: var(--primary-soft);
+            color: var(--primary);
+        }
+
+        /* Tile heads (mock .tile-head): optional icon chip, then titles. */
+        .dash-tile-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            background: var(--primary-soft);
+            color: var(--primary);
+        }
+        .dash-tile-icon svg { width: 20px; height: 20px; }
+        .dash-tile-icon + div { flex: 1 1 auto; margin-left: 12px; }
+        [dir="rtl"] .dash-tile-icon + div { margin-left: 0; margin-right: 12px; }
+
+        /* Charging tile (mock .t-charge): state, the big time to full,
+           three readings, then the way to the charging page. */
+        .dash-charge-chip { margin-bottom: 12px; }
+        .dash-charge-big { min-width: 0; }
+        .dash-charge-big strong {
+            display: block;
+            color: var(--on-surface);
+            font-size: var(--fs-display);
+            font-weight: 700;
+            line-height: 1.05;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: break-word;
+        }
+        .dash-charge-big span {
+            display: block;
+            margin-top: 4px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            line-height: 1.35;
+        }
+        .dash-charge-card .dash-metric-grid--4 {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            margin-top: 16px;
+        }
+        .dash-charge-card .dash-metric { padding: 10px; border-radius: 12px; }
+        .dash-charge-card .dash-metric strong {
+            font-size: var(--fs-body);
+            line-height: 1.25;
+            overflow-wrap: normal;
+        }
+        /* A one-column tile under 1440px is too narrow for three readings
+           a row: two, with the session across the bottom. */
+        @media (min-width: 1024px) and (max-width: 1439px) {
+            .dash-charge-card .dash-metric-grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dash-charge-card .dash-metric-grid--4 > .dash-metric:nth-child(3) { grid-column: 1 / -1; }
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-charge-card .dash-metric-grid--4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-charge-card .dash-metric-grid--4 > .dash-metric:nth-child(3) { grid-column: auto; }
+        }
+        .dash-charge-card .dash-action-row { padding-top: 12px; }
+        .dash-charge-card .dash-primary-btn.dash-tile-link,
+        .dash-primary-btn.dash-tile-link {
+            width: auto;
+            min-height: 44px;
+            margin-left: -4px;
+            padding: 0 4px;
+            justify-content: flex-start;
+            background: transparent;
+            color: var(--primary);
+            font-size: var(--fs-label);
+        }
+        [dir="rtl"] .dash-primary-btn.dash-tile-link { margin-left: 0; margin-right: -4px; }
+        .dash-tile-link svg,
+        [dir="rtl"] .dash-tile-link svg {
+            width: 16px;
+            height: 16px;
+            margin: 0 0 0 6px;
+            transition: transform var(--duration-fast) var(--easing-standard);
+        }
+        [dir="rtl"] .dash-tile-link svg { margin: 0 6px 0 0; transform: scaleX(-1); }
+        @media (hover: hover) {
+            .dash-charge-card .dash-primary-btn.dash-tile-link:hover { box-shadow: none; text-decoration: underline; }
+            .dash-tile-link:hover svg { transform: translateX(3px); }
+            [dir="rtl"] .dash-tile-link:hover svg { transform: scaleX(-1) translateX(3px); }
+        }
+
+        /* AI insight (mock .t-brief): the kicker beside the icon chip, the
+           title full width under them, so long titles keep the tile's width.
+           A column flexbox keeps the copy at the top of a stretched tile. */
+        .dash-ai-insight {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: stretch;
+        }
+        .dash-ai-insight-kicker {
+            display: flex;
+            align-items: center;
+            min-height: 40px;
+        }
+        .dash-ai-insight-copy strong,
+        [dir="rtl"] .dash-ai-insight-copy strong {
+            margin: 12px 0 0;
+        }
+        .dash-ai-insight-text { margin-top: 10px; }
+
+        /* Quick controls (mock .controls): Lock and Unlock are the large
+           tiles (Lock in the primary fill), the other four sit beside them;
+           power, your own buttons and the page shortcuts follow as pills. */
+        .dash-command-grid { grid-gap: 10px; }
+        .dash-command { min-height: 92px; padding: 14px; border-radius: 16px; }
+        .dash-command svg { width: 36px; height: 36px; padding: 8px; border-radius: 12px; }
+        .dash-command-grid.dash-command-grid-main {
+            grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+            grid-template-areas:
+                "lock   flash find"
+                "unlock open  close";
+        }
+        .dash-command-grid-main > .dash-command:nth-child(1) { grid-area: lock; }
+        .dash-command-grid-main > .dash-command:nth-child(2) { grid-area: unlock; }
+        .dash-command-grid-main > .dash-command:nth-child(3) { grid-area: flash; }
+        .dash-command-grid-main > .dash-command:nth-child(4) { grid-area: find; }
+        .dash-command-grid-main > .dash-command:nth-child(5) { grid-area: open; }
+        .dash-command-grid-main > .dash-command:nth-child(6) { grid-area: close; }
+        .dash-command-grid-main > .dash-command:nth-child(-n+2) { padding: 16px; }
+        .dash-command-grid-main > .dash-command:nth-child(-n+2) svg {
+            width: 52px;
+            height: 52px;
+            padding: 13px;
+            border-radius: 16px;
+        }
+        .dash-command-grid-main > .dash-command:nth-child(-n+2) span {
+            font-size: var(--fs-headline);
+            font-weight: 700;
+        }
+        .dash-command-grid-main > .dash-command:first-child {
+            background: var(--primary-container);
+            color: var(--on-primary-container);
+        }
+        .dash-command-grid-main > .dash-command:first-child svg { background: rgba(255, 255, 255, 0.12); }
+        :root[data-theme="light"] .dash-command-grid-main > .dash-command:first-child svg { background: rgba(0, 0, 0, 0.06); }
+        .dash-command-grid-power,
+        #dashCustomCommands {
+            display: flex;
+            flex-wrap: wrap;
+            margin: 10px -8px -8px 0;
+        }
+        [dir="rtl"] .dash-command-grid-power,
+        [dir="rtl"] #dashCustomCommands { margin: 10px 0 -8px -8px; }
+        .dash-command-grid-power .dash-command,
+        #dashCustomCommands .dash-command {
+            flex: 1 1 auto;
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 48px;
+            margin: 0 8px 8px 0;
+            padding: 6px 16px;
+            border-radius: var(--radius-full);
+            font-size: var(--fs-label);
+        }
+        [dir="rtl"] .dash-command-grid-power .dash-command,
+        [dir="rtl"] #dashCustomCommands .dash-command { margin: 0 0 8px 8px; }
+        .dash-command-grid-power .dash-command { padding-left: 6px; }
+        [dir="rtl"] .dash-command-grid-power .dash-command { padding-left: 16px; padding-right: 6px; }
+        .dash-command-grid-power .dash-command svg { margin: 0 10px 0 0; border-radius: 50%; }
+        [dir="rtl"] .dash-command-grid-power .dash-command svg { margin: 0 0 0 10px; }
+        /* Narrow tiles (phones, the tile beside a 1024–1279px hero): Lock and
+           Unlock side by side as wide rows, the other four two by two. */
+        @media (max-width: 599px), (min-width: 1024px) and (max-width: 1279px) {
+            .dash-command-grid.dash-command-grid-main {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                grid-template-areas:
+                    "lock  unlock"
+                    "flash find"
+                    "open  close";
+            }
+            .dash-command-grid-main > .dash-command:nth-child(-n+2) {
+                flex-direction: row;
+                align-items: center;
+                justify-content: flex-start;
+                min-height: 80px;
+            }
+            .dash-command-grid-main > .dash-command:nth-child(-n+2) svg,
+            [dir="rtl"] .dash-command-grid-main > .dash-command:nth-child(-n+2) svg { width: 44px; height: 44px; padding: 10px; margin: 0 12px 0 0; }
+            [dir="rtl"] .dash-command-grid-main > .dash-command:nth-child(-n+2) svg { margin: 0 0 0 12px; }
+            .dash-command-grid-main > .dash-command:nth-child(-n+2) span { font-size: var(--fs-title); }
+        }
+        /* One pill set for power, your own buttons and the shortcuts. */
+        .dash-pills {
+            position: relative;
+            display: flex;
+            flex-wrap: wrap;
+            margin: 10px -8px -8px 0;
+        }
+        [dir="rtl"] .dash-pills { margin: 10px 0 -8px -8px; }
+        .dash-pills > .dash-command-grid-power,
+        .dash-pills > #dashCustomCommands,
+        .dash-pills > .dash-command-grid-media { display: contents; margin: 0; }
+        .dash-pills.is-collapsed {
+            max-height: 56px;
+            overflow: hidden;
+            padding-right: 112px;
+        }
+        [dir="rtl"] .dash-pills.is-collapsed { padding-right: 0; padding-left: 112px; }
+        .dash-pills-more {
+            flex: 0 0 auto;
+            min-height: 48px;
+            margin: 0 8px 8px 0;
+            padding: 0 18px;
+            border: 0;
+            border-radius: var(--radius-full);
+            background: var(--secondary-container);
+            color: var(--on-secondary-container);
+            font: inherit;
+            font-size: var(--fs-label);
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .dash-pills.is-collapsed .dash-pills-more {
+            position: absolute;
+            top: 0;
+            right: 8px;
+            margin: 0;
+        }
+        [dir="rtl"] .dash-pills.is-collapsed .dash-pills-more { right: auto; left: 8px; }
+        .dash-pills .dash-command {
+            flex: 1 1 auto;
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 48px;
+            margin: 0 8px 8px 0;
+            padding: 6px 16px;
+            border-radius: var(--radius-full);
+            font-size: var(--fs-label);
+        }
+        [dir="rtl"] .dash-pills .dash-command { margin: 0 0 8px 8px; }
+        .dash-pills .dash-command svg,
+        [dir="rtl"] .dash-pills .dash-command svg { margin: 0 10px 0 -10px; }
+        [dir="rtl"] .dash-pills .dash-command svg { margin: 0 -10px 0 10px; }
+        .dash-fig-unit { white-space: nowrap; }
+
+        /* Page shortcuts: pills that size to their label and wrap, so long
+           names in any language stay whole words. */
+        .dash-command-grid-media {
+            display: flex;
+            flex-wrap: wrap;
+            margin: 10px -8px -8px 0;
+        }
+        [dir="rtl"] .dash-command-grid-media { margin: 10px 0 -8px -8px; }
+        .dash-command-grid-media .dash-command {
+            flex: 1 1 auto;
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 48px;
+            margin: 0 8px 8px 0;
+            padding: 6px 16px 6px 6px;
+            border-radius: var(--radius-full);
+            font-size: var(--fs-label);
+        }
+        [dir="rtl"] .dash-command-grid-media .dash-command { margin: 0 0 8px 8px; padding: 6px 6px 6px 16px; }
+        .dash-command-grid-media .dash-command svg {
+            width: 36px;
+            height: 36px;
+            margin: 0 10px 0 0;
+            border-radius: 50%;
+        }
+        [dir="rtl"] .dash-command-grid-media .dash-command svg { margin: 0 0 0 10px; }
+        .dash-command span,
+        .dash-glance-row span,
+        .dash-glance-row strong,
+        .dash-metric span {
+            -webkit-hyphens: auto;
+            hyphens: auto;
+        }
+
+        /* Location (mock .loc): the map beside the titles and the action
+           when the tile spans two columns; it fills the tile's height. */
+        @media (min-width: 600px) {
+            .dash-location-card {
+                display: grid;
+                grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+                grid-template-rows: auto 1fr;
+                min-height: 270px;
+            }
+            .dash-location-map {
+                position: relative;
+                grid-column: 1;
+                grid-row: 1 / span 2;
+                min-height: 270px;
+            }
+            .dash-location-map #mapContainer {
+                position: absolute;
+                top: 0;
+                right: 0;
+                bottom: 0;
+                left: 0;
+                height: auto;
+            }
+            .dash-location-card > .dash-card-head {
+                grid-column: 2;
+                grid-row: 1;
+                align-items: flex-start;
+                padding: 20px 20px 0;
+            }
+            .dash-location-card > .dash-action-row {
+                grid-column: 2;
+                grid-row: 2;
+                align-items: flex-end;
+                padding: 16px 20px 20px;
+            }
+        }
+
+        /* Main info (mock .metrics): as many 150px readings a row as the
+           tile holds; the two radio readings stay side by side. */
+        @media (min-width: 769px) {
+            .dash-grid > .dash-info-card #dashInfoGrid.dash-metric-grid,
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-info-card #dashInfoGrid.dash-metric-grid {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                grid-auto-flow: row dense;
+            }
+            .dash-grid > .dash-info-card #dashInfoGrid > .dash-metric,
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-info-card #dashInfoGrid > .dash-metric,
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-info-card #dashInfoGrid > #dashLockMetric.dash-metric,
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-info-card #dashInfoGrid > #dashPowerMetric.dash-metric { grid-column: auto; }
+        }
+        .dash-metric strong { overflow-wrap: normal; }
+        .dash-metric-ico {
+            flex: 0 0 auto;
+            width: 14px;
+            height: 14px;
+            margin-right: 6px;
+            opacity: 0.85;
+        }
+        [dir="rtl"] .dash-metric-ico { margin-right: 0; margin-left: 6px; }
+        .dash-metric .dash-radio-value .dash-metric-ico { display: none; }
+
+        @media (min-width: 1280px) and (max-width: 1439px) {
+            .dash-glance { --dash-soc-size: 64px; grid-template-columns: minmax(0, 1fr) 190px; }
+        }
+        @media (min-width: 1600px) {
+            .dash-glance { grid-template-columns: minmax(0, 1fr) 260px; }
+        }
+        @media (min-width: 1024px) and (max-width: 1279px) {
+            .dash-glance,
+            html:not([data-android-embed="1"]) .dash-glance { --dash-soc-size: 64px; grid-template-columns: minmax(0, 1fr) 170px; }
+            .dash-car-psi { font-size: 11px; }
+            /* A narrow hero: status tiles 3 + 2 (as on phones). */
+            .dash-glance-rows { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+            .dash-glance-row { grid-column: span 2; }
+            .dash-glance-row:nth-child(n+4) { grid-column: span 3; }
+        }
+        @media (max-width: 1023px) {
+            .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dash-grid > .dash-hero,
+            .dash-grid > .dash-actions-card,
+            .dash-grid > .dash-location-card,
+            .dash-grid > .dash-info-card,
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-info-card,
+            .dash-grid > #dashAiInsight[hidden] ~ .dash-charge-card { grid-column: 1 / -1; grid-row: auto; }
+            .dash-grid > .dash-charge-card { grid-column: auto; }
+            .dash-grid > #dashAiInsight { grid-column: 2; grid-row: 3; }
+            .dash-glance { --dash-soc-size: 64px; grid-template-columns: minmax(0, 1fr) 220px; }
+            .dash-command-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .dash-command-grid-media { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+            .dash-command-grid-power { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            #dashCustomCommands > .dash-command:last-child:nth-child(odd) { grid-column: auto; }
+        }
+        @media (max-width: 768px) {
+            .dash-hero-copy h1 {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                overflow: hidden;
+                clip: rect(0 0 0 0);
+                white-space: nowrap;
+            }
+            .dash-hero-copy p { display: none; }
+            .dash-hero-copy { margin: 0; }
+            .dashboard-page-body { padding-top: 4px; }
+        }
+        @media (max-width: 599px) {
+            .dash-grid { grid-template-columns: minmax(0, 1fr); }
+            .dash-grid > #dashAiInsight { grid-column: 1; grid-row: 4; }
+            .dash-grid > .dash-charge-card { grid-column: 1 / -1; }
+            .dash-hero,
+            .dash-card,
+            .dash-ai-insight { border-radius: 22px; }
+            .dash-glance {
+                --dash-soc-size: 52px;
+                grid-template-columns: minmax(0, 1fr) 112px;
+                grid-column-gap: 14px;
+                grid-template-areas:
+                    "main   main"
+                    "soc    car"
+                    "chips  chips"
+                    "rows   rows"
+                    "charge charge";
+            }
+            .dash-glance-side,
+            .dash-glance-car { margin-top: 16px; }
+            .dash-car-psi { font-size: 19px; }
+            .dash-command-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dash-command-grid-media { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            #dashCustomCommands > .dash-command:last-child:nth-child(odd) { grid-column: 1 / -1; }
+            .dash-location-map #mapContainer { height: 180px; }
+        }
+        @media (max-width: 380px) {
+            .dash-glance { --dash-soc-size: 46px; grid-template-columns: minmax(0, 1fr) 96px; grid-column-gap: 12px; }
+        }
+
+        /* Car density: larger targets. */
+        :root[data-android-embed="1"] .dash-primary-btn { min-height: 56px; }
+        :root[data-android-embed="1"] .dash-card-grip { width: 48px; height: 48px; }
+        :root[data-android-embed="1"] .dash-location-map .leaflet-bar a {
+            width: 48px;
+            height: 48px;
+            line-height: 48px;
         }
     </style>
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
-    <script src="../shared/map.js?v=7"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/map.js?v=8"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');
@@ -1710,6 +2979,7 @@
                         ? (BYD.i18n.t('dashboard.toast_command_sent') || 'Command sent')
                         : (BYD.i18n.t('dashboard.toast_command_failed') || 'Command failed');
                     var msg = (data && (data.message || data.error)) || fallback;
+                    if (ok) BYD.dashboard.glance.cue(url);
                     if (BYD.utils && BYD.utils.toast) BYD.utils.toast(msg, ok ? 'success' : 'error');
                     setTimeout(function() { BYD.dashboard.refreshVehicleState(); }, 700);
                 }).catch(function() {
@@ -1748,12 +3018,92 @@
                         grid.appendChild(el);
                     }
                     grid.style.display = '';
+                    BYD.dashboard.layoutPills();
                 }).catch(function() {});
             },
             fireCustom: function(btn) {
                 var id = btn && btn.getAttribute('data-qc-id');
                 if (!id) return;
                 BYD.dashboard.command(btn, '/api/quick-controls/fire/' + encodeURIComponent(id));
+            },
+            // Vehicle power rides the local remote-key rail only, so the row is shown only once
+            // the daemon confirms that rail exists; a failed probe leaves it hidden.
+            loadPowerControls: function() {
+                fetch('/api/vehicle/cloud-status', { cache: 'no-store' }).then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                }).then(function(data) {
+                    var grid = document.getElementById('dashPowerCommands');
+                    if (grid) grid.style.display = data && data.localRemoteKey === true ? '' : 'none';
+                    BYD.dashboard.layoutPills();
+                }).catch(function() {});
+            },
+            // Power, your own buttons and the page shortcuts share one row of pills;
+            // past one row the rest fold behind More (keeps the tile the mock's height).
+            layoutPills: function() {
+                var box = document.getElementById('dashPills');
+                var more = document.getElementById('dashPillsMore');
+                if (!box || !more) return;
+                if (!more._wired) {
+                    more._wired = true;
+                    more.addEventListener('click', function() {
+                        var open = !box.classList.contains('is-open');
+                        box.classList.toggle('is-open', open);
+                        box.classList.toggle('is-collapsed', !open);
+                        more.setAttribute('aria-expanded', open ? 'true' : 'false');
+                        var label = more.firstChild;
+                        label.setAttribute('data-i18n', open ? 'common.less' : 'common.more');
+                        var key = open ? 'common.less' : 'common.more';
+                        var text = BYD.i18n.t(key);
+                        label.textContent = text && text !== key ? text : (open ? 'Less' : 'More');
+                    });
+                }
+                if (box.classList.contains('is-open')) return;
+                box.classList.remove('is-collapsed');
+                more.hidden = true;
+                var items = box.querySelectorAll('.dash-command');
+                var first = null, overflow = false;
+                for (var i = 0; i < items.length; i++) {
+                    if (!items[i].offsetParent) continue;
+                    var top = items[i].getBoundingClientRect().top;
+                    if (first === null) first = top;
+                    else if (top > first + 4) { overflow = true; break; }
+                }
+                if (!overflow) return;
+                more.hidden = false;
+                box.classList.add('is-collapsed');
+            },
+            // Confirmed first: switching the car off is disruptive to anyone inside. The router
+            // still refuses both unless the car is parked and stationary.
+            powerCommand: function(btn, on) {
+                if (!btn || btn.classList.contains('pending')) return;
+                function translated(key, fallback) {
+                    var value = BYD.i18n.t(key);
+                    return value && value !== key ? value : fallback;
+                }
+                var title = on
+                    ? translated('vehicle.power_on_confirm', 'Power on the vehicle?')
+                    : translated('vehicle.power_off_confirm', 'Power off the vehicle?');
+                var body = on
+                    ? translated('vehicle.power_on_confirm_body',
+                        'The vehicle will switch on where it is parked.')
+                    : translated('vehicle.power_off_confirm_body',
+                        'The vehicle will switch off. Anyone inside will lose climate and power.');
+                var confirmation = BYD.utils && BYD.utils.confirmDialog
+                    ? BYD.utils.confirmDialog({
+                        title: title,
+                        body: body,
+                        confirmLabel: on
+                            ? translated('vehicle.power_on', 'Power on')
+                            : translated('vehicle.power_off', 'Power off'),
+                        cancelLabel: translated('common.cancel', 'Cancel'),
+                        danger: !on
+                    })
+                    : Promise.resolve(window.confirm(title + ' ' + body));
+                Promise.resolve(confirmation).then(function(confirmed) {
+                    if (!confirmed) return;
+                    BYD.dashboard.command(btn, on ? '/api/vehicle/power-on' : '/api/vehicle/power-off');
+                });
             },
             refreshVehicleState: function() {
                 var self = this;
@@ -1897,6 +3247,7 @@
                         if (!el) return;
                         el.classList.remove('good', 'warn', 'alert');
                         if (cls) el.classList.add(cls);
+                        if (el.parentNode && el.parentNode.setAttribute) el.parentNode.setAttribute('data-tone', cls || '');
                     }
 
                     // Lock row + centre glyph + door pills.
@@ -2050,13 +3401,75 @@
                     }
                 },
 
+                // Big figures as the mock sets them: the number, then a smaller unit.
+                setFigure: function(el, text) {
+                    if (!el) return;
+                    var m = /^(.*?\d)\s*([^\d\s][^\d]*)$/.exec(text || '');
+                    if (!m) { el.textContent = text || '--'; return; }
+                    var num = el.firstElementChild;
+                    var unit = el.lastElementChild;
+                    if (!num || !unit || num === unit || unit.className !== 'dash-fig-unit') {
+                        num = document.createElement('span');
+                        unit = document.createElement('small');
+                        unit.className = 'dash-fig-unit';
+                        el.textContent = '';
+                        el.appendChild(num);
+                        el.appendChild(unit);
+                    }
+                    unit.textContent = m[2];
+                    this.tweenNumber(num, m[1]);
+                },
+                // Counts a plain figure to its new value (mock), unless motion is reduced.
+                tweenNumber: function(el, target) {
+                    var plain = /^\d+(\.\d+)?$/;
+                    var from = el.textContent;
+                    var root = document.documentElement;
+                    var reduced = root.getAttribute('data-reduced-motion') === 'true'
+                        || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+                    if (el._tween) cancelAnimationFrame(el._tween);
+                    if (reduced || document.hidden || !plain.test(target) || !plain.test(from) || from === target
+                            || typeof requestAnimationFrame !== 'function') {
+                        el.textContent = target;
+                        return;
+                    }
+                    var a = parseFloat(from), b = parseFloat(target);
+                    var decimals = (target.split('.')[1] || '').length;
+                    var t0 = Date.now();
+                    var step = function() {
+                        var p = Math.min(1, (Date.now() - t0) / 600);
+                        var e = 1 - Math.pow(1 - p, 3);
+                        el.textContent = p < 1 ? (a + (b - a) * e).toFixed(decimals) : target;
+                        el._tween = p < 1 ? requestAnimationFrame(step) : 0;
+                    };
+                    el._tween = requestAnimationFrame(step);
+                },
+                // Flash and Find play on the car once the command is accepted (mock twin).
+                cue: function(url) {
+                    var car = document.getElementById('dashGlanceCar');
+                    if (!car) return;
+                    var cls = url === '/api/vehicle/flash' ? ['is-flashing']
+                        : url === '/api/vehicle/find-car' ? ['is-flashing', 'is-finding'] : [];
+                    for (var i = 0; i < cls.length; i++) {
+                        car.classList.remove(cls[i]);
+                        void car.offsetWidth;
+                        car.classList.add(cls[i]);
+                    }
+                    if (!cls.length) return;
+                    clearTimeout(car._cueTimer);
+                    car._cueTimer = setTimeout(function() {
+                        car.classList.remove('is-flashing', 'is-finding');
+                    }, 1900);
+                },
+
                 // SoC ring + range readout, from /api/status.
                 RING_CIRC: 257.6,
                 setSoc: function(percent, rangeText) {
                     var ring = document.getElementById('dashSocRing');
                     var fill = document.getElementById('dashRingFill');
                     var rangeEl = document.getElementById('dashHeroRange');
-                    if (rangeEl) rangeEl.textContent = rangeText || '--';
+                    this.setFigure(rangeEl, rangeText || '--');
+                    var bar = document.getElementById('dashSocBarFill');
+                    if (bar) bar.style.width = (typeof percent === 'number' && percent >= 0 ? Math.max(0, Math.min(100, percent)) : 0) + '%';
                     if (!ring || !fill) return;
                     ring.classList.remove('soc-mid', 'soc-low');
                     if (typeof percent === 'number' && percent >= 0) {
@@ -2152,17 +3565,19 @@
                     return BYD.units.distVal(v).toLocaleString() + ' ' + BYD.units.distLabel();
                 }
                 var total = odo ? km(odo.totalKm) : null;
+                // A 7th tile strands alone on the 6-up track; re-track like the fuel cell does.
+                var grid = document.getElementById('dashInfoGrid');
+                if (grid) grid.classList.toggle('has-odo', total !== null);
                 if (total === null) { metric.style.display = 'none'; return; }
                 metric.style.display = '';
                 var totalEl = document.getElementById('dashOdo');
                 if (totalEl) totalEl.textContent = fmt(total);
                 var splitEl = document.getElementById('dashOdoSplit');
                 if (!splitEl) return;
-                // The split only means something on a hybrid: a BEV has no hevKm (or
-                // reports 0 on DiLink 5) and its evKm just repeats the total, so the
-                // tile shows the total alone unless the car has real HEV distance.
+                // Hybrids only (hev > 0), and neither part may exceed the total.
                 var ev = km(odo.evKm), hev = km(odo.hevKm);
-                if (ev === null || hev === null || hev <= 0) { splitEl.style.display = 'none'; return; }
+                if (ev === null || hev === null || hev <= 0
+                        || ev > total + 1 || hev > total + 1) { splitEl.style.display = 'none'; return; }
                 splitEl.textContent = (BYD.i18n.t('automation.mode_ev') || 'EV') + ' ' + fmt(ev)
                     + ' · ' + (BYD.i18n.t('automation.mode_hev') || 'HEV') + ' ' + fmt(hev);
                 splitEl.style.display = '';
@@ -2461,6 +3876,7 @@
                 setIfChanged('dashDriveDetail', detailText);
 
                 root.className = 'dash-drive-state is-' + state.mode;
+                if (state.speedKmh !== null) root.classList.add('has-speed');
                 root.setAttribute('data-state', state.mode);
 
                 var gearEl = setIfChanged('dashDriveGear', state.gear);
@@ -2513,6 +3929,20 @@
                 }
                 return state;
             },
+            updateBluetoothStatus: function(raw, transportStale) {
+                var radio = BYD.utils.bluetoothStatus(raw, 0, transportStale === true);
+                var metric = document.getElementById('dashBluetoothMetric');
+                var value = document.getElementById('dashBluetoothValue');
+                var label = document.getElementById('dashBluetooth');
+                var detail = document.getElementById('dashBluetoothDetail');
+                if (metric) {
+                    metric.setAttribute('data-state', radio.state);
+                    metric.title = 'Vehicle Bluetooth: ' + radio.label + '. ' + radio.detail;
+                }
+                if (value) value.setAttribute('aria-label', 'Vehicle Bluetooth: ' + radio.label);
+                if (label) label.textContent = radio.label;
+                if (detail) detail.textContent = radio.detail;
+            },
             updateFromStatus: function(status) {
                 if (!status) return;
                 this.lastStatus = status;
@@ -2523,12 +3953,21 @@
                     var el = document.getElementById(id);
                     if (el) el.textContent = value;
                 }
-                function setChip(id, value, cls) {
+                function setChip(id, value, cls, ico) {
                     var el = document.getElementById(id);
                     if (!el) return;
-                    el.textContent = value;
-                    el.classList.remove('good', 'warn', 'alert');
-                    if (cls) el.classList.add(cls);
+                    var text = el.querySelector('.dash-chip-text') || el;
+                    text.textContent = value;
+                    el.title = value;
+                    el.classList.remove('good', 'warn', 'alert', 'is-live');
+                    (cls || '').split(' ').forEach(function (c) { if (c) el.classList.add(c); });
+                    if (ico) el.setAttribute('data-ico', ico);
+                }
+                function tr(key, fallback, vars) {
+                    var v = BYD.i18n.t(key, vars);
+                    if (v && v !== key) return v;
+                    if (vars) Object.keys(vars).forEach(function (n) { fallback = fallback.split('{' + n + '}').join(vars[n]); });
+                    return fallback;
                 }
                 function timeAgo(timestamp) {
                     // Returns "Ns ago" / "Nm ago" / "Nh ago" using locale-
@@ -2557,12 +3996,23 @@
                 }
 
                 var driveState = this.updateDriveState(status);
-                var deviceLabel = BYD.i18n.t('dashboard.chip_device_value', { id: status.deviceId || '--' })
-                                  || ('Device ' + (status.deviceId || '--'));
-                setChip('dashConnChip', deviceLabel, status.deviceId ? 'good' : '');
-                var survLabel = BYD.i18n.t('dashboard.chip_surveillance_value', { state: tOnOff(status.gpuSurveillance) })
-                                || ('Surveillance ' + tOnOff(status.gpuSurveillance));
-                setChip('dashSurvChip', survLabel, status.gpuSurveillance ? 'good' : '');
+                // Hero chips: surveillance → recording (only while it runs) →
+                // GPS fix → how the car is connected. Each links to its page.
+                if (status.safeZoneSuppressed || status.inSafeZone) {
+                    setChip('dashSurvChip', status.safeZoneName
+                        ? tr('dashboard.chip_safe_zone_named', 'Safe zone · {name}', { name: status.safeZoneName })
+                        : tr('dashboard.chip_safe_zone', 'Safe zone'), '', 'home');
+                } else if (status.gpuSurveillance) {
+                    setChip('dashSurvChip', tr('dashboard.chip_surveillance_armed', 'Surveillance armed'), 'good is-live');
+                } else {
+                    setChip('dashSurvChip', tr('dashboard.chip_surveillance_off', 'Surveillance off'), '', 'shield-off');
+                }
+                var recChip = document.getElementById('dashRecChip');
+                var isRecording = !!(status.recordingStatus && status.recordingStatus.isRecording);
+                if (recChip) {
+                    recChip.hidden = !isRecording;
+                    if (isRecording) setChip('dashRecChip', tr('dashboard.chip_recording', 'Recording'), 'alert is-live');
+                }
                 setText('dashAcc', tOnOff(driveState.powerOn));
 
                 var batteryVoltage = status.battery
@@ -2578,7 +4028,7 @@
                 if (socPercent !== null) {
                     var socText = socPercent.toFixed(1) + '%';
                     setText('dashSoc', socText);
-                    setText('dashHeroSoc', socText);
+                    this.glance.setFigure(document.getElementById('dashHeroSoc'), socText);
                 } else {
                     setText('dashSoc', '--');
                     setText('dashHeroSoc', '--');
@@ -2630,15 +4080,43 @@
                     netIpEl.textContent = ip;
                     netIpEl.style.display = ip ? '' : 'none';
                 }
+                this.updateBluetoothStatus(status.bluetooth, false);
 
-                if (status.gps && status.gps.hasLocation) {
-                    var stale = status.gps.isCached || status.gps.isStale;
-                    var gpsChip = stale
-                        ? (BYD.i18n.t('dashboard.chip_gps_cached') || 'GPS cached')
-                        : (BYD.i18n.t('dashboard.chip_gps_live') || 'GPS live');
-                    setChip('dashGpsChip', gpsChip, stale ? 'warn' : 'good');
+                var gpsFix = status.gps || {};
+                if (gpsFix.hasLocation) {
+                    var stale = gpsFix.isCached || gpsFix.isStale || gpsFix.isFixStale;
+                    var fixAge = Number(gpsFix.fixAgeMs || gpsFix.ageMs) || 0;
+                    var accuracy = Number(gpsFix.accuracy);
+                    if (stale) {
+                        setChip('dashGpsChip', fixAge > 0
+                            ? tr('dashboard.chip_gps_cached_age', 'GPS cached · {age}', { age: timeAgo(Date.now() - fixAge) })
+                            : tr('dashboard.chip_gps_cached', 'GPS cached'), 'warn', 'nav');
+                    } else if (isFinite(accuracy) && accuracy > 0) {
+                        var imperial = BYD.units && BYD.units.mode === 'mi';
+                        var accText = imperial
+                            ? Math.max(1, Math.round(accuracy * 3.28084)) + ' ft'
+                            : Math.max(1, Math.round(accuracy)) + ' m';
+                        setChip('dashGpsChip', tr('dashboard.chip_gps_accuracy', 'GPS ±{value}', { value: accText }), '', 'nav');
+                    } else {
+                        setChip('dashGpsChip', tr('dashboard.chip_gps_live', 'GPS live'), '', 'nav');
+                    }
                 } else {
-                    setChip('dashGpsChip', BYD.i18n.t('dashboard.chip_gps_pending') || 'GPS --', '');
+                    setChip('dashGpsChip', tr('dashboard.chip_gps_none', 'No GPS fix'), '', 'nav-off');
+                }
+                // Connection chip; setStatusHealth() takes it over while /status is failing.
+                var link = status.network || {};
+                var bars = Number(link.signal);
+                if (link.type === 'wifi') {
+                    setChip('dashConnChip', link.ssid
+                        ? tr('dashboard.chip_wifi', 'Wi-Fi · {ssid}', { ssid: link.ssid })
+                        : (BYD.i18n.t('status.wifi') || 'Wi-Fi'), '',
+                        !isFinite(bars) || bars >= 67 ? 'wifi' : (bars >= 34 ? 'wifi-mid' : 'wifi-low'));
+                } else if (link.type === 'cellular') {
+                    setChip('dashConnChip', tr('dashboard.chip_mobile', 'Mobile data'), '', 'signal');
+                } else if (link.type === 'ethernet') {
+                    setChip('dashConnChip', tr('dashboard.chip_ethernet', 'Ethernet'), '', 'ethernet');
+                } else {
+                    setChip('dashConnChip', tr('dashboard.chip_offline', 'Offline'), 'warn', 'wifi-off');
                 }
 
                 // ----- Charging card -----
@@ -2666,6 +4144,8 @@
 
                     if (c.socPercent !== undefined && c.socPercent !== null) {
                         setText('dashChargeSoc', c.socPercent.toFixed(1) + '%');
+                        var socBar = document.getElementById('dashChargeSocBar');
+                        if (socBar) socBar.style.width = Math.max(0, Math.min(100, c.socPercent)) + '%';
                     } else {
                         setText('dashChargeSoc', '--');
                     }
@@ -2707,15 +4187,22 @@
                 window.open('https://www.google.com/maps/dir/?api=1&destination=' + gps.lat + ',' + gps.lng + '&travelmode=driving', '_blank');
             },
             setStatusHealth: function(state) {
+                if (state !== 'live') {
+                    this.updateBluetoothStatus(
+                        this.lastStatus && this.lastStatus.bluetooth, true);
+                }
                 var chip = document.getElementById('dashConnChip');
                 if (!chip || state === 'live') return;
                 var disconnected = state === 'disconnected';
                 var key = disconnected ? 'status.disconnected' : 'status.stale';
                 var fallback = disconnected ? 'Disconnected' : 'Status stale';
                 var label = BYD.i18n.t(key);
-                chip.textContent = label && label !== key ? label : fallback;
-                chip.classList.remove('good', 'warn', 'alert');
+                label = label && label !== key ? label : fallback;
+                (chip.querySelector('.dash-chip-text') || chip).textContent = label;
+                chip.title = label;
+                chip.classList.remove('good', 'warn', 'alert', 'is-live');
                 chip.classList.add(disconnected ? 'alert' : 'warn');
+                chip.setAttribute('data-ico', disconnected ? 'wifi-off' : 'clock');
             }
         };
 
@@ -2738,6 +4225,58 @@
         BYD.i18n.init().then(function() {
             BYD.core.init();
             if (BYD.map) BYD.map.init();
+            // The map fills its tile, whose height follows the bento row; Leaflet
+            // only re-measures on window resize, so re-measure when the box changes.
+            var mapBox = document.getElementById('mapContainer');
+            if (mapBox && typeof ResizeObserver !== 'undefined') {
+                var mapResizeTimer = null;
+                new ResizeObserver(function() {
+                    clearTimeout(mapResizeTimer);
+                    mapResizeTimer = setTimeout(function() {
+                        if (BYD.map && BYD.map.map) BYD.map.map.invalidateSize();
+                    }, 120);
+                }).observe(mapBox);
+            }
+            // Figures read as the mock sets them: the number, then a smaller unit.
+            // Re-applied whenever a reading's text is replaced.
+            var unitized = document.querySelectorAll('#dashInfoGrid .dash-metric > strong, #dashChargeTtf, .dash-charge-card .dash-metric > strong');
+            var unitize = function(el) {
+                if (el.childNodes.length !== 1 || el.firstChild.nodeType !== 3) return;
+                var text = el.firstChild.nodeValue;
+                if (!/^[~+]?\d/.test(text) || !/\d[^\d\s.,]/.test(text.replace(/\s+/g, ''))) return;
+                var parts = text.match(/[~+]?[\d.,]+|[^\d]+/g) || [text];
+                el.textContent = '';
+                for (var i = 0; i < parts.length; i++) {
+                    if (/\d/.test(parts[i])) {
+                        el.appendChild(document.createTextNode(parts[i]));
+                    } else if (parts[i].replace(/\s/g, '')) {
+                        if (/^\s/.test(parts[i])) el.appendChild(document.createTextNode(' '));
+                        var u = document.createElement('small');
+                        u.className = 'dash-fig-unit';
+                        u.textContent = parts[i].replace(/^\s+|\s+$/g, '');
+                        el.appendChild(u);
+                        if (/\s$/.test(parts[i])) el.appendChild(document.createTextNode(' '));
+                    }
+                }
+            };
+            if (typeof MutationObserver !== 'undefined') {
+                var unitObserver = new MutationObserver(function(records) {
+                    for (var r = 0; r < records.length; r++) {
+                        var target = records[r].target.nodeType === 3 ? records[r].target.parentNode : records[r].target;
+                        if (target) unitize(target);
+                    }
+                });
+                for (var u = 0; u < unitized.length; u++) {
+                    unitize(unitized[u]);
+                    unitObserver.observe(unitized[u], { childList: true, characterData: true, subtree: true });
+                }
+            }
+            BYD.dashboard.layoutPills();
+            var pillsTimer = null;
+            window.addEventListener('resize', function() {
+                clearTimeout(pillsTimer);
+                pillsTimer = setTimeout(function() { BYD.dashboard.layoutPills(); }, 150);
+            });
             BYD.dashboard.initVehicleStatePolling();
             BYD.dashboard.initAiInsight();
             BYD.dashboard.refreshSecurityDigest();
@@ -2745,6 +4284,7 @@
             // Once, after i18n: the labels are user-authored so they need no translation,
             // and the grid stays hidden when the user has defined no buttons.
             BYD.dashboard.loadCustomCommands();
+            BYD.dashboard.loadPowerControls();
         });
 
         // ── Dashboard card reorder ──────────────────────────────────

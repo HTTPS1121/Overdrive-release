@@ -235,7 +235,9 @@
       "check_update": "⬆️ 업데이트 확인",
       "backup": "💾 백업",
       "stop": "⛔ 중지",
-      "start": "✅ 시작"
+      "start": "✅ 시작",
+      "tunnel_switch": "🔁 {0}로 전환",
+      "tunnel_run_both": "➕ 모두 실행"
     },
     "daemons": {
       "title": "🤖 *데몬*\n\n"
@@ -280,7 +282,8 @@
       "status_running": "{0}: ✅ 실행 중",
       "status_stopped": "{0}: ⛔ 중지됨",
       "action_usage": "사용법: /daemon {0} start|stop|status",
-      "tunnel_url": "🌐 *터널 URL*\n{0}"
+      "tunnel_url": "🌐 *터널 URL*\n{0}",
+      "tunnel_conflict": "⚠️ {0}이 이미 실행 중입니다.\n\n{1}로 전환할까요({0}은 중지됩니다), 아니면 두 터널을 함께 실행할까요?"
     },
     "events": {
       "invalid_hours": "⚠️ 시간 값이 올바르지 않습니다. 사용법: `/events [hours] [page]`\n예: `/events 12 2`",
@@ -762,6 +765,7 @@
     "turn_right": "우측 방향지시등",
     "side_left": "좌측",
     "side_right": "우측",
+    "side_any": "어느 쪽이든",
     "blind_spot": "사각지대 경고",
     "blind_spot_description": "레이더 사각지대 경고가 해당 측면에서 울리고 있는지 여부입니다. 사각지대, 차선 변경 및 교차 통행 경고를 포함합니다. 경고는 순간적이므로, 마지막 경고 후 몇 초 동안 신호가 켜진 상태로 유지됩니다.",
     "time": "시간",

@@ -68,6 +68,7 @@ object SavedPlacesStore {
     fun save(context: Context, kind: String, result: SearchResult) {
         try {
             if (result.label.isBlank()) return
+            if (result.lat.isNaN() || result.lng.isNaN()) return
             val current = getAll(context).toMutableList()
             when (kind) {
                 KIND_HOME, KIND_WORK ->
@@ -150,7 +151,7 @@ object SavedPlacesStore {
             val lat = obj.optDouble(KEY_LAT, Double.NaN)
             val lng = obj.optDouble(KEY_LNG, Double.NaN)
             if (lat.isNaN() || lng.isNaN()) continue
-            out.add(SavedPlace(kind, SearchResult(label, lat, lng)))
+            out.add(SavedPlace(kind, RecentSearchStore.readPlace(obj, label, lat, lng)))
         }
         return out
     }
@@ -164,6 +165,7 @@ object SavedPlacesStore {
                 obj.put(KEY_LABEL, item.result.label)
                 obj.put(KEY_LAT, item.result.lat)
                 obj.put(KEY_LNG, item.result.lng)
+                RecentSearchStore.putPlaceFields(obj, item.result)
                 arr.put(obj)
             }
             prefs(context).edit().putString(KEY_PLACES, arr.toString()).apply()

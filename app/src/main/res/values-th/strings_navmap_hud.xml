@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>ขับต่อไป</item>
+        <item>ออกเดินทาง</item>
+        <item>ถึงจุดหมาย</item>
+        <item>จุดหมายอยู่ทางขวา</item>
+        <item>จุดหมายอยู่ทางซ้าย</item>
+        <item>เบี่ยงขวา</item>
+        <item>เลี้ยวขวา</item>
+        <item>เลี้ยวขวาหักศอก</item>
+        <item>กลับรถ</item>
+        <item>เลี้ยวซ้ายหักศอก</item>
+        <item>เลี้ยวซ้าย</item>
+        <item>เบี่ยงซ้าย</item>
+        <item>เข้าทางลาด</item>
+        <item>ใช้ทางออก</item>
+        <item>ตรงไป</item>
+        <item>ชิดขวา</item>
+        <item>ชิดซ้าย</item>
+        <item>รวมเข้าช่องทาง</item>
+        <item>รวมเข้าทางขวา</item>
+        <item>รวมเข้าทางซ้าย</item>
+        <item>เข้าวงเวียน</item>
+        <item>ออกจากวงเวียน</item>
+        <item>ขึ้นเรือข้ามฟาก</item>
+        <item>ลงจากเรือข้ามฟาก</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>ขับต่อไปตาม</item>
+        <item>ออกเดินทางไปตาม</item>
+        <item>ถึงจุดหมายที่</item>
+        <item>จุดหมายอยู่ทางขวาที่</item>
+        <item>จุดหมายอยู่ทางซ้ายที่</item>
+        <item>เบี่ยงขวาเข้าสู่</item>
+        <item>เลี้ยวขวาเข้าสู่</item>
+        <item>เลี้ยวขวาหักศอกเข้าสู่</item>
+        <item>กลับรถเข้าสู่</item>
+        <item>เลี้ยวซ้ายหักศอกเข้าสู่</item>
+        <item>เลี้ยวซ้ายเข้าสู่</item>
+        <item>เบี่ยงซ้ายเข้าสู่</item>
+        <item>เข้าทางลาดไปยัง</item>
+        <item>ใช้ทางออกไปยัง</item>
+        <item>ตรงไปเข้าสู่</item>
+        <item>ชิดขวาเข้าสู่</item>
+        <item>ชิดซ้ายเข้าสู่</item>
+        <item>รวมเข้ากับ</item>
+        <item>รวมเข้าทางขวาสู่</item>
+        <item>รวมเข้าทางซ้ายสู่</item>
+        <item>ผ่านวงเวียนเข้าสู่</item>
+        <item>ออกจากวงเวียนเข้าสู่</item>
+        <item>ขึ้นเรือข้ามฟาก:</item>
+        <item>ลงจากเรือแล้วเข้าสู่</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>ที่ 1</item>
+        <item>ที่ 2</item>
+        <item>ที่ 3</item>
+        <item>ที่ 4</item>
+        <item>ที่ 5</item>
+        <item>ที่ 6</item>
+        <item>ที่ 7</item>
+        <item>ที่ 8</item>
+        <item>ที่ 9</item>
+        <item>ที่ 10</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">ใช้ทางออก%1$s</string>
+    <string name="nav_hud_roundabout_exit_onto">ใช้ทางออก%1$s เข้าสู่</string>
+    <string name="nav_hud_towards">มุ่งหน้า</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">ทางออก %1$s</string>
+    <string name="nav_hud_then">จากนั้น</string>
+    <string name="nav_hud_arrive">ถึง</string>
+    <string name="nav_hud_recenter">จัดกึ่งกลาง</string>
+    <string name="nav_hud_end">สิ้นสุด</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">ม.</string>
+    <string name="nav_hud_unit_km">กม.</string>
+    <string name="nav_hud_unit_ft">ฟุต</string>
+    <string name="nav_hud_unit_mi">ไมล์</string>
+    <string name="nav_hud_unit_kmh">กม./ชม.</string>
+    <string name="nav_hud_unit_mph">ไมล์/ชม.</string>
+    <string name="nav_hud_cd_mute">ปิดเสียงนำทาง</string>
+    <string name="nav_hud_cd_unmute">เปิดเสียงนำทาง</string>
+    <string name="nav_hud_cd_overview">แสดงเส้นทางทั้งหมด</string>
+    <string name="nav_hud_cd_overview_exit">กลับไปที่มุมมองการขับขี่</string>
+    <string name="nav_hud_cd_end">สิ้นสุดการนำทาง</string>
+    <string name="nav_hud_cd_recenter">จัดกึ่งกลางที่ตำแหน่งรถ</string>
+    <string name="nav_hud_cd_compass_heading_up">เข็มทิศ: ทิศทางการขับอยู่ด้านบน แตะเพื่อให้ทิศเหนืออยู่ด้านบน</string>
+    <string name="nav_hud_cd_compass_north_up">เข็มทิศ: ทิศเหนืออยู่ด้านบน แตะเพื่อให้ทิศทางการขับอยู่ด้านบน</string>
+    <string name="nav_hud_cd_back">ออกจากแผนที่</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">จากนั้นอีก %2$s %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">ถึงเวลา %1$s เหลืออีก %2$s และ %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">ล่าช้าจากการจราจร %1$s</string>
+</resources>

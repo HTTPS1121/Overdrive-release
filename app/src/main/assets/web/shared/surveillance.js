@@ -91,24 +91,30 @@ BYD.surveillance = {
         // whose data module sleeps after ACC OFF. Hydrated from /api/surveillance/config
         // and persisted immediately on toggle (no Apply).
         mobileDataKeepAlive: false,
+        // Canonical parked Bluetooth preference, shared across every feature.
+        bluetoothKeepAlive: false,
         // DiLink 5 only: opt-in BYD-cloud realtime heartbeat while parked.
         // Capability/readiness arrive with /api/surveillance/config so the
         // row can stay hidden on other generations and disabled until the
         // account is verified.
         di5CloudKeepAlive: false,
+        di5CloudKeepAliveConfigured: false,
+        di5CloudKeepAlivePollerEnabled: false,
         di5CloudKeepAliveSupported: false,
         di5CloudKeepAliveCloudReady: false,
-        // DiLink 5 QNX common-network keep-alive. Row shown only when the
-        // firmware exposes the QnxMessage service.
-        di5QnxNetworkKeepAlive: false,
-        di5QnxNetworkKeepAliveMaxMinutes: 60,
-        di5QnxNetworkKeepAliveSupported: false,
-        // Opt-in DiLink 5 parked keep-alive lease (Experimental). Master switch
+        // Opt-in DiLink 5 parked keep-alive lease. Master switch
         // only — the levers are config-only diagnostics. Deliberately has NO
         // capability flag: DiLink 5 head units exist with and without the
         // QCarCam camera stack, so the row is never tied to the camera-mode
         // selection (unlike di5CloudKeepAlive above).
         di5ParkedKeepAlive: false,
+        // Opt-in DiLink 5 assist-off profile: one toggle per driver-assistance
+        // control (CPD, LDA/LKA mode, ELKA, DMS), all default OFF, each applied at
+        // every ignition. assistOffAvailable comes from the server and is true only
+        // in DiLink 5 mode with the model EXPLICITLY confirmed as the Sealion 7; the
+        // rows stay disabled otherwise. Immediate-save, never part of the Apply diff.
+        assistOff: { cpd: false, lda: false, elka: false, dms: false },
+        assistOffAvailable: false,
         // Low-power-while-parked master toggle (mirrors camera.surveillanceIdleThrottle
         // + oemDashcam.idleThrottleWhenParked, which are driven together). Default
         // false = today's behaviour (full idle frame rate). Hydrated from
@@ -183,6 +189,8 @@ BYD.surveillance = {
     _telemetryWriteVersion: 0,
     _telemetryFieldPostInFlight: 0,
     _immediateWriteVersions: {},
+    _bluetoothWritePending: false,
+    _bluetoothReadPending: null,
     hasUnsavedChanges: false,
     lastConfigTimestamp: 0,  // Track config file timestamp for sync
 
@@ -227,6 +235,43 @@ BYD.surveillance = {
 
     _isLatestImmediateWrite(key, version) {
         return this._immediateWriteVersions[key] === version;
+    },
+
+    updateBluetoothKeepAliveUI() {
+        const toggle = document.getElementById('survBluetoothKeepAlive');
+        if (!toggle) return;
+        toggle.checked = this.config.bluetoothKeepAlive === true;
+        toggle.disabled = !this._hydrated || this._bluetoothWritePending;
+    },
+
+    syncBluetoothKeepAlive(value, readVersion) {
+        if (typeof value !== 'boolean' || this._bluetoothWritePending) return;
+        if (readVersion !== undefined &&
+                readVersion !== (this._immediateWriteVersions.bluetoothKeepAlive || 0)) return;
+        // Independent immediate-save preferences may hydrate even when another
+        // tab has pending edits. Keep both baselines in sync for this key only.
+        this.config.bluetoothKeepAlive = value;
+        if (this.savedConfig) this.savedConfig.bluetoothKeepAlive = value;
+        this.updateBluetoothKeepAliveUI();
+    },
+
+    refreshBluetoothKeepAlive() {
+        if (this._bluetoothWritePending) return Promise.resolve();
+        if (this._bluetoothReadPending) return this._bluetoothReadPending;
+        const version = this._immediateWriteVersions.bluetoothKeepAlive || 0;
+        const read = fetch('/api/surveillance/config')
+            .then(resp => resp.json())
+            .then(data => {
+                if (data.success && data.config) {
+                    this.syncBluetoothKeepAlive(data.config.bluetoothKeepAlive, version);
+                }
+            })
+            .catch(() => {})
+            .then(() => {
+                if (this._bluetoothReadPending === read) this._bluetoothReadPending = null;
+            });
+        this._bluetoothReadPending = read;
+        return read;
     },
 
     distanceMap: {
@@ -298,6 +343,7 @@ BYD.surveillance = {
         this.savedConfig = JSON.parse(JSON.stringify(this.config));
         this.updateUI();
         this._hydrated = true;
+        this.updateBluetoothKeepAliveUI();
         this.startClock();
 
         // Telegram pairing state — drives the tier filter availability UI.
@@ -327,6 +373,7 @@ BYD.surveillance = {
             // dirty tab should still pick up a peer page's limit change.
             if (document.visibilityState === 'visible') {
                 this.reloadConfig();
+                this._refreshStorageType();
             }
             // Stop heatmap polling when page is hidden
             if (document.visibilityState === 'hidden' && this._heatmapInterval) {
@@ -341,6 +388,13 @@ BYD.surveillance = {
                 }
             }
         });
+        window.addEventListener('focus', () => {
+            if (document.visibilityState === 'visible') {
+                this.reloadConfig();
+                this._refreshStorageType();
+            }
+        });
+        window.addEventListener('overdrive:resume', () => this.reloadConfig());
 
         // Re-evaluate Apply enabled-state + unsaved markers whenever the
         // user swaps bottom tabs — markChanged() reads the active tab id
@@ -369,13 +423,17 @@ BYD.surveillance = {
             // categories' limits, so a dirty page would otherwise show a stale verdict
             // indefinitely. Writes no control, so it's safe with edits in flight.
             this.refreshBudgetOnly();
+            // Read the shared Bluetooth key without replacing unrelated edits.
+            await this.refreshBluetoothKeepAlive();
             return;
         }
 
         try {
+            const bluetoothVersion = this._immediateWriteVersions.bluetoothKeepAlive || 0;
             const resp = await fetch('/api/surveillance/config');
             const data = await resp.json();
             if (data.success && data.config) {
+                this.syncBluetoothKeepAlive(data.config.bluetoothKeepAlive, bluetoothVersion);
                 // Check if config actually changed (via timestamp)
                 const newTimestamp = data.config.lastModified || 0;
                 if (newTimestamp > this.lastConfigTimestamp) {
@@ -395,11 +453,13 @@ BYD.surveillance = {
                     // edit. Return WITHOUT advancing lastConfigTimestamp so the
                     // next reload re-attempts once the edit is saved. Mirrors the
                     // mid-flight guard in recording.js reloadConfig.
-                    if (this.hasUnsavedChanges) return;
+                    if (this.hasUnsavedChanges || this._bluetoothWritePending ||
+                            bluetoothVersion !== (this._immediateWriteVersions.bluetoothKeepAlive || 0)) return;
 
                     // Apply server config atomically (no await between here and
                     // updateUI, so the three stay consistent).
-                    this.config = { ...this.config, ...data.config };
+                    const bluetoothCurrent = this.config.bluetoothKeepAlive === true;
+                    this.config = Object.assign({}, this.config, data.config, { bluetoothKeepAlive: bluetoothCurrent });
                     // Use server-provided distance/sensitivity if available
                     if (!data.config.distance) {
                         this.config.distance = this.sizeToDistance(this.config.minObjectSize || 0.08);
@@ -516,6 +576,7 @@ BYD.surveillance = {
                     document.querySelectorAll('#survFpsBtns .btn-toggle').forEach(function (btn) {
                         btn.classList.toggle('active', btn.dataset.value === String(sfRefresh));
                     });
+                    this.renderActiveEstimate();
                 }
             }
         } catch (_) {}
@@ -572,6 +633,17 @@ BYD.surveillance = {
         }
     },
     
+    /**
+     * The storage type is edited on storage.html now. Re-read it when this page
+     * comes back so the keep-USB prompt (toggleKeepUsbPower) sees the current pick.
+     */
+    _refreshStorageType() {
+        const now = Date.now();
+        if (now - (this._storageTypeReadAt || 0) < 2000) return;
+        this._storageTypeReadAt = now;
+        this.loadStorageSettings();
+    },
+
     async loadStorageStats() {
         try {
             const resp = await fetch('/api/recordings/stats');
@@ -692,7 +764,10 @@ BYD.surveillance = {
                 } else if (data.recordingQuality) {
                     this.config.surveillanceQuality = data.recordingQuality;
                 }
-                this.config.recordingQualityOptions = data.recordingQualityOptions || {};
+                // Parked table is computed at the surveillance fps (bitrate scales with fps).
+                this.config.recordingQualityOptions =
+                    data.surveillanceQualityOptions || data.recordingQualityOptions || {};
+                this.config.qualityOptionsByFps = data.qualityOptionsByFps || null;
                 this.config.activeRecordingEstimate = data.activeRecordingEstimate || null;
             }
         } catch (e) {
@@ -720,8 +795,10 @@ BYD.surveillance = {
             const r = await fetch('/api/settings/quality');
             if (!r.ok) return;
             const data = await r.json();
-            if (data && data.recordingQualityOptions) {
-                this.config.recordingQualityOptions = data.recordingQualityOptions;
+            const opts = data && (data.surveillanceQualityOptions || data.recordingQualityOptions);
+            if (opts) {
+                this.config.recordingQualityOptions = opts;
+                this.config.qualityOptionsByFps = data.qualityOptionsByFps || null;
                 this.renderActiveEstimate();
             }
         } catch (e) { /* best-effort */ }
@@ -775,7 +852,7 @@ BYD.surveillance = {
      * edits. Writes no control, so it is safe with edits in flight.
      */
     async refreshBudgetOnly() {
-        if (!BYD.storageBudget) return;
+        if (!BYD.storageBudget || !document.getElementById('survBudgetBanner')) return;
         try {
             const resp = await fetch('/api/settings/storage');
             const data = await resp.json();
@@ -1265,7 +1342,8 @@ BYD.surveillance = {
     updateSurvLimit(value) {
         this.config.surveillanceLimitMb = parseInt(value);
         const v = parseInt(value);
-        document.getElementById('survLimitValue').textContent = v >= 1000 ? (v / 1000) + ' GB' : v + ' MB';
+        const valueEl = document.getElementById('survLimitValue');
+        if (valueEl) valueEl.textContent = v >= 1000 ? (v / 1000) + ' GB' : v + ' MB';
         // Live advisory while dragging — the point at which the user crosses the
         // volume's capacity is exactly when they need to know.
         this.updateBudgetBanner();
@@ -1300,8 +1378,9 @@ BYD.surveillance = {
                 this.loadStorageStats();
             }
 
-            // Refresh CDR info if SD card is selected
-            if (this.config.surveillanceStorageType === 'SD_CARD' && this.storageInfo.sdCardAvailable) {
+            // Refresh CDR info if SD card is selected (the card now lives on storage.html)
+            if (document.getElementById('cdrCleanupCard')
+                    && this.config.surveillanceStorageType === 'SD_CARD' && this.storageInfo.sdCardAvailable) {
                 this.loadCdrConfig();
             }
         }, 10000);
@@ -1314,7 +1393,7 @@ BYD.surveillance = {
             const data = await resp.json();
             if (data.success && data.config) {
                 loaded = true;
-                this.config = { ...this.config, ...data.config };
+                this.config = Object.assign({}, this.config, data.config);
                 // Use server-provided distance/sensitivity if available, otherwise calculate from minObjectSize
                 if (!data.config.distance) {
                     this.config.distance = this.sizeToDistance(this.config.minObjectSize || 0.08);
@@ -1448,8 +1527,7 @@ BYD.surveillance = {
         // because of edits on another tab.
         var markerTabMap = {
             'detectionUnsaved': 'detection',
-            'recordingUnsaved': 'recording',
-            'storageUnsaved':   'storage'
+            'recordingUnsaved': 'recording'
         };
         for (var elId in markerTabMap) {
             var el = document.getElementById(elId);
@@ -1691,8 +1769,9 @@ BYD.surveillance = {
 
     /** Look up the per-tier estimate computed by the server (codec+fps already
      *  factored in). Returns null if not loaded yet. */
-    estimateForTier(tier) {
-        const opts = this.config.recordingQualityOptions || {};
+    estimateForTier(tier, fps) {
+        const byFps = this.config.qualityOptionsByFps;
+        const opts = (byFps && byFps[String(fps)]) || this.config.recordingQualityOptions || {};
         return opts[tier] || null;
     },
 
@@ -1712,9 +1791,11 @@ BYD.surveillance = {
             // diff when the user has changed the tier without applying yet.
             const currentTier = this.config.surveillanceQuality;
             const savedTier = this.savedConfig ? this.savedConfig.surveillanceQuality : currentTier;
-            const currentEst = this.estimateForTier(currentTier);
-            const savedEst = this.estimateForTier(savedTier);
-            if (currentTier === savedTier || !savedEst) {
+            const currentFps = this.config.surveillanceCameraFps;
+            const savedFps = this.savedConfig ? this.savedConfig.surveillanceCameraFps : currentFps;
+            const currentEst = this.estimateForTier(currentTier, currentFps);
+            const savedEst = this.estimateForTier(savedTier, savedFps);
+            if ((currentTier === savedTier && currentFps === savedFps) || !savedEst) {
                 el.textContent = this.formatEstimate(currentEst);
             } else {
                 el.textContent = this.formatEstimate(savedEst)
@@ -1998,7 +2079,6 @@ BYD.surveillance = {
             });
         this.applyDi5CloudKeepAliveUI();
         this.applyDi5ParkedKeepAliveUI();
-        this.applyDi5QnxNetworkKeepAliveUI();
         // Explanatory note (shown only when inert).
         const note = document.getElementById('postOffDisabledNotice');
         if (note) note.style.display = inert ? '' : 'none';
@@ -2137,8 +2217,8 @@ BYD.surveillance = {
         if (this.config.surveillanceLimitMb > newMax) this.config.surveillanceLimitMb = newMax;
         this.updateStorageLimitUI();
         this.updateCdrCleanupVisibility();
-        // Flag the storage tab dirty via the standard diff so the Apply button and
-        // per-tab "unsaved" markers stay consistent (mirrors setStorageType()).
+        // Re-run the dirty diff so the Apply button and "unsaved" markers stay
+        // consistent; storage fields belong to no tab here (storage.html owns them).
         this.markChanged();
         // Return the prior storage type so the caller can revert if persist fails.
         return prevStorageType;
@@ -2355,6 +2435,52 @@ BYD.surveillance = {
     },
 
     /**
+     * A single shared parked-radio preference. Immediate partial writes keep
+     * unrelated Apply actions from restoring an older value from this page.
+     */
+    toggleBluetoothKeepAlive() {
+        const toggle = document.getElementById('survBluetoothKeepAlive');
+        if (!toggle) return;
+        if (!this._hydrated || this._bluetoothWritePending) {
+            this.updateBluetoothKeepAliveUI(); return;
+        }
+        const requested = toggle.checked;
+        const previous = this.config.bluetoothKeepAlive === true;
+        const version = this._nextImmediateWrite('bluetoothKeepAlive');
+        const translate = (key, fallback) => {
+            const value = BYD.i18n && BYD.i18n.t ? BYD.i18n.t(key) : null;
+            return !value || value === key ? fallback : value;
+        };
+        this._bluetoothWritePending = true;
+        this.config.bluetoothKeepAlive = requested;
+        this.updateBluetoothKeepAliveUI();
+        this._writeJson('/api/surveillance/config', { bluetoothKeepAlive: requested })
+            .then(data => {
+                if (!this._isLatestImmediateWrite('bluetoothKeepAlive', version)) return;
+                const value = data.config && typeof data.config.bluetoothKeepAlive === 'boolean'
+                    ? data.config.bluetoothKeepAlive : requested;
+                this._bluetoothWritePending = false;
+                this.syncBluetoothKeepAlive(value);
+                if (BYD.utils && BYD.utils.toast) {
+                    BYD.utils.toast(value
+                        ? translate('surveillance.bluetooth_keepalive_saved_on', 'Shared parked Bluetooth enabled')
+                        : translate('surveillance.bluetooth_keepalive_saved_off', 'Shared parked Bluetooth disabled'), 'success');
+                }
+            })
+            .catch(() => {
+                if (!this._isLatestImmediateWrite('bluetoothKeepAlive', version)) return;
+                const persisted = this.savedConfig && typeof this.savedConfig.bluetoothKeepAlive === 'boolean'
+                    ? this.savedConfig.bluetoothKeepAlive : previous;
+                this._bluetoothWritePending = false;
+                this.syncBluetoothKeepAlive(persisted);
+                if (BYD.utils && BYD.utils.toast) {
+                    BYD.utils.toast(translate('surveillance.bluetooth_keepalive_save_failed',
+                        'Could not save the shared Bluetooth setting'), 'error');
+                }
+            });
+    },
+
+    /**
      * Experimental DiLink 5 BYD-cloud heartbeat. Immediate-save with the same
      * optimistic/revert contract as the neighboring mobile-data toggle.
      * CameraDaemon applies it to the current authoritative ACC state, so OFF
@@ -2411,75 +2537,6 @@ BYD.surveillance = {
     },
 
     /**
-     * Experimental DiLink 5 QNX common-network keep-alive. Same immediate-save
-     * contract as the cloud toggle; the daemon picks it up on its next parked tick.
-     */
-    toggleDi5QnxNetworkKeepAlive() {
-        const el = document.getElementById('survDi5QnxNetworkKeepAlive');
-        if (!el) return;
-        this._saveDi5QnxNetworkKeepAlive({ di5QnxNetworkKeepAlive: el.checked });
-    },
-
-    setDi5QnxNetworkKeepAliveMinutes() {
-        const el = document.getElementById('survDi5QnxNetworkKeepAliveMinutes');
-        if (!el) return;
-        const minutes = Math.max(5, Math.min(480, parseInt(el.value, 10) || 60));
-        this._saveDi5QnxNetworkKeepAlive({ di5QnxNetworkKeepAliveMaxMinutes: minutes });
-    },
-
-    _saveDi5QnxNetworkKeepAlive(change) {
-        const key = Object.keys(change)[0];
-        const previous = this.config[key];
-        const writeVersion = this._nextImmediateWrite(key);
-        const self = this;
-        const t = (k, fb) => (BYD.i18n && BYD.i18n.t
-            ? (BYD.i18n.t(k) || fb) : fb);
-
-        this.config[key] = change[key];
-        this.applyDi5QnxNetworkKeepAliveUI();
-
-        this._writeJson('/api/surveillance/config', change)
-          .then(function () {
-              if (self.savedConfig) self.savedConfig[key] = change[key];
-              if (!self._isLatestImmediateWrite(key, writeVersion)) return;
-              if (BYD.utils && BYD.utils.toast) {
-                  BYD.utils.toast(t('surveillance.di5_qnx_keepalive_saved',
-                      'DI5 QNX keep-alive saved (applies on the next parked tick)'), 'success');
-              }
-          }).catch(function (error) {
-              if (!self._isLatestImmediateWrite(key, writeVersion)) return;
-              self.config[key] = self.savedConfig && key in self.savedConfig
-                  ? self.savedConfig[key] : previous;
-              self.applyDi5QnxNetworkKeepAliveUI();
-              if (BYD.utils && BYD.utils.toast) {
-                  BYD.utils.toast(t('surveillance.di5_qnx_keepalive_save_failed',
-                      error && error.message ? error.message
-                          : 'Could not save DI5 QNX keep-alive'), 'error');
-              }
-          });
-    },
-
-    applyDi5QnxNetworkKeepAliveUI() {
-        const supported = this.config.di5QnxNetworkKeepAliveSupported === true;
-        const enabled = this.config.di5QnxNetworkKeepAlive === true;
-        const inert = (this.config.operatingMode || 'onAndOff') === 'onOnly';
-        const row = document.getElementById('survDi5QnxNetworkKeepAliveRow');
-        const minutesRow = document.getElementById('survDi5QnxNetworkKeepAliveMinutesRow');
-        const toggle = document.getElementById('survDi5QnxNetworkKeepAlive');
-        const minutes = document.getElementById('survDi5QnxNetworkKeepAliveMinutes');
-        if (row) row.style.display = supported ? '' : 'none';
-        if (minutesRow) minutesRow.style.display = supported && enabled ? '' : 'none';
-        if (toggle) {
-            toggle.checked = enabled;
-            toggle.disabled = !supported || inert;
-        }
-        if (minutes) {
-            minutes.value = this.config.di5QnxNetworkKeepAliveMaxMinutes || 60;
-            minutes.disabled = !supported || inert || !enabled;
-        }
-    },
-
-    /**
      * DI5-only capability/readiness reflection. A previously enabled setting
      * remains switchable OFF after credentials are cleared; only a new enable
      * is blocked until BYD Cloud is verified again.
@@ -2511,7 +2568,7 @@ BYD.surveillance = {
     },
 
     /**
-     * Experimental DiLink 5 parked keep-alive lease (MCU/sentry hold etc.).
+     * DiLink 5 parked keep-alive lease.
      * Immediate-save with the same optimistic/revert contract as the DI5 cloud
      * toggle. Turning ON asks for confirmation because the lease spends 12 V
      * battery while parked; turning OFF persists directly. The lease itself
@@ -2550,10 +2607,11 @@ BYD.surveillance = {
             title: t('surveillance.di5_parked_keepalive_confirm_title',
                 'Enable DiLink 5 parked keep-alive?'),
             body: t('surveillance.di5_parked_keepalive_confirm_body',
-                'This experimental feature holds the vehicle in sentry mode and re-wakes the MCU '
-                + 'while the car is switched off, which uses more 12V battery. It stops by itself '
-                + 'below the voltage cutoff and stays off until the car is switched on or charging '
-                + 'is detected. Every hardware write is logged so you can verify it on your car.'),
+                'This feature helps keep the head unit and vehicle systems awake '
+                + 'while the car is off. It works locally without cloud or internet access, '
+                + 'uses more 12V battery, and depends on the vehicle firmware. It stops below '
+                + 'the voltage cutoff. Enable it only after verifying parked ADB and camera '
+                + 'availability on your vehicle.'),
             confirmLabel: t('surveillance.di5_parked_keepalive_confirm_ok', 'Enable'),
             cancelLabel: t('common.cancel', 'Cancel'),
             danger: false
@@ -2632,6 +2690,169 @@ BYD.surveillance = {
             toggle.checked = enabled;
             toggle.disabled = inert;
         }
+    },
+
+    /**
+     * Opt-in DiLink 5 assist-off profile. Four independent per-control toggles
+     * (cpd / lda / elka / dms), each default OFF and each turning ONE
+     * driver-assistance feature off at every ignition. Same immediate-save,
+     * optimistic/revert contract as the parked keep-alive toggle above: turning
+     * ON asks for confirmation (a driver-assistance feature is disabled on every
+     * power cycle; a missing dialog fails safe and does NOT enable), turning OFF
+     * persists directly. Persisted into the "vehicle" section through
+     * POST /api/surveillance/config {assistOff: {<control>: on}}; the app
+     * process applies it on the next ACC-ON transition.
+     */
+    _assistOffControls: ['cpd', 'lda', 'elka', 'dms'],
+
+    _assistOffInputId(control) {
+        return 'survAssistOff' + control.charAt(0).toUpperCase() + control.slice(1);
+    },
+
+    _assistOffEnabled(control) {
+        return !!(this.config.assistOff && this.config.assistOff[control] === true);
+    },
+
+    _setAssistOffLocal(control, on) {
+        if (!this.config.assistOff || typeof this.config.assistOff !== 'object') {
+            this.config.assistOff = { cpd: false, lda: false, elka: false, dms: false };
+        }
+        this.config.assistOff[control] = (on === true);
+    },
+
+    toggleAssistOff(control) {
+        if (this._assistOffControls.indexOf(control) < 0) return;
+        const el = document.getElementById(this._assistOffInputId(control));
+        if (!el) return;
+        const previous = this._assistOffEnabled(control);
+        if (el.disabled) {
+            el.checked = previous;
+            return;
+        }
+        const on = el.checked;
+        const self = this;
+        const t = (k, fb) => (BYD.i18n && BYD.i18n.t
+            ? (BYD.i18n.t(k) || fb) : fb);
+
+        if (!on) {
+            this._persistAssistOff(control, false, el, previous);
+            return;
+        }
+        // The dialog is the user's consent to disable a driver-assistance feature at
+        // every ignition. If it is unavailable, fail safe: do NOT enable — revert and warn.
+        if (!BYD.utils || !BYD.utils.confirmDialog) {
+            el.checked = previous;
+            self._setAssistOffLocal(control, previous);
+            if (BYD.utils && BYD.utils.toast) {
+                BYD.utils.toast(t('surveillance.assist_off_confirm_unavailable',
+                    'Confirmation unavailable — the assist-off setting was not enabled'), 'error');
+            }
+            return;
+        }
+        // Body = the row's own name (so the dialog says WHICH feature), then the shared
+        // warning; for CPD also the cabin-switch-absent note from the row description.
+        const controlName = t('surveillance.assist_off_' + control, control.toUpperCase());
+        let body = controlName + '. ' + t('surveillance.assist_off_confirm_body',
+            'This disables a driver-assistance feature at EVERY ignition, as soon as the '
+            + 'car\'s assist service is ready and only while the car is stationary. The car '
+            + 'would otherwise keep or restore that feature on each power cycle. The write is '
+            + 'read back to confirm where the car offers a readback. Enable it only if you '
+            + 'understand what this feature does on your car.');
+        if (control === 'cpd') {
+            body += ' ' + t('surveillance.assist_off_cpd_desc',
+                'For cars with no cabin-camera CPD switch, such as the Sealion 7 model.');
+        }
+        const proceed = BYD.utils.confirmDialog({
+            title: t('surveillance.assist_off_confirm_title',
+                'Turn a driver-assistance feature off at every ignition?'),
+            body: body,
+            confirmLabel: t('surveillance.assist_off_confirm_ok', 'Enable'),
+            cancelLabel: t('common.cancel', 'Cancel'),
+            danger: true
+        });
+        Promise.resolve(proceed).then(function (ok) {
+            if (!ok) {
+                if (el) el.checked = previous;
+                self._setAssistOffLocal(control, previous);
+                return;
+            }
+            self._persistAssistOff(control, true, el, previous);
+        }).catch(function () {
+            if (el) el.checked = previous;
+            self._setAssistOffLocal(control, previous);
+            if (BYD.utils && BYD.utils.toast) {
+                BYD.utils.toast(t('surveillance.assist_off_save_failed',
+                    'Could not save the DI5 assist-off setting'), 'error');
+            }
+        });
+    },
+
+    _persistAssistOff(control, on, el, previous) {
+        const self = this;
+        const t = (k, fb) => (BYD.i18n && BYD.i18n.t
+            ? (BYD.i18n.t(k) || fb) : fb);
+        const writeKey = 'assistOff.' + control;
+        const writeVersion = this._nextImmediateWrite(writeKey);
+        this._setAssistOffLocal(control, on);
+        this.applyAssistOffUI();
+        const body = { assistOff: {} };
+        body.assistOff[control] = on;
+        this._writeJson('/api/surveillance/config', body)
+          .then(function () {
+              if (self.savedConfig) {
+                  if (!self.savedConfig.assistOff
+                          || typeof self.savedConfig.assistOff !== 'object') {
+                      self.savedConfig.assistOff = {};
+                  }
+                  self.savedConfig.assistOff[control] = on;
+              }
+              if (!self._isLatestImmediateWrite(writeKey, writeVersion)) return;
+              self._setAssistOffLocal(control, on);
+              self.applyAssistOffUI();
+              if (BYD.utils && BYD.utils.toast) {
+                  const msg = on
+                      ? t('surveillance.assist_off_saved_on',
+                          'Assist-off enabled (applies at the next ignition)')
+                      : t('surveillance.assist_off_saved_off',
+                          'Assist-off disabled');
+                  BYD.utils.toast(msg, 'success');
+              }
+          }).catch(function (error) {
+              if (!self._isLatestImmediateWrite(writeKey, writeVersion)) return;
+              const persisted = self.savedConfig && self.savedConfig.assistOff
+                  && typeof self.savedConfig.assistOff[control] === 'boolean'
+                  ? self.savedConfig.assistOff[control] : previous;
+              self._setAssistOffLocal(control, persisted);
+              if (el) el.checked = persisted;
+              self.applyAssistOffUI();
+              if (BYD.utils && BYD.utils.toast) {
+                  const fallback = error && error.message
+                      ? error.message : 'Could not save the DI5 assist-off setting';
+                  BYD.utils.toast(t('surveillance.assist_off_save_failed', fallback), 'error');
+              }
+          });
+    },
+
+    /**
+     * Reflect the assist-off opt-ins and their availability. The inputs are
+     * enabled only when the server reports assistOffAvailable === true (DiLink 5
+     * mode AND the model explicitly confirmed as the Sealion 7); otherwise they
+     * stay disabled and the hint explains why. Not tied to the onOnly dimming:
+     * the profile acts at ignition ON, not after ACC OFF.
+     */
+    applyAssistOffUI() {
+        const available = this.config.assistOffAvailable === true;
+        const self = this;
+        this._assistOffControls.forEach(function (control) {
+            const toggle = document.getElementById(self._assistOffInputId(control));
+            if (!toggle) return;
+            toggle.checked = self._assistOffEnabled(control);
+            toggle.disabled = !available;
+            const row = toggle.closest ? toggle.closest('.setting-row') : null;
+            if (row) row.style.opacity = available ? '' : '0.6';
+        });
+        const hint = document.getElementById('survAssistOffUnavailableHint');
+        if (hint) hint.style.display = available ? 'none' : 'block';
     },
 
     /**
@@ -3173,6 +3394,9 @@ BYD.surveillance = {
 
         var gridCols = data.gridCols || 10;
         var gridRows = data.gridRows || 7;
+        // Geometry-aware responses use fixed pixel cells and a clipped last row.
+        // Retain uniform rendering only for servers that supply no geometry.
+        var pixelGrid = data.blockSize > 0 && data.quadrantWidth > 0 && data.quadrantHeight > 0;
 
         // viewMode: 0=Mosaic, 1=Front, 2=Right, 3=Rear, 4=Left, 5=Raw, 6=OEM Dashcam
         var viewMode = data.viewMode || 0;
@@ -3197,8 +3421,8 @@ BYD.surveillance = {
         var isSingle = singleQuadrant >= 0;
         var quadW = isSingle ? cw : cw / 2;
         var quadH = isSingle ? ch : ch / 2;
-        var blockW = quadW / gridCols;
-        var blockH = quadH / gridRows;
+        var blockW = pixelGrid ? quadW * data.blockSize / data.quadrantWidth : quadW / gridCols;
+        var blockH = pixelGrid ? quadH * data.blockSize / data.quadrantHeight : quadH / gridRows;
 
         // Mosaic layout, matching the recorder's output and the GL shader's
         // uViewMode==0 rearrange: Front=TL, Right=TR, Rear=BL, Left=BR.
@@ -3275,11 +3499,16 @@ BYD.surveillance = {
                     var c = q.confidence[i];
                     if (c <= 0) continue;
 
-                    activeCount++;
                     var col = i % gridCols;
                     var row = Math.floor(i / gridCols);
+                    if (row >= gridRows) continue;
                     var bx = qx + col * blockW;
                     var by = qy + row * blockH;
+                    var cellH = pixelGrid
+                            ? Math.min(data.blockSize, data.quadrantHeight - row * data.blockSize)
+                                * quadH / data.quadrantHeight : blockH;
+                    if (cellH <= 0) continue;
+                    activeCount++;
 
                     // Smooth color gradient: green → yellow → red
                     var r, g, b, a;
@@ -3297,7 +3526,7 @@ BYD.surveillance = {
                         a = 0.40 + 0.25 * t;
                     }
                     ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + a.toFixed(2) + ')';
-                    ctx.fillRect(bx + 1, by + 1, blockW - 2, blockH - 2);
+                    ctx.fillRect(bx + 1, by + 1, Math.max(0, blockW - 2), Math.max(0, cellH - 2));
                 }
             }
 
@@ -3414,6 +3643,7 @@ BYD.surveillance = {
         // Parked cellular keep-alive. Default OFF when absent (opt-in feature).
         const mobileData = document.getElementById('survMobileDataKeepAlive');
         if (mobileData) mobileData.checked = (this.config.mobileDataKeepAlive === true);
+        this.updateBluetoothKeepAliveUI();
 
         // Experimental DI5 cloud heartbeat (hidden on other camera modes).
         const di5CloudKeepAlive =
@@ -3424,7 +3654,7 @@ BYD.surveillance = {
         }
         this.applyDi5CloudKeepAliveUI();
 
-        // Experimental DI5 parked keep-alive lease (always visible; not tied to
+        // DI5 parked keep-alive lease (always visible; not tied to
         // the camera-mode selection).
         const di5ParkedKeepAlive =
             document.getElementById('survDi5ParkedKeepAlive');
@@ -3433,6 +3663,10 @@ BYD.surveillance = {
                 (this.config.di5ParkedKeepAlive === true);
         }
         this.applyDi5ParkedKeepAliveUI();
+
+        // Opt-in DI5 assist-off profile (per-control toggles; enabled only when the
+        // server reports assistOffAvailable).
+        this.applyAssistOffUI();
 
         // Low-battery (HV SoC) cutoff slider. 0 renders as "Off".
         const socCutoff = document.getElementById('lowSocCutoffSlider');
@@ -3627,8 +3861,8 @@ BYD.surveillance = {
      *
      * The keys here MUST match exactly what SurveillanceApiHandler reads on
      * POST (configJson.has(...) calls). Audited 2026-05-20 against the
-     * Java handler. The "_storage_endpoint" sentinel signals a separate POST
-     * to /api/settings/storage instead of the surveillance config endpoint.
+     * Java handler. Storage location + limit moved to storage.html, so no
+     * tab here posts /api/settings/storage.
      *
      * Side-cam boost (sideCamBoost*) is intentionally absent — those
      * controls write into `quadrantOverrides` rather than dedicated keys,
@@ -3693,20 +3927,12 @@ BYD.surveillance = {
             // mirrored config field that setOemSurveillanceMode() updates
             // on `this.config`.
             'oemSurveillanceMode'
-        ],
-        storage: [
-            // Sentinel — branches the Apply flow to /api/settings/storage.
-            // The diff loop in _tabDirty() skips this sentinel, so it doesn't
-            // participate in the per-tab dirty check; the two fields below
-            // are what actually drive Apply enablement on the storage tab.
-            '_storage_endpoint',
-            'surveillanceLimitMb', 'surveillanceStorageType'
         ]
     },
 
     /**
      * Look up the tab the user is currently viewing. The bottom-tabs script
-     * (shared/app-tabs.js) persists the active tab to localStorage; we read
+     * (shared/app-tabs.js?v=3) persists the active tab to localStorage; we read
      * that so a partial save targets the visible tab even after the user
      * switches across tabs without reloading.
      */
@@ -3716,7 +3942,9 @@ BYD.surveillance = {
             var idx = path.lastIndexOf('/');
             var page = idx >= 0 ? path.substring(idx + 1) : (path || 'index');
             var stored = window.localStorage.getItem('ot-active-tab-' + page);
-            if (stored) return stored;
+            // A saved tab that no longer exists (the old Storage tab) falls
+            // through to the pill app-tabs.js actually shows.
+            if (stored && this._tabFieldMap[stored]) return stored;
         } catch (e) {}
         // Fall back to the visible bottom-tab pill.
         var visible = document.querySelector('.bottom-tab.is-active');
@@ -3731,61 +3959,15 @@ BYD.surveillance = {
     async _applySettingsNow() {
         const btn = document.getElementById('btnApply');
         const origText = btn.innerHTML;
-        btn.innerHTML = BYD.i18n.t('surveillance.saving');
+        btn.innerHTML = '<span class="r-btn-spinner" aria-hidden="true"></span>' + BYD.i18n.t('surveillance.saving');
         btn.disabled = true;
 
         try {
             const activeTab = this._activeTabId();
             const fields = this._tabFieldMap[activeTab] || [];
-            const isStorageTab = fields.indexOf('_storage_endpoint') !== -1;
-
-            let storageData = {};
-
-            if (isStorageTab) {
-                // Storage tab — only write storage fields via /api/settings/storage,
-                // mirroring the legacy carve-out. Don't touch /api/surveillance/config
-                // so detection sensitivity / schedule etc. stay untouched.
-                const storageResp = await fetch('/api/settings/storage', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        surveillanceLimitMb: this.config.surveillanceLimitMb,
-                        surveillanceStorageType: this.config.surveillanceStorageType
-                    })
-                });
-                storageData = await storageResp.json();
-                // HTTP 200 with {success:false} = the requested storage-TYPE
-                // change was rejected (target volume unavailable). The server
-                // handles the type FIRST and returns before the limit, so
-                // nothing was committed — revert both optimistic fields to the
-                // baseline, re-render, and throw so the catch shows an error
-                // instead of baking the rejected value into savedConfig.
-                if (!storageResp.ok || !storageData || storageData.success !== true) {
-                    if (this.savedConfig) {
-                        this.config.surveillanceStorageType = this.savedConfig.surveillanceStorageType;
-                        this.config.surveillanceLimitMb = this.savedConfig.surveillanceLimitMb;
-                    }
-                    this.updateStorageLimitUI();
-                    this.updateStorageTypeUI();
-                    throw new Error((storageData && storageData.error)
-                        || ('Storage save failed: ' + storageResp.status));
-                }
-                // Re-sync config to the daemon's committed (possibly clamped)
-                // value so the savedConfig snapshot below baselines off the true
-                // persisted number — see the matching re-sync in recording.js.
-                if (typeof storageData.surveillanceLimitMb === 'number') {
-                    this.config.surveillanceLimitMb = storageData.surveillanceLimitMb;
-                }
-                if (storageData.surveillanceStorageType) {
-                    this.config.surveillanceStorageType = storageData.surveillanceStorageType;
-                }
-                // CDR cleanup card on this tab self-saves — toggleCdrCleanup()
-                // and the slider onchange handlers POST to
-                // /api/storage/external/config directly on each change. So
-                // pressing Apply on the Storage tab only needs to write the
-                // surveillance storage limit + storage-type pair above; the
-                // CDR retention sliders are already persisted live.
-            } else if (activeTab === 'oem') {
+            // Storage location + limit are saved on storage.html; every tab here
+            // writes its own endpoint only.
+            if (activeTab === 'oem') {
                 // OEM tab — write the chosen OEM surveillance mode through
                 // the dedicated endpoint. recording.html owns the OEM
                 // telemetry burn-in toggle; this page only flips the mode.
@@ -3976,10 +4158,7 @@ BYD.surveillance = {
             // Refresh storage stats after save (cleanup may have run)
             setTimeout(() => this.loadStorageStats(), 1000);
 
-            let msg = BYD.i18n.t('surveillance.settings_applied');
-            if (storageData.cleanup && storageData.cleanup.surveillanceToDelete) {
-                msg = BYD.i18n.t('surveillance.settings_applied_deleting', {files: storageData.cleanup.surveillanceFilesEstimate, size: storageData.cleanup.surveillanceToDelete});
-            }
+            const msg = BYD.i18n.t('surveillance.settings_applied');
 
             btn.innerHTML = BYD.i18n.t('surveillance.saved_check');
             setTimeout(() => { btn.innerHTML = origText; }, 1500);
@@ -4073,6 +4252,7 @@ BYD.surveillance = {
      * Update surveillance-specific UI from status (called by core.js)
      */
     updateFromStatus(status) {
+        this.syncBluetoothKeepAlive(status.bluetoothKeepAlive);
         const survState = document.getElementById('survState');
         if (survState) {
             if (status.safeZoneSuppressed || status.inSafeZone) {
@@ -4123,10 +4303,80 @@ BYD.surveillance = {
             });
     },
 
+    // Which confirmed classes may fire the lights/horn. 'any' keeps the original
+    // behaviour; the others wait until detection has confirmed a class this event.
+    updateDeterrentTrigger(value) {
+        const previous = this.config.deterrentTrigger || 'any';
+        const writeVersion = this._nextImmediateWrite('deterrentTrigger');
+        this.config.deterrentTrigger = value;
+        this.updateDeterrentUI();
+        this._writeJson('/api/surveillance/config', { deterrentTrigger: value })
+            .then(() => {
+                if (this.savedConfig) this.savedConfig.deterrentTrigger = value;
+                if (!this._isLatestImmediateWrite('deterrentTrigger', writeVersion)) return;
+                this.config.deterrentTrigger = value;
+                this.updateDeterrentUI();
+            }).catch(e => {
+                if (!this._isLatestImmediateWrite('deterrentTrigger', writeVersion)) return;
+                this.config.deterrentTrigger = this.savedConfig
+                        && this.savedConfig.deterrentTrigger
+                    ? this.savedConfig.deterrentTrigger : previous;
+                this.updateDeterrentUI();
+                if (BYD.utils && BYD.utils.toast) {
+                    BYD.utils.toast(
+                        (e && e.message) || 'Could not save deterrent trigger',
+                        'error');
+                }
+            });
+    },
+
+    // Parked impact watch (opt-in). Saves immediately, like the deterrent settings.
+    updateImpact(field, value) {
+        if (field !== 'impactDetection' && field !== 'impactSensitivity') return;
+        const previous = this.config[field];
+        const writeVersion = this._nextImmediateWrite(field);
+        this.config[field] = value;
+        this.updateImpactUI();
+        const payload = {};
+        payload[field] = value;
+        this._writeJson('/api/surveillance/config', payload)
+            .then(() => {
+                if (this.savedConfig) this.savedConfig[field] = value;
+                if (!this._isLatestImmediateWrite(field, writeVersion)) return;
+                this.config[field] = value;
+                this.updateImpactUI();
+            }).catch(e => {
+                if (!this._isLatestImmediateWrite(field, writeVersion)) return;
+                this.config[field] = this.savedConfig && field in this.savedConfig
+                    ? this.savedConfig[field] : previous;
+                this.updateImpactUI();
+                if (BYD.utils && BYD.utils.toast) {
+                    BYD.utils.toast(
+                        (e && e.message) || 'Could not save impact detection',
+                        'error');
+                }
+            });
+    },
+
+    updateImpactUI() {
+        const enabled = this.config.impactDetection === true;
+        const toggle = document.getElementById('impactDetection');
+        if (toggle) toggle.checked = enabled;
+        const row = document.getElementById('impactSensitivityRow');
+        if (row) row.style.display = enabled ? '' : 'none';
+        const select = document.getElementById('impactSensitivity');
+        if (select) select.value = this.config.impactSensitivity || 'medium';
+    },
+
     updateDeterrentUI() {
+        this.updateImpactUI();
         const action = this.config.deterrentAction || 'silent';
         const select = document.getElementById('deterrentAction');
         if (select) select.value = action;
+        const triggerRow = document.getElementById('deterrentTriggerRow');
+        if (triggerRow) triggerRow.style.display = action === 'silent' ? 'none' : '';
+        const triggerSelect = document.getElementById('deterrentTrigger');
+        if (triggerSelect) triggerSelect.value = this.config.deterrentTrigger || 'any';
 
         const badge = document.getElementById('deterrentBadge');
         if (badge) {

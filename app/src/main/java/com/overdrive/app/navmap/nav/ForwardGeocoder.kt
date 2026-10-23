@@ -2,6 +2,7 @@ package com.overdrive.app.navmap.nav
 
 import android.util.Log
 import com.overdrive.app.navmap.NavMapConfig
+import com.overdrive.app.navmap.google.GooglePlacesClient
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -171,6 +172,20 @@ object ForwardGeocoder {
             }
         }
 
+        // 1c) Google Places text search (user's key); null falls through, transport failure fails fast.
+        if (GooglePlacesClient.usable() &&
+            com.overdrive.app.navmap.google.GoogleMapsBudget.hasRoom(com.overdrive.app.navmap.google.GoogleSku.TEXT_SEARCH)
+        ) {
+            GooglePlacesClient.textSearch(q, n, focusLat, focusLng)?.let {
+                if (it.isEmpty()) lastError = SearchError.EMPTY
+                return it
+            }
+            if (GooglePlacesClient.lastTransportFailure) {
+                noteTransportFailure(GooglePlacesClient.lastTransportError ?: java.io.IOException("Google Places"))
+                return emptyList()
+            }
+        }
+
         // 2) Stadia geocoding (reuses the routing BYOK key when the endpoint is Stadia).
         stadiaCreds()?.let { (base, key) ->
             val stadia = searchStadia(base, key, q, n, focusLat, focusLng)
@@ -223,6 +238,7 @@ object ForwardGeocoder {
         val n = if (limit < 1) 1 else limit
 
         CoordinateInputParser.parse(q, focusLat, focusLng)?.let { return listOf(it) }
+        if (GooglePlacesClient.usable()) GooglePlacesClient.autocomplete(q, n, focusLat, focusLng)?.let { return it }
 
         stadiaCreds()?.let { (base, key) ->
             val stadia = stadiaAutocomplete(base, key, q, n, focusLat, focusLng)
@@ -230,6 +246,38 @@ object ForwardGeocoder {
         }
         return searchPhoton(q, n, focusLat, focusLng)
     }
+
+    /**
+     * [result] with coordinates; Google predictions go through Place Details, then the free
+     * geocoders on the prediction's text when Details is unavailable. Null when unresolvable.
+     */
+    fun resolve(result: SearchResult): SearchResult? {
+        if (!result.needsResolve) return result
+        GooglePlacesClient.details(result)?.let { return it }
+        val q = listOfNotNull(result.label.takeIf { it.isNotBlank() }, result.secondary?.takeIf { it.isNotBlank() })
+            .joinToString(", ")
+        if (q.isEmpty()) return null
+        val hit = freeLookup(q) ?: return null
+        return SearchResult(result.label, hit.lat, hit.lng, secondary = result.secondary ?: hit.label)
+    }
+
+    /** First hit from the keyless/Stadia chain (no Google), for resolving a prediction without Details. */
+    private fun freeLookup(q: String): SearchResult? {
+        stadiaCreds()?.let { (base, key) ->
+            searchStadia(base, key, q, 1, null, null).firstOrNull()?.let { return it }
+        }
+        searchPhoton(q, 1, null, null).firstOrNull()?.let { return it }
+        return searchNominatim(q, 1).firstOrNull()
+    }
+
+    /** True while Google Places backs search (activity uses the shorter debounce). */
+    fun googleActive(): Boolean = GooglePlacesClient.usable()
+
+    /** Pre-opens the TLS connection to the Google search host; no-op without Google. */
+    fun warmUp() = GooglePlacesClient.warmUp()
+
+    /** Ends the Places autocomplete session; the next keystroke starts a new one. */
+    fun endSession() = GooglePlacesClient.resetSession()
 
     // ── Stadia Maps (BYOK Pelias geocoder) ───────────────────────────────────
 
@@ -418,6 +466,7 @@ object ForwardGeocoder {
      * @return the nearest place's label at the tapped coordinate, or null
      */
     fun reverse(lat: Double, lng: Double): SearchResult? {
+        if (GooglePlacesClient.reverseUsable()) GooglePlacesClient.reverse(lat, lng)?.let { return it }
         return try {
             val url = StringBuilder(PHOTON_REVERSE_BASE)
                 .append("?lat=").append(lat)

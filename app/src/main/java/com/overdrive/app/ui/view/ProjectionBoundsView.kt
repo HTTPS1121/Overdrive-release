@@ -37,10 +37,10 @@ import kotlin.math.roundToInt
  *    Optional [aspectLocked] keeps the box at the panel aspect.
  *  - [Mode.CONTROL]: taps/swipes ANYWHERE on the stage forward to the app (normalized 0..1 of the
  *    whole view = whole cluster, which the fragment maps through the full-cluster mirror to cluster px).
- *  - [Mode.IDLE]: the "Mirror preview" hint, no frame.
+ *  - [Mode.IDLE]: draws nothing and ignores touches.
  *
- * Modeled on DashCast's {@code ResizeFrameView} (cluster-space frame, uniform scale), extended
- * with move, side handles, aspect lock, presets (driven from the fragment) and live control.
+ * A cluster-space frame drawn at a uniform scale, with move, side handles, aspect lock, presets
+ * (driven from the fragment) and live control.
  */
 class ProjectionBoundsView @JvmOverloads constructor(
     context: Context,
@@ -67,8 +67,8 @@ class ProjectionBoundsView @JvmOverloads constructor(
     private var box = ProjectionBoundsGeometry.Rect(0, 0, clusterW, clusterH)
     private var boxInitialized = false
 
-    /** Whether resize keeps the panel aspect. Off by default: DashCast-style free placement is
-     *  the point of on-cluster positioning; the fragment can lock it via [setAspectLocked]. */
+    /** Whether resize keeps the panel aspect. Off by default: free placement is the point of
+     *  on-cluster positioning; the fragment can lock it via [setAspectLocked]. */
     private var aspectLocked = false
 
     /** Fires live while the box changes in ADJUST mode: (left,top,right,bottom in CLUSTER px,
@@ -93,10 +93,6 @@ class ProjectionBoundsView @JvmOverloads constructor(
         style = Paint.Style.STROKE; strokeWidth = dp(2.5f); color = ACCENT
     }
     private val scrim = Paint().apply { color = Color.argb(0x66, 0x00, 0x00, 0x00) }
-    private val hint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(0xB0, 0xFF, 0xFF, 0xFF); textAlign = Paint.Align.CENTER
-        textSize = dp(13f)
-    }
     private val sizeLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textAlign = Paint.Align.CENTER; textSize = dp(12f)
         setShadowLayer(2f, 1f, 1f, Color.BLACK)
@@ -184,6 +180,17 @@ class ProjectionBoundsView @JvmOverloads constructor(
         invalidate()
     }
 
+    /** Show the rect the cluster actually holds (cluster px) without emitting a change. */
+    fun setWindowRect(l: Int, t: Int, r: Int, b: Int) {
+        box = ProjectionBoundsGeometry.clampToCluster(
+            ProjectionBoundsGeometry.Rect(l, t, r, b), clusterW, clusterH, null)
+        boxInitialized = true
+        invalidate()
+    }
+
+    /** True while a resize/move gesture is in progress. */
+    fun isAdjusting(): Boolean = adjustPointerId != MotionEvent.INVALID_POINTER_ID
+
     /** Current window as a normalized (0..1 of the cluster) rect, for persistence. */
     fun normalizedWindow(): FloatArray = floatArrayOf(
         box.left.toFloat() / clusterW, box.top.toFloat() / clusterH,
@@ -218,13 +225,8 @@ class ProjectionBoundsView @JvmOverloads constructor(
         val r = box.right * sx
         val b = box.bottom * sy
         when (mode) {
-            Mode.IDLE -> {
-                canvas.drawText(context.getString(
-                    com.overdrive.app.R.string.projection_bounds_hint_idle),
-                    (l + r) / 2f, (t + b) / 2f, hint)
-            }
-            Mode.CONTROL -> {
-                // Transparent — the live mirror shows through; we only capture touches.
+            Mode.IDLE, Mode.CONTROL -> {
+                // Transparent — the stage's own hint and the live mirror show through.
             }
             Mode.ADJUST -> {
                 // Dim OUTSIDE the window rect to focus the frame (4 rects around the hole).
@@ -413,7 +415,7 @@ class ProjectionBoundsView @JvmOverloads constructor(
     override fun performClick(): Boolean { super.performClick(); return true }
 
     /** Which handle (if any) the point grabs. Corners+sides tested first (in view px), then the
-     *  interior counts as MOVE. Mirrors DashCast ResizeFrameView.hitTest. */
+     *  interior counts as MOVE. */
     private fun hitTest(x: Float, y: Float): Int {
         val sx = width.toFloat() / clusterW
         val sy = height.toFloat() / clusterH

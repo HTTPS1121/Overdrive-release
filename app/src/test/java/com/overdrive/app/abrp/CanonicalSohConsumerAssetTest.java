@@ -56,12 +56,13 @@ public class CanonicalSohConsumerAssetTest {
         assertTrue(estimator.contains("status.put(\"soh\", roundedOrUnavailable(snapshot.displaySoh))"));
         assertTrue(estimator.contains("roundedOrUnavailable(snapshot.displaySoh)"));
         assertTrue(estimator.contains("ResolvedSoh resolved = resolveDisplaySoh("));
-        assertTrue(abrp.contains("sohEstimator.getDisplaySoh()"));
-        assertTrue(mqtt.contains("sohEstimator.getDisplaySoh()"));
-        assertTrue(history.contains("sohEst.getCapacitySohSnapshot()"));
+        assertTrue(abrp.contains("SohEstimator.getDisplaySohOrOem("));
+        assertTrue(mqtt.contains("SohEstimator.getDisplaySohOrOem("));
+        assertTrue(history.contains("SohEstimator.getDisplaySohOrOem("));
+        assertTrue(history.contains(".getCapacitySohSnapshot()"));
         assertTrue(history.contains("capacitySoh.getDisplaySoh()"));
-        assertTrue(http.contains("sohEst.getDisplaySoh()"));
-        assertTrue(automations.contains("estimator.getDisplaySoh()"));
+        assertTrue(http.contains("SohEstimator.getDisplaySohOrOem("));
+        assertTrue(automations.contains("SohEstimator.getDisplaySohOrOem("));
         assertTrue(mainActivity.contains("json.optDouble(\"displaySoh\", -1.0)"));
         assertTrue(diagnostics.contains("json.optDouble(\"displaySoh\", -1.0)"));
         assertTrue(dashboard.contains("finalDisplaySource == \"oem\""));

@@ -58,7 +58,8 @@ BYD.map = {
         // Create car marker with custom icon
         this.carMarker = L.marker([0, 0], {
             icon: this.createCarIcon(),
-            rotationAngle: 0
+            rotationAngle: 0,
+            title: BYD.i18n.t('map.your_vehicle')
         }).addTo(this.map);
 
         this.carMarker.bindPopup('<b>' + BYD.i18n.t('map.your_vehicle') + '</b><br>' + BYD.i18n.t('map.your_vehicle_sub'));

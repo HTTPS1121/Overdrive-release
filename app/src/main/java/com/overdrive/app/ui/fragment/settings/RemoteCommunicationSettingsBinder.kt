@@ -280,9 +280,19 @@ class RemoteCommunicationSettingsBinder(private val root: View) {
             }
         )
         persistedOutputLevel = snapshot.outputLevel
-        outputSlider.value = snapshot.outputLevel.toFloat()
+        outputSlider.value = sliderValueFor(snapshot.outputLevel)
         applying = false
         applyEmergencyUi(snapshot.emergencyDisabled)
+    }
+
+    // Slider throws from onDraw on a value off its step grid; the API accepts any 0-100.
+    private fun sliderValueFor(level: Int): Float {
+        val from = outputSlider.valueFrom
+        val to = outputSlider.valueTo
+        val step = outputSlider.stepSize
+        val clamped = level.toFloat().coerceIn(from, to)
+        if (step <= 0f) return clamped
+        return (from + Math.round((clamped - from) / step) * step).coerceIn(from, to)
     }
 
     private fun renderOverlayPermission(allowed: Boolean) {

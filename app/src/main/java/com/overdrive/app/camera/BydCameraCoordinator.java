@@ -10,7 +10,7 @@ import java.lang.reflect.Proxy;
  * Cooperative camera coordinator for BYD platform.
  *
  * NOTE: IBYDCameraUser callback registration is disabled. The DI4 panoramic
- * recorder follows DIPlus's uninterrupted model:
+ * recorder follows an uninterrupted model:
  * one AVMCamera producer stays open while the native camera UI co-consumes it.
  * Legacy contention detection remains polling-based.
  *
@@ -29,6 +29,8 @@ public class BydCameraCoordinator {
 
     // Event callback state (AVMCamera.IEventCallback — separate from IBYDCameraUser)
     private boolean eventCallbackSet = false;
+    // DI4 only: append the HAL's arg1/arg2 so field logs can tell event causes apart.
+    private volatile boolean logEventArgs = false;
 
     // Native app activity tracking (for polling fallback)
     private volatile boolean nativeAppActive = false;
@@ -62,6 +64,10 @@ public class BydCameraCoordinator {
 
     public void setActiveCameraId(int cameraId) {
         this.activeCameraId = cameraId;
+    }
+
+    public void setLogEventArgs(boolean logEventArgs) {
+        this.logEventArgs = logEventArgs;
     }
 
     // ==================== IBYDCameraService Connection ====================
@@ -281,6 +287,7 @@ public class BydCameraCoordinator {
     public void setupEventCallback(Object cameraObj) {
         if (cameraObj == null) return;
         if (cameraObj instanceof com.overdrive.app.camera.dilink5.DiLink5QCarCamBackend) return;
+        if (cameraObj instanceof com.overdrive.app.camera.camera2.Camera2AvmBackend) return;
         if (eventCallbackSet) return;  // already wired; resetEventCallbackState clears
 
         try {
@@ -308,7 +315,11 @@ public class BydCameraCoordinator {
                         if (args != null && args.length >= 2 && args[1] instanceof Integer) {
                             eventType = (Integer) args[1];
                         }
-                        handleCameraEvent(eventType);
+                        String argSuffix = "";
+                        if (logEventArgs && args != null && args.length >= 4) {
+                            argSuffix = " (arg1=" + args[2] + ", arg2=" + args[3] + ")";
+                        }
+                        handleCameraEvent(eventType, argSuffix);
                     }
                     return null;
                 }
@@ -331,26 +342,26 @@ public class BydCameraCoordinator {
         }
     }
 
-    private void handleCameraEvent(int eventType) {
+    private void handleCameraEvent(int eventType, String argSuffix) {
         if (eventType == 1003) {
             // EVT_TYPE_FIRST_FRAME — HAL confirmed first frame delivered
-            logger.info("Camera HAL: first frame delivered (event 1003)");
+            logger.info("Camera HAL: first frame delivered (event 1003)" + argSuffix);
         } else if (eventType == -10086 || eventType == 8) {
-            logger.error("CAMERA HAL ERROR: event=" + eventType);
+            logger.error("CAMERA HAL ERROR: event=" + eventType + argSuffix);
             if (yieldCallback != null) {
                 yieldCallback.onCameraError(eventType);
             }
         } else if (eventType == 1002) {
             // EVT_TYPE_SERVER_DIED — camera server process died
-            logger.error("CAMERA HAL: server died (event 1002)");
+            logger.error("CAMERA HAL: server died (event 1002)" + argSuffix);
             if (yieldCallback != null) {
                 yieldCallback.onCameraError(eventType);
             }
         } else if (eventType == 1000) {
             // EVT_TYPE_ERR — generic camera error
-            logger.warn("Camera HAL error event: " + eventType);
+            logger.warn("Camera HAL error event: " + eventType + argSuffix);
         } else if (eventType != 0 && eventType != 1001) {
-            logger.info("Camera event: " + eventType);
+            logger.info("Camera event: " + eventType + argSuffix);
         }
     }
 
@@ -359,7 +370,7 @@ public class BydCameraCoordinator {
     /**
      * Notify IBYDCameraService before opening camera.
      *
-     * <p>Intentionally a no-op. DIPlus panoramic recording opens AVMCamera
+     * <p>Intentionally a no-op. Panoramic recording opens AVMCamera
      * directly and does not join IBYDCameraUser arbitration.
      */
     public void notifyPreOpenCamera() {

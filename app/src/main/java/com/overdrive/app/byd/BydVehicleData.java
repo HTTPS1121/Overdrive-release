@@ -209,6 +209,8 @@ public class BydVehicleData {
     // a tri-state int (not a boolean) so an unreadable switch cannot masquerade as "off" —
     // consumers skip UNAVAILABLE rather than publishing a wrong state.
     public final int ambientEnabled;
+    // Cabin (reading) light: 1 = on, 0 = off, UNAVAILABLE when the trim does not report it.
+    public final int readingLight;
 
     // ==================== ADAS ====================
     public final boolean speedLimitWarning;
@@ -430,6 +432,7 @@ public class BydVehicleData {
         this.ambientColour = b.ambientColour;
         this.ambientColourKnown = b.ambientColourKnown;
         this.ambientEnabled = b.ambientEnabled;
+        this.readingLight = b.readingLight;
         this.speedLimitWarning = b.speedLimitWarning;
         this.speedLimitWarningKnown = b.speedLimitWarningKnown;
         this.childPresenceDetection = b.childPresenceDetection;
@@ -787,6 +790,7 @@ public class BydVehicleData {
                 if (seatClimateAtMs > 0L) j.put("seatClimateAtMs", seatClimateAtMs);
                 if (ambientColourKnown) j.put("ambientColour", ambientColour);
                 if (ambientEnabled != UNAVAILABLE) j.put("ambientEnabled", ambientEnabled);
+                if (readingLight != UNAVAILABLE) j.put("readingLight", readingLight);
                 if (speedLimitWarningKnown) {
                     j.put("speedLimitWarning", speedLimitWarning);
                 }
@@ -1151,6 +1155,7 @@ public class BydVehicleData {
                 }
             }
             b.ambientEnabled = json.optInt("ambientEnabled", UNAVAILABLE);
+            b.readingLight = json.optInt("readingLight", UNAVAILABLE);
             if (json.has("speedLimitWarning")
                     && !json.isNull("speedLimitWarning")) {
                 b.speedLimitWarning =
@@ -1443,6 +1448,7 @@ public class BydVehicleData {
         b.ambientColour = ambientColour;
         b.ambientColourKnown = ambientColourKnown;
         b.ambientEnabled = ambientEnabled;
+        b.readingLight = readingLight;
         b.seatHeat = seatHeat; b.seatCool = seatCool;
         b.seatVentilationSupport = seatVentilationSupport;
         b.steeringWheelHeat = steeringWheelHeat;
@@ -1535,6 +1541,7 @@ public class BydVehicleData {
         int ambientColour = 1;
         boolean ambientColourKnown;
         int ambientEnabled = UNAVAILABLE;
+        int readingLight = UNAVAILABLE;
         boolean speedLimitWarning;
         boolean speedLimitWarningKnown;
         int childPresenceDetection = UNAVAILABLE;
@@ -1807,6 +1814,7 @@ public class BydVehicleData {
             return this;
         }
         public Builder ambientEnabled(int v) { ambientEnabled = v; return this; }
+        public Builder readingLight(int v) { readingLight = v; return this; }
         public Builder speedLimitWarning(boolean v) {
             speedLimitWarning = v;
             speedLimitWarningKnown = true;

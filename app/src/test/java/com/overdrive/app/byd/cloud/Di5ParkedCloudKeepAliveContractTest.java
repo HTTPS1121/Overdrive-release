@@ -70,21 +70,68 @@ public class Di5ParkedCloudKeepAliveContractTest {
     }
 
     @Test
+    public void genericCloudMergePollIsSuppressedOnlyForParkedDi5LocalHold() {
+        assertTrue(BydCloudDataProvider
+                .shouldSuppressRealtimePollForDi5ParkedLocalHold(
+                        true, true, true, false));
+        assertFalse(BydCloudDataProvider
+                .shouldSuppressRealtimePollForDi5ParkedLocalHold(
+                        false, true, true, false));
+        assertFalse(BydCloudDataProvider
+                .shouldSuppressRealtimePollForDi5ParkedLocalHold(
+                        true, false, true, false));
+        assertFalse(BydCloudDataProvider
+                .shouldSuppressRealtimePollForDi5ParkedLocalHold(
+                        true, true, false, false));
+        assertFalse(BydCloudDataProvider
+                .shouldSuppressRealtimePollForDi5ParkedLocalHold(
+                        true, true, true, true));
+    }
+
+    @Test
     public void configAndApiAreOptInAndPrerequisiteGated() throws IOException {
         String config = read(
                 "app/src/main/java/com/overdrive/app/config/UnifiedConfigManager.kt");
         String api = read(
                 "app/src/main/java/com/overdrive/app/server/SurveillanceApiHandler.java");
+        String build = read("app/build.gradle.kts");
 
         assertTrue(config.contains(
                 "surveillance.put(\"di5CloudKeepAlive\", false)"));
         assertTrue(config.contains(
+                "surveillance.put(\"di5CloudKeepAlivePollerEnabled\", false)"));
+        assertTrue(config.contains(
+                "fun isDi5CloudKeepAlivePollerEnabled(): Boolean"));
+        assertTrue(config.contains(
+                "BuildConfig.DI5_CLOUD_KEEPALIVE_POLLER_ENABLED"));
+        assertTrue(config.contains(
                 "fun isDi5CloudKeepAliveEnabled(): Boolean"));
         assertTrue(config.contains(
                 "optBoolean(\"di5CloudKeepAlive\", false)"));
+        assertTrue(config.contains(
+                "optBoolean(\"di5CloudKeepAlivePollerEnabled\", false)"));
+        assertTrue(build.contains(
+                "DI5_CLOUD_KEEPALIVE_POLLER_ENABLED\", \"false\""));
+        int upgradeMigration = config.indexOf(
+                "if (!surveillance.has(\"di5CloudKeepAlivePollerEnabled\")) {");
+        assertTrue(upgradeMigration >= 0);
+        int upgradeMigrationEnd = config.indexOf(
+                "} else if (!surveillance.has(\"di5CloudKeepAlive\")) {",
+                upgradeMigration);
+        assertTrue(upgradeMigrationEnd > upgradeMigration);
+        String upgradeMigrationBlock =
+                config.substring(upgradeMigration, upgradeMigrationEnd);
+        assertTrue(upgradeMigrationBlock.contains(
+                "surveillance.put(\"di5CloudKeepAlive\", false)"));
+        assertTrue(upgradeMigrationBlock.contains(
+                "surveillance.put(\"di5CloudKeepAlivePollerEnabled\", false)"));
 
         assertTrue(api.contains(
                 "config.put(\"di5CloudKeepAlive\","));
+        assertTrue(api.contains(
+                "config.put(\"di5CloudKeepAliveConfigured\","));
+        assertTrue(api.contains(
+                "config.put(\"di5CloudKeepAlivePollerEnabled\","));
         assertTrue(api.contains(
                 "config.put(\"di5CloudKeepAliveSupported\","));
         assertTrue(api.contains(
@@ -93,6 +140,8 @@ public class Di5ParkedCloudKeepAliveContractTest {
                 "if (configJson.has(\"di5CloudKeepAlive\"))"));
         assertTrue(api.contains(
                 "Connect and verify BYD Cloud before enabling this setting"));
+        assertTrue(api.contains(
+                "DI5 cloud keep-alive polling is disabled by configuration"));
         assertTrue(api.contains(
                 "CameraDaemon.reconcileDi5CloudKeepAliveFromConfig()"));
     }
@@ -144,6 +193,10 @@ public class Di5ParkedCloudKeepAliveContractTest {
                 "DI5 cloud keep-alive request starting"));
         assertTrue(provider.contains(
                 "DI5 cloud keep-alive request completed in "));
+        assertTrue(provider.contains(
+                "shouldSuppressRealtimePollForDi5ParkedLocalHold()"));
+        assertTrue(provider.contains(
+                "DiLink 5 parked local keep-alive is active"));
         assertTrue(provider.contains(
                 "\"di5ParkedKeepAliveDeadlineMisses\""));
     }
@@ -220,7 +273,7 @@ public class Di5ParkedCloudKeepAliveContractTest {
                 "id=\"survDi5CloudKeepAlive\" disabled "
                         + "onchange=\"SurvSettings.toggleDi5CloudKeepAlive()\""));
         assertTrue(html.contains(
-                "surveillance.js?v=survtoggle10"));
+                "surveillance.js?v=survtoggle15"));
         assertTrue(script.contains(
                 "toggleDi5CloudKeepAlive()"));
         assertTrue(script.contains(

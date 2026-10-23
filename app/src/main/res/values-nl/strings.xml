@@ -282,8 +282,8 @@
     <string name="onboarding_expert_surveillance_body">Afstemming detectie, kwaliteit en opslag hier Deze open als in-app configuratiepagina\'s van uw auto - een leeg scherm betekent gewoon dat de helper nog steeds begint.</string>
     <string name="onboarding_expert_camprobe_title">Camera probe - voorzichtig</string>
     <string name="onboarding_expert_camprobe_body">Deze hermaps die een fysieke camera elke rol verzorgen en de camera\'s opnieuw opstarten. Verander het alleen als een feed er verkeerd uitziet - je stelt dit eerder in de handleiding.</string>
-    <string name="onboarding_expert_traffic_title">Data monitor — vereist voor toegang op afstand</string>
-    <string name="onboarding_expert_traffic_body">BYD\'s ingebouwde Traffic Monitor blokkeert andere apps om de ingebouwde SIM van de auto te gebruiken. Als je je auto op afstand wilt bereiken via de BYD SIM, moet je hem hier uitschakelen. De hoofdunit herstart om de verandering toe te passen.</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — vereist voor toegang op afstand</string>
+    <string name="onboarding_expert_traffic_body">De ingebouwde Traffic Monitor van BYD verhindert dat andere apps de ingebouwde simkaart van de auto gebruiken. Als je je auto op afstand wilt bereiken via de BYD-simkaart, moet je hem hier uitschakelen. Het infotainmentsysteem start opnieuw op om de wijziging toe te passen.</string>
     <string name="onboarding_expert_daemons_title">Diensten - met zorg</string>
     <string name="onboarding_expert_daemons_body">Deze schakelen tussen start en stop achtergrondservices. Hiermee schakelt u Camera, toezicht of ACC Sentry stops uit en houdt u deze uit totdat u ze weer inschakelt - zelfs na een herstart.</string>
     <string name="onboarding_expert_security_title">Vergrendelen met een pincode</string>
@@ -551,7 +551,8 @@
     <string name="toast_soh_reset_failed_with_message">Niet geslaagd: %1$s</string>
     <string name="toast_select_at_least_one_category">Selecteer ten minste één categorie</string>
     <string name="toast_reset_failed_with_error">Niet ingesteld: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s verkeersmonitor...</string>
+    <string name="toast_traffic_monitor_enabling">Traffic Monitor wordt ingeschakeld…</string>
+    <string name="toast_traffic_monitor_disabling">Traffic Monitor wordt uitgeschakeld…</string>
     <string name="dialog_close">Sluiten</string>
     <string name="dialog_reset">Resetten</string>
     <string name="dialog_delete">Verwijderen</string>
@@ -570,13 +571,14 @@
     <string name="dialog_traffic_cannot_check_title">Kan de status niet controleren</string>
     <string name="dialog_traffic_cannot_check_message">ADB-verbinding is nog niet klaar.\n\nDe app heeft ADB-toegang nodig om systeempakketten te beheren. Zorg ervoor dat:\n\n• USB Debugging is ingeschakeld in Developer Options\n• De ADB-autoriseringsopdracht is geaccepteerd\n\nDe status wordt automatisch bijgewerkt zodra de verbinding is gesloten.</string>
     <string name="dialog_traffic_disable_title">BYD Traffic Monitor uitschakelen?</string>
-    <string name="dialog_traffic_disable_message">De BYD Traffic Monitor (com.byd.trafficmonitor) is een ingebouwde systeem-app die de verkeersomstandigheden in de achtergrond continu bewaakt.\n\n️ Waarom deze uitschakelen?\n\n• Verbrengt mobiele gegevens (zelfs wanneer geparkeerd)\n• Gebruikt CPU en batterij in de achtergrond\n• Niet nodig als u een aparte navigatie-app gebruikt\n• Kan het netwerkgebruik van de dashcam verstoren\n\nDit is veilig om te uitschakelen  het beïnvloedt alleen de ingebouwde verkeersoverlay op de kaart. Uw navigatie, Bluetooth, en alle andere autofuncties blijven onveranderd.\n\nEen harde herlaten is vereist na het uitschakelen (</string>
-    <string name="dialog_traffic_enable_title">BYD-verkeersmonitor weer ingeschakeld?</string>
-    <string name="dialog_traffic_enable_message">De BYD Traffic Monitor is momenteel uitgeschakeld.\n\nHet opnieuw inzetten herstelt de ingebouwde verkeersoverlay op de navigatiekaart. Merk op dat het in de achtergrond wordt uitgevoerd en mobiele gegevens verbruikt.\n\nEen harde herstart is nodig na het inzetten (houd de centrale console knop 5 seconden).</string>
-    <string name="dialog_traffic_status_title">Verkeersmonitor %1$s</string>
+    <string name="dialog_traffic_disable_message">De BYD Traffic Monitor (com.byd.trafficmonitor) is een ingebouwde systeemapp die bepaalt welke apps mobiele data mogen gebruiken. Hij verhindert dat apps van derden, waaronder OverDrive, de ingebouwde simkaart van de auto gebruiken.\n\nWaarom uitschakelen?\n\n• Laat OverDrive en andere apps die je installeert via de BYD-simkaart internet gebruiken\n• Vereist om je auto op afstand te bereiken via de BYD-simkaart\n\nJe navigatie, Bluetooth en alle andere functies van de auto blijven onaangetast.\n\nNa het uitschakelen is een harde herstart vereist (houd de knop op de middenconsole 5 seconden ingedrukt).</string>
+    <string name="dialog_traffic_enable_title">BYD Traffic Monitor weer inschakelen?</string>
+    <string name="dialog_traffic_enable_message">De BYD Traffic Monitor is momenteel uitgeschakeld.\n\nAls je hem weer inschakelt, verhindert hij opnieuw dat OverDrive en andere apps van derden de ingebouwde simkaart van de auto gebruiken, waardoor toegang op afstand via de BYD-simkaart niet meer werkt.\n\nNa het inschakelen is een harde herstart vereist (houd de knop op de middenconsole 5 seconden ingedrukt).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor ingeschakeld</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor uitgeschakeld</string>
     <string name="dialog_traffic_reboot_message">De wijziging is toegepast. Doe nu een harde herstart: druk op en hou de centrale console knop voor 5 seconden vast.</string>
-    <string name="traffic_monitor_loading">Verkeersmonitor: Controleer...</string>
-    <string name="traffic_monitor_tap_to_check">Verkeersmonitor (klik om te controleren)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: controleren…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (tik om te controleren)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">Ritten</string>
     <string name="reset_label_soc_history">SoC + 12V geschiedenis</string>
@@ -632,6 +634,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Dit routes MQTT via Tailscale zodat u een private makelaar kunt bereiken op uw tailnet zonder port forwarding.\n\nTerwijl geactiveerd:\n• MQTT naar een tailnet makelaar werkt (bijv. Mosquitto op een apparaat op uw tailnet)\n• MQTT naar openbare makelaars (HiveMQ, AWS IoT, enz.) zal falen  Tailscale alleen routes naar uw tailnet\n• De Tailscale daemon zal opnieuw starten om de verandering toe te passen\n• Andere app en de rest van het apparaat verkeer worden niet beïnvloed\n\nJe kunt dit op elk moment uitschakelen.</string>
     <string name="dialog_zrok_reset_title">Zrok omgeving opnieuw instellen</string>
     <string name="dialog_zrok_reset_message">Dit zal:\n• de zrok-tunnel stoppen als het loopt\n• de zrok-omgeving van dit apparaat verwijderen\n• de opgeslagen token verwijderen\n\nJe zult je token opnieuw moeten invoeren en opnieuw moeten activeren. Dit maakt gebruik van een van je 5 apparaat slots op zrok.io.\n\nBen je zeker?</string>
+    <string name="dialog_tunnel_conflict_title">Er draait al een andere tunnel</string>
+    <string name="dialog_tunnel_conflict_message">%1$s draait al. Overschakelen naar %2$s (hiermee stopt %1$s), of beide tunnels tegelijk gebruiken?\n\nAls beide draaien:\n• Het dashboard is bereikbaar via twee openbare links\n• Het mobiele dataverbruik in rust neemt iets toe\n• Beide starten automatisch na een herstart</string>
+    <string name="dialog_tunnel_conflict_switch">Overschakelen</string>
+    <string name="dialog_tunnel_conflict_run_both">Beide gebruiken</string>
     <string name="toast_resetting_zrok">Zrok-omgeving opnieuw instellen...</string>
     <string name="toast_zrok_reset_success">Zrok omgeving opnieuw instellen.</string>
     <string name="toast_zrok_reset_partial">Omgeving opnieuw instellen (tokenbestand kan handmatig worden gereinigd)</string>
@@ -693,8 +699,8 @@
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">Tips &amp; probleemoplossing</string>
     <string name="setup_traffic_title">BYD Traffic Monitor uitschakelen</string>
-    <string name="setup_traffic_body">De BYD Traffic Monitor blokkeert dat apps van derden internet bereiken. Het uitschakelen ervan stelt OverDrive en alle andere apps die u installeert in staat het netwerk daadwerkelijk te gebruiken.</string>
-    <string name="setup_traffic_button">Open verkeersmonitor</string>
+    <string name="setup_traffic_body">De BYD Traffic Monitor verhindert dat apps van derden het internet bereiken. Door hem uit te schakelen kunnen OverDrive en alle andere apps die je installeert het netwerk daadwerkelijk gebruiken. Daarna is een harde herstart vereist.</string>
+    <string name="setup_traffic_button">Traffic Monitor openen</string>
     <string name="setup_camera_fix_title">Is de camera zwart of onjuist?</string>
     <string name="setup_camera_fix_body">Camera probe, stel Camera ID op 0, tik op Save, en start dan de camera daemon opnieuw. Als de feeds nog steeds verkeerd zijn, herhaal met Camera ID 1. Laat het mapping-gedeelte ongerept.</string>
     <!-- Recording storage path -->
@@ -808,6 +814,8 @@
     <string name="settings_about_support_share_value">Elke gedeelde link helpt een andere eigenaar van BYD om Overdrive te ontdekken.</string>
     <string name="settings_about_support_share_message">Bekijk Overdrive  open source surveillance &amp; dashcam voor BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Deel Overdrive</string>
+    <string name="settings_about_youtube_title">Abonneer op YouTube</string>
+    <string name="settings_about_youtube_value">Like, abonneer en deel — elke weergave helpt Overdrive groeien.</string>
     <string name="settings_about_open_link_failed">Ik kon de link niet openen.</string>
     <string name="settings_about_open_link_copied">Geen browser gevonden. URL gekopieerd: %1$s</string>
     <string name="settings_about_support_kofi_title">Brandstof voor de volgende release</string>
@@ -846,7 +854,7 @@
     <string name="recordings_preview_placeholder_body">Tik op elk item aan de linkerkant om het te spelen.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">ADB Console</string>
-    <string name="diagnostics_section_traffic">Verkeersmonitor</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Camera-sonde</string>
     <string name="diagnostics_section_battery">Batterijgezondheid</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -913,7 +921,7 @@
     <!-- Metric tiles -->
     <string name="dashboard_metric_recordings">De opnames van vandaag .</string>
     <string name="dashboard_metric_storage">Gebruikte opslag</string>
-    <string name="dashboard_metric_tunnel">Afstandsbeveiliging</string>
+    <string name="dashboard_metric_tunnel">Toegang op afstand</string>
     <string name="dashboard_metric_services">Backgrounddiensten</string>
     <string name="dashboard_metric_value_pending">—</string>
     <string name="dashboard_metric_vehicle">Voertuig</string>
@@ -962,6 +970,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Pre/post buffers, codec, opslaglimieten.</string>
     <string name="settings_section_surveillance_subtitle">Detectiezonen, schema, bewegingsgevoeligheid.</string>
+    <string name="settings_section_storage_subtitle">Waar opnames worden opgeslagen, opslaglimieten, opruimen van de BYD-dashcam.</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT hardlopers.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">Over OverDrive</string>
@@ -1353,6 +1362,10 @@
     <string name="projection_autostart_conflict_confirm">Deze app gebruiken</string>
     <string name="projection_app_uninstalled">Die app is niet meer geïnstalleerd.</string>
     <string name="projection_status_service_down">De spiegelservice is niet gereed — herstart de app (of de camera-daemon) en probeer het opnieuw.</string>
+    <string name="projection_status_connecting">Verbinden met het cluster…</string>
+    <string name="projection_status_mirror_unavailable">Mirror niet beschikbaar</string>
+    <string name="projection_fullscreen_enter">Volledig scherm</string>
+    <string name="projection_fullscreen_exit">Volledig scherm sluiten</string>
     <string name="cd_replay_status">Onmiddellijke afspelen status</string>
     <string name="recording_lib_type_replay">HERHALING</string>
     <string name="settings_overlay_replay_title">Direct afspelen indicator</string>
@@ -1378,4 +1391,17 @@
     <string name="rail_section_automation">Automatisering</string>
     <string name="rail_section_system">Systeem</string>
     <string name="rail_collapse_label">Inklappen</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Luistert…</string>
+    <string name="voice_overlay_thinking">Denkt na…</string>
+    <string name="voice_overlay_speaking">Spreekt…</string>
+    <string name="voice_overlay_done">Klaar</string>
+    <string name="voice_overlay_cancelled">Geannuleerd</string>
+    <string name="voice_overlay_not_understood">Sorry, dat verstond ik niet</string>
+    <string name="voice_overlay_offline">AI-assistent is niet beschikbaar</string>
+    <string name="voice_overlay_busy">De assistent is al in gebruik</string>
+    <string name="voice_overlay_blocked_moving">Niet beschikbaar tijdens het rijden</string>
+    <string name="voice_overlay_refused">Dat kan niet met spraak</string>
+    <string name="voice_overlay_failed">Dat kon niet worden voltooid</string>
 </resources>

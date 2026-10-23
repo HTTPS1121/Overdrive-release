@@ -4,8 +4,8 @@
 
   Cast an installed app onto the driver-cluster display and mirror it here, with
   tap/swipe forwarded back. The mirror PIXELS are composited by the daemon onto a
-  Surface owned by [projectionTexture]; this layout owns both the output buffer and the
-  draggable pane geometry within it (see ProjectionFragment).
+  Surface owned by [projectionTexture]; ProjectionFragment sizes the stage to the
+  panel aspect and owns the draggable window geometry over it.
 
   IDs (ProjectionFragment.kt findViewById targets) must stay in sync with layout-land.
 -->
@@ -16,54 +16,31 @@
     android:background="?android:attr/colorBackground">
 
     <androidx.core.widget.NestedScrollView
+        android:id="@+id/projectionScroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true"
-        android:clipToPadding="false">
+        android:clipToPadding="false"
+        android:fillViewport="true">
 
     <LinearLayout
+        android:id="@+id/projectionContent"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:clipToPadding="false"
         android:orientation="vertical"
         android:paddingHorizontal="@dimen/page_padding_horizontal"
         android:paddingTop="@dimen/page_padding_top"
-        android:paddingBottom="@dimen/page_padding_bottom"
-        android:clipToPadding="false">
-
-        <!-- ================== STATUS ================== -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="@dimen/dashboard_modern_gap"
-            android:baselineAligned="false"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <View
-                android:id="@+id/projectionStatusDot"
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:layout_marginEnd="10dp"
-                android:background="@drawable/status_dot_neutral" />
-
-            <TextView
-                android:id="@+id/projectionStatus"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/projection_status_idle"
-                android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-                android:textColor="?attr/colorOnSurfaceVariant" />
-        </LinearLayout>
+        android:paddingBottom="@dimen/page_padding_bottom">
 
         <!-- ================== STAGE ==================
-             The live cluster mirror. The daemon composites the cluster into the TextureView
-             Surface; the overlay draws the resize frame + handles and forwards touches in
-             control mode. The 8:3 height here is only a seed — ProjectionFragment's
-             updateStageAspect owns the real height once the panel size is known. -->
+             The daemon composites the cluster into the TextureView Surface; the overlay
+             draws the resize frame and owns every touch; the pill, hint and progress bar under it
+             only display state. -->
         <com.google.android.material.card.MaterialCardView
+            android:id="@+id/projectionMirrorCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
             android:clipToOutline="true"
             app:cardBackgroundColor="@android:color/black"
             app:cardCornerRadius="@dimen/dashboard_modern_radius"
@@ -74,7 +51,7 @@
             <FrameLayout
                 android:id="@+id/projectionStage"
                 android:layout_width="match_parent"
-                android:layout_height="300dp"
+                android:layout_height="180dp"
                 android:background="@android:color/black">
 
                 <TextureView
@@ -82,22 +59,90 @@
                     android:layout_width="match_parent"
                     android:layout_height="match_parent" />
 
+
+                <LinearLayout
+                    android:id="@+id/projectionEmptyState"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:alpha="0.8"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="16dp">
+
+                    <!-- A row, not a stack: the portrait stage can be ~100dp tall. -->
+                    <ImageView
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:layout_marginEnd="12dp"
+                        android:importantForAccessibility="no"
+                        android:src="@drawable/ic_projection"
+                        app:tint="@android:color/white" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:maxLines="3"
+                        android:text="@string/projection_status_none"
+                        android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                        android:textColor="@android:color/white" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/projectionHud"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="top|start"
+                    android:layout_margin="8dp"
+                    android:background="@drawable/projection_hud_background"
+                    android:baselineAligned="false"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp">
+
+                    <View
+                        android:id="@+id/projectionStatusDot"
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/status_dot_neutral" />
+
+                    <TextView
+                        android:id="@+id/projectionStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:accessibilityLiveRegion="polite"
+                        android:ellipsize="end"
+                        android:maxLines="2"
+                        android:text="@string/projection_status_idle"
+                        android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
+                        android:textColor="@android:color/white" />
+                </LinearLayout>
+
+                <com.google.android.material.progressindicator.LinearProgressIndicator
+                    android:id="@+id/projectionProgress"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="top"
+                    android:indeterminate="true"
+                    android:visibility="gone"
+                    app:indicatorTrackGapSize="0dp"
+                    app:trackColor="@android:color/transparent"
+                    app:trackCornerRadius="0dp"
+                    app:trackThickness="3dp" />
+
+                <!-- Last, so the resize frame and its handles draw over the pill and hint. -->
                 <com.overdrive.app.ui.view.ProjectionBoundsView
                     android:id="@+id/projectionBounds"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent" />
-
-                <ProgressBar
-                    android:id="@+id/projectionProgress"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center"
-                    android:visibility="gone" />
             </FrameLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ================== CAST ================== -->
+        <!-- ================== DOCK ================== -->
         <com.google.android.material.card.MaterialCardView
+            android:id="@+id/projectionDock"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/dashboard_modern_gap"
@@ -109,51 +154,75 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="@dimen/dashboard_modern_card_padding">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/projection_pick_app"
-                    android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
-                    android:textColor="?attr/colorOnSurface" />
-
-                <Spinner
-                    android:id="@+id/projectionAppSpinner"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:minHeight="@dimen/dashboard_modern_touch_target" />
+                android:padding="12dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/dashboard_modern_gap"
+                    android:baselineAligned="false"
+                    android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/projectionCastButton"
-                        style="@style/Widget.Overdrive.M3.Button"
+                    <Spinner
+                        android:id="@+id/projectionAppSpinner"
                         android:layout_width="0dp"
                         android:layout_height="@dimen/dashboard_modern_touch_target"
-                        android:layout_marginEnd="6dp"
                         android:layout_weight="1"
-                        android:text="@string/projection_cast" />
+                        android:background="@drawable/projection_picker_background"
+                        android:dropDownVerticalOffset="4dp"
+                        android:popupBackground="@drawable/projection_picker_popup"
+                        android:spinnerMode="dropdown" />
 
                     <com.google.android.material.button.MaterialButton
-                        android:id="@+id/projectionStopButton"
-                        style="@style/Widget.Overdrive.M3.Button.Outlined"
-                        android:layout_width="0dp"
+                        android:id="@+id/projectionFullscreenButton"
+                        style="@style/Widget.Overdrive.M3.HeaderIconButton"
+                        android:layout_width="@dimen/dashboard_modern_touch_target"
                         android:layout_height="@dimen/dashboard_modern_touch_target"
-                        android:layout_marginStart="6dp"
-                        android:layout_weight="1"
+                        android:layout_marginStart="8dp"
+                        android:contentDescription="@string/projection_fullscreen_enter"
                         android:enabled="false"
-                        android:text="@string/projection_stop" />
+                        android:insetTop="4dp"
+                        android:insetBottom="4dp"
+                        android:tooltipText="@string/projection_fullscreen_enter"
+                        app:icon="@drawable/ic_fullscreen" />
                 </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/projectionCastButton"
+                    style="@style/Widget.Overdrive.M3.Button.Icon"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/dashboard_modern_touch_target"
+                    android:layout_marginTop="8dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="@string/projection_cast"
+                    app:icon="@drawable/ic_projection"
+                    app:iconGravity="textStart" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/projectionStopButton"
+                    style="@style/Widget.Overdrive.M3.Button.Tonal.Icon"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/dashboard_modern_touch_target"
+                    android:layout_marginTop="8dp"
+                    android:ellipsize="end"
+                    android:enabled="false"
+                    android:maxLines="1"
+                    android:text="@string/projection_stop"
+                    android:visibility="gone"
+                    app:icon="@drawable/ic_stop"
+                    app:iconGravity="textStart" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ================== CLUSTER WINDOW ================== -->
+        <!-- ================== SETTINGS ================== -->
+        <LinearLayout
+            android:id="@+id/projectionSettings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+        <!-- CLUSTER WINDOW -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -200,7 +269,11 @@
                         android:insetLeft="0dp"
                         android:insetRight="0dp"
                         android:paddingHorizontal="4dp"
-                        android:text="@string/projection_preset_full" />
+                        android:text="@string/projection_preset_full"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/projectionPresetLeft"
@@ -211,7 +284,11 @@
                         android:insetLeft="0dp"
                         android:insetRight="0dp"
                         android:paddingHorizontal="4dp"
-                        android:text="@string/projection_preset_left" />
+                        android:text="@string/projection_preset_left"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/projectionPresetRight"
@@ -222,7 +299,11 @@
                         android:insetLeft="0dp"
                         android:insetRight="0dp"
                         android:paddingHorizontal="4dp"
-                        android:text="@string/projection_preset_right" />
+                        android:text="@string/projection_preset_right"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/projectionPresetCenter"
@@ -233,9 +314,15 @@
                         android:insetLeft="0dp"
                         android:insetRight="0dp"
                         android:paddingHorizontal="4dp"
-                        android:text="@string/projection_preset_center" />
+                        android:text="@string/projection_preset_center"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
+                <!-- Resize sits with the presets here; landscape moves it into the dock,
+                     where the stage it edits stays in view. -->
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/projectionAdjustButton"
                     style="@style/Widget.Overdrive.M3.Button.Tonal.Icon"
@@ -244,7 +331,8 @@
                     android:layout_marginTop="8dp"
                     android:enabled="false"
                     android:text="@string/projection_adjust_bounds"
-                    app:icon="@drawable/ic_crop_free" />
+                    app:icon="@drawable/ic_crop_free"
+                    app:iconGravity="textStart" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -272,7 +360,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ================== MIRROR SCALING + AUTO-START ================== -->
+        <!-- MIRROR SCALING + AUTO-START + TRANSPORT -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -316,7 +404,12 @@
                         android:layout_width="0dp"
                         android:layout_height="@dimen/dashboard_modern_touch_target"
                         android:layout_weight="1"
-                        android:text="@string/projection_scale_fit" />
+                        android:text="@string/projection_scale_fit"
+                        android:paddingHorizontal="4dp"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/projectionScaleFill"
@@ -324,7 +417,12 @@
                         android:layout_width="0dp"
                         android:layout_height="@dimen/dashboard_modern_touch_target"
                         android:layout_weight="1"
-                        android:text="@string/projection_scale_fill" />
+                        android:text="@string/projection_scale_fill"
+                        android:paddingHorizontal="4dp"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/projectionScaleZoom"
@@ -332,7 +430,12 @@
                         android:layout_width="0dp"
                         android:layout_height="@dimen/dashboard_modern_touch_target"
                         android:layout_weight="1"
-                        android:text="@string/projection_scale_zoom" />
+                        android:text="@string/projection_scale_zoom"
+                        android:paddingHorizontal="4dp"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
                 <View
@@ -378,8 +481,87 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
                 </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="@dimen/dashboard_modern_card_padding"
+                    android:background="?attr/colorOutlineVariant" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/dashboard_modern_card_padding"
+                    android:text="@string/projection_transport_title"
+                    android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+                    android:textColor="?attr/colorOnSurface" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/projection_transport_desc"
+                    android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
+                <com.google.android.material.button.MaterialButtonToggleGroup
+                    android:id="@+id/projectionTransportGroup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    app:selectionRequired="true"
+                    app:singleSelection="true">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/projectionTransportAuto"
+                        style="@style/Widget.Overdrive.M3.Button.Outlined"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/dashboard_modern_touch_target"
+                        android:layout_weight="1"
+                        android:text="@string/projection_transport_auto"
+                        android:paddingHorizontal="4dp"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/projectionTransportLegacy"
+                        style="@style/Widget.Overdrive.M3.Button.Outlined"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/dashboard_modern_touch_target"
+                        android:layout_weight="1"
+                        android:text="@string/projection_transport_legacy"
+                        android:paddingHorizontal="4dp"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/projectionTransportDilink5"
+                        style="@style/Widget.Overdrive.M3.Button.Outlined"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/dashboard_modern_touch_target"
+                        android:layout_weight="1"
+                        android:text="@string/projection_transport_dilink5"
+                        android:paddingHorizontal="4dp"
+                        android:maxLines="1"
+                        app:autoSizeMaxTextSize="14sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
+                </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                <TextView
+                    android:id="@+id/projectionTransportStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+        </LinearLayout>
     </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 

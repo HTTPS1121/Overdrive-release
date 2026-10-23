@@ -1,6 +1,7 @@
 package com.overdrive.app.launcher
 
 import android.content.Context
+import com.overdrive.app.R
 import com.overdrive.app.logging.LogManager
 
 /**
@@ -16,11 +17,12 @@ class TunnelLauncher(
 ) {
     companion object {
         private const val TAG = "TunnelLauncher"
-        private val LAUNCH_GUARD_TIMEOUT_SECONDS = 90L
+        private const val LAUNCH_GUARD_TIMEOUT_SECONDS = 90L
         
         // Cloudflared paths
-        private val CLOUDFLARED_TMP_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cloudflared")
-        private val CLOUDFLARED_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cloudflared.log")
+        private val CLOUDFLARED_TMP_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("cloudflared")
+        private val CLOUDFLARED_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("cloudflared.log")
+        private val CLOUDFLARED_DISABLED_SENTINEL: String get() = com.overdrive.app.util.ScratchRoot.path("cloudflared.disabled")
         
         // Process name for identification
         private const val CLOUDFLARED_PROCESS = "cloudflared"
@@ -31,6 +33,33 @@ class TunnelLauncher(
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
                 Thread(runnable, "cloudflared-launch-guard").apply { isDaemon = true }
             }
+
+        // Automatic restarts back off after the 2nd consecutive failed launch: 2, 4, then 5 min.
+        private const val AUTO_RETRY_BASE_MS = 2 * 60_000L
+        private const val AUTO_RETRY_MAX_MS = 5 * 60_000L
+        private var consecutiveFailures = 0 // guarded by launchLock
+        private var nextAutoStartAtMs = 0L // guarded by launchLock
+
+        /** Milliseconds until an automatic (non-user) start may run; 0 when due. */
+        fun autoStartDelayMs(): Long = synchronized(launchLock) {
+            if (consecutiveFailures < 2) 0L else (nextAutoStartAtMs - monotonicNowMs()).coerceAtLeast(0L)
+        }
+
+        fun resetAutoStartBackoff() = synchronized(launchLock) {
+            consecutiveFailures = 0
+            nextAutoStartAtMs = 0L
+        }
+
+        // Monotonic: head units often correct their wall clock after boot.
+        private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000L
+
+        private fun markActiveLaunchCancelled() = synchronized(launchLock) {
+            activeLaunch?.cancelled = true
+        }
+
+        private fun autoRetryDelayMs(failures: Int): Long =
+            if (failures < 2) 0L
+            else minOf(AUTO_RETRY_MAX_MS, AUTO_RETRY_BASE_MS shl minOf(failures - 2, 4))
     }
     
     interface TunnelCallback {
@@ -41,6 +70,8 @@ class TunnelLauncher(
 
     private class LaunchFlight(callback: TunnelCallback) {
         val callbacks = mutableListOf(callback)
+        @Volatile var urlDelivered = false
+        @Volatile var cancelled = false
     }
 
     /**
@@ -49,6 +80,8 @@ class TunnelLauncher(
      * the shared single-thread ADB executor for the sleep duration. Same
      * pattern as ZrokLauncher.reconcileScheduler.
      */
+    private val strings: Context get() = com.overdrive.app.util.AppLocaleContext.of(context)
+
     private val pollScheduler: java.util.concurrent.ScheduledExecutorService =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
                 Thread(r, "tunnel-poll").apply { isDaemon = true }
@@ -64,8 +97,6 @@ class TunnelLauncher(
      * Launch Cloudflared tunnel via ADB shell.
      * Creates a public URL that forwards to local port 8080.
      * Reuses existing tunnel if already running.
-     * 
-     * NOTE: Cloudflared and Zrok are mutually exclusive - this will kill zrok first.
      */
     fun launchCloudflared(callback: TunnelCallback) {
         val (flight, ownsLaunch) = registerLaunch(callback)
@@ -79,7 +110,7 @@ class TunnelLauncher(
         // TunnelLauncher instance that started the work is shut down.
         launchGuardScheduler.schedule({
             notifyCallbacks(finishLaunch(flight)) {
-                it.onError("Cloudflared launch timed out")
+                it.onError(strings.getString(R.string.cloudflared_error_launch_timeout))
             }
         }, LAUNCH_GUARD_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
 
@@ -89,6 +120,7 @@ class TunnelLauncher(
             }
 
             override fun onTunnelUrl(url: String) {
+                if (url.isNotBlank()) flight.urlDelivered = true
                 notifyCallbacks(finishLaunch(flight)) { it.onTunnelUrl(url) }
             }
 
@@ -101,7 +133,7 @@ class TunnelLauncher(
             launchCloudflaredGuarded(guardedCallback)
         } catch (e: Exception) {
             notifyCallbacks(finishLaunch(flight)) {
-                it.onError("Cloudflared launch failed: ${e.message}")
+                it.onError(strings.getString(R.string.cloudflared_error_launch_failed, e.message))
             }
         }
     }
@@ -132,6 +164,13 @@ class TunnelLauncher(
                 val callbacks = flight.callbacks.toList()
                 flight.callbacks.clear()
                 activeLaunch = null
+                if (flight.urlDelivered) {
+                    consecutiveFailures = 0
+                    nextAutoStartAtMs = 0L
+                } else if (!flight.cancelled) {
+                    consecutiveFailures++
+                    nextAutoStartAtMs = monotonicNowMs() + autoRetryDelayMs(consecutiveFailures)
+                }
                 callbacks
             }
         }
@@ -153,169 +192,99 @@ class TunnelLauncher(
         logManager.info(TAG, "Launching Cloudflared tunnel...")
         callback.onLog("Checking for existing tunnel...")
         
-        // Kill zrok first (mutually exclusive)
-        killZrokIfRunning {
-            // Then check if cloudflared tunnel is already running
-            isTunnelRunning { isRunning ->
-                if (isRunning) {
-                    // Tunnel already running, try to get existing URL
-                    logManager.info(TAG, "Cloudflared already running, checking for URL...")
-                    callback.onLog("Tunnel already running, getting URL...")
-                    getTunnelUrl { existingUrl ->
-                        if (existingUrl != null) {
-                            // Check if current tunnel matches configured version
-                            val isPaid = com.overdrive.app.config.CloudflaredPaidConfig.isPaidVersion()
-                            val isFreeUrl = existingUrl.contains("trycloudflare.com")
-                            
-                            if (isPaid && isFreeUrl) {
-                                logManager.info(TAG, "Running tunnel is free but paid version selected. Restarting...")
-                                callback.onLog("Restarting tunnel for paid version...")
-                                stopTunnel(object : TunnelCallback {
-                                    override fun onLog(message: String) {}
-                                    override fun onTunnelUrl(url: String) { launchCloudflaredInternal(callback) }
-                                    // Don't launch a second cloudflared next to one that is still running.
-                                    override fun onError(error: String) {
-                                        callback.onError("Could not stop the free tunnel before switching to paid: $error")
-                                    }
-                                })
-                                return@getTunnelUrl
-                            }
-
-                            logManager.info(TAG, "Reusing existing tunnel: $existingUrl")
-                            callback.onLog("Reusing existing tunnel")
-                            callback.onTunnelUrl(existingUrl)
-                        } else {
-                            // Running but no URL - wait for it
-                            logManager.info(TAG, "Tunnel running but no URL yet, waiting...")
-                            callback.onLog("Waiting for tunnel URL...")
-                            waitForTunnelUrl(callback, 1)
+        isTunnelRunning { isRunning ->
+            if (isRunning) {
+                // Tunnel already running, try to get existing URL
+                logManager.info(TAG, "Cloudflared already running, checking for URL...")
+                callback.onLog("Tunnel already running, getting URL...")
+                getTunnelUrl { existingUrl ->
+                    if (existingUrl != null) {
+                        // Check if current tunnel matches configured version
+                        val isPaid = com.overdrive.app.config.CloudflaredPaidConfig.isPaidVersion()
+                        val isFreeUrl = existingUrl.contains("trycloudflare.com")
+                        
+                        if (isPaid && isFreeUrl) {
+                            logManager.info(TAG, "Running tunnel is free but paid version selected. Restarting...")
+                            callback.onLog("Restarting tunnel for paid version...")
+                            stopTunnel(object : TunnelCallback {
+                                override fun onLog(message: String) {}
+                                override fun onTunnelUrl(url: String) { launchCloudflaredInternal(callback) }
+                                // Never launch a second cloudflared next to one that is still running.
+                                override fun onError(error: String) {
+                                    callback.onError("Could not stop the free tunnel before switching to paid: $error")
+                                }
+                            })
+                            return@getTunnelUrl
                         }
+
+                        logManager.info(TAG, "Reusing existing tunnel: $existingUrl")
+                        callback.onLog("Reusing existing tunnel")
+                        callback.onTunnelUrl(existingUrl)
+                    } else {
+                        // Running but no URL - wait for it
+                        logManager.info(TAG, "Tunnel running but no URL yet, waiting...")
+                        callback.onLog("Waiting for tunnel URL...")
+                        waitForTunnelUrl(callback, 1)
                     }
-                } else {
-                    // Not running — run straight from the bundled, executable
-                    // jniLib in nativeLibraryDir. The old path copied the binary
-                    // to the daemon storage and chmod +x'd it, which fails when
-                    // that storage is relocated to /sdcard (noexec) on DiLink 5.
-                    callback.onLog("Setting up cloudflared...")
-                    launchCloudflaredInternal(callback)
                 }
+            } else {
+                callback.onLog("Setting up cloudflared...")
+                prepareCloudflared(callback)
             }
         }
     }
-    
-    /**
-     * Kill zrok if running (mutual exclusion).
-     */
-    private fun killZrokIfRunning(onComplete: () -> Unit) {
+
+    private fun prepareCloudflared(callback: TunnelCallback) {
+        val srcPath = "${context.applicationInfo.nativeLibraryDir}/libcloudflared.so"
         adbShellExecutor.execute(
-            command = "pgrep -f zrok",
+            command = prepareCloudflaredCommand(srcPath),
             callback = object : AdbShellExecutor.ShellCallback {
                 override fun onSuccess(output: String) {
-                    if (output.trim().isNotEmpty()) {
-                        logManager.info(TAG, "Killing zrok (mutually exclusive with cloudflared)")
-                        // Use the script-via-tmpfile form so toybox `pkill -f
-                        // 'zrok'` can't self-match the calling shell's argv.
-                        // Order: sentinel + chmod + rm script BEFORE the
-                        // pkill cascade, so even if pkill suicides nothing
-                        // important is dropped (defense-in-depth even though
-                        // the script form already prevents the suicide).
-                        val killScript =
-                            "[ -f /data/local/tmp/zrok.disabled ] || " +
-                            "echo \"disabled — cloudflared starting at \$(date)\" > /data/local/tmp/zrok.disabled\n" +
-                            "chmod 666 /data/local/tmp/zrok.disabled 2>/dev/null\n" +
-                            "rm -f /data/local/tmp/start_zrok.sh 2>/dev/null\n" +
-                            com.overdrive.app.launcher.DaemonLauncher.psAwkKillLine("zrok") +
-                            "killall -9 zrok 2>/dev/null\n" +
-                            "echo done\n"
-                        adbShellExecutor.executeScript(
-                            scriptBody = killScript,
-                            callback = object : AdbShellExecutor.ShellCallback {
-                                override fun onSuccess(o: String) {
-                                    // Settle on pollScheduler so the ADB
-                                    // executor stays free during the 300ms wait.
-                                    pollScheduler.schedule({ onComplete() }, 300, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                }
-                                override fun onError(e: String) { onComplete() }
-                            }
-                        )
-                    } else {
-                        onComplete()
-                    }
-                }
-                override fun onError(error: String) { onComplete() }
-            }
-        )
-    }
-    
-    private fun installCloudflared(callback: TunnelCallback) {
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        val srcPath = "$nativeLibDir/libcloudflared.so"
-        
-        callback.onLog("Installing cloudflared...")
-        
-        // Check if source exists
-        adbShellExecutor.execute(
-            command = "test -f $srcPath && echo yes || echo no",
-            callback = object : AdbShellExecutor.ShellCallback {
-                override fun onSuccess(output: String) {
-                    if (output.trim() != "yes") {
-                        logManager.error(TAG, "libcloudflared.so not found")
-                        callback.onError("libcloudflared.so not found. Add it to jniLibs/arm64-v8a/")
-                        return
-                    }
-                    
-                    // Copy and make executable
-                    adbShellExecutor.execute(
-                        command = "cp $srcPath $CLOUDFLARED_TMP_PATH && chmod +x $CLOUDFLARED_TMP_PATH",
-                        callback = object : AdbShellExecutor.ShellCallback {
-                            override fun onSuccess(copyOutput: String) {
-                                callback.onLog("cloudflared installed")
-                                launchCloudflaredInternal(callback)
-                            }
-                            
-                            override fun onError(error: String) {
-                                logManager.error(TAG, "Failed to install cloudflared: $error")
-                                callback.onError("Failed to install cloudflared: $error")
-                            }
+                    when {
+                        output.contains("refreshed") || output.contains("existing") ->
+                            launchCloudflaredInternal(callback)
+                        output.contains("nosrc") -> {
+                            logManager.error(TAG, "libcloudflared.so not found")
+                            callback.onError(strings.getString(R.string.cloudflared_error_binary_missing))
                         }
-                    )
+                        else -> {
+                            logManager.error(TAG, "Failed to install cloudflared: ${output.trim()}")
+                            callback.onError(strings.getString(R.string.cloudflared_error_install_failed))
+                        }
+                    }
                 }
-                
+
                 override fun onError(error: String) {
-                    logManager.error(TAG, "Failed to check cloudflared source: $error")
-                    callback.onError("Failed to check cloudflared source: $error")
+                    logManager.error(TAG, "Failed to install cloudflared: $error")
+                    callback.onError(strings.getString(R.string.cloudflared_error_install_failed_detail, error))
                 }
             }
         )
     }
+
+    // Re-copied from the APK (atomic mv) when the installed binary is missing, empty or a different size;
+    // an existing non-empty binary is the fallback when the copy fails.
+    private fun prepareCloudflaredCommand(srcPath: String): String =
+        "D=$CLOUDFLARED_TMP_PATH; S=$srcPath; rm -f \"\$D\".new.* 2>/dev/null; " +
+        "if test -x \"\$D\" && test -s \"\$D\" && test -f \"\$S\" && " +
+        "[ \"\$(wc -c < \"\$D\" | tr -d ' ')\" = \"\$(wc -c < \"\$S\" | tr -d ' ')\" ]; then echo existing; else " +
+        "STAGED=\"\$D.new.\$\$\"; " +
+        "if test -f \"\$S\" && cp \"\$S\" \"\$STAGED\" 2>/dev/null && chmod +x \"\$STAGED\" && mv -f \"\$STAGED\" \"\$D\"; then " +
+        "echo refreshed; elif test -x \"\$D\" && test -s \"\$D\"; then rm -f \"\$STAGED\"; echo existing; " +
+        "elif test -f \"\$S\"; then rm -f \"\$STAGED\"; echo copyfail; else echo nosrc; fi; fi"
     
     private fun launchCloudflaredInternal(callback: TunnelCallback) {
         callback.onLog("Starting cloudflared tunnel...")
         
-        // Use the sing-box proxy only if its port (8119 = 0x1FB7) is actually
-        // listening. `pgrep -f sing-box` matched its own `sh -c` wrapper, so it
-        // always reported the proxy as up; QUIC ignores proxy env vars, which hid
-        // that, but an HTTP/2 tunnel then dialed a dead 127.0.0.1:8119 forever.
-        adbShellExecutor.execute(
-            command = "grep -qiE ':1FB7 [0-9A-F:]+ 0A ' /proc/net/tcp /proc/net/tcp6 && echo up",
-            callback = object : AdbShellExecutor.ShellCallback {
-                override fun onSuccess(output: String) {
-                    // Sing-box proxy is listening, use it
-                    val useProxy = output.trim() == "up"
-                    launchCloudflaredWithConfig(callback, useProxy)
-                }
-                
-                override fun onError(error: String) {
-                    // Sing-box not running, launch without proxy
-                    logManager.info(TAG, "Sing-box not running, launching cloudflared without proxy")
-                    launchCloudflaredWithConfig(callback, false)
-                }
-            }
-        )
+        // Port probe, not `pgrep -f sing-box`: that also matches its own sh -c wrapper.
+        launchCloudflaredWithConfig(callback, com.overdrive.app.mqtt.ProxyHelper.probePort(8119))
     }
     
     private fun launchCloudflaredWithConfig(callback: TunnelCallback, useProxy: Boolean) {
         val cmd = buildString {
+            // A stop or park that lands while this launch is in flight wins over it.
+            append("if [ -f $CLOUDFLARED_DISABLED_SENTINEL ] || [ -f ${com.overdrive.app.ui.model.ParkedShutdown.MARKER_PATH} ]; ")
+            append("then echo CF_START_CANCELLED; else ")
             append("nohup sh -c '")
 
             if (useProxy) {
@@ -331,10 +300,9 @@ class TunnelLauncher(
                 callback.onLog("Direct connection (no proxy)...")
             }
 
-            // Flags (incl. --retries, which caps the reconnect backoff rather than
-            // limiting attempts) are documented in CloudflaredPaidConfig.
-            append("${context.applicationInfo.nativeLibraryDir}/libcloudflared.so ${com.overdrive.app.config.CloudflaredPaidConfig.getArgs()}")
-            append("' > $CLOUDFLARED_LOG 2>&1 &")
+            // --retries caps the reconnect backoff, it does not limit attempts (see CloudflaredPaidConfig).
+            append("$CLOUDFLARED_TMP_PATH ${com.overdrive.app.config.CloudflaredPaidConfig.getArgs()}")
+            append("' > $CLOUDFLARED_LOG 2>&1 & fi")
         }
         
         // Redact the cloudflared paid token before logging — the command can
@@ -346,6 +314,12 @@ class TunnelLauncher(
             command = cmd,
             callback = object : AdbShellExecutor.ShellCallback {
                 override fun onSuccess(output: String) {
+                    if (output.contains("CF_START_CANCELLED")) {
+                        logManager.info(TAG, "Cloudflared start cancelled: disable sentinel or parked marker present")
+                        markActiveLaunchCancelled()
+                        callback.onError(strings.getString(R.string.cloudflared_start_cancelled))
+                        return
+                    }
                     logManager.info(TAG, "Cloudflared launch command sent")
                     callback.onLog("Waiting for tunnel URL...")
                     waitForTunnelUrl(callback, 1)
@@ -353,7 +327,7 @@ class TunnelLauncher(
                 
                 override fun onError(error: String) {
                     logManager.error(TAG, "Failed to launch cloudflared: $error")
-                    callback.onError("Launch failed: $error")
+                    callback.onError(strings.getString(R.string.cloudflared_error_spawn_failed, error))
                 }
             }
         )
@@ -367,11 +341,14 @@ class TunnelLauncher(
                 callback = object : AdbShellExecutor.ShellCallback {
                     override fun onSuccess(output: String) {
                         logManager.error(TAG, "Cloudflared timed out. Log: ${output.takeLast(500)}")
-                        callback.onError("Failed to get URL. Log tail:\n${output.takeLast(500)}")
+                        callback.onError(
+                            if (output.isBlank()) strings.getString(R.string.cloudflared_no_output)
+                            else strings.getString(R.string.cloudflared_error_no_url, output.takeLast(500))
+                        )
                     }
 
                     override fun onError(error: String) {
-                        callback.onError("Timed out waiting for tunnel URL")
+                        callback.onError(strings.getString(R.string.cloudflared_error_url_timeout))
                     }
                 }
             )
@@ -407,14 +384,14 @@ class TunnelLauncher(
                     if (logContent.contains("proxyconnect") ||
                         (logContent.contains("proxy") && logContent.contains("refused"))) {
                         logManager.error(TAG, "Proxy error - is sing-box running?")
-                        callback.onError("Proxy Error: Is sing-box running on port 8119?\n${logContent.takeLast(200)}")
+                        callback.onError(strings.getString(R.string.cloudflared_error_proxy, logContent.takeLast(200)))
                         return
                     }
                     
                     // Check for connection errors
                     if (logContent.contains("connection refused") || logContent.contains("dial tcp")) {
                         logManager.error(TAG, "Connection error: $logContent")
-                        callback.onError("Cloudflared connection error: ${logContent.takeLast(300)}")
+                        callback.onError(strings.getString(R.string.cloudflared_error_connection, logContent.takeLast(300)))
                         return
                     }
                     
@@ -437,7 +414,6 @@ class TunnelLauncher(
         logManager.info(TAG, "Stopping tunnel...")
         callback.onLog("Stopping tunnel...")
         
-        // Kill + verify (see DaemonLauncher.killCloudflaredAndVerify for why it kills by PID).
         // Only an explicit STOPPED marker counts as stopped.
         adbShellExecutor.execute(
             command = DaemonLauncher.killCloudflaredAndVerify(),
@@ -461,8 +437,7 @@ class TunnelLauncher(
                 }
 
                 override fun onError(error: String) {
-                    // The stop command itself failed (ADB transport), so we don't know
-                    // whether cloudflared is still running — don't report it as stopped.
+                    // The ADB command failed, so whether cloudflared still runs is unknown.
                     logManager.error(TAG, "Tunnel stop failed: $error")
                     callback.onError("Failed to stop tunnel: $error")
                 }

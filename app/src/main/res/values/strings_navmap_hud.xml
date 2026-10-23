@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Continue</item>
+        <item>Head out</item>
+        <item>Arrive</item>
+        <item>Arrive on the right</item>
+        <item>Arrive on the left</item>
+        <item>Bear right</item>
+        <item>Turn right</item>
+        <item>Sharp right</item>
+        <item>Make a U-turn</item>
+        <item>Sharp left</item>
+        <item>Turn left</item>
+        <item>Bear left</item>
+        <item>Take the ramp</item>
+        <item>Take the exit</item>
+        <item>Keep straight</item>
+        <item>Keep right</item>
+        <item>Keep left</item>
+        <item>Merge</item>
+        <item>Merge right</item>
+        <item>Merge left</item>
+        <item>Enter the roundabout</item>
+        <item>Leave the roundabout</item>
+        <item>Take the ferry</item>
+        <item>Leave the ferry</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Continue on</item>
+        <item>Head out on</item>
+        <item>Arrive at</item>
+        <item>Arrive on the right at</item>
+        <item>Arrive on the left at</item>
+        <item>Bear right onto</item>
+        <item>Turn right onto</item>
+        <item>Sharp right onto</item>
+        <item>Make a U-turn onto</item>
+        <item>Sharp left onto</item>
+        <item>Turn left onto</item>
+        <item>Bear left onto</item>
+        <item>Take the ramp onto</item>
+        <item>Take the exit onto</item>
+        <item>Keep straight onto</item>
+        <item>Keep right onto</item>
+        <item>Keep left onto</item>
+        <item>Merge onto</item>
+        <item>Merge right onto</item>
+        <item>Merge left onto</item>
+        <item>Enter the roundabout on</item>
+        <item>Leave the roundabout onto</item>
+        <item>Take the ferry to</item>
+        <item>Leave the ferry onto</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1st</item>
+        <item>2nd</item>
+        <item>3rd</item>
+        <item>4th</item>
+        <item>5th</item>
+        <item>6th</item>
+        <item>7th</item>
+        <item>8th</item>
+        <item>9th</item>
+        <item>10th</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Take the %1$s exit</string>
+    <string name="nav_hud_roundabout_exit_onto">Take the %1$s exit onto</string>
+    <string name="nav_hud_towards">Towards</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Exit %1$s</string>
+    <string name="nav_hud_then">Then</string>
+    <string name="nav_hud_arrive">Arrive</string>
+    <string name="nav_hud_recenter">Re-centre</string>
+    <string name="nav_hud_end">End</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_attribution" translatable="false">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</string>
+    <string name="nav_hud_cd_mute">Mute voice guidance</string>
+    <string name="nav_hud_cd_unmute">Unmute voice guidance</string>
+    <string name="nav_hud_cd_overview">Show the whole route</string>
+    <string name="nav_hud_cd_overview_exit">Back to driving view</string>
+    <string name="nav_hud_cd_end">End navigation</string>
+    <string name="nav_hud_cd_recenter">Re-centre on the car</string>
+    <string name="nav_hud_cd_compass_heading_up">Compass: heading up. Tap for north up</string>
+    <string name="nav_hud_cd_compass_north_up">Compass: north up. Tap for heading up</string>
+    <string name="nav_hud_cd_back">Leave the map</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Then %1$s in %2$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Arriving at %1$s, %2$s, %3$s to go</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">%1$s of traffic delay</string>
+</resources>

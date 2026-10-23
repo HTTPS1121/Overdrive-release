@@ -475,10 +475,12 @@ public class FoveatedCropper {
         // legacy 4-strip path never flips (recorder paints upright strips).
         // Hoisted out of the corner branch so the affine build below sees it.
         float xFlipOut = 0f, yFlipOut = 0f;
+        boolean bottomOriginTexture = false;
         if (useCornerLayout) {
             // DiLink 4 receives legacy strip geometry for its 2x2 producer;
             // DiLink 5 is configured with the producer's actual dimensions.
             boolean dilink5 = cameraLayout == 1 && DiLink5Platform.isEnabled();
+            bottomOriginTexture = dilink5;
             int producerW = Math.max(1, dilink5 ? stripWidth : stripWidth / 2);
             int producerH = Math.max(1, dilink5 ? stripHeight : stripHeight * 2);
             cropWidthNorm = (float) CROP_SIZE / producerW;
@@ -616,7 +618,12 @@ public class FoveatedCropper {
                         : GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
             cameraTextureId);
         GLES20.glUniform1i(uCameraTex, 0);
-        GLES20.glUniform4f(uCropRect, cropLeft, cropTop, cropWidthNorm, cropHeightNorm);
+        if (bottomOriginTexture) {
+            // Same top-origin window, sampled from DiLink 5's bottom-origin texture.
+            GLES20.glUniform4f(uCropRect, cropLeft, 1.0f - cropTop, cropWidthNorm, -cropHeightNorm);
+        } else {
+            GLES20.glUniform4f(uCropRect, cropLeft, cropTop, cropWidthNorm, cropHeightNorm);
+        }
         if (uRedMaskStrength >= 0) {
             GLES20.glUniform1f(uRedMaskStrength, redMaskEnabled ? 1.0f : 0.0f);
         }

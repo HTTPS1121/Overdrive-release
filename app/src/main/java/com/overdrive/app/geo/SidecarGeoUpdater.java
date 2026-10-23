@@ -195,7 +195,7 @@ public final class SidecarGeoUpdater {
         // bytes it added would otherwise stay invisible to the parked-tick
         // skip until the hourly backstop. Best-effort, never fails the write.
         try {
-            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(f);
         } catch (Throwable ignored) {}
     }
 }

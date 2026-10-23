@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>המשך</item>
+        <item>צא לדרך</item>
+        <item>הגעה ליעד</item>
+        <item>היעד מימין</item>
+        <item>היעד משמאל</item>
+        <item>פנה קלות ימינה</item>
+        <item>פנה ימינה</item>
+        <item>פנה בחדות ימינה</item>
+        <item>בצע פניית פרסה</item>
+        <item>פנה בחדות שמאלה</item>
+        <item>פנה שמאלה</item>
+        <item>פנה קלות שמאלה</item>
+        <item>היכנס לרמפה</item>
+        <item>צא ביציאה</item>
+        <item>המשך ישר</item>
+        <item>הישאר מימין</item>
+        <item>הישאר משמאל</item>
+        <item>השתלב</item>
+        <item>השתלב ימינה</item>
+        <item>השתלב שמאלה</item>
+        <item>היכנס לכיכר</item>
+        <item>צא מהכיכר</item>
+        <item>עלה על המעבורת</item>
+        <item>רד מהמעבורת</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>המשך לאורך</item>
+        <item>צא לדרך לאורך</item>
+        <item>הגעה אל</item>
+        <item>היעד מימין:</item>
+        <item>היעד משמאל:</item>
+        <item>פנה קלות ימינה אל</item>
+        <item>פנה ימינה אל</item>
+        <item>פנה בחדות ימינה אל</item>
+        <item>בצע פניית פרסה אל</item>
+        <item>פנה בחדות שמאלה אל</item>
+        <item>פנה שמאלה אל</item>
+        <item>פנה קלות שמאלה אל</item>
+        <item>היכנס לרמפה אל</item>
+        <item>צא ביציאה אל</item>
+        <item>המשך ישר אל</item>
+        <item>הישאר מימין אל</item>
+        <item>הישאר משמאל אל</item>
+        <item>השתלב אל</item>
+        <item>השתלב ימינה אל</item>
+        <item>השתלב שמאלה אל</item>
+        <item>דרך הכיכר אל</item>
+        <item>צא מהכיכר אל</item>
+        <item>עלה על המעבורת:</item>
+        <item>רד מהמעבורת אל</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>ה-1</item>
+        <item>ה-2</item>
+        <item>ה-3</item>
+        <item>ה-4</item>
+        <item>ה-5</item>
+        <item>ה-6</item>
+        <item>ה-7</item>
+        <item>ה-8</item>
+        <item>ה-9</item>
+        <item>ה-10</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">צא ביציאה %1$s</string>
+    <string name="nav_hud_roundabout_exit_onto">צא ביציאה %1$s אל</string>
+    <string name="nav_hud_towards">לכיוון</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">יציאה %1$s</string>
+    <string name="nav_hud_then">ואז</string>
+    <string name="nav_hud_arrive">הגעה</string>
+    <string name="nav_hud_recenter">מרכז מחדש</string>
+    <string name="nav_hud_end">סיום</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">מ׳</string>
+    <string name="nav_hud_unit_km">ק״מ</string>
+    <string name="nav_hud_unit_ft">רגל</string>
+    <string name="nav_hud_unit_mi">מייל</string>
+    <string name="nav_hud_unit_kmh">קמ״ש</string>
+    <string name="nav_hud_unit_mph">מייל/ש׳</string>
+    <string name="nav_hud_cd_mute">השתק הנחיות קוליות</string>
+    <string name="nav_hud_cd_unmute">בטל השתקת הנחיות קוליות</string>
+    <string name="nav_hud_cd_overview">הצג את כל המסלול</string>
+    <string name="nav_hud_cd_overview_exit">חזרה לתצוגת נהיגה</string>
+    <string name="nav_hud_cd_end">סיום ניווט</string>
+    <string name="nav_hud_cd_recenter">מרכז מחדש על הרכב</string>
+    <string name="nav_hud_cd_compass_heading_up">מצפן: כיוון הנסיעה למעלה. הקש כדי להציג צפון למעלה</string>
+    <string name="nav_hud_cd_compass_north_up">מצפן: צפון למעלה. הקש כדי להציג את כיוון הנסיעה למעלה</string>
+    <string name="nav_hud_cd_back">יציאה מהמפה</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">ואז בעוד %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">הגעה ב-%1$s, נותרו %2$s ו-%3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">עיכוב של %1$s בגלל תנועה</string>
+</resources>

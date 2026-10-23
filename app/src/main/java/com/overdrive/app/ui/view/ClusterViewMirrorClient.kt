@@ -27,6 +27,8 @@ object ClusterViewMirrorClient {
     // MUST match ClusterViewMirrorService.
     private const val SERVICE_NAME = "overdrive_cluster_view"
     private const val DESCRIPTOR = "com.overdrive.app.cluster.IClusterViewMirror"
+    const val ACTION_PUBLISH = "com.overdrive.app.action.CLUSTER_VIEW_MIRROR"
+    const val EXTRA_BINDER = "cluster_view_mirror"
     private const val FIRST = IBinder.FIRST_CALL_TRANSACTION
     private const val TXN_ATTACH = FIRST
     private const val TXN_REPROJECT = FIRST + 1
@@ -48,6 +50,8 @@ object ClusterViewMirrorClient {
 
     @Volatile private var cached: IBinder? = null
     @Volatile private var cachedDeathRecipient: IBinder.DeathRecipient? = null
+    // Delivered by the daemon's broadcast when ServiceManager refuses its registration (DI5).
+    @Volatile private var delivered: IBinder? = null
     private val nextSessionId = AtomicLong(1L)
     private val newestSessionId = AtomicLong(0L)
     @Volatile private var activeSessionId = 0L
@@ -65,6 +69,28 @@ object ClusterViewMirrorClient {
         return id
     }
 
+    /** Accept the daemon's broadcast Binder; it is validated by descriptor before first use. */
+    fun offerBinder(binder: IBinder?) {
+        if (binder != null) delivered = binder
+    }
+
+    /** True while [sessionId] is attached on a live service (cleared when the daemon dies). */
+    fun isSessionActive(sessionId: Long): Boolean {
+        val c = cached
+        return activeSessionId == sessionId && c != null && c.isBinderAlive
+    }
+
+    private fun deliveredService(): IBinder? {
+        val b = delivered ?: return null
+        val valid = try {
+            b.isBinderAlive && b.interfaceDescriptor == DESCRIPTOR
+        } catch (_: Throwable) {
+            false
+        }
+        if (!valid && delivered === b) delivered = null
+        return if (valid) b else null
+    }
+
     private fun service(): IBinder? {
         val c = cached
         if (c != null && c.isBinderAlive) return c
@@ -73,6 +99,7 @@ object ClusterViewMirrorClient {
             val sm = Class.forName("android.os.ServiceManager")
             val get = sm.getMethod("getService", String::class.java)
             val b = get.invoke(null, SERVICE_NAME) as? IBinder
+                ?: deliveredService()
                 ?: return null
             val death = IBinder.DeathRecipient { serviceDied(b) }
             try {
@@ -92,6 +119,7 @@ object ClusterViewMirrorClient {
 
     private fun serviceDied(dead: IBinder) {
         synchronized(this) {
+            if (delivered === dead) delivered = null
             if (cached !== dead) return
             Log.w(TAG, "mirror service binder died")
             cached = null

@@ -105,6 +105,12 @@ public final class AmbientProbe {
         Object setting = device(ctx, SETTING_DEVICE);
         Object light = device(ctx, LIGHT_DEVICE);
         if (setting == null) return null;
+        boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        // An unbound DI5 adapter answers 0 for every getter; that capture would apply as "off".
+        if (diLink5 && !BydDeviceHelper.isDiLink5AdapterReady(
+                ctx, setting, "getSettingAdapterManager")) {
+            return null;
+        }
 
         try {
             JSONObject r = new JSONObject();
@@ -114,6 +120,16 @@ public final class AmbientProbe {
             // downstream tests length()>0 — so an empty zone read as a real captured one.
             JSONObject front = readZone(setting, AREA_FRONT);
             JSONObject rear = readZone(setting, AREA_REAR);
+            // DI5 0 is IAL_COLOR_INVALID / IAL_BRIGHTNESS_INVALID. A zone whose colour reads 0 is
+            // not reporting, so its brightness 0 is not a real "off" and would apply as one.
+            for (JSONObject zone : new JSONObject[]{front, rear}) {
+                if (diLink5 && zone.optInt("colour", 1) < 1) {
+                    zone.remove("colour");
+                    if (zone.optInt("brightness", 1) < 1) zone.remove("brightness");
+                }
+            }
+            // Nothing reported: an area-only block would overwrite a good saved one.
+            if (diLink5 && front.length() == 0 && rear.length() == 0) return null;
             if (front.length() > 0) r.put("front", front);
             if (rear.length() > 0) r.put("rear", rear);
 
@@ -122,6 +138,10 @@ public final class AmbientProbe {
             // MAIN_SWITCH is the Light-device 0/1 feature (see BydDataCollector's tier ladder);
             // the mode switches are the execute-style 1/2 ones.
             putBool(r, "mainSwitch", readSwitch(light, MAIN_SWITCH_STATUS, 0));
+            // DI5: only "on" has a verified write value, so an off switch is left uncaptured.
+            if (diLink5 && BydDataCollector.getInstance().diLink5AmbientMainState() == 1) {
+                r.put("mainSwitch", true);
+            }
             putBool(r, "musicMode", readSwitch(setting, MUSIC_MODE_STATE, OFF));
             putBool(r, "dynamicColours", readSwitch(light, DYNAMIC_COLOURS_STATE, OFF));
             putBool(r, "nightAutoDim", readSwitch(light, NIGHT_DIM_FEEDBACK, OFF));
@@ -155,7 +175,17 @@ public final class AmbientProbe {
         if (useDiLink5AppProcessBridge()) {
             return VehicleActuatorBridge.readDiLink5AmbientColourMax(ctx);
         }
-        Object setting = device(ctx, SETTING_DEVICE);
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            // DI5 reports its palette through getAmbientLightColorSupport, not the legacy id.
+            int count = BydDataCollector.getInstance().diLink5AmbientColourCount();
+            return count == BydVehicleData.UNAVAILABLE
+                    ? DEFAULT_SEEKBAR_MAX + 1 : Math.min(count, WRITABLE_COLOUR_MAX);
+        }
+        return colourMaxFor(device(ctx, SETTING_DEVICE));
+    }
+
+    /** {@link #colourMax} for a setting-device handle the caller already holds. */
+    public static int colourMaxFor(Object setting) {
         if (setting == null) return DEFAULT_SEEKBAR_MAX + 1;
         // A feature-id read, not a named getter: BYD reads SET_IAL_COLOR_CONFIG off the HAL
         // and maps it to a seekbar max. There is no getIALColorConfig() method to call.
@@ -313,7 +343,10 @@ public final class AmbientProbe {
         if (zone.has("brightness")) {
             if (zone.has("colour")) settle();   // same zone, but still two writes in a row
             int level = clamp(zone.getInt("brightness"), 0, BRIGHTNESS_MAX);
-            r.put("brightness", collector.setAmbientBrightnessZoned(zoneName, level * 20));
+            // DI5 brightness commands switch the cabin on; a restore must not.
+            r.put("brightness", com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                    ? collector.restoreDiLink5AmbientLevel(zoneName, level)
+                    : collector.setAmbientBrightnessZoned(zoneName, level * 20));
         }
         return r;
     }

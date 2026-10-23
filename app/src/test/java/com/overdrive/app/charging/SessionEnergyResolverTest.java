@@ -18,6 +18,43 @@ public class SessionEnergyResolverTest {
                 .withFileLog(false));
     }
 
+    @Test
+    public void socEstimateAppliesEveryValidCanonicalSohWithoutAFloor() {
+        double[] healthValues = {1.0, 45.0, 59.0, 60.0, 97.0, 100.0};
+        for (double health : healthValues) {
+            assertEquals("SOH " + health + " must scale capacity unchanged",
+                    0.8 * 21.5 * health / 100.0,
+                    SessionEnergyResolver.socEstimateKwh(80.0, 21.5, health),
+                    0.0001);
+        }
+    }
+
+    @Test
+    public void invalidOrUnknownSohStillUsesNominalCapacity() {
+        double[] invalidHealthValues = {
+                Double.NaN, 0.0, -999.0, 101.0,
+                Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY
+        };
+        for (double health : invalidHealthValues) {
+            assertEquals("Invalid SOH " + health + " must use nominal capacity",
+                    17.2, SessionEnergyResolver.socEstimateKwh(80.0, 21.5, health),
+                    0.0001);
+        }
+    }
+
+    @Test
+    public void correctMeteredEnergyAtFortyFivePercentHealthIsAccepted() {
+        double socEstimate = SessionEnergyResolver.socEstimateKwh(80.0, 21.5, 45.0);
+        SessionEnergyResolver.Result result = SessionEnergyResolver.resolve(
+                7.74, false, false, 0.0, socEstimate, false, false);
+
+        assertEquals(7.74, socEstimate, 0.0001);
+        assertEquals(SessionEnergyResolver.SRC_METERED, result.source);
+        assertEquals(7.74, result.energyKwh, 0.0001);
+        assertFalse(result.incomplete);
+        assertTrue(result.canCalibrateSoh());
+    }
+
     /**
      * The captured field failure (log {@code AL37RNJ9}): a counter running at exactly half scale whose
      * ratio against the SOC estimate read 0.58 — PAST the 0.55 band, because the estimate is scaled by

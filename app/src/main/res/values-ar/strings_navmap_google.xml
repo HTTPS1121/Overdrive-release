@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">طبقات الخريطة</string>
+    <string name="navmap_google_type_default">خريطة Google</string>
+    <string name="navmap_google_type_satellite">القمر الصناعي</string>
+    <string name="navmap_google_type_hybrid">مختلط</string>
+    <string name="navmap_google_type_terrain">التضاريس</string>
+    <string name="navmap_google_type_overdrive">خريطة OverDrive</string>
+    <string name="navmap_google_traffic">حركة المرور المباشرة</string>
+    <string name="navmap_google_traffic_on">تم تشغيل حركة المرور المباشرة</string>
+    <string name="navmap_google_traffic_off">تم إيقاف حركة المرور المباشرة</string>
+    <string name="navmap_google_traffic_paused">حركة المرور المباشرة متوقفة مؤقتًا حتى %1$s (الحد اليومي المجاني)</string>
+    <string name="navmap_google_map_paused">خريطة Google متوقفة مؤقتًا حتى %1$s (الحد اليومي المجاني)</string>
+    <string name="navmap_google_map_unavailable">خريطة Google غير متاحة، يتم عرض خريطة OverDrive</string>
+    <string name="navmap_google_key_problem">مشكلة في مفتاح Google Maps. تحقق من إعدادات RoadSense.</string>
+    <string name="navmap_google_route_key_problem">رفضت خدمة التوجيه من Google المفتاح. تحقق من إعدادات RoadSense.</string>
+    <string name="navmap_google_route_limit">تم بلوغ حد التوجيه من Google لهذا اليوم</string>
+    <string name="navmap_google_arrived">لقد وصلت إلى وجهتك</string>
+    <string name="navmap_google_traffic_delay">تأخير مروري: %1$s</string>
+    <string name="navmap_google_no_delays">لا تأخيرات مرورية</string>
+    <string name="navmap_google_faster_route">تم العثور على مسار أسرع يوفّر %1$s</string>
+    <string name="navmap_google_faster_route_switch">تبديل</string>
+    <string name="navmap_google_routes_by_google">المسارات من Google</string>
+    <string name="navmap_google_routing_provided_by">خدمة التوجيه مقدَّمة من %1$s</string>
+    <string name="navmap_google_place_failed">تعذّر فتح هذا المكان</string>
+    <string name="navmap_google_finding_place">جارٍ العثور على المكان…</string>
+</resources>

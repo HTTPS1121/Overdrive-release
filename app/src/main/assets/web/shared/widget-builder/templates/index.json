@@ -1,0 +1,9 @@
+[
+  { "file": "charge-ring.json", "name": "Charge ring", "size": "small" },
+  { "file": "tyres-regen.json", "name": "Tyres & regen", "size": "wide" },
+  { "file": "hazard-ahead.json", "name": "Hazard ahead", "size": "medium" },
+  { "file": "battery-pack.json", "name": "Battery pack", "size": "small" },
+  { "file": "speed-power.json", "name": "Speed & power", "size": "medium" },
+  { "file": "efficiency.json", "name": "Trip efficiency", "size": "wide" },
+  { "file": "battery-rebuilt.json", "name": "Battery cell", "size": "small" }
+]

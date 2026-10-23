@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "name": "Charge ring",
+  "size": "small",
+  "about": "A glowing ring gauge: battery level when parked, live charging power when plugged in.",
+  "layers": [
+    { "type": "pulse", "name": "Charging glow", "cx": 80, "cy": 92, "r": 80, "period": 2.4,
+      "color": "=is_dcfc ? glowGood : glowAccent", "visible": "=is_charging" },
+    { "type": "ring", "name": "Level", "cx": 80, "cy": 92, "r": 54, "width": 12, "start": 135, "sweep": 270, "value": "=soc / 100",
+      "color": "=is_charging ? (is_dcfc ? glowGood : glowAccent) : ramp(soc, 0, glowDanger, 10, glowDanger, 18, glowWarn, 26, glowWarn, 34, glowAccent)",
+      "track": "etch", "glow": 1, "motion": "liquid" },
+    { "type": "text", "name": "Percent", "x": 80, "y": 103, "align": "center", "size": 32, "weight": 600, "text": "{soc}", "unit": "%", "color": "text", "motion": "number" },
+    { "type": "text", "name": "Caption", "x": 80, "y": 146, "align": "center", "size": 13, "weight": 600,
+      "text": "=is_charging && known(is_dcfc) ? (is_dcfc ? 'DC' : 'AC') : 'SoC'", "color": "text3" },
+    { "type": "text", "name": "Label", "x": 158, "y": 63, "size": 15, "weight": 500, "text": "=is_charging ? 'Charging' : 'Range'", "color": "text2" },
+    { "type": "text", "name": "Value", "x": 158, "y": 105, "size": 32, "weight": 600,
+      "text": "=is_charging ? fmt(charge_power, 1) : fmt(dist(ev_range_km))", "unit": "=is_charging ? 'kW' : dist_unit", "color": "text" },
+    { "type": "text", "name": "Status", "x": 158, "y": 133, "size": 15, "weight": 600,
+      "text": "=is_charging ? fmt(charging_eta_minutes) + ' min left' : soc <= 20 ? 'Charge soon' : known(charge_limit) ? 'Limit ' + fmt(charge_limit) + '%' : 'Battery ' + fmt(soc) + '%'",
+      "color": "=!is_charging && soc <= 20 ? warn : text2" }
+  ]
+}

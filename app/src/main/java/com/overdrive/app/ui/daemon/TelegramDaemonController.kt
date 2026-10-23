@@ -44,9 +44,9 @@ class TelegramDaemonController(
             override fun onLaunched() {
                 callback.onStatusChanged(DaemonStatus.STOPPED, "Stopped")
             }
-            
+
             override fun onError(error: String) {
-                callback.onStatusChanged(DaemonStatus.STOPPED, "Stopped")
+                callback.onError(error)
             }
         })
     }

@@ -160,7 +160,7 @@ public final class Dilink5SdkInjector {
             List<IOException> suppressed = new ArrayList<>();
             Object[] newElements = makeInMemoryElements(dexListCls, dexPaths, suppressed);
             if (newElements == null || newElements.length == 0) {
-                File optDir = context != null ? new File(context.getCodeCacheDir(), "bydauto-inj") : new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/bydauto-inj"));
+                File optDir = context != null ? new File(context.getCodeCacheDir(), "bydauto-inj") : new File(com.overdrive.app.util.ScratchRoot.path("bydauto-inj"));
                 optDir.mkdirs();
                 List<File> files = new ArrayList<>();
                 for (String p : dexPaths) {
@@ -189,7 +189,10 @@ public final class Dilink5SdkInjector {
             dexElementsField.set(pathList, combined);
 
             boolean ok = coreLoadable(loader);
-            if (ok) injectedElements.put(loader, newElements);
+            if (ok) {
+                injectedElements.put(loader, newElements);
+                warnIfBaseInterfacesMissing(loader);
+            }
             logger.info("Injected " + newElements.length + " dex elements into "
                     + loader.getClass().getSimpleName() + "; bydauto core loadable=" + ok);
             return ok;
@@ -218,6 +221,24 @@ public final class Dilink5SdkInjector {
             return true;
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+    // Every device and listener class implements one of these; the injected container may rely
+    // on another jar for them, so a miss is reported rather than failing the injection.
+    private static final String[] BASE_INTERFACE_CLASSES = {
+            "android.hardware.IBYDAutoDevice",
+            "android.hardware.IBYDAutoListener"
+    };
+
+    private static void warnIfBaseInterfacesMissing(ClassLoader loader) {
+        for (String name : BASE_INTERFACE_CLASSES) {
+            try {
+                Class.forName(name, false, loader);
+            } catch (Throwable t) {
+                logger.warn("Vehicle SDK injected without " + name
+                        + "; classes implementing it cannot load");
+            }
         }
     }
 

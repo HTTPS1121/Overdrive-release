@@ -26,6 +26,8 @@ public class Di5ParkedKeepAliveContractTest {
         assertTrue(config.contains(
                 "surveillance.put(\"di5ParkedKeepAlive\", false)"));
         assertTrue(config.contains(
+                "Di5ParkedKeepAliveSettings.ensureLinkConfig(surveillance)"));
+        assertTrue(config.contains(
                 "surveillance.put(\"di5ParkedKeepAliveMcuHold\", true)"));
         assertTrue(config.contains(
                 "surveillance.put(\"di5ParkedKeepAliveMcuPowerHold\", true)"));
@@ -141,7 +143,8 @@ public class Di5ParkedKeepAliveContractTest {
                 < release.indexOf("releaseApLocked(\"release\")"));
         // Cross-process status file the API reads.
         assertTrue(hold.contains(
-                "DEFAULT_STATUS_PATH =\n            \"/data/local/tmp/overdrive_di5_keepalive.status\""));
+                "DEFAULT_STATUS_PATH =\n            com.overdrive.app.util.ScratchRoot"
+                        + ".path(\"overdrive_di5_keepalive.status\")"));
     }
 
     @Test
@@ -188,7 +191,9 @@ public class Di5ParkedKeepAliveContractTest {
         // Released synchronously on daemon shutdown before the reconcilers tear down.
         int shutdown = accSentry.indexOf("log(\"=== DAEMON SHUTDOWN INITIATED ===\");");
         assertTrue(shutdown > 0);
-        int release = accSentry.indexOf(".releaseForProcessExit(\"daemon shutdown\");", shutdown);
+        int release = accSentry.indexOf(
+                ".releaseForProcessExit(\"daemon shutdown\", inSentryMode);",
+                shutdown);
         int transition = accSentry.indexOf("beginShutdownAccOnTransition();", shutdown);
         assertTrue(release > 0 && release < transition);
         // Token minted per generation against the sentry fence.
@@ -248,10 +253,15 @@ public class Di5ParkedKeepAliveContractTest {
         assertFalse(postBlock.contains("DiLink5Platform"));
         assertFalse(postBlock.contains("only in DiLink 5 mode"));
         assertTrue(postBlock.contains("Failed to save DI5 parked keep-alive setting"));
-        // The cloud experiment keeps its own DI5-mode gate; the two stay independent.
+        // The cloud experiment keeps its own rollout + DI5-mode gates; the
+        // local parked master remains independent of both.
+        assertTrue(api.contains(
+                "boolean di5CloudKeepAlivePollerEnabled ="));
         assertTrue(api.contains(
                 "boolean di5CloudKeepAliveSupported =\n"
-                        + "                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();"));
+                        + "                di5CloudKeepAlivePollerEnabled\n"
+                        + "                        && com.overdrive.app.camera.dilink5.DiLink5Platform\n"
+                        + "                                .isSelected();"));
         // Status endpoint reports context, not a capability verdict.
         assertTrue(vehicle.contains(
                 "cleanPath.equals(\"/api/vehicle/di5-keepalive\") && method.equals(\"GET\")"));

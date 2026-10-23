@@ -236,7 +236,9 @@
       "check_update": "⬆️ Vérifier la mise à jour",
       "backup": "💾 Sauvegarde",
       "stop": "⛔ Arrêt",
-      "start": "✅ Démarrer"
+      "start": "✅ Démarrer",
+      "tunnel_switch": "🔁 Basculer vers {0}",
+      "tunnel_run_both": "➕ Lancer les deux"
     },
     "daemons": {
       "title": "🤖 *Daemons*\n\n"
@@ -281,7 +283,8 @@
       "status_running": "{0}: ✅ En cours d'exécution",
       "status_stopped": "{0}: ⛔ Arrêté",
       "action_usage": "Utilisation: /daemon {0} start|stop|status",
-      "tunnel_url": "🌐 *URL du tunnel*\n{0}"
+      "tunnel_url": "🌐 *URL du tunnel*\n{0}",
+      "tunnel_conflict": "⚠️ {0} est déjà actif.\n\nBasculer vers {1} (ce qui arrête {0}) ou utiliser les deux tunnels en parallèle ?"
     },
     "events": {
       "invalid_hours": "⚠️ Valeur heure invalide. Utilisation: `/events [hours] [page]`\nExemple: `/events 12 2`",
@@ -627,7 +630,7 @@
     "mode": "Mode",
     "none": "Aucun",
     "continuous": "En continu",
-    "drive_mode": "Mode Lecteur",
+    "drive_mode": "Mode conduite",
     "proximity_guard": "Garde de proximité",
     "set_drive_mode": "Définir le mode de conduite",
     "set_drive_mode_description": "Change le mode de conduite (ECO / Sport).",
@@ -685,7 +688,7 @@
     "camera_left": "Gauche",
     "camera_right": "Droite",
     "display": "Afficher",
-    "display_headunit": "Unité de tête",
+    "display_headunit": "Unité principale",
     "display_cluster": "Pilote cluster",
     "position": "Position",
     "pos_center": "Centrer",
@@ -765,6 +768,7 @@
     "blind_spot_description": "Indique si l'avertissement radar d'angle mort alerte pour un côté. Couvre les avertissements d'angle mort, de changement de voie et de trafic transversal. Les alertes sont brèves, le signal est donc maintenu actif pendant quelques secondes après le dernier avertissement.",
     "side_left": "Gauche",
     "side_right": "Droite",
+    "side_any": "N'importe quel côté",
     "time": "Date et heure",
     "time_description": "L'heure locale de votre véhicule. Les comparaisons considéreront que minuit est la plus petite et que 23:59 est la plus grande.",
     "wifi_state": "Etat WiFi",
@@ -848,7 +852,7 @@
     "door_rear_right": "Porte arrière",
     "door_hood": "Capot",
     "door_trunk": "Coffre",
-    "door_fuel_cap": "Casquette de Carburant",
+    "door_fuel_cap": "Bouchon de réservoir",
     "move_up": "Déplacer vers le haut",
     "move_down": "Déplacer vers le bas",
     "day": "Jour",
@@ -971,7 +975,7 @@
     "nav_recents": "Applications récentes",
     "screenshot": "Prendre une capture d'écran",
     "screenshot_description": "Capturez une capture d'écran de l'écran choisi pour le stockage.",
-    "display_head_unit": "Unité de tête",
+    "display_head_unit": "Unité principale",
     "move_app_display": "Déplacer l'application vers l'affichage",
     "move_app_display_description": "Déplacer une application vers l'affichage de l'unité principale ou du groupe de pilotes.",
     "stop_cluster_cast": "Arrêt de la grappe",

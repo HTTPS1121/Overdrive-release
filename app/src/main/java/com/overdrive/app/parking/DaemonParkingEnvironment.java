@@ -221,6 +221,8 @@ public final class DaemonParkingEnvironment implements ParkingEnvironment {
 
     @Override
     public double readRemainKwh() {
+        // DiLink 5's remainKwh also carries SoC % and SoC / 10 readings, so its bookends use SoC.
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return Double.NaN;
         try {
             com.overdrive.app.byd.BydVehicleData d = BydDataCollector.getInstance().getData();
             double kwh = d != null ? d.remainKwh : Double.NaN;
@@ -486,18 +488,25 @@ public final class DaemonParkingEnvironment implements ParkingEnvironment {
                 canvas.drawColor(0xFF101418);
                 Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
                 boolean any = false;
-                for (int q = 0; q < 4 && q < quadrantJpegs.length; q++) {
-                    byte[] jpeg = quadrantJpegs[q];
-                    if (jpeg == null || jpeg.length == 0) continue;
-                    BitmapFactory.Options o = new BitmapFactory.Options();
-                    o.inSampleSize = 2;   // 1280×960 → 640×480: exactly the tile size on legacy
-                    o.inPreferredConfig = Bitmap.Config.RGB_565;
-                    Bitmap tile = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length, o);
-                    if (tile == null) continue;
+                for (int q = 0; q < 4; q++) {
+                    int col = (q == 0 || q == 2) ? 0 : 1;   // front/rear left column
+                    int row = (q == 0 || q == 1) ? 0 : 1;   // front/right top row
+                    Rect dst = new Rect(col * tileW, row * tileH, (col + 1) * tileW, (row + 1) * tileH);
+                    byte[] jpeg = q < quadrantJpegs.length ? quadrantJpegs[q] : null;
+                    Bitmap tile = null;
+                    if (jpeg != null && jpeg.length > 0) {
+                        BitmapFactory.Options o = new BitmapFactory.Options();
+                        o.inSampleSize = 2;   // 1280×960 → 640×480: exactly the tile size on legacy
+                        o.inPreferredConfig = Bitmap.Config.RGB_565;
+                        tile = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length, o);
+                    }
+                    if (tile == null) {
+                        // No frame for this camera: a marked placeholder, so the
+                        // photo reads "not captured" rather than "camera saw black".
+                        drawMissingTile(canvas, dst);
+                        continue;
+                    }
                     try {
-                        int col = (q == 0 || q == 2) ? 0 : 1;   // front/rear left column
-                        int row = (q == 0 || q == 1) ? 0 : 1;   // front/right top row
-                        Rect dst = new Rect(col * tileW, row * tileH, (col + 1) * tileW, (row + 1) * tileH);
                         canvas.drawBitmap(tile, null, dst, paint);
                         any = true;
                     } finally {
@@ -512,6 +521,59 @@ public final class DaemonParkingEnvironment implements ParkingEnvironment {
                 return null;
             } finally {
                 canvasBmp.recycle();
+            }
+        }
+
+        /**
+         * Placeholder for a camera that yielded no frame: neutral grey with a
+         * crossed-out lens glyph, drawn with primitives only (no text — the
+         * daemon has no default typeface and Canvas.drawText can abort it).
+         */
+        private static void drawMissingTile(Canvas canvas, Rect dst) {
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setColor(0xFF2A3038);
+            canvas.drawRect(dst, p);
+            float cx = dst.exactCenterX(), cy = dst.exactCenterY();
+            float r = Math.min(dst.width(), dst.height()) * 0.12f;
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(2f, r * 0.18f));
+            p.setColor(0xFF6B7683);
+            // Lens body + ring, then the diagonal slash.
+            canvas.drawRoundRect(cx - r * 1.6f, cy - r * 1.1f, cx + r * 1.6f, cy + r * 1.1f, r * 0.3f, r * 0.3f, p);
+            canvas.drawCircle(cx, cy, r * 0.55f, p);
+            p.setColor(0xFFB0433D);
+            canvas.drawLine(cx - r * 2.0f, cy + r * 1.6f, cx + r * 2.0f, cy - r * 1.6f, p);
+        }
+
+        /** Mean luma below this AND no pixel brighter than {@link #BLANK_MAX_LUMA} ⇒ blank. */
+        static final int BLANK_MEAN_LUMA = 6;
+        static final int BLANK_MAX_LUMA = 24;
+
+        @Override
+        public boolean isBlank(byte[] jpeg) {
+            if (jpeg == null || jpeg.length == 0) return false;
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inSampleSize = 8;   // 1280×960 → 160×120: 19 k pixels, sub-millisecond
+            o.inPreferredConfig = Bitmap.Config.RGB_565;
+            Bitmap b = null;
+            try {
+                b = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length, o);
+                if (b == null) return false;
+                int w = b.getWidth(), h = b.getHeight();
+                int[] px = new int[w * h];
+                b.getPixels(px, 0, w, 0, 0, w, h);
+                long sum = 0;
+                int max = 0;
+                for (int p : px) {
+                    int l = (((p >> 16) & 0xFF) * 77 + ((p >> 8) & 0xFF) * 150 + (p & 0xFF) * 29) >> 8;
+                    sum += l;
+                    if (l > max) max = l;
+                }
+                return px.length > 0 && sum / px.length < BLANK_MEAN_LUMA && max < BLANK_MAX_LUMA;
+            } catch (Throwable t) {
+                return false;
+            } finally {
+                if (b != null) b.recycle();
             }
         }
 

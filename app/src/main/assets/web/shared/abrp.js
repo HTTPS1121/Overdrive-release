@@ -3,6 +3,8 @@
  * Manages ABRP token configuration, service control, and live telemetry display
  */
 
+const ABRP_BOLT_ICON = '<svg class="r-inline-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
+
 const ABRP = {
     refreshInterval: null,
     enabled: false,
@@ -381,14 +383,15 @@ const ABRP = {
         const statusEl = document.getElementById('vehicleStatus');
         if (statusEl) {
             if (t.is_charging) {
-                statusEl.textContent = '⚡ ' + BYD.i18n.t('abrp.charging');
-                statusEl.style.color = 'var(--brand-primary)';
+                statusEl.textContent = BYD.i18n.t('abrp.charging');
+                statusEl.insertAdjacentHTML('afterbegin', ABRP_BOLT_ICON);
+                statusEl.style.color = 'var(--primary)';
             } else if (t.is_parked) {
                 statusEl.textContent = BYD.i18n.t('abrp.parked');
-                statusEl.style.color = 'var(--text-secondary)';
+                statusEl.style.color = 'var(--on-surface-variant)';
             } else {
                 statusEl.textContent = BYD.i18n.t('abrp.driving');
-                statusEl.style.color = '#22c55e';
+                statusEl.style.color = 'var(--status-success)';
             }
         }
 
@@ -396,8 +399,10 @@ const ABRP = {
         const chargingEl = document.getElementById('vehicleCharging');
         if (chargingEl) {
             chargingEl.style.display = t.is_charging ? 'inline' : 'none';
-            if (t.is_dcfc) chargingEl.textContent = '⚡ ' + BYD.i18n.t('abrp.dc_fast_charging');
-            else if (t.is_charging) chargingEl.textContent = '⚡ ' + BYD.i18n.t('abrp.charging');
+            if (t.is_dcfc || t.is_charging) {
+                chargingEl.textContent = BYD.i18n.t(t.is_dcfc ? 'abrp.dc_fast_charging' : 'abrp.charging');
+                chargingEl.insertAdjacentHTML('afterbegin', ABRP_BOLT_ICON);
+            }
         }
     },
 

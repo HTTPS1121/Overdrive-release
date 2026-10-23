@@ -59,6 +59,8 @@ public final class PermissionGranter {
         // harmless); listed here so the grant is attempted anyway and intent is clear.
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
 
         // --- BYD HAL: core vehicle subsystems ---
         "android.permission.BYDAUTO_AC_COMMON",
@@ -352,7 +354,7 @@ public final class PermissionGranter {
     private static int execGrant(String packageName, String permission) {
         try {
             Process process = Runtime.getRuntime().exec(
-                new String[]{"sh", "-c", "pm grant " + packageName + " " + permission + " 2>&1"});
+                new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap("pm grant " + packageName + " " + permission + " 2>&1")});
             
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             StringBuilder output = new StringBuilder();
@@ -452,7 +454,7 @@ public final class PermissionGranter {
             // grant). Android's dumpsys also self-bounds per service (~10s),
             // so this is belt and suspenders, not the only limit.
             Process process = Runtime.getRuntime().exec(
-                new String[]{"sh", "-c", "dumpsys -t 5 package " + packageName + " 2>/dev/null"});
+                new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap("dumpsys -t 5 package " + packageName + " 2>/dev/null")});
 
             StringBuilder output = new StringBuilder(16384);
             try (BufferedReader reader =

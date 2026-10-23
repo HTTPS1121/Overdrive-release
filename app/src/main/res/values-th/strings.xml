@@ -432,7 +432,8 @@
     <string name="toast_soh_reset_failed_with_message">รีเซ็ตไม่สำเร็จ: %1$s</string>
     <string name="toast_select_at_least_one_category">กรุณาเลือกหมวดหมู่ที่ต้องการอย่างน้อย 1 รายการ</string>
     <string name="toast_reset_failed_with_error">รีเซ็ตไม่สำเร็จ: %1$s</string>
-    <string name="toast_traffic_monitor_changing">กำลังเปลี่ยนสถานะระบบตรวจสอบข้อมูลเครือข่าย (Traffic Monitor): %1$s…</string>
+    <string name="toast_traffic_monitor_enabling">กำลังเปิดใช้งาน Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">กำลังปิดใช้งาน Traffic Monitor…</string>
     <string name="dialog_close">ปิด</string>
     <string name="dialog_reset">รีเซ็ต</string>
     <string name="dialog_delete">ลบ</string>
@@ -451,10 +452,11 @@
     <string name="dialog_traffic_cannot_check_title">ตรวจสอบสถานะไม่ได้</string>
     <string name="dialog_traffic_cannot_check_message">การเชื่อมต่อ ADB ยังไม่พร้อมใช้งาน\n\nแอปพลิเคชันจำเป็นต้องใช้ ADB เพื่อจัดการระบบของอุปกรณ์ กรุณาตรวจสอบว่า:\n\n• เปิดใช้งาน \'การแก้ไขจุดบกพร่อง USB\' (USB Debugging) ในตัวเลือกนักพัฒนาแล้ว\n• กดยอมรับการแจ้งเตือนเพื่ออนุญาต ADB แล้ว\n\nสถานะจะได้รับการอัปเดตโดยอัตโนมัติหลังจากเชื่อมต่อสำเร็จ</string>
     <string name="dialog_traffic_disable_title">ต้องการปิดใช้งาน BYD Traffic Monitor หรือไม่?</string>
-    <string name="dialog_traffic_disable_message">แอปพลิเคชัน BYD Traffic Monitor (com.byd.trafficmonitor) เป็นระบบที่ติดตั้งมากับรถยนต์ ซึ่งจะทำการตรวจสอบสภาพการจราจรอย่างต่อเนื่องในเบื้องหลัง\n\nเหตุใดจึงควรปิดใช้งาน?\n\n• มีการใช้ข้อมูลเครือข่าย (แม้ในขณะจอดรถ)\n• ใช้ทรัพยากร CPU และแบตเตอรี่ในเบื้องหลัง\n• ไม่จำเป็นหากคุณใช้แอปพลิเคชันนำทางอื่นอยู่แล้ว\n• อาจรบกวนการใช้เครือข่ายของแอปพลิเคชันกล้องหน้ารถ\n\nการปิดใช้งานสามารถทำได้อย่างปลอดภัย โดยจะส่งผลกระทบเพียงการแสดงข้อมูลจราจรบนแผนที่ของรถเท่านั้น ระบบนำทาง บลูทูธ และฟังก์ชันอื่นๆ จะยังคงทำงานได้ตามปกติ\n\n**จำเป็นต้องรีสตาร์ทหน้าจอรถ (Hard Reboot)** หลังจากการปิดใช้งาน (กดปุ่มกลางคอนโซลค้างไว้ 5 วินาที)</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) เป็นแอปพลิเคชันระบบในตัวที่ควบคุมว่าแอปใดบ้างสามารถใช้ข้อมูลมือถือได้ แอปนี้จะบล็อกแอปของบุคคลที่สาม รวมถึง OverDrive ไม่ให้ใช้ซิมในตัวรถ\n\nเหตุใดจึงควรปิดใช้งาน?\n\n• ช่วยให้ OverDrive และแอปอื่นๆ ที่คุณติดตั้งใช้อินเทอร์เน็ตผ่านซิม BYD ได้\n• จำเป็นสำหรับการเข้าถึงรถของคุณจากระยะไกลผ่านซิม BYD\n\nระบบนำทาง บลูทูธ และฟังก์ชันอื่นๆ ทั้งหมดของรถจะไม่ได้รับผลกระทบ\n\nหลังจากปิดใช้งานแล้ว จำเป็นต้องรีบูตแบบบังคับ (กดปุ่มบนคอนโซลกลางค้างไว้ 5 วินาที)</string>
     <string name="dialog_traffic_enable_title">ต้องการเปิดใช้งาน BYD Traffic Monitor อีกครั้งหรือไม่?</string>
-    <string name="dialog_traffic_enable_message">แอปพลิเคชัน BYD Traffic Monitor ถูกปิดใช้งานอยู่ในขณะนี้\n\nหากเปิดใช้งาน ระบบจะนำข้อมูลสภาพการจราจรกลับมาแสดงบนแผนที่ของรถ แต่ระบบจะทำงานในเบื้องหลังและใช้ข้อมูลเครือข่ายอินเทอร์เน็ต\n\n**จำเป็นต้องรีสตาร์ทหน้าจอรถ (Hard Reboot)** หลังจากการเปิดใช้งาน (กดปุ่มกลางคอนโซลค้างไว้ 5 วินาที)</string>
-    <string name="dialog_traffic_status_title">ตัวตรวจสอบจราจร %1$s</string>
+    <string name="dialog_traffic_enable_message">ขณะนี้ BYD Traffic Monitor ถูกปิดใช้งานอยู่\n\nหากเปิดใช้งานอีกครั้ง แอปนี้จะกลับมาบล็อก OverDrive และแอปของบุคคลที่สามอื่นๆ ไม่ให้ใช้ซิมในตัวรถ ส่งผลให้การเข้าถึงระยะไกลผ่านซิม BYD หยุดทำงาน\n\nหลังจากเปิดใช้งานแล้ว จำเป็นต้องรีบูตแบบบังคับ (กดปุ่มบนคอนโซลกลางค้างไว้ 5 วินาที)</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor เปิดใช้งานอยู่</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor ปิดใช้งานอยู่</string>
     <string name="dialog_traffic_reboot_message">บันทึกการตั้งค่าเรียบร้อยแล้ว\n\nกรุณารีสตาร์ทหน้าจอรถของคุณ:\nกดปุ่มตรงกลางคอนโซลค้างไว้ 5 วินาที</string>
     <string name="traffic_monitor_loading">Traffic Monitor: กำลังตรวจสอบ…</string>
     <string name="traffic_monitor_tap_to_check">Traffic Monitor (แตะเพื่อตรวจสอบ)</string>
@@ -513,6 +515,10 @@
     <string name="dialog_tailscale_proxy_enable_message">โหมดนี้จะกำหนดให้ MQTT เชื่อมต่อผ่าน Tailscale เพื่อให้คุณสามารถเข้าถึง Broker ส่วนตัวในเครือข่าย Tailnet ได้โดยไม่ต้องใช้การ Forward Port\n\nเมื่อเปิดใช้งาน:\n• สามารถใช้ Broker ที่อยู่ในเครือข่าย Tailnet ได้ตามปกติ (เช่น Mosquitto บนอุปกรณ์อื่นใน Tailnet)\n• ไม่สามารถเชื่อมต่อ Broker สาธารณะได้ (เช่น HiveMQ, AWS IoT) — เนื่องจาก Tailscale จะเชื่อมต่อเฉพาะในเครือข่าย Tailnet เท่านั้น\n• ระบบ Tailscale เบื้องหลังจะทำการรีสตาร์ทเพื่อใช้การตั้งค่าใหม่นี้\n• การใช้งานเครือข่ายของแอปพลิเคชันอื่นและระบบของรถจะไม่ได้รับผลกระทบ\n\nคุณสามารถปิดใช้งานโหมดนี้ได้ตลอดเวลา</string>
     <string name="dialog_zrok_reset_title">รีเซ็ต Zrok Environment</string>
     <string name="dialog_zrok_reset_message">การดำเนินการนี้จะ:\n• หยุดการทำงานของ Zrok Tunnel หากกำลังทำงานอยู่\n• ลบ Zrok Environment ออกจากอุปกรณ์นี้\n• ลบข้อมูล Token ที่บันทึกไว้\n\nคุณจำเป็นต้องระบุ Token เพื่อเปิดใช้งานใหม่อีกครั้ง (ใช้โควตาอุปกรณ์ 1 สิทธิ์บน zrok.io)\n\nคุณแน่ใจหรือไม่?</string>
+    <string name="dialog_tunnel_conflict_title">มี Tunnel อื่นทำงานอยู่</string>
+    <string name="dialog_tunnel_conflict_message">%1$s กำลังทำงานอยู่แล้ว ต้องการสลับไปใช้ %2$s (จะหยุด %1$s) หรือใช้ทั้งสอง Tunnel พร้อมกัน?\n\nเมื่อทำงานทั้งสอง:\n• เข้าถึงแดชบอร์ดได้จากลิงก์สาธารณะสองลิงก์\n• การใช้ข้อมูลมือถือขณะไม่ได้ใช้งานจะเพิ่มขึ้นเล็กน้อย\n• ทั้งสองจะเริ่มทำงานอัตโนมัติหลังรีบูต</string>
+    <string name="dialog_tunnel_conflict_switch">สลับ</string>
+    <string name="dialog_tunnel_conflict_run_both">ใช้ทั้งสอง</string>
     <string name="toast_resetting_zrok">กำลังรีเซ็ต Zrok Environment…</string>
     <string name="toast_zrok_reset_success">รีเซ็ต Zrok สำเร็จ กรุณาระบุ Token เพื่อตั้งค่าใหม่</string>
     <string name="toast_zrok_reset_partial">รีเซ็ตสำเร็จเพียงบางส่วน (อาจจำเป็นต้องลบไฟล์ Token ด้วยตนเองเพิ่มเติม)</string>
@@ -573,9 +579,9 @@
     <string name="setup_overlay_already_granted">อนุญาตเรียบร้อยแล้ว</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">คำแนะนำและการแก้ปัญหา</string>
-    <string name="setup_traffic_title">ปิดใช้งานแอปพลิเคชัน BYD Traffic Monitor</string>
-    <string name="setup_traffic_body">แอปพลิเคชัน BYD Traffic Monitor อาจปิดกั้นการเชื่อมต่อเครือข่ายของแอปพลิเคชันอื่น การปิดใช้งานจะช่วยให้ OverDrive และแอปพลิเคชันอื่นสามารถใช้งานเครือข่ายได้ตามปกติ หลังจากการปิดใช้งาน จำเป็นต้องรีสตาร์ทหน้าจอรถ</string>
-    <string name="setup_traffic_button">เปิด Traffic Monitor</string>
+    <string name="setup_traffic_title">ปิดใช้งาน BYD Traffic Monitor</string>
+    <string name="setup_traffic_body">BYD Traffic Monitor จะบล็อกแอปของบุคคลที่สามไม่ให้เข้าถึงอินเทอร์เน็ต การปิดใช้งานจะช่วยให้ OverDrive และแอปอื่นใดก็ตามที่คุณติดตั้งสามารถใช้งานเครือข่ายได้จริง หลังจากนั้นจำเป็นต้องรีบูตแบบบังคับ</string>
+    <string name="setup_traffic_button">เปิดแอป Traffic Monitor</string>
     <string name="setup_camera_fix_title">ภาพกล้องมืดหรือไม่ถูกต้อง?</string>
     <string name="setup_camera_fix_body">ตรวจสอบกล้อง กำหนดค่า Camera ID เป็น 0 แล้วกดบันทึก จากนั้นให้ทำการรีสตาร์ทระบบกล้อง หากภาพยังคงผิดปกติ กรุณาลองเปลี่ยนเป็น Camera ID 1 โดยไม่ต้องปรับการจับคู่ (Mapping)</string>
     <!-- Recording storage path -->
@@ -659,6 +665,8 @@
     <string name="settings_about_support_share_value">ทุกลิงก์ที่แชร์ช่วยให้ผู้ใช้ BYD ท่านอื่นได้รู้จักกับ Overdrive</string>
     <string name="settings_about_support_share_message">ลองใช้งาน Overdrive — แอปพลิเคชันกล้องหน้ารถและโหมดเฝ้าระวังแบบ Open-Source สำหรับ BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">แชร์ Overdrive</string>
+    <string name="settings_about_youtube_title">ติดตามเราบน YouTube</string>
+    <string name="settings_about_youtube_value">กดไลก์ กดติดตาม และแชร์ — ทุกการรับชมช่วยให้ Overdrive เติบโต</string>
     <string name="settings_about_open_link_failed">ไม่สามารถเปิดลิงก์ได้</string>
     <string name="settings_about_open_link_copied">ไม่พบเว็บเบราว์เซอร์ คัดลอก URL เรียบร้อยแล้ว: %1$s</string>
     <string name="settings_about_support_kofi_title">สนับสนุนการพัฒนาเวอร์ชันถัดไป</string>
@@ -697,7 +705,7 @@
     <string name="recordings_preview_placeholder_body">แตะเลือกวิดีโอทางด้านซ้ายเพื่อรับชม</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">คอนโซล ADB</string>
-    <string name="diagnostics_section_traffic">ตรวจสอบข้อมูลเครือข่าย</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">ตรวจสอบสถานะกล้อง</string>
     <string name="diagnostics_section_battery">สุขภาพแบตเตอรี่</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -813,6 +821,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">ระยะเวลา Buffer, Video Codec, ขีดจำกัดพื้นที่</string>
     <string name="settings_section_surveillance_subtitle">โซนตรวจจับ, การกำหนดเวลาทำงาน, ความไวต่อความเคลื่อนไหว</string>
+    <string name="settings_section_storage_subtitle">ตำแหน่งจัดเก็บการบันทึก, ขีดจำกัดพื้นที่, การล้างไฟล์กล้องหน้ารถ BYD</string>
     <string name="settings_section_daemons_subtitle">ระบบการจัดการ Cloudflared, Zrok, Telegram, MQTT</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">เกี่ยวกับ OverDrive</string>
@@ -1184,7 +1193,7 @@
     <string name="onboarding_later">ทำภายหลัง</string>
     <string name="onboarding_camera_pano_body">ใช้ลูกศรเพื่อหาภาพ 4 ส่วนที่ประกอบเข้าด้วยกัน อ่านจากด้านล่าง: ด้านล่างซ้ายคือด้านหลัง ด้านล่างขวาคือด้านซ้าย</string>
     <string name="onboarding_expert_roadsense_body">RoadSense ใช้เซ็นเซอร์การเคลื่อนไหวของรถและ GPS เพื่อตรวจจับอันตรายบนถนน — เนินสะดุด หลุมบ่อ ลูกระนาด — และเตือนคุณก่อนถึงจุดที่รู้จัก แท็บต่างๆ ครอบคลุมการตรวจจับ แผนที่อันตราย เสียงเตือน และจุดบอด เปิดสวิตช์หลักเพื่อใช้งานทั้งหมด</string>
-    <string name="onboarding_expert_traffic_title">ตัวตรวจสอบการจราจร — จำเป็นสำหรับการเข้าถึงระยะไกล</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — จำเป็นสำหรับการเข้าถึงระยะไกล</string>
     <string name="onboarding_expert_daemons_body">สวิตช์เหล่านี้เริ่มและหยุดบริการเบื้องหลัง การปิดกล้อง การเฝ้าระวัง หรือ ACC Sentry จะหยุดการบันทึกและคงปิดไว้จนกว่าคุณจะเปิดกลับ — แม้หลังจากรีสตาร์ท</string>
     <string name="onboarding_camera_verify_repick">เลือกใหม่</string>
     <string name="onboarding_dash_chips_body">ชิปด้านบนแสดงการบันทึก บริการ และลิงก์รีโมตของคุณ มันอัปเดตเอง — ไม่ใช่ปุ่ม</string>
@@ -1276,7 +1285,7 @@
     <string name="rail_charging">การชาร์จ</string>
     <string name="rail_automations">ระบบอัตโนมัติ</string>
     <string name="onboarding_skip">ข้าม</string>
-    <string name="onboarding_expert_traffic_body">ตัวตรวจสอบการจราจรในตัวของ BYD บล็อกแอปอื่นๆ ไม่ให้ใช้ซิมในตัวของรถ หากคุณต้องการเข้าถึงรถของคุณจากระยะไกลผ่านซิม BYD คุณต้องปิดมันที่นี่ หัวเครื่องจะรีบูตเพื่อใช้การเปลี่ยนแปลง</string>
+    <string name="onboarding_expert_traffic_body">Traffic Monitor ที่ BYD ติดตั้งมาให้จะบล็อกแอปอื่นไม่ให้ใช้ซิมในตัวรถ หากคุณต้องการเข้าถึงรถจากระยะไกลผ่านซิม BYD จะต้องปิดใช้งาน Traffic Monitor ที่นี่ หน้าจอกลางจะรีบูตเพื่อให้การเปลี่ยนแปลงมีผล</string>
     <string name="onboarding_expert_surveillance_body">ปรับแต่งการตรวจจับ คุณภาพ และที่จัดเก็บที่นี่ สิ่งเหล่านี้เปิดเป็นหน้าตั้งค่าในแอปที่ส่งมาจากรถของคุณ — หน้าจอว่างเปล่าหมายความว่าตัวช่วยยังเริ่มทำงานอยู่</string>
     <string name="settings_backup_with_trips">รวมการเดินทาง</string>
     <string name="onboarding_expert_roadsense_title">RoadSense</string>
@@ -1328,6 +1337,10 @@
     <string name="projection_autostart_conflict_confirm">ใช้แอปนี้</string>
     <string name="projection_app_uninstalled">แอปนั้นไม่ได้ติดตั้งอยู่แล้ว</string>
     <string name="projection_status_service_down">บริการมิเรอร์ยังไม่พร้อม — โปรดรีสตาร์ตแอป (หรือเดมอนกล้อง) แล้วลองอีกครั้ง</string>
+    <string name="projection_status_connecting">กำลังเชื่อมต่อกับหน้าปัด…</string>
+    <string name="projection_status_mirror_unavailable">ภาพสะท้อนไม่พร้อมใช้งาน</string>
+    <string name="projection_fullscreen_enter">เต็มหน้าจอ</string>
+    <string name="projection_fullscreen_exit">ออกจากโหมดเต็มหน้าจอ</string>
     <string name="dashboard_modern_vehicle_status">สถานะรถ</string>
     <string name="vehicle_dialog_detection">การตรวจจับ: %1$s</string>
     <string name="vehicle_dialog_detection_auto">อัตโนมัติ</string>
@@ -1339,4 +1352,17 @@
     <string name="rail_section_automation">ระบบอัตโนมัติ</string>
     <string name="rail_section_system">ระบบ</string>
     <string name="rail_collapse_label">ย่อ</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">กำลังฟัง…</string>
+    <string name="voice_overlay_thinking">กำลังคิด…</string>
+    <string name="voice_overlay_speaking">กำลังพูด…</string>
+    <string name="voice_overlay_done">เสร็จแล้ว</string>
+    <string name="voice_overlay_cancelled">ยกเลิกแล้ว</string>
+    <string name="voice_overlay_not_understood">ขออภัย ฟังไม่ทัน</string>
+    <string name="voice_overlay_offline">ผู้ช่วย AI ไม่พร้อมใช้งาน</string>
+    <string name="voice_overlay_busy">ผู้ช่วยกำลังถูกใช้งานอยู่</string>
+    <string name="voice_overlay_blocked_moving">ใช้งานไม่ได้ขณะขับรถ</string>
+    <string name="voice_overlay_refused">ทำสิ่งนี้ด้วยเสียงไม่ได้</string>
+    <string name="voice_overlay_failed">ทำรายการนี้ไม่สำเร็จ</string>
 </resources>

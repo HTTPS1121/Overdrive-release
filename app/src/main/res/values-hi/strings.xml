@@ -435,7 +435,8 @@
     <string name="toast_soh_reset_failed_with_message">रीसेट विफल: %1$s</string>
     <string name="toast_select_at_least_one_category">कम से कम एक श्रेणी का चयन करें</string>
     <string name="toast_reset_failed_with_error">रीसेट विफल: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s ट्रैफिक मॉनिटर...</string>
+    <string name="toast_traffic_monitor_enabling">Traffic Monitor सक्षम किया जा रहा है…</string>
+    <string name="toast_traffic_monitor_disabling">Traffic Monitor अक्षम किया जा रहा है…</string>
     <string name="dialog_close">बंद करें</string>
     <string name="dialog_reset">रीसेट</string>
     <string name="dialog_delete">हटाएँ</string>
@@ -453,14 +454,15 @@
     <string name="dialog_reset_complete_title">पूर्ण रीसेट</string>
     <string name="dialog_traffic_cannot_check_title">स्थिति की जांच नहीं कर सका</string>
     <string name="dialog_traffic_cannot_check_message">एडीबी कनेक्शन अभी तक तैयार नहीं है। सिस्टम पैकेज प्रबंधित करने के लिए एप्लिकेशन को एडीबी एक्सेस की आवश्यकता है। कृपया सुनिश्चित करें किः\n\n• USB डिबगिंग डेवलपर विकल्पों में सक्षम है\n• एडीबी प्राधिकरण प्रलोभन स्वीकार किया गया है\n\nएक बार कनेक्ट होने पर स्थिति स्वचालित रूप से अपडेट हो जाएगी।</string>
-    <string name="dialog_traffic_disable_title">BYD ट्रैफिक मॉनिटर को निष्क्रिय करें?</string>
-    <string name="dialog_traffic_disable_message">BYD ट्रैफिक मॉनिटर (com.byd.trafficmonitor) एक अंतर्निहित सिस्टम ऐप है जो लगातार पृष्ठभूमि में सड़क यातायात की स्थिति की निगरानी करता है।\n\n️ इसे निष्क्रिय क्यों करें?\n\n• मोबाइल डेटा का उपभोग करता है (यहां तक कि जब पार्किंग की जाती है)\n• पृष्ठभूमि में CPU और बैटरी का उपयोग करता है\n• यदि आप एक अलग नेविगेशन ऐप का उपयोग करते हैं\n• डैशकैम के नेटवर्क उपयोग में हस्तक्षेप कर सकता है\n\nयह निष्क्रिय करने के लिए सुरक्षित है  यह केवल नक्शे पर अंतर्निहित यातायात ओवरले को प्रभावित करता है। आपका नेविगेशन, Bluetooth, और अन्य सभी कार कार्यों को प्रभावित नहीं करता है।\n\n\nएक हार्ड रीबूट</string>
-    <string name="dialog_traffic_enable_title">BYD ट्रैफिक मॉनिटर को फिर से सक्षम करें?</string>
-    <string name="dialog_traffic_enable_message">BYD ट्रैफिक मॉनिटर वर्तमान में अक्षम है।\n\n इसे फिर से सक्षम करने से नेविगेशन मानचित्र पर अंतर्निहित ट्रैफिक ओवरलैप को बहाल किया जाएगा। ध्यान दें कि यह पृष्ठभूमि में चलेगा और मोबाइल डेटा का उपभोग करेगा।\n\n सक्षम करने के बाद एक हार्ड रीबूट की आवश्यकता होती है (केंद्र कंसोल बटन 5 सेकंड रखें) ।</string>
-    <string name="dialog_traffic_status_title">ट्रैफिक मॉनिटर %1$s</string>
+    <string name="dialog_traffic_disable_title">BYD Traffic Monitor को अक्षम करें?</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) एक बिल्ट-इन सिस्टम ऐप है, जो यह नियंत्रित करता है कि कौन-से ऐप मोबाइल डेटा का उपयोग कर सकते हैं। यह OverDrive सहित तृतीय-पक्ष ऐप्स को कार के बिल्ट-इन SIM का उपयोग करने से रोकता है।\n\nइसे अक्षम क्यों करें?\n\n• OverDrive और आपके द्वारा इंस्टॉल किए गए अन्य ऐप्स BYD SIM के ज़रिए इंटरनेट का उपयोग कर पाएँगे\n• BYD SIM के ज़रिए अपनी कार तक रिमोट से पहुँचने के लिए आवश्यक\n\nआपका नेविगेशन, Bluetooth और कार के अन्य सभी फ़ंक्शन अप्रभावित रहते हैं।\n\nअक्षम करने के बाद हार्ड रीबूट आवश्यक है (सेंटर कंसोल का बटन 5 सेकंड तक दबाकर रखें)।</string>
+    <string name="dialog_traffic_enable_title">BYD Traffic Monitor को फिर से सक्षम करें?</string>
+    <string name="dialog_traffic_enable_message">BYD Traffic Monitor वर्तमान में अक्षम है।\n\nइसे फिर से सक्षम करने पर यह OverDrive और अन्य तृतीय-पक्ष ऐप्स को कार के बिल्ट-इन SIM का उपयोग करने से फिर से रोक देगा, जिससे BYD SIM के ज़रिए रिमोट एक्सेस काम करना बंद कर देगा।\n\nसक्षम करने के बाद हार्ड रीबूट आवश्यक है (सेंटर कंसोल का बटन 5 सेकंड तक दबाकर रखें)।</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor सक्षम है</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor अक्षम है</string>
     <string name="dialog_traffic_reboot_message">परिवर्तन लागू कर दिया गया है. कृपया एक हार्ड रीबूट करें अबः\n दबाएं और 5 सेकंड के लिए केंद्रीय कंसोल बटन पकड़ें.</string>
-    <string name="traffic_monitor_loading">ट्रैफिक मॉनिटर: जांच...</string>
-    <string name="traffic_monitor_tap_to_check">ट्रैफिक मॉनिटर (चेक करने के लिए टैप करें)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: जाँच की जा रही है…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (जाँचने के लिए टैप करें)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">यात्राएँ</string>
     <string name="reset_label_soc_history">SoC + 12V इतिहास</string>
@@ -516,6 +518,10 @@
     <string name="dialog_tailscale_proxy_enable_message">यह मार्ग MQTT से Tailscale के माध्यम से है ताकि आप पोर्ट फॉरवर्डिंग के बिना अपने टेलनेट पर एक निजी ब्रोकर तक पहुंच सकें।\n\nजबकि सक्षमः\n• MQTT एक टेलनेट ब्रोकर पर काम करता है (उदाहरण के लिए आपके टेलनेट पर एक डिवाइस पर Mosquitto)\n• MQTT सार्वजनिक ब्रोकरों पर (HiveMQ, AWS IoT, आदि) विफल हो जाएगा  Tailscale केवल मार्गों को अपने टेलनेट पर लागू करना होगा\n• Tailscale डेमोन परिवर्तन लागू करने के लिए फिर से शुरू होगा\n• अन्य ऐप ट्रैफ़िक और डिवाइस के बाकी प्रभावित नहीं होते हैं\n\nआप इसे किसी भी समय बंद कर सकते हैं।</string>
     <string name="dialog_zrok_reset_title">Zrok पर्यावरण को रीसेट करें</string>
     <string name="dialog_zrok_reset_message">यह:\n• बंद कर देगा zrok सुरंग यदि चल रहा है\n• इस डिवाइस से zrok वातावरण निकालें\n• सहेजे गए टोकन को हटाएं\n\nआपको अपने टोकन को फिर से दर्ज करने और फिर से सक्षम करने की आवश्यकता होगी। यह zrok.io पर आपके 5 डिवाइस स्लॉट में से एक का उपयोग करता है।\n\nक्या आप सुनिश्चित हैं?</string>
+    <string name="dialog_tunnel_conflict_title">एक और सुरंग चल रही है</string>
+    <string name="dialog_tunnel_conflict_message">%1$s पहले से चल रही है। %2$s पर स्विच करें (इससे %1$s बंद हो जाएगी), या दोनों सुरंगें एक साथ चलाएँ?\n\nदोनों चलने पर:\n• डैशबोर्ड दो सार्वजनिक लिंक से उपलब्ध रहेगा\n• निष्क्रिय अवस्था में मोबाइल डेटा का उपयोग थोड़ा बढ़ जाएगा\n• रीबूट के बाद दोनों अपने-आप शुरू होंगी</string>
+    <string name="dialog_tunnel_conflict_switch">स्विच करें</string>
+    <string name="dialog_tunnel_conflict_run_both">दोनों चलाएँ</string>
     <string name="toast_resetting_zrok">Zrok वातावरण को रीसेट करना...</string>
     <string name="toast_zrok_reset_success">Zrok वातावरण रीसेट करें। फिर से सेट करने के लिए एक नया टोकन दर्ज करें।</string>
     <string name="toast_zrok_reset_partial">पर्यावरण रीसेट (टोकन फ़ाइल को मैनुअल सफाई की आवश्यकता हो सकती है)</string>
@@ -576,9 +582,9 @@
     <string name="setup_overlay_already_granted">पहले से ही दी गई</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">सुझाव और समस्या निवारण</string>
-    <string name="setup_traffic_title">BYD ट्रैफिक मॉनिटर को अक्षम करें</string>
-    <string name="setup_traffic_body">BYD ट्रैफिक मॉनिटर इंटरनेट तक पहुंचने से तृतीय-पक्ष ऐप्स को ब्लॉक करता है। इसे अक्षम करने से OverDrive और आपके द्वारा स्थापित किए जाने वाले किसी भी अन्य ऐप को वास्तव में नेटवर्क का उपयोग करने की अनुमति मिलती है। इसके बाद हार्ड रीबूट की आवश्यकता होती है।</string>
-    <string name="setup_traffic_button">खुले यातायात मॉनिटर</string>
+    <string name="setup_traffic_title">BYD Traffic Monitor अक्षम करें</string>
+    <string name="setup_traffic_body">BYD Traffic Monitor तृतीय-पक्ष ऐप्स को इंटरनेट तक पहुँचने से रोकता है। इसे अक्षम करने से OverDrive और आपके द्वारा इंस्टॉल किए गए किसी भी अन्य ऐप को वास्तव में नेटवर्क का उपयोग करने की अनुमति मिलती है। इसके बाद हार्ड रीबूट आवश्यक है।</string>
+    <string name="setup_traffic_button">Traffic Monitor खोलें</string>
     <string name="setup_camera_fix_title">कैमरा काली या गलत फीड करता है?</string>
     <string name="setup_camera_fix_body">कैमरा जांच, कैमरा आईडी को 0 पर सेट करें, सहेजें टैप करें, फिर कैमरा डेमन को पुनरारंभ करें। यदि फ़ीड अभी भी गलत हैं, तो कैमरा आईडी 1 के साथ दोहराएं। मानचित्रण अनुभाग को छुआ हुआ छोड़ दें।</string>
     <!-- Recording storage path -->
@@ -662,6 +668,8 @@
     <string name="settings_about_support_share_value">प्रत्येक साझा किया गया लिंक किसी अन्य BYD मालिक को Overdrive खोजने में मदद करता है।</string>
     <string name="settings_about_support_share_message">BYD के लिए Overdrive ओपन सोर्स निगरानी और डैशकैम देखेंः https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Overdrive साझा करें</string>
+    <string name="settings_about_youtube_title">YouTube पर सब्सक्राइब करें</string>
+    <string name="settings_about_youtube_value">लाइक, सब्सक्राइब और शेयर करें — हर व्यू Overdrive को आगे बढ़ने में मदद करता है।</string>
     <string name="settings_about_open_link_failed">लिंक नहीं खोल सका।</string>
     <string name="settings_about_open_link_copied">कोई ब्राउज़र नहीं मिला। URL कॉपीः %1$s</string>
     <string name="settings_about_support_kofi_title">अगले रिलीज को ईंधन</string>
@@ -700,7 +708,7 @@
     <string name="recordings_preview_placeholder_body">इसे खेलने के लिए बाईं ओर किसी भी वस्तु पर टैप करें।</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">एडीबी कंसोल</string>
-    <string name="diagnostics_section_traffic">ट्रैफिक मॉनिटर</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">कैमरा जांच</string>
     <string name="diagnostics_section_battery">बैटरी स्वास्थ्य</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -816,6 +824,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">पूर्व/पश्चात बफर, कोडेक, भंडारण सीमा।</string>
     <string name="settings_section_surveillance_subtitle">पता लगाने के क्षेत्रों, कार्यक्रम, गति संवेदनशीलता.</string>
+    <string name="settings_section_storage_subtitle">रिकॉर्डिंग कहाँ सहेजी जाती हैं, स्थान सीमाएँ, BYD डैशकैम सफ़ाई।</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT धावकों.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">OverDrive के बारे में</string>
@@ -1194,7 +1203,7 @@
     <string name="onboarding_later">यह बाद में करें</string>
     <string name="onboarding_camera_pano_body">जोड़ी गई 4-अप इमेज खोजने के लिए तीरों का उपयोग करें। इसे नीचे से पढ़ें: नीचे-बायाँ पिछला हिस्सा है, नीचे-दायाँ बायाँ साइड है।</string>
     <string name="onboarding_expert_roadsense_body">RoadSense गाड़ी के मोशन सेंसर और GPS का उपयोग करके सड़क के ख़तरों — बम्प, गड्ढे, स्पीड ब्रेकर — का पता लगाता है और ज्ञात ख़तरों से पहले आपको चेतावनी देता है। इसके टैब डिटेक्शन, ख़तरा मैप, चेतावनी चाइम और Blind Spot कवर करते हैं। इनमें से किसी का भी उपयोग करने के लिए मास्टर स्विच चालू करें।</string>
-    <string name="onboarding_expert_traffic_title">ट्रैफ़िक मॉनिटर — रिमोट एक्सेस के लिए ज़रूरी</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — रिमोट एक्सेस के लिए आवश्यक</string>
     <string name="onboarding_expert_daemons_body">ये स्विच बैकग्राउंड सेवाओं को शुरू और बंद करते हैं। Camera, Surveillance या ACC Sentry को बंद करने से रिकॉर्डिंग रुक जाती है और जब तक आप उन्हें दोबारा चालू न करें, वे बंद रहती हैं — रीस्टार्ट के बाद भी।</string>
     <string name="onboarding_camera_verify_repick">दोबारा चुनें</string>
     <string name="onboarding_dash_chips_body">ऊपर के चिप रिकॉर्डिंग, सेवाएँ और आपका रिमोट लिंक दिखाते हैं। ये अपने आप अपडेट होते हैं — ये बटन नहीं हैं।</string>
@@ -1338,6 +1347,10 @@
     <string name="projection_autostart_conflict_confirm">इस ऐप का उपयोग करें</string>
     <string name="projection_app_uninstalled">वह ऐप अब इंस्टॉल नहीं है।</string>
     <string name="projection_status_service_down">मिरर सेवा तैयार नहीं है — ऐप (या कैमरा डेमन) पुनः आरंभ करें और फिर से प्रयास करें।</string>
+    <string name="projection_status_connecting">क्लस्टर से कनेक्ट हो रहा है…</string>
+    <string name="projection_status_mirror_unavailable">मिरर उपलब्ध नहीं है</string>
+    <string name="projection_fullscreen_enter">पूर्ण स्क्रीन</string>
+    <string name="projection_fullscreen_exit">पूर्ण स्क्रीन से बाहर निकलें</string>
     <string name="dashboard_modern_vehicle_status">वाहन की स्थिति</string>
     <string name="vehicle_dialog_detection">पहछान: %1$s</string>
     <string name="vehicle_dialog_detection_auto">स्वचालित</string>
@@ -1349,4 +1362,17 @@
     <string name="rail_section_automation">स्वचालन</string>
     <string name="rail_section_system">सिस्टम</string>
     <string name="rail_collapse_label">समेटें</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">सुन रहा हूँ…</string>
+    <string name="voice_overlay_thinking">सोच रहा हूँ…</string>
+    <string name="voice_overlay_speaking">बोल रहा हूँ…</string>
+    <string name="voice_overlay_done">हो गया</string>
+    <string name="voice_overlay_cancelled">रद्द किया गया</string>
+    <string name="voice_overlay_not_understood">माफ़ कीजिए, मैं समझ नहीं पाया</string>
+    <string name="voice_overlay_offline">AI असिस्टेंट उपलब्ध नहीं है</string>
+    <string name="voice_overlay_busy">असिस्टेंट पहले से उपयोग में है</string>
+    <string name="voice_overlay_blocked_moving">गाड़ी चलाते समय उपलब्ध नहीं</string>
+    <string name="voice_overlay_refused">यह आवाज़ से नहीं किया जा सकता</string>
+    <string name="voice_overlay_failed">यह पूरा नहीं हो सका</string>
 </resources>

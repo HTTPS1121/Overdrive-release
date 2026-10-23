@@ -31,7 +31,7 @@ public class LiveCameraSelectorLoadingAssetTest {
                 "function mountResolvedSelection()", mountStart);
         int cacheCheck = appShell.indexOf(
                 "tryCache(function (hit) {", resolvedMount);
-        int threeLoader = appShell.indexOf("ensureEv3d();", cacheCheck);
+        int threeLoader = appShell.indexOf("loadRenderer();", cacheCheck);
         int selectionGate = appShell.indexOf(
                 "if (lastEv3dModel && lastEv3dColor) {", resolvedMount);
 

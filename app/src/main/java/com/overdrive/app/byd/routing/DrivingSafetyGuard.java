@@ -42,9 +42,20 @@ public final class DrivingSafetyGuard {
     public static final String GUARD_DISPLAY_BRIGHTNESS = "displayBrightness";
     public static final String GUARD_DISPLAY_POWER = "displayPower";
     public static final String GUARD_SCREEN_MEDIA = "screenMedia";
+    /**
+     * Vehicle power on/off. Deliberately absent from GUARD_KEYS: an unlisted key reads as
+     * permanently enabled, and the settings API rejects writes to it.
+     */
+    public static final String GUARD_VEHICLE_POWER = "vehiclePower";
+    /**
+     * Horn and locate-flash. The local rail actuates these directly, where BYD's cloud used to
+     * refuse them in motion, so the guard stays on unless the user turns it off.
+     */
+    public static final String GUARD_HORN_LIGHTS = "hornLights";
 
     private static final String[] GUARD_KEYS = {
             GUARD_DOOR_LOCKS,
+            GUARD_HORN_LIGHTS,
             GUARD_TRUNK,
             GUARD_MIRROR_FOLD,
             GUARD_POSITIONING,
@@ -114,30 +125,62 @@ public final class DrivingSafetyGuard {
 
     /** True only when this action's guard is enabled and the live vehicle state blocks it. */
     public static boolean isActionBlocked(String key) {
-        return isGuardEnabled(key) && isMovementBlocked();
+        return getActionBlockReason(key) != null;
+    }
+
+    /** Live block reason for this action, or {@code null} when it may run. */
+    public static String getActionBlockReason(String key) {
+        return isGuardEnabled(key) ? getMovementBlockReason() : null;
     }
 
     /** Machine-readable live reason for a blocked movement gate, or {@code null} when allowed. */
     public static String getMovementBlockReason() {
         if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
             boolean scoped = VehicleActuatorBridge.hasDiLink5RequestScope();
+            // The parked ACC refresh cadence is slower than the freshness window.
+            if (!scoped) AccMonitor.confirmDiLink5StateForSafety();
             Boolean scopedAccOn = scoped
                     ? VehicleActuatorBridge.currentDiLink5RequestAccOn() : null;
             boolean scopedStateValid = scoped
                     && scopedAccOn != null
                     && !VehicleActuatorBridge.isDiLink5RequestExpired();
+            GearReading gear = resolveGear();
+            double speedKmh = resolveSpeedKmh();
+            if (scoped) {
+                // Local evidence wins; the daemon's dispatch sample only fills what this process can't read.
+                if (gear == GearReading.UNKNOWN) {
+                    gear = gearReading(VehicleActuatorBridge.currentDiLink5RequestGear());
+                }
+                if (Double.isNaN(speedKmh)) {
+                    speedKmh = VehicleActuatorBridge.currentDiLink5RequestSpeedKmh();
+                }
+            }
             return blockReasonDiLink5(
-                    resolveGear(),
+                    gear,
                     scopedAccOn != null
                             ? scopedAccOn.booleanValue() : AccMonitor.isAccOn(),
                     scoped ? scopedStateValid : AccMonitor.isAccStateAuthoritative(),
                     scoped ? scopedStateValid : AccMonitor.isAccStateFreshForSafety(),
-                    resolveSpeedKmh());
+                    speedKmh);
         }
         boolean accAuthoritative = AccMonitor.isAccStateAuthoritative();
         if (!accAuthoritative) return "state_unknown";
         if (!AccMonitor.isAccOn()) return null;
         return blockReason(resolveGear(), true, true, resolveSpeedKmh());
+    }
+
+    /** True only when the movement gate's own ACC inputs say the car is off (DiLink 5: freshly). */
+    public static boolean isAccConfirmedOff() {
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            if (VehicleActuatorBridge.hasDiLink5RequestScope()) {
+                return Boolean.FALSE.equals(VehicleActuatorBridge.currentDiLink5RequestAccOn())
+                        && !VehicleActuatorBridge.isDiLink5RequestExpired();
+            }
+            return AccMonitor.isAccStateAuthoritative()
+                    && AccMonitor.isAccStateFreshForSafety()
+                    && !AccMonitor.isAccOn();
+        }
+        return AccMonitor.isAccStateAuthoritative() && !AccMonitor.isAccOn();
     }
 
     /**

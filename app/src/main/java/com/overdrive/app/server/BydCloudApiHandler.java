@@ -347,13 +347,14 @@ public class BydCloudApiHandler {
                 return;
             }
 
+            // Cloud-only: the local remote-key rail must not answer a test of the account.
             VehicleCommandRouter.VehicleCommand command;
             switch (action) {
                 case "find_car":
-                    command = new VehicleCommandRouter.FindCarCommand();
+                    command = new VehicleCommandRouter.FindCarCommand(true);
                     break;
                 case "flash_lights":
-                    command = new VehicleCommandRouter.FlashLightsCommand();
+                    command = new VehicleCommandRouter.FlashLightsCommand(true);
                     break;
                 default:
                     throw new IllegalStateException("validated cloud test action was not dispatched");

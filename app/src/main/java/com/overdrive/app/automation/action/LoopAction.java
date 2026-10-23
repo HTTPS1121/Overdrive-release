@@ -99,22 +99,32 @@ public class LoopAction extends BaseAction {
             return;
         }
 
-        long deadline = System.currentTimeMillis() + MAX_WALL_MS;
+        // {wall-clock deadline, iterations admitted}. A queued run resuming after a yielded
+        // wait replays its admitted iterations without re-checking either bound.
+        Object recorded = Automations.queuedFlowRecord(automationAction);
+        long[] progress = recorded instanceof long[]
+                ? (long[]) recorded
+                : new long[] {System.currentTimeMillis() + MAX_WALL_MS, 0L};
+        Automations.recordQueuedFlow(automationAction, progress);
         int i = 0;
         while (i < cap) {
             if (Thread.currentThread().isInterrupted()) return; // worker teardown
-            if (System.currentTimeMillis() >= deadline) {
-                logger.info("LoopAction: wall-clock cap hit after " + i + " iterations");
-                return;
-            }
-            if (condMode) {
-                // Re-evaluate against live state (supports dynamic RHS + coercion).
-                boolean held = AutomationCondition.evaluate(event, comparator, target);
-                // while: stop when the condition stops holding; until: stop once it holds.
-                if ("while".equals(mode) && !held) break;
-                if ("until".equals(mode) && held) break;
+            if (i >= progress[1]) {
+                if (System.currentTimeMillis() >= progress[0]) {
+                    logger.info("LoopAction: wall-clock cap hit after " + i + " iterations");
+                    return;
+                }
+                if (condMode) {
+                    // Re-evaluate against live state (supports dynamic RHS + coercion).
+                    boolean held = AutomationCondition.evaluate(event, comparator, target);
+                    // while: stop when the condition stops holding; until: stop once it holds.
+                    if ("while".equals(mode) && !held) break;
+                    if ("until".equals(mode) && held) break;
+                }
+                progress[1] = i + 1;
             }
             Automations.runActionList(body); // re-entrant; depth-guarded
+            if (Automations.queuedDeferralPending()) return;
             i++;
             // A Wait Until inside the body that timed out aborts the whole run — stop looping
             // rather than re-entering the body (runActionList would skip every action anyway,

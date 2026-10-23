@@ -35,11 +35,10 @@ public final class SessionEnergyResolver {
     private static final DaemonLogger logger = DaemonLogger.getInstance("SessionEnergyResolver");
 
     /**
-     * Floor applied to a reported SOH before it scales the SOC estimate, percent.
+     * Legacy percentage used to derive the lower counter acceptance ratio.
      *
-     * <p>Matches the floor the SOH estimator already enforces on its own outputs, so the two agree
-     * on what counts as an implausible health figure. Flooring rather than discarding keeps the
-     * estimate continuous — see {@link #socEstimateKwh}.
+     * <p>Retained for compatibility with the existing counter arbitration band. It does not
+     * constrain the canonical SOH supplied to {@link #socEstimateKwh}.
      */
     public static final double MIN_PLAUSIBLE_SOH_PERCENT = 60.0;
 
@@ -47,14 +46,9 @@ public final class SessionEnergyResolver {
      * Accept a metered figure when {@code metered / socEstimate} lands in {@code [LOW, HIGH]}.
      * Outside the band the counter is treated as broken for this session.
      *
-     * <p>LOW is tied to {@link #MIN_PLAUSIBLE_SOH_PERCENT}, not chosen independently.
-     *
-     * <p>A metered figure below the SOC estimate is the signature of a pack holding less than the
-     * estimate assumes — i.e. degradation. Rejecting at 0.70 while the same file (and the SOH
-     * estimator) both treat 60% health as plausible was self-contradictory: a pack at 62% health
-     * would have its CORRECT measured energy called "diverged". Deriving the bound from the health
-     * floor keeps the two consistent, so a pack anywhere in the range the project considers credible
-     * has its measurement believed.
+     * <p>LOW retains the existing tolerance for capacity and SOC-derived estimate disagreement.
+     * The SOC estimate already applies the canonical SOH, including valid vehicle readings below
+     * the estimator's own fallback floor.
      */
     public static final double RATIO_LOW = MIN_PLAUSIBLE_SOH_PERCENT / 100.0;
     public static final double RATIO_HIGH = 1.30;
@@ -64,9 +58,8 @@ public final class SessionEnergyResolver {
      *
      * <p>Set just above an exact half so a half-scale counter is caught with a little tolerance for
      * quantisation and for the SOC estimate's own error, while staying clearly below
-     * {@link #RATIO_LOW} — so the region this claims is one the health interpretation had already
-     * given up on. Nothing in between is reinterpreted: a ratio of 0.65 is still treated as a
-     * possibly-degraded pack whose measurement is believed.
+     * {@link #RATIO_LOW}. Nothing in between is reinterpreted: a ratio of 0.65 remains within the
+     * tolerated counter disagreement.
      */
     public static final double HALF_SCALE_MAX_RATIO = 0.55;
     /**
@@ -159,7 +152,8 @@ public final class SessionEnergyResolver {
      *
      * @param socDeltaPercent end SOC - start SOC, percentage points
      * @param nominalKwh      pack nominal capacity, kWh (0/NaN when unknown)
-     * @param sohPercent      state of health, percent (0/NaN when unknown -> treated as 100)
+     * @param sohPercent      canonical state of health in (0,100], applied unchanged;
+     *                        invalid or unknown values are treated as 100
      * @return kWh, or NaN when it cannot be computed
      */
     public static double socEstimateKwh(double socDeltaPercent, double nominalKwh, double sohPercent) {
@@ -167,16 +161,12 @@ public final class SessionEnergyResolver {
         if (!Double.isFinite(nominalKwh) || nominalKwh <= 0) return Double.NaN;
         // A percent of SOC holds nominal x SOH/100, not nominal.
         //
-        // A low-but-real SOH is FLOORED rather than discarded. Snapping an out-of-band value to 1.0
-        // ("assume healthy") inflates the estimate by 1/SOH, and because the estimate then arbitrates
-        // whether to trust the metered counter, a genuinely aged pack could see its CORRECT measured
-        // energy rejected as "diverged" and the inflated estimate priced instead — at SOH 45 on a
-        // 21.5 kWh pack over 80% SOC that is 17.2 kWh billed for a measured 7.74 kWh. A floor keeps
-        // the estimate continuous (no doubling as SOH crosses a threshold) and errs toward believing
-        // the measurement. Only a value that is not a percentage at all falls back to 1.0.
+        // Preserve any valid canonical percentage so this cross-check agrees with the vehicle
+        // reading and the displayed health value. The estimator applies its own fallback floor.
+        // Only an invalid or unknown percentage falls back to nominal capacity.
         double sohFactor = 1.0;
         if (Double.isFinite(sohPercent) && sohPercent > 0 && sohPercent <= 100.0) {
-            sohFactor = Math.max(sohPercent, MIN_PLAUSIBLE_SOH_PERCENT) / 100.0;
+            sohFactor = sohPercent / 100.0;
         }
         double estimate = (socDeltaPercent / 100.0) * nominalKwh * sohFactor;
         // Preserve sub-noise estimates for wrap/gap arbitration; only the final resolver applies
@@ -383,10 +373,9 @@ public final class SessionEnergyResolver {
             // there under-reports the session by half and prices it that way, and worse, offers it for
             // SOH calibration where it reads as ~50% pack health.
             //
-            // The two cases are separable: real degradation is bounded (a pack below
-            // MIN_PLAUSIBLE_SOH_PERCENT of nominal is beyond anything this fleet sees, which is why
-            // RATIO_LOW is derived from it), whereas a scale fault clusters near an exact submultiple.
-            // A ratio at or under the half-scale band is therefore a UNIT fault, not a health signal:
+            // The SOC estimate already accounts for canonical pack health, so degradation alone
+            // should not halve this ratio. A scale fault clusters near an exact submultiple.
+            // A ratio at or under the half-scale band is treated as a UNIT fault:
             // withhold it from both pricing and calibration rather than believe it.
             // THIS THRESHOLD ALONE IS NOT ENOUGH, because its denominator is not independent of the
             // fault. socEstimate is socDelta x nominal x SOH, and every halved session drags the SOH

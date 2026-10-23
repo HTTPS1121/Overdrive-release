@@ -128,7 +128,7 @@ class RecordingController {
      */
     private fun execShell(cmd: String): String {
         return try {
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)))
             process.waitFor()
             
             val reader = BufferedReader(InputStreamReader(process.inputStream))

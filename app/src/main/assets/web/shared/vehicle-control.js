@@ -64,6 +64,7 @@ var VC = {
         rangeKm: 0,
         cloudConfigured: false,
         cloudState: 'checking',
+        localRemoteKey: false,
         acOn: false,
         acTemp: 22,
         acFan: 3,
@@ -171,6 +172,10 @@ var VC = {
             this._startImmersiveScene();
         }
         this.bindControls();
+        this.bindSafetyControls();
+        this.bindRemoteKeyDiagControls();
+        // Read once at boot so the Safety tab dot shows a switched-off guard before it is opened.
+        this.fetchSafetySettings();
         this.startStateSync();
         this.startAcChargeCurrentSync();
         this.startCloudStatusSync();
@@ -2151,12 +2156,20 @@ var VC = {
         panel.classList.add('open');
         if (dock) dock.classList.add('is-open');
         // Tall panels: Windows (4×5 preset grid), Charging (schedule + cap stacked),
-        // Climate (controls + remote preconditioning row).
+        // Climate (controls + remote preconditioning row), Safety (one row per guard).
         if (panelId === 'panelWindows' || panelId === 'panelCharging'
-                || panelId === 'panelClimate') {
+                || panelId === 'panelClimate' || panelId === 'panelSafety'
+                || panelId === 'panelRemoteKeyDiag') {
             panel.classList.add('vc-panel-tall');
         } else panel.classList.remove('vc-panel-tall');
         this._activePanel = panelId;
+        // Re-read on open: Automations → Safety writes the same settings.
+        if (panelId === 'panelSafety') {
+            this.fetchSafetySettings();
+        }
+        if (panelId === 'panelRemoteKeyDiag') {
+            this.fetchRemoteKeyDiag();
+        }
         if (panelId === 'panelCharging') {
             this.fetchChargingSchedule();
             this.fetchChargeCap();
@@ -2250,25 +2263,31 @@ var VC = {
     bindControls: function() {
         var self = this;
 
+        this.bindBtn('btnRemoteAccess', function() {
+            self.openRemoteAccess();
+        });
+
         // Lock — routed (cloud-first; SDK has no door-lock primitive so cloud-only effectively).
         this.bindBtn('btnLock', function() {
-            if (!self.requireCloud()) return;
+            if (!self.requireCloudOrLocalKey()) return;
             self.setPending('btnLock', true);
             self.triggerLockVFX();
             self.apiPost('/api/vehicle/lock').then(function(result) {
                 self.setPending('btnLock', false);
                 self.toastFromResult(result, BYD.i18n.t('vehicle.car_locked'), BYD.i18n.t('vehicle.lock_failed'));
+                self.offerCloudRemedyOnFailure(result);
             });
         });
 
         // Unlock — routed (cloud-first).
         this.bindBtn('btnUnlock', function() {
-            if (!self.requireCloud()) return;
+            if (!self.requireCloudOrLocalKey()) return;
             self.setPending('btnUnlock', true);
             self.triggerUnlockVFX();
             self.apiPost('/api/vehicle/unlock').then(function(result) {
                 self.setPending('btnUnlock', false);
                 self.toastFromResult(result, BYD.i18n.t('vehicle.car_unlocked'), BYD.i18n.t('vehicle.unlock_failed'));
+                self.offerCloudRemedyOnFailure(result);
             });
         });
 
@@ -2297,26 +2316,73 @@ var VC = {
 
         // Flash lights — routed (cloud-only on this gen). Toast reads server-resolved message.
         this.bindBtn('btnFlash', function() {
-            if (!self.requireCloud()) return;
+            if (!self.requireCloudOrLocalKey()) return;
             self.setPending('btnFlash', true);
             self.triggerFlashVFX();
             self.apiPost('/api/vehicle/flash').then(function(result) {
                 self.setPending('btnFlash', false);
                 self.toastFromResult(result, BYD.i18n.t('vehicle.lights_flashed'), BYD.i18n.t('vehicle.flash_failed'));
+                self.offerCloudRemedyOnFailure(result);
             });
         });
 
         // Find car — routed cloud-first (cloud-only on this gen). Vehicle wakes,
         // then horn + lights pulse.
         this.bindBtn('btnFindCar', function() {
-            if (!self.requireCloud()) return;
+            if (!self.requireCloudOrLocalKey()) return;
             self.setPending('btnFindCar', true);
             self.triggerFlashVFX();
             self.apiPost('/api/vehicle/find-car').then(function(result) {
                 self.setPending('btnFindCar', false);
                 self.toastFromResult(result, BYD.i18n.t('vehicle_control.find_car_label'), null);
+                self.offerCloudRemedyOnFailure(result);
             });
         });
+
+        // Vehicle power. Confirmed first because switching the car off is disruptive to
+        // anyone in it, and the router refuses both unless the car is parked and stationary.
+        var bindPower = function(id, on) {
+            self.bindBtn(id, function() {
+                var title = self.translatedText(
+                        on ? 'vehicle.power_on_confirm' : 'vehicle.power_off_confirm',
+                        on ? 'Power on the vehicle?' : 'Power off the vehicle?');
+                var body = self.translatedText(
+                        on ? 'vehicle.power_on_confirm_body' : 'vehicle.power_off_confirm_body',
+                        on
+                            ? 'The vehicle will switch on where it is parked.'
+                            : 'The vehicle will switch off. Anyone inside will lose climate and power.');
+                var confirmation = window.BYD && BYD.utils && BYD.utils.confirmDialog
+                    ? BYD.utils.confirmDialog({
+                        title: title,
+                        body: body,
+                        confirmLabel: self.translatedText(
+                                on ? 'vehicle.power_on' : 'vehicle.power_off',
+                                on ? 'Power on' : 'Power off'),
+                        cancelLabel: self.translatedText('common.cancel', 'Cancel'),
+                        danger: !on
+                    })
+                    : Promise.resolve(window.confirm(title + ' ' + body));
+                Promise.resolve(confirmation).then(function(confirmed) {
+                    if (!confirmed) return;
+                    self.setPending(id, true);
+                    self.apiPost(on ? '/api/vehicle/power-on' : '/api/vehicle/power-off')
+                        .then(function(result) {
+                            self.setPending(id, false);
+                            self.toastFromResult(result,
+                                self.translatedText(
+                                    on ? 'vehicle.power_on_sent' : 'vehicle.power_off_sent',
+                                    on ? 'Power on sent' : 'Power off sent'),
+                                self.translatedText(
+                                    on ? 'vehicle.power_on_failed' : 'vehicle.power_off_failed',
+                                    on
+                                        ? 'The vehicle did not accept the power-on command'
+                                        : 'The vehicle did not accept the power-off command'));
+                        });
+                });
+            });
+        };
+        bindPower('btnPowerOn', true);
+        bindPower('btnPowerOff', false);
 
         this.bindBtn('btnIviReboot', function() {
             var body =
@@ -2465,25 +2531,44 @@ var VC = {
                     BYD.i18n.t('vehicle.drl_failed'));
             });
         });
+        this.bindBtn('btnCabinLight', function() {
+            var lights = self.vehicleState.lights || {};
+            // Trims that cannot report the lamp fall back to the last state set from here.
+            var on = typeof lights.readingLight === 'boolean' ? lights.readingLight : !!self._cabinLightOn;
+            var enable = !on;
+            self.apiPost('/api/vehicle/lights', { target: 'readingLight', enable: enable }).then(function(result) {
+                if (result.success) {
+                    self._cabinLightOn = enable;
+                    self._cabinHoldUntil = Date.now() + 10000;
+                    if (self.vehicleState.lights) self.vehicleState.lights.readingLight = enable;
+                    self.updateLightsUI();
+                }
+                self.toastFromResult(result,
+                    BYD.i18n.t(enable ? 'vehicle.cabin_light_on' : 'vehicle.cabin_light_off'),
+                    BYD.i18n.t('vehicle.cabin_light_failed'));
+            });
+        });
         var ambientSlider = document.getElementById('ambientColourSlider');
         if (ambientSlider) {
             var ambientDebounce = null;
             ambientSlider.addEventListener('input', function() {
                 var v = parseInt(ambientSlider.value, 10);
                 self.vehicleState.lights.ambientColour = v;
+                self._ambientHoldUntil = Date.now() + 15000;
                 self.updateLightsUI();
                 // Debounce the write so dragging the slider doesn't fire a POST per pixel.
                 if (ambientDebounce) clearTimeout(ambientDebounce);
                 ambientDebounce = setTimeout(function() {
-                    self.apiPost('/api/vehicle/lights', { target: 'ambientColour', value: v }).then(function(result) {
-                        if (result.success) {
-                            self.updateLightsUI();
-                        }
-                        self.toastFromResult(result,
-                            BYD.i18n.t('vehicle.ambient_set'),
-                            BYD.i18n.t('vehicle.ambient_failed'));
-                    });
+                    self._postAmbient({ target: 'ambientColour', value: v });
                 }, 350);
+            });
+        }
+        var ambientRgb = document.getElementById('ambientRgbPicker');
+        if (ambientRgb) {
+            // 'change' fires once when the picker closes; the reply names the palette colour written.
+            ambientRgb.addEventListener('change', function() {
+                self._ambientHoldUntil = Date.now() + 15000;
+                self._postAmbient({ target: 'ambientColour', rgb: ambientRgb.value });
             });
         }
 
@@ -2860,7 +2945,11 @@ var VC = {
         function submitClimatePower(next, request) {
             var previous = self.vehicleState.acOn;
             var revision = self.beginClimateMutation('power');
+            // Powering an off car on first can hold this request ~25 s; block a repeat tap.
+            var buttonId = next ? 'btnAcOn' : 'btnAcOff';
+            self.setPending(buttonId, true);
             self.apiPost('/api/vehicle/climate', request).then(function(result) {
+                self.setPending(buttonId, false);
                 if (!self.finishClimateMutation('power', revision)) return;
                 self.vehicleState.acOn = result && result.success ? next : previous;
                 self.updateClimateUI();
@@ -2869,6 +2958,7 @@ var VC = {
                     next ? BYD.i18n.t('vehicle.ac_on') : BYD.i18n.t('vehicle.ac_off'),
                     BYD.i18n.t('vehicle.ac_command_failed'));
             }).catch(function(e) {
+                self.setPending(buttonId, false);
                 if (!self.finishClimateMutation('power', revision)) return;
                 self.vehicleState.acOn = previous;
                 self.updateClimateUI();
@@ -3677,7 +3767,17 @@ var VC = {
             // 'muted' / NO DATA).
             if (data.tyres) self.updateTyreCallouts(data.tyres);
 
-            if (data.lights) self.vehicleState.lights = data.lights;
+            if (data.lights) {
+                // A just-picked ambient colour stands until the car has had time to report it.
+                if (self._ambientHoldUntil > Date.now() && self.vehicleState.lights) {
+                    data.lights.ambientColour = self.vehicleState.lights.ambientColour;
+                }
+                // Same for a just-switched cabin light.
+                if (self._cabinHoldUntil > Date.now() && self.vehicleState.lights) {
+                    data.lights.readingLight = self.vehicleState.lights.readingLight;
+                }
+                self.vehicleState.lights = data.lights;
+            }
             if (data.adas) self.vehicleState.adas = data.adas;
             if (data.setting) self.vehicleState.setting = data.setting;
 
@@ -3770,6 +3870,8 @@ var VC = {
             return resp.json();
         }).then(function(data) {
             self.vehicleState.cloudConfigured = !!(data.configured && data.verified);
+            self.vehicleState.localRemoteKey = data.localRemoteKey === true;
+            self.updateLocalKeyControls();
             self.vehicleState.cloudState = self.vehicleState.cloudConfigured
                 ? 'connected'
                 : 'not_configured';
@@ -3915,6 +4017,41 @@ var VC = {
         return false;
     },
 
+    /**
+     * A body command can fail because the local rail is not honoured on this car. With no
+     * account configured the remedy is still "connect one", so say that instead of leaving the
+     * user with a bare failure toast — this is the hint the cloud-only gate used to give.
+     */
+    offerCloudRemedyOnFailure: function(result) {
+        if (result && result.success) return;
+        // A movement-gate refusal is answered by the Safety tab, not by an account.
+        if (result && result.outcome === 'blocked_driving') return;
+        if (this.vehicleState.cloudConfigured) return;
+        this.showCloudModal();
+    },
+
+    /**
+     * Guard for controls that have BOTH a cloud leg and a local rail. The cloud modal is
+     * only shown when neither path exists, so a car without an account still actuates.
+     */
+    requireCloudOrLocalKey: function() {
+        if (this.vehicleState.cloudConfigured) return true;
+        if (this.vehicleState.localRemoteKey) return true;
+        this.showCloudModal();
+        return false;
+    },
+
+    // Vehicle power is offered only once the daemon confirms the local rail exists, so a
+    // visible tile always has a path to the car.
+    updateLocalKeyControls: function() {
+        var show = this.vehicleState.localRemoteKey === true;
+        var ids = ['btnPowerOn', 'btnPowerOff'];
+        for (var i = 0; i < ids.length; i++) {
+            var el = document.getElementById(ids[i]);
+            if (el) el.style.display = show ? '' : 'none';
+        }
+    },
+
     showCloudModal: function() {
         var overlay = document.getElementById('cloudModal');
         if (overlay) overlay.classList.add('visible');
@@ -3939,6 +4076,325 @@ var VC = {
             } catch (e) { /* fall through to the web route */ }
         }
         window.location.href = 'byd-cloud.html';
+    },
+
+    openRemoteAccess: function() {
+        if (typeof window.AndroidBridge !== 'undefined'
+                && typeof AndroidBridge.navigate === 'function') {
+            try {
+                if (AndroidBridge.navigate('remoteAccess') === 'ok') return;
+            } catch (e) { /* fall through to the web route */ }
+        }
+        window.location.href = 'remote-access.html';
+    },
+
+    // ==================== DRIVING SAFETY ====================
+
+    // Same settings and contract as Automations → Safety: the switches appear only once the
+    // daemon's values are verified, one write runs at a time, and a failed write re-reads.
+    _safetyFetchRevision: 0,
+    _safetySaving: false,
+    _safetyLoaded: false,
+
+    safetyToggles: function() {
+        return document.querySelectorAll('#panelSafety [data-vc-safety-key]');
+    },
+
+    bindSafetyControls: function() {
+        var self = this;
+        var toggles = this.safetyToggles();
+        for (var i = 0; i < toggles.length; i++) {
+            toggles[i].addEventListener('change', function() {
+                self.saveSafetySetting(this);
+            });
+        }
+    },
+
+    setSafetyTogglesDisabled: function(disabled) {
+        var toggles = this.safetyToggles();
+        for (var i = 0; i < toggles.length; i++) toggles[i].disabled = disabled;
+    },
+
+    /** Paints verified values. Returns false, painting nothing, if any switch lacks a boolean. */
+    applySafetySettings: function(safety) {
+        var toggles = this.safetyToggles();
+        var anyOff = false;
+        var i;
+        if (!safety || typeof safety !== 'object') return false;
+        for (i = 0; i < toggles.length; i++) {
+            if (typeof safety[toggles[i].getAttribute('data-vc-safety-key')] !== 'boolean') {
+                return false;
+            }
+        }
+        for (i = 0; i < toggles.length; i++) {
+            toggles[i].checked = safety[toggles[i].getAttribute('data-vc-safety-key')];
+            if (!toggles[i].checked) anyOff = true;
+        }
+        var tab = document.querySelector('[data-panel="panelSafety"]');
+        if (tab) {
+            if (anyOff) tab.classList.add('has-active');
+            else tab.classList.remove('has-active');
+        }
+        return true;
+    },
+
+    /** A status key hides the switches behind that message; null shows the switches. */
+    setSafetyStatus: function(key, fallback, isError) {
+        var status = document.getElementById('vcSafetyStatus');
+        var list = document.getElementById('vcSafetyList');
+        if (list) list.style.display = key ? 'none' : '';
+        if (!status) return;
+        if (!key) {
+            status.style.display = 'none';
+            return;
+        }
+        // data-i18n follows the message so a locale re-hydrate keeps showing it.
+        status.setAttribute('data-i18n', key);
+        status.setAttribute('role', isError ? 'alert' : 'status');
+        if (isError) status.classList.add('is-error');
+        else status.classList.remove('is-error');
+        status.textContent = this.translatedText(key, fallback);
+        status.style.display = '';
+    },
+
+    fetchSafetySettings: function() {
+        var self = this;
+        // A write in flight repaints from its own response.
+        if (this._safetySaving) return Promise.resolve();
+        var revision = ++this._safetyFetchRevision;
+        var timeoutId = 0;
+        // A refresh keeps verified switches on screen, frozen until it lands.
+        if (this._safetyLoaded) this.setSafetyTogglesDisabled(true);
+        else this.setSafetyStatus('automation.safety_loading', 'Loading safety settings…', false);
+        return Promise.race([
+            fetch('/api/automations/settings', { cache: 'no-store' }),
+            new Promise(function(resolve, reject) {
+                timeoutId = setTimeout(function() {
+                    reject(new Error('safety settings request timed out'));
+                }, 10000);
+            })
+        ]).then(function(resp) {
+            return resp.json().then(function(data) {
+                if (!resp.ok || !data || data.success !== true) {
+                    throw new Error('invalid safety settings response');
+                }
+                return data;
+            });
+        }).then(function(data) {
+            if (revision !== self._safetyFetchRevision) return;
+            if (!self.applySafetySettings(data.drivingSafety)) {
+                throw new Error('invalid safety settings response');
+            }
+            self._safetyLoaded = true;
+            self.setSafetyStatus(null);
+            self.setSafetyTogglesDisabled(false);
+        }).catch(function(e) {
+            if (revision !== self._safetyFetchRevision) return;
+            self._safetyLoaded = false;
+            self.setSafetyStatus('automation.safety_unavailable',
+                'Safety settings are unavailable. The current guard state could not be verified; reload this page to try again.',
+                true);
+            console.warn('[VC] Failed to load safety settings:', e);
+        }).then(function() {
+            if (timeoutId) clearTimeout(timeoutId);
+        });
+    },
+
+    saveSafetySetting: function(el) {
+        var self = this;
+        var key = el.getAttribute('data-vc-safety-key');
+        var enabled = !!el.checked;
+        if (!key) return;
+        var confirmation = Promise.resolve(true);
+        if (!enabled) {
+            var message = this.translatedText('automation.safety_disable_confirm',
+                'Disable this safety guard? The action will be allowed while the car is moving or its state is unknown.');
+            confirmation = window.BYD && BYD.utils && BYD.utils.confirmDialog
+                ? BYD.utils.confirmDialog({
+                    title: this.translatedText('common.warning', 'Warning'),
+                    body: message,
+                    confirmLabel: this.translatedText('common.disable', 'Disable'),
+                    cancelLabel: this.translatedText('common.cancel', 'Cancel'),
+                    danger: true
+                })
+                : Promise.resolve(window.confirm(message));
+        }
+        Promise.resolve(confirmation).then(function(confirmed) {
+            if (!confirmed) {
+                el.checked = true;
+                return;
+            }
+            var drivingSafety = {};
+            drivingSafety[key] = enabled;
+            self._safetySaving = true;
+            self.setSafetyTogglesDisabled(true);
+            return fetch('/api/automations/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ drivingSafety: drivingSafety })
+            }).then(function(resp) {
+                return resp.json().then(function(data) {
+                    if (!resp.ok || !data || data.success !== true
+                            || !self.applySafetySettings(data.drivingSafety)) {
+                        throw new Error('safety setting was not persisted');
+                    }
+                });
+            }).then(function() {
+                self._safetySaving = false;
+                self.setSafetyTogglesDisabled(false);
+            }, function(e) {
+                console.warn('[VC] Failed to save safety setting:', e);
+                el.checked = !enabled;
+                self._safetySaving = false;
+                self.toast(self.translatedText('common.settings_save_failed',
+                    'Failed to save settings'), 'error');
+                // The write may have landed before its response was lost, so re-read it.
+                return self.fetchSafetySettings();
+            });
+        });
+    },
+
+    // ==================== REMOTE-KEY DIAGNOSTICS (EXPERIMENTAL) ====================
+
+    // Experimental command-format selector + MCU readiness-gate toggle. Same one-write-at-a-time
+    // / verified-repaint contract as the Safety panel. Backed by /api/debug/remote-key.
+    _rkdiagFetchRevision: 0,
+    _rkdiagSaving: false,
+    _rkdiagLoaded: false,
+
+    bindRemoteKeyDiagControls: function() {
+        var self = this;
+        var format = document.getElementById('vcRkdiagFormat');
+        if (format && !format._vcBound) {
+            format._vcBound = true;
+            format.addEventListener('change', function() { self.saveRemoteKeyDiag(); });
+        }
+        var gate = document.getElementById('vcRkdiagGate');
+        if (gate && !gate._vcBound) {
+            gate._vcBound = true;
+            gate.addEventListener('change', function() { self.saveRemoteKeyDiag(); });
+        }
+    },
+
+    setRemoteKeyDiagDisabled: function(disabled) {
+        var format = document.getElementById('vcRkdiagFormat');
+        var gate = document.getElementById('vcRkdiagGate');
+        if (format) format.disabled = disabled;
+        if (gate) gate.disabled = disabled;
+    },
+
+    setRemoteKeyDiagStatus: function(key, fallback, isError) {
+        var status = document.getElementById('vcRkdiagStatus');
+        var body = document.getElementById('vcRkdiagBody');
+        if (body) body.style.display = key ? 'none' : '';
+        if (!status) return;
+        if (!key) { status.style.display = 'none'; return; }
+        status.setAttribute('data-i18n', key);
+        status.setAttribute('role', isError ? 'alert' : 'status');
+        if (isError) status.classList.add('is-error'); else status.classList.remove('is-error');
+        status.textContent = this.translatedText(key, fallback);
+        status.style.display = '';
+    },
+
+    /** Paints verified values; returns false (painting nothing) if the response is malformed. */
+    applyRemoteKeyDiag: function(data) {
+        if (!data || typeof data.frameFormat !== 'string'
+                || typeof data.mcuReadyGate !== 'boolean') {
+            return false;
+        }
+        var format = document.getElementById('vcRkdiagFormat');
+        var gate = document.getElementById('vcRkdiagGate');
+        if (format) format.value = data.frameFormat === 'dynamic' ? 'dynamic' : 'fixed';
+        if (gate) gate.checked = data.mcuReadyGate;
+        var activeFormat = document.getElementById('vcRkdiagActiveFormat');
+        if (activeFormat) {
+            activeFormat.textContent = (format && format.value === 'dynamic')
+                ? this.translatedText('vehicle.rkdiag_format_dynamic_short', 'Dynamic (73-byte)')
+                : this.translatedText('vehicle.rkdiag_format_fixed_short', 'Fixed (26-byte)');
+        }
+        var mcu = document.getElementById('vcRkdiagMcuStatus');
+        if (mcu) {
+            mcu.textContent = (typeof data.mcuStatus === 'number' && data.mcuStatus >= 0)
+                ? String(data.mcuStatus)
+                : this.translatedText('vehicle.rkdiag_mcu_unavailable', 'Unavailable');
+        }
+        var rail = document.getElementById('vcRkdiagRail');
+        if (rail) {
+            rail.textContent = (data.localRailEnabled === false)
+                ? this.translatedText('vehicle.rkdiag_rail_disabled', 'Disabled')
+                : this.translatedText('vehicle.rkdiag_rail_enabled', 'Enabled');
+        }
+        // Dot the tab when a non-default option (dynamic format, or gate off) is active.
+        var tab = document.querySelector('[data-panel="panelRemoteKeyDiag"]');
+        if (tab) {
+            var nonDefault = (format && format.value === 'dynamic') || data.mcuReadyGate === false;
+            if (nonDefault) tab.classList.add('has-active'); else tab.classList.remove('has-active');
+        }
+        return true;
+    },
+
+    fetchRemoteKeyDiag: function() {
+        var self = this;
+        if (this._rkdiagSaving) return Promise.resolve();
+        var revision = ++this._rkdiagFetchRevision;
+        if (this._rkdiagLoaded) this.setRemoteKeyDiagDisabled(true);
+        else this.setRemoteKeyDiagStatus('vehicle.rkdiag_loading', 'Loading diagnostics…', false);
+        return fetch('/api/debug/remote-key', { cache: 'no-store' })
+            .then(function(resp) {
+                return resp.json().then(function(data) {
+                    if (!resp.ok || !data || data.success !== true) {
+                        throw new Error('invalid remote-key diagnostics response');
+                    }
+                    return data;
+                });
+            }).then(function(data) {
+                if (revision !== self._rkdiagFetchRevision) return;
+                if (!self.applyRemoteKeyDiag(data)) {
+                    throw new Error('invalid remote-key diagnostics response');
+                }
+                self._rkdiagLoaded = true;
+                self.setRemoteKeyDiagStatus(null);
+                self.setRemoteKeyDiagDisabled(false);
+            }).catch(function(e) {
+                if (revision !== self._rkdiagFetchRevision) return;
+                self._rkdiagLoaded = false;
+                self.setRemoteKeyDiagStatus('vehicle.rkdiag_unavailable',
+                    'Remote-key diagnostics are unavailable. Reload this page to try again.', true);
+                console.warn('[VC] Failed to load remote-key diagnostics:', e);
+            });
+    },
+
+    saveRemoteKeyDiag: function() {
+        var self = this;
+        var format = document.getElementById('vcRkdiagFormat');
+        var gate = document.getElementById('vcRkdiagGate');
+        var payload = {
+            frameFormat: format ? (format.value === 'dynamic' ? 'dynamic' : 'fixed') : 'fixed',
+            mcuReadyGate: gate ? !!gate.checked : true
+        };
+        this._rkdiagSaving = true;
+        this.setRemoteKeyDiagDisabled(true);
+        return fetch('/api/debug/remote-key', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).then(function(resp) {
+            return resp.json().then(function(data) {
+                if (!resp.ok || !data || data.success !== true
+                        || !self.applyRemoteKeyDiag(data)) {
+                    throw new Error('remote-key diagnostics were not persisted');
+                }
+            });
+        }).then(function() {
+            self._rkdiagSaving = false;
+            self.setRemoteKeyDiagDisabled(false);
+        }, function(e) {
+            console.warn('[VC] Failed to save remote-key diagnostics:', e);
+            self._rkdiagSaving = false;
+            self.toast(self.translatedText('common.settings_save_failed',
+                'Failed to save settings'), 'error');
+            return self.fetchRemoteKeyDiag();
+        });
     },
 
     // ==================== UI UPDATES ====================
@@ -4205,9 +4661,12 @@ var VC = {
 
     updateCloudControlAvailability: function() {
         var state = this.vehicleState.cloudState || 'checking';
+        var localOk = this.vehicleState.localRemoteKey === true;
         var controls = document.querySelectorAll('[data-requires-cloud="true"]');
         for (var i = 0; i < controls.length; i++) {
-            controls[i].setAttribute('data-cloud-state', state);
+            var el = controls[i];
+            var usable = localOk && el.getAttribute('data-local-key-ok') === 'true';
+            el.setAttribute('data-cloud-state', usable ? 'connected' : state);
         }
     },
 
@@ -4279,27 +4738,78 @@ var VC = {
         var btnDRL = document.getElementById('btnDRL');
         var on = !!(this.vehicleState.lights.dayTimeLight);
         if (btnDRL) { if (on) btnDRL.classList.add('on'); else btnDRL.classList.remove('on'); }
+        var btnCabin = document.getElementById('btnCabinLight');
+        if (btnCabin) {
+            var cabin = this.vehicleState.lights.readingLight;
+            if (typeof cabin === 'boolean') this._cabinLightOn = cabin;
+            btnCabin.classList.toggle('on', !!this._cabinLightOn);
+        }
 
         var slider = document.getElementById('ambientColourSlider');
         if (slider) {
             var colour = this.vehicleState.lights.ambientColour;
-            if (typeof colour === 'number') {
+            var known = typeof colour === 'number';
+            var options = this.vehicleState.lights.ambientOptions;
+            var picked = known && options && colour >= 1 && colour <= options.length
+                ? options[colour - 1] : null;
+            if (options && options.length) {
+                slider.disabled = false;
+                // The palette length is the car's own (31, or 7 on some DiLink 5 trims).
+                slider.max = options.length;
+                // background-image, not the shorthand: the shorthand resets
+                // background-clip and the ramp would paint over the touch padding.
+                slider.style.backgroundImage =
+                    'linear-gradient(to right, ' + options.join(',') + ')';
+            } else {
+                slider.disabled = true;
+            }
+            if (known) {
                 slider.value = colour;
-                var options = this.vehicleState.lights.ambientOptions;
-                var picked = options && colour >= 1 && colour <= options.length
-                    ? options[colour - 1] : null;
-                if (options && options.length) {
-                    slider.disabled = false;
-                    // background-image, not the shorthand: the shorthand resets
-                    // background-clip and the ramp would paint over the touch padding.
-                    slider.style.backgroundImage =
-                        'linear-gradient(to right, ' + options.join(',') + ')';
-                } else {
-                    slider.disabled = true;
-                }
                 this._paintAmbientThumb(slider, picked);
             }
+            var rgbPicker = document.getElementById('ambientRgbPicker');
+            if (rgbPicker) {
+                rgbPicker.disabled = slider.disabled;
+                if (rgbPicker.parentNode) {
+                    rgbPicker.parentNode.classList.toggle('is-disabled', slider.disabled);
+                }
+                // An open picker keeps the user's pick; the first poll after it closes catches up.
+                if (picked && document.activeElement !== rgbPicker) {
+                    rgbPicker.value = String(picked).toLowerCase();
+                }
+            }
         }
+    },
+
+    /**
+     * One ambient write at a time: DiLink 5 confirms each by readback and its bridge queues only
+     * one more request. A pick made meanwhile replaces any older pending one.
+     */
+    _postAmbient: function(body) {
+        var self = this;
+        if (self._ambientInFlight) {
+            self._ambientPendingBody = body;
+            return;
+        }
+        self._ambientInFlight = true;
+        self._ambientHoldUntil = Date.now() + 15000;
+        self.apiPost('/api/vehicle/lights', body).then(function(result) {
+            self._ambientInFlight = false;
+            var next = self._ambientPendingBody;
+            self._ambientPendingBody = null;
+            if (next) {
+                self._postAmbient(next);
+                return;
+            }
+            self._ambientHoldUntil = result.success ? Date.now() + 3000 : 0;
+            if (result.success && typeof result.colour === 'number') {
+                self.vehicleState.lights.ambientColour = result.colour;
+            }
+            self.updateLightsUI();
+            self.toastFromResult(result,
+                BYD.i18n.t('vehicle.ambient_set'),
+                BYD.i18n.t('vehicle.ambient_failed'));
+        });
     },
 
     _paintAmbientThumb: function(slider, picked) {

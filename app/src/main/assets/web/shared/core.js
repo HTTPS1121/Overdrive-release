@@ -1156,7 +1156,8 @@ BYD.core = {
             const survEl = document.getElementById('survStatus');
             if (survEl) {
                 if (status.safeZoneSuppressed || status.inSafeZone) {
-                    survEl.textContent = '🏠 ' + BYD.i18n.t('status.safe');
+                    survEl.textContent = BYD.i18n.t('status.safe');
+                    survEl.insertAdjacentHTML('afterbegin', '<svg class="r-inline-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>');
                     survEl.className = 'status-value safe';
                 } else {
                     const active = status.gpuSurveillance || false;
@@ -1167,6 +1168,9 @@ BYD.core = {
 
             // Network status (WiFi SSID + IP or Mobile Data)
             this.updateNetworkStatus(status);
+            if (window.RemoteAccess && RemoteAccess.updateBluetoothStatus) {
+                RemoteAccess.updateBluetoothStatus(status.bluetooth, false);
+            }
 
             // Connection dot
             const connDot = document.getElementById('connDot');
@@ -1196,6 +1200,9 @@ BYD.core = {
             return status;
         } catch (e) {
             this.pollFailureCount++;
+            if (window.RemoteAccess && RemoteAccess.updateBluetoothStatus) {
+                RemoteAccess.updateBluetoothStatus(this.lastStatus && this.lastStatus.bluetooth, true);
+            }
             console.warn('[Core] Status refresh failed (' + this.pollFailureCount + '): ' + e);
             // Don't blank the dashboard on a single hiccup — keep the last
             // good values rendered. After a couple of consecutive failures,
@@ -1418,7 +1425,7 @@ BYD.core = {
         const evSohRow = document.getElementById('evSohRow');
         if (evSohEl && status.soh && status.soh.percent > 0) {
             evSohEl.textContent = status.soh.percent.toFixed(1) + '%';
-            evSohEl.style.color = status.soh.percent >= 90 ? '#22c55e' : status.soh.percent >= 80 ? '#00D4AA' : status.soh.percent >= 70 ? '#fbbf24' : '#ef4444';
+            evSohEl.style.color = status.soh.percent >= 90 ? 'var(--success)' : status.soh.percent >= 80 ? 'var(--primary)' : status.soh.percent >= 70 ? 'var(--warning)' : 'var(--danger)';
             if (evSohRow) evSohRow.style.display = '';
         }
 
@@ -1777,6 +1784,52 @@ BYD.core = {
 BYD.utils = BYD.utils || {};
 BYD.utils.toast = (msg, type) => BYD.core.toast(msg, type);
 
+/** Format actual radio telemetry, never a saved preference or phone connection. */
+BYD.utils.bluetoothStatus = function (radio, extraAgeMs, transportStale) {
+    radio = radio || {};
+    var states = { 10: 'off', 11: 'turning_on', 12: 'on', 13: 'turning_off' };
+    var nativeState = typeof radio.state === 'number' ? states[radio.state] : null;
+    var age = typeof radio.ageMs === 'number' && isFinite(radio.ageMs) && radio.ageMs >= 0
+        ? radio.ageMs : null;
+    var extra = typeof extraAgeMs === 'number' && isFinite(extraAgeMs) && extraAgeMs >= 0
+        ? extraAgeMs : 0;
+    var maxAge = typeof radio.maxAgeMs === 'number' && isFinite(radio.maxAgeMs) && radio.maxAgeMs > 0
+        ? radio.maxAgeMs : 15000;
+    var fresh = !transportStale && radio.available === true && radio.fresh === true &&
+        nativeState && age !== null && age + extra <= maxAge;
+    var state = fresh ? nativeState : nativeState ? 'stale' :
+        radio.status === 'unavailable' ? 'unavailable' : 'unknown';
+    function tr(key, fallback, params) {
+        var value = BYD.i18n && BYD.i18n.t ? BYD.i18n.t(key, params) : null;
+        if (!value || value === key) {
+            value = fallback;
+            if (params) Object.keys(params).forEach(function (name) {
+                value = value.replace('{' + name + '}', params[name]);
+            });
+        }
+        return value;
+    }
+    function label(key) {
+        var labels = {
+            on: ['status.on', 'ON'], off: ['status.off', 'OFF'],
+            turning_on: ['status.bluetooth_turning_on', 'Turning on'],
+            turning_off: ['status.bluetooth_turning_off', 'Turning off'],
+            unknown: ['status.unknown', 'Unknown'], unavailable: ['status.unavailable', 'Unavailable'],
+            stale: ['status.stale', 'Stale']
+        };
+        return tr(labels[key][0], labels[key][1]);
+    }
+    return {
+        state: state, label: label(state), fresh: !!fresh,
+        enabled: fresh ? nativeState === 'on' : null,
+        detail: state === 'stale'
+            ? tr('status.bluetooth_last_reported', 'Last reported: {state}', { state: label(nativeState) })
+            : state === 'unknown' ? tr('status.bluetooth_waiting', 'Waiting for car Bluetooth status')
+            : state === 'unavailable' ? tr('status.bluetooth_unavailable', 'Bluetooth radio unavailable')
+            : tr('status.bluetooth_radio', 'Car Bluetooth radio')
+    };
+};
+
 /**
  * Scroll the page back to the top of a list after it is replaced under the
  * user — paging a catalog, applying a filter, changing a sort. Landing on
@@ -1971,6 +2024,7 @@ BYD.utils._showModal = function (opts) {
 
         try {
             if (input) input.focus();
+            else if (opts.danger && cancelBtn) cancelBtn.focus();
             else confirmBtn.focus();
         } catch (e) {}
 

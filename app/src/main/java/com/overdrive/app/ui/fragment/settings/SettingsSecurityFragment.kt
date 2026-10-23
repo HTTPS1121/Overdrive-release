@@ -78,6 +78,12 @@ class SettingsSecurityFragment : Fragment() {
         rowChange.setOnClickListener { onChangePinTapped() }
         rowAutoLock.setOnClickListener { onAutoLockTapped() }
 
+        // The layout carries the legacy-root command as its static text; bind
+        // the live one so a head unit on the alternate scratch root shows the
+        // folder its shell can actually touch.
+        view.findViewById<android.widget.TextView?>(R.id.tvSecurityRecoveryCommand)?.text =
+            com.overdrive.app.auth.PinManager.recoveryCommand()
+
         renderState()
     }
 

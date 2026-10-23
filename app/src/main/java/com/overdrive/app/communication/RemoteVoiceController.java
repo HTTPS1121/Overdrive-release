@@ -68,7 +68,7 @@ public final class RemoteVoiceController {
         try {
             process = new ProcessBuilder(
                     "sh", "-c",
-                    "appops get com.overdrive.app SYSTEM_ALERT_WINDOW")
+                    com.overdrive.app.util.ScratchRoot.remap("appops get com.overdrive.app SYSTEM_ALERT_WINDOW"))
                     .redirectErrorStream(true)
                     .start();
             if (!process.waitFor(900, TimeUnit.MILLISECONDS)) {
@@ -84,8 +84,12 @@ public final class RemoteVoiceController {
             }
             String value = bytes.toString("UTF-8").toLowerCase(Locale.US);
             if (value.contains("allow") || value.contains("foreground")) return true;
-            if (value.contains("deny") || value.contains("ignore")
-                    || value.contains("default")) return false;
+            if (value.contains("deny") || value.contains("ignore")) return false;
+            // "default" = the op was never toggled (every pm-grant install); the platform
+            // resolves it from the static grant, which this shell probe cannot see. Report
+            // unknown so the service handshake stays authoritative — same rule as
+            // OverlayPermissionChecker.appOpsDecision in the app process.
+            if (value.contains("default")) return null;
         } catch (Throwable t) {
             logger.debug("Overlay permission probe unavailable: " + t.getMessage());
         } finally {
@@ -102,7 +106,7 @@ public final class RemoteVoiceController {
 
     private static void exec(String command) {
         try {
-            Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+            Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(command)});
         } catch (Throwable t) {
             logger.warn("Remote voice service command failed: " + t.getMessage());
         }

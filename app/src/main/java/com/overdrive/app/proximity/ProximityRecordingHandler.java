@@ -36,6 +36,12 @@ public class ProximityRecordingHandler {
     // tag-replace semantics: a later push with the same tag swaps the
     // banner) and points at the now-finalised .mp4 + sibling hero JPEG.
     private String activeRecordingFile;
+    // Whether this clip has had its radar notification; a clip a blind-spot alert started has not.
+    private boolean radarNotified = false;
+    // Tag of the start push, so the final push replaces that card even after a RED upgrade.
+    private String activeNotificationTag;
+    // The live session began with a blind-spot alert; if that clip failed to start, a radar trigger retries.
+    private boolean startedByBlindSpot = false;
     
     public ProximityRecordingHandler(GpuSurveillancePipeline pipeline) {
         this.pipeline = pipeline;
@@ -49,12 +55,23 @@ public class ProximityRecordingHandler {
      * @param triggerLevel The trigger level that caused recording ("YELLOW" or "RED")
      */
     public void startRecording(String triggerLevel) {
+        startRecording(triggerLevel, true);
+    }
+
+    /** Starts a clip for a blind-spot alert, without a notification: the driver is in the car. */
+    public void startBlindSpotRecording() {
+        startRecording("BLIND_SPOT", false);
+    }
+
+    private void startRecording(String triggerLevel, boolean radar) {
         if (isRecording) {
             logger.warn("Already recording, ignoring start request");
             return;
         }
         
-        currentTriggerLevel = triggerLevel;
+        currentTriggerLevel = radar ? triggerLevel : null;
+        radarNotified = false;
+        startedByBlindSpot = !radar;
         
         try {
             // Per-trigger SD/USB mount sanity-check, mirroring the surveillance
@@ -96,6 +113,8 @@ public class ProximityRecordingHandler {
             isRecording = true;
             
             logger.info("Proximity recording started: trigger=" + triggerLevel + " dir=" + outputDir.getAbsolutePath());
+            if (!radar) return;
+            radarNotified = true;
             
             // Send Telegram notification
             sendTelegramNotification(triggerLevel);
@@ -126,6 +145,7 @@ public class ProximityRecordingHandler {
             // the exact clip being recorded and renders its thumbnail.
             String filename = activeRecordingFilename();
             activeRecordingFile = filename;
+            activeNotificationTag = "proximity-" + triggerLevel;
             String url;
             if (filename != null) {
                 String enc = java.net.URLEncoder.encode(filename, "UTF-8");
@@ -188,6 +208,7 @@ public class ProximityRecordingHandler {
             // Stop recording
             pipeline.stopRecording();
             isRecording = false;
+            radarNotified = false;
 
             logger.info("Proximity recording stopped");
 
@@ -204,6 +225,7 @@ public class ProximityRecordingHandler {
             e.printStackTrace();
         } finally {
             activeRecordingFile = null;
+            activeNotificationTag = null;
         }
     }
 
@@ -246,7 +268,8 @@ public class ProximityRecordingHandler {
                                     : com.overdrive.app.notifications.NotificationEvent.Severity.WARN,
                             red ? "Object very close" : "Object nearby",
                             red ? "Within 0.5 m" : "Within 0.8 m",
-                            "proximity-" + triggerLevel,
+                            activeNotificationTag != null
+                                    ? activeNotificationTag : "proximity-" + triggerLevel,
                             url,
                             data));
         } catch (Throwable t) {
@@ -263,7 +286,21 @@ public class ProximityRecordingHandler {
      */
     public void extendRecording(String triggerLevel) {
         if (!isRecording) {
+            if (startedByBlindSpot) {
+                logger.info("Blind-spot clip did not start; starting it for the radar trigger");
+                startRecording(triggerLevel, true);
+                return;
+            }
             logger.warn("Cannot extend - not recording");
+            return;
+        }
+        if (!radarNotified) {
+            // First radar trigger in a clip a blind-spot alert started: notify it like a new event.
+            currentTriggerLevel = triggerLevel;
+            radarNotified = true;
+            logger.info("Radar trigger during blind-spot recording: " + triggerLevel);
+            sendTelegramNotification(triggerLevel);
+            publishProximityNotification(triggerLevel);
             return;
         }
         

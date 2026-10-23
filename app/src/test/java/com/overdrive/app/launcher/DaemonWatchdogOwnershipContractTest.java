@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.junit.Assume;
 import org.junit.Test;
 
@@ -208,7 +209,7 @@ public class DaemonWatchdogOwnershipContractTest {
             throws Exception {
         String script = join(DaemonLauncher.Companion
                 .buildAccSentryWatchdogScript(
-                        "/data/app/base.apk", ""));
+                        "/data/app/base.apk", "", true));
 
         assertOwnershipProtocol(script, "/data/local/tmp/start_acc_sentry.sh",
                 "/data/local/tmp/acc_sentry_watchdog.pid",
@@ -217,6 +218,219 @@ public class DaemonWatchdogOwnershipContractTest {
         assertTrue(acquired < script.indexOf("/system/bin/device_config put"));
         assertTrue(acquired < script.indexOf("=== WATCHDOG STARTED ==="));
         assertShellSyntax(script);
+    }
+
+    @Test
+    public void nonDi5AccWatchdogHasNoHealthPollerOrRecurringWakeup()
+            throws Exception {
+        String script = join(DaemonLauncher.Companion
+                .buildAccSentryWatchdogScript(
+                        "/data/app/base.apk", "", false));
+
+        assertFalse(script.contains("HEALTH_FILE="));
+        assertFalse(script.contains("HEALTH_ARMED="));
+        assertFalse(script.contains("HEALTH_WATCH_PID"));
+
+        String launcher = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/launcher/DaemonLauncher.kt");
+        String writer = section(
+                launcher,
+                "private fun writeWatchdogScript(",
+                "private fun launchWatchdogScript(");
+        assertTrue(writer.contains(
+                "DiLink5Platform.isSelected()"));
+        String telegram = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/daemon/telegram/"
+                        + "DaemonCommandHandler.java");
+        assertTrue(telegram.contains(
+                ".DiLink5Platform.isSelected())"));
+        assertShellSyntax(script);
+    }
+
+    @Test
+    public void vehicleModeRedeployPreservesStopAndParkedGates()
+            throws Exception {
+        String cleanup = DaemonLauncher.Companion
+                .buildAccSentryModeSyncCleanupScript();
+
+        assertOrdered(
+                cleanup,
+                "[ -f \"/data/local/tmp/acc_sentry_daemon.disabled\" ]",
+                "MODE_SYNC_SKIPPED_DISABLED",
+                "[ -f \"/data/local/tmp/overdrive_parked_shutdown\" ]",
+                "MODE_SYNC_SKIPPED_PARKED",
+                "rm -f \"/data/local/tmp/start_acc_sentry.sh\"",
+                "grep -F 'acc_sentry'",
+                "sleep 1",
+                "\"/data/local/tmp/acc_sentry_watchdog.pid\"",
+                "\"/data/local/tmp/acc_sentry_health\"",
+                "rm -rf \"/data/local/tmp/acc_sentry_watchdog.lock\"",
+                "MODE_SYNC_REDEPLOY_READY");
+        assertFalse(cleanup.contains(
+                "rm -f \"/data/local/tmp/acc_sentry_daemon.disabled\""));
+        assertShellSyntax(cleanup);
+
+        String launcher = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/launcher/DaemonLauncher.kt");
+        String redeploy = section(
+                launcher,
+                "fun redeployAccSentryDaemonForVehicleMode(",
+                "private fun launchAccSentryDaemonInternal(");
+        assertTrue(redeploy.contains(
+                "buildAccSentryModeSyncCleanupScript()"));
+        assertTrue(redeploy.contains(
+                "enableDi5HealthSupervision"));
+        assertTrue(redeploy.contains(
+                "allowBareFallback = false"));
+        assertFalse(redeploy.contains(
+                "DiLink5Platform.isSelected()"));
+    }
+
+    @Test
+    public void accWatchdogRestartsOnlyAnArmedStaleDi5Heartbeat()
+            throws Exception {
+        String script = join(DaemonLauncher.Companion
+                .buildAccSentryWatchdogScript(
+                        "/data/app/base.apk", "", true));
+
+        int daemonPid = script.indexOf("DAEMON_PID=$!");
+        int healthStart = script.indexOf("HEALTH_ARMED=0", daemonPid);
+        int matchingPid = script.indexOf(
+                "[ \"$HEALTH_MARKER_PID\" = \"$DAEMON_PID\" ]",
+                healthStart);
+        int arm = script.indexOf("HEALTH_ARMED=1", matchingPid);
+        int staleGate = script.indexOf(
+                "if [ $HEALTH_ARMED -eq 1 ]; then", arm);
+        int staleAge = script.indexOf(
+                "HEALTH_AGE=$((NOW_SEC - HEALTH_LAST_GOOD))",
+                staleGate);
+        int kill = script.indexOf("kill -9 $DAEMON_PID", staleAge);
+        int wait = script.indexOf("wait $DAEMON_PID", kill);
+        int stopHealth = script.indexOf(
+                "kill $HEALTH_WATCH_PID", wait);
+
+        assertTrue(daemonPid >= 0);
+        assertTrue(healthStart > daemonPid);
+        assertTrue(matchingPid > healthStart);
+        assertTrue(arm > matchingPid);
+        assertTrue(staleGate > arm);
+        assertTrue(staleAge > staleGate);
+        assertTrue(kill > staleAge);
+        assertTrue(wait > kill);
+        assertTrue(stopHealth > wait);
+
+        // A non-Di5 child never publishes a matching marker, so this remains
+        // zero and the kill branch is unreachable.
+        assertTrue(script.contains("HEALTH_ARMED=0"));
+        assertTrue(script.contains(
+                "if [ $HEALTH_CHECK_GAP -gt $HEALTH_SUSPEND_GAP_SEC ]; then"));
+        assertTrue(script.contains(
+                "HEALTH_LAST_MARKER=$HEALTH_MARKER_SEC"));
+        assertTrue(script.contains(
+                "elif [ \"$HEALTH_MARKER_SEC\""
+                        + " != \"$HEALTH_LAST_MARKER\" ]; then"));
+        assertTrue(script.contains(
+                "granting fresh grace window"));
+        assertShellSyntax(script);
+    }
+
+    @Test
+    public void accHealthSupervisorIsDormantWithoutMarkerAndKillsWhenStale()
+            throws Exception {
+        Path shell = Paths.get("/bin/sh");
+        Assume.assumeTrue(Files.isExecutable(shell));
+
+        Path root = Files.createTempDirectory("overdrive-acc-health-");
+        try {
+            runAccHealthScenario(
+                    shell, root.resolve("no-marker"), false);
+            runAccHealthScenario(
+                    shell, root.resolve("stale-marker"), true);
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private static void runAccHealthScenario(
+            Path shell, Path prefix, boolean publishMarker) throws Exception {
+        Path systemAwk = Paths.get("/usr/bin/awk");
+        Assume.assumeTrue(Files.isExecutable(systemAwk));
+        Path scriptPath = Paths.get(prefix + ".sh");
+        Path logPath = Paths.get(prefix + ".log");
+        Path markerPath = Paths.get(prefix + ".health");
+        Path fakeBin = Files.createDirectories(
+                Paths.get(prefix + ".bin"));
+        Path fakeAwk = fakeBin.resolve("awk");
+        Files.write(fakeAwk, (
+                "#!/bin/sh\n"
+                        + "if [ \"$2\" = \"/proc/uptime\" ]; then\n"
+                        + "  date +%s\n"
+                        + "else\n"
+                        + "  exec \"" + systemAwk + "\" \"$@\"\n"
+                        + "fi\n").getBytes(StandardCharsets.UTF_8));
+        assertTrue(fakeAwk.toFile().setExecutable(true));
+
+        StringBuilder script = new StringBuilder();
+        script.append("#!/bin/sh\n")
+                .append("PATH=\"").append(fakeBin)
+                .append(":$PATH\"; export PATH\n")
+                .append("LOG_FILE=\"").append(logPath).append("\"\n")
+                .append("HEALTH_FILE=\"").append(markerPath).append("\"\n")
+                .append("HEALTH_POLL_SEC=1\n")
+                .append("HEALTH_STALE_SEC=1\n")
+                .append("HEALTH_SUSPEND_GAP_SEC=30\n")
+                .append(": > \"$LOG_FILE\"\n")
+                .append("sleep 30 &\n")
+                .append("DAEMON_PID=$!\n");
+        if (publishMarker) {
+            script.append(
+                    "NOW_SEC=$(awk '{print int($1)}' /proc/uptime)\n")
+                    .append("echo \"$DAEMON_PID $NOW_SEC\" > \"$HEALTH_FILE\"\n");
+        }
+        script.append(String.join("\n",
+                DaemonLauncher.Companion.accSentryHealthCoprocessLines(
+                        "DAEMON_PID", "HEALTH_WATCH_PID")))
+                .append('\n');
+        if (publishMarker) {
+            script.append("TRIES=0\n")
+                    .append("while ! grep -F 'heartbeat stale' \"$LOG_FILE\" >/dev/null 2>&1; do\n")
+                    .append("  TRIES=$((TRIES + 1))\n")
+                    .append("  if [ $TRIES -ge 10 ]; then\n")
+                    .append("    kill $DAEMON_PID $HEALTH_WATCH_PID 2>/dev/null\n")
+                    .append("    exit 41\n")
+                    .append("  fi\n")
+                    .append("  sleep 1\n")
+                    .append("done\n")
+                    .append("wait $DAEMON_PID 2>/dev/null || true\n")
+                    .append("kill -0 $DAEMON_PID 2>/dev/null && exit 42\n")
+                    .append("wait $HEALTH_WATCH_PID 2>/dev/null || true\n");
+        } else {
+            script.append("sleep 3\n")
+                    .append("kill -0 $DAEMON_PID 2>/dev/null || exit 43\n")
+                    .append("kill $DAEMON_PID $HEALTH_WATCH_PID 2>/dev/null\n")
+                    .append("wait $DAEMON_PID 2>/dev/null || true\n")
+                    .append("wait $HEALTH_WATCH_PID 2>/dev/null || true\n");
+        }
+        Files.write(
+                scriptPath,
+                script.toString().getBytes(StandardCharsets.UTF_8));
+
+        Process process = new ProcessBuilder(
+                shell.toString(), scriptPath.toString())
+                .redirectErrorStream(true)
+                .start();
+        boolean finished = process.waitFor(20, TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+        }
+        byte[] output = process.getInputStream().readAllBytes();
+        assertTrue("health supervisor scenario timed out: "
+                        + new String(output, StandardCharsets.UTF_8),
+                finished);
+        assertEquals(
+                new String(output, StandardCharsets.UTF_8),
+                0,
+                process.exitValue());
     }
 
     private static void assertOwnershipProtocol(

@@ -137,13 +137,15 @@ public class AutomationSafetySettingsAssetTest {
                         + "            m.invoke(dev, level);"));
         assertTrue(collector.contains(
                 "if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_BRIGHTNESS)) return false;\n"
-                        + "            Process p = new ProcessBuilder(\"sh\", \"-c\", script)"));
+                        + "            Process p = new ProcessBuilder(\"sh\", \"-c\", "
+                        + "com.overdrive.app.util.ScratchRoot.remap(script))"));
         assertTrue(collector.contains(
                 "if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;\n"
                         + "                m.invoke(settingDevice);"));
         assertTrue(collector.contains(
                 "if (drivingSafetyBlocked(DrivingSafetyGuard.GUARD_DISPLAY_POWER)) return false;\n"
-                        + "            Process p = new ProcessBuilder(\"sh\", \"-c\", script)"));
+                        + "            Process p = new ProcessBuilder(\"sh\", \"-c\", "
+                        + "com.overdrive.app.util.ScratchRoot.remap(script))"));
         assertTrue(collector.contains(
                 "if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;\n"
                         + "                Object r = m.invoke(bodyworkDevice, val);"));

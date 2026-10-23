@@ -190,9 +190,25 @@ class YoloDetector(private val context: Context) {
     // + optional normalize). Built lazily in init() once we know the
     // input tensor dtype.
     private var imageProcessor: ImageProcessor? = null
-    
+
+    // Non-square crops (the 320×240 mosaic quadrant) are letterboxed instead of
+    // stretched to square; the 4:3→1:1 stretch made painted pillars read as people.
+    // Square crops never touch these. Cached per crop size; guarded by interpLock.
+    private class LetterboxGeometry(val padX: Float, val padY: Float, val contentW: Int, val contentH: Int)
+    private var normalizeProcessor: ImageProcessor? = null
+    private var letterboxProcessor: ImageProcessor? = null
+    private var letterboxGeom: LetterboxGeometry? = null
+    private var letterboxSrcW = -1
+    private var letterboxSrcH = -1
+    private var letterboxBytes: ByteArray? = null
+    private var letterboxBuffer: TensorBuffer? = null
+    private var letterboxImage: TensorImage? = null
+
     // COCO class IDs
     companion object {
+        // Ultralytics' letterbox fill value (the grey the model was trained with).
+        private const val LETTERBOX_PAD: Byte = 114
+
         const val CLASS_PERSON = 0
         const val CLASS_BICYCLE = 1
         const val CLASS_CAR = 2
@@ -353,6 +369,12 @@ class YoloDetector(private val context: Context) {
                     .add(NormalizeOp(0f, 255f))
                     .build()
             }
+            // Letterbox path: same normalize step, applied after padding.
+            normalizeProcessor = if (inputIsQuantized) null else
+                ImageProcessor.Builder().add(NormalizeOp(0f, 255f)).build()
+            letterboxGeom = null
+            letterboxSrcW = -1
+            letterboxSrcH = -1
 
             // Pre-allocate output buffer sized to the actual tensor layout+dtype
             // (outputElements was computed from the probed shape above).
@@ -398,6 +420,9 @@ class YoloDetector(private val context: Context) {
      * @param detectBike Detect bicycle/motorcycle
      * @param minRelativeHeight Minimum object height relative to QUADRANT (SOTA: 15% rule)
      *                          This is applied per-quadrant in 2x2 mosaic grid
+     *
+     * Non-square crops are letterboxed (aspect kept, grey padding); boxes are
+     * returned in the crop's own pixel space either way.
      */
     fun detect(
         rgbData: ByteArray,
@@ -451,7 +476,9 @@ class YoloDetector(private val context: Context) {
             // dtype: FP32 path normalizes 0..255 -> 0.0..1.0; INT8 path is
             // resize-only and the interpreter's input quantization handles
             // the uint8 mapping internally.
-            val tensorImage = imageProcessor!!.process(inputImageBuffer)
+            val geom = if (width != height) letterboxGeometry(width, height) else null
+            val tensorImage = if (geom != null) letterbox(inputImageBuffer!!, geom)
+                              else imageProcessor!!.process(inputImageBuffer)
 
             // Run inference (CPU XNNPACK). interp.run() blocks until the
             // last layer is computed; there's no async/queue model on the
@@ -531,16 +558,55 @@ class YoloDetector(private val context: Context) {
                 // ghost cap, funnel diagnostics) — only the anchor decode +
                 // host NMS disappear because the graph did them.
                 parseOutputEndToEnd(
-                    fo, width, height, confThreshold,
+                    fo, width, height, geom, confThreshold,
                     detectPerson, detectCar, detectAnimal, detectBike, minRelativeHeight
                 )
             } else {
                 parseOutput(
-                    fo, width, height, confThreshold,
+                    fo, width, height, geom, confThreshold,
                     detectPerson, detectCar, detectAnimal, detectBike, minRelativeHeight
                 )
             }
         }
+    }
+
+    /** Aspect-preserving fit of a non-square crop into the square input, cached per crop size. */
+    private fun letterboxGeometry(width: Int, height: Int): LetterboxGeometry {
+        val cached = letterboxGeom
+        if (cached != null && letterboxSrcW == width && letterboxSrcH == height) return cached
+        val scale = minOf(inputSize.toFloat() / width, inputSize.toFloat() / height)
+        val contentW = Math.round(width * scale).coerceIn(1, inputSize)
+        val contentH = Math.round(height * scale).coerceIn(1, inputSize)
+        val geom = LetterboxGeometry(
+            ((inputSize - contentW) / 2).toFloat(), ((inputSize - contentH) / 2).toFloat(), contentW, contentH)
+        letterboxProcessor = ImageProcessor.Builder()
+            .add(ResizeOp(contentH, contentW, ResizeOp.ResizeMethod.BILINEAR))
+            .build()
+        letterboxBytes = ByteArray(inputSize * inputSize * 3).also { it.fill(LETTERBOX_PAD) }
+        letterboxBuffer = TensorBuffer.createFixedSize(intArrayOf(inputSize, inputSize, 3), DataType.UINT8)
+        letterboxImage = TensorImage(DataType.UINT8)
+        letterboxSrcW = width
+        letterboxSrcH = height
+        letterboxGeom = geom
+        return geom
+    }
+
+    /** Resize into the content box and paste onto the grey canvas (padding bytes are never rewritten). */
+    private fun letterbox(src: TensorImage, geom: LetterboxGeometry): TensorImage {
+        val resized = letterboxProcessor!!.process(src).buffer
+        resized.rewind()
+        val canvas = letterboxBytes!!
+        val rowBytes = geom.contentW * 3
+        val padX = geom.padX.toInt()
+        val padY = geom.padY.toInt()
+        for (row in 0 until geom.contentH) {
+            resized.get(canvas, ((padY + row) * inputSize + padX) * 3, rowBytes)
+        }
+        val buf = letterboxBuffer!!
+        buf.loadBuffer(ByteBuffer.wrap(canvas))
+        val img = letterboxImage!!
+        img.load(buf)
+        return normalizeProcessor?.process(img) ?: img
     }
     
     /**
@@ -553,6 +619,7 @@ class YoloDetector(private val context: Context) {
         output: FloatArray,
         imgWidth: Int,
         imgHeight: Int,
+        geom: LetterboxGeometry?,
         confThreshold: Float,
         detectPerson: Boolean,
         detectCar: Boolean,
@@ -566,8 +633,8 @@ class YoloDetector(private val context: Context) {
         val numBoxes = legacyNumBoxes
         val numClasses = legacyNumChannels - 4
 
-        val scaleX = imgWidth.toFloat() / inputSize
-        val scaleY = imgHeight.toFloat() / inputSize
+        val scaleX = imgWidth.toFloat() / (geom?.contentW ?: inputSize)
+        val scaleY = imgHeight.toFloat() / (geom?.contentH ?: inputSize)
 
         // Size-gate reference frame.
         //
@@ -729,10 +796,26 @@ class YoloDetector(private val context: Context) {
             val wPx = w * inputSize
             val hPx = h * inputSize
 
-            val objX = ((cxPx - wPx / 2) * scaleX).toInt().coerceIn(0, imgWidth)
-            val objY = ((cyPx - hPx / 2) * scaleY).toInt().coerceIn(0, imgHeight)
-            val objW = (wPx * scaleX).toInt().coerceIn(0, imgWidth - objX)
-            val objH = (hPx * scaleY).toInt().coerceIn(0, imgHeight - objY)
+            val objX: Int
+            val objY: Int
+            val objW: Int
+            val objH: Int
+            if (geom != null) {
+                // Letterboxed: clip to the content box, then shift out the padding.
+                val bx1 = (cxPx - wPx / 2).coerceIn(geom.padX, geom.padX + geom.contentW) - geom.padX
+                val bx2 = (cxPx + wPx / 2).coerceIn(geom.padX, geom.padX + geom.contentW) - geom.padX
+                val by1 = (cyPx - hPx / 2).coerceIn(geom.padY, geom.padY + geom.contentH) - geom.padY
+                val by2 = (cyPx + hPx / 2).coerceIn(geom.padY, geom.padY + geom.contentH) - geom.padY
+                objX = (bx1 * scaleX).toInt().coerceIn(0, imgWidth)
+                objY = (by1 * scaleY).toInt().coerceIn(0, imgHeight)
+                objW = ((bx2 - bx1) * scaleX).toInt().coerceIn(0, imgWidth - objX)
+                objH = ((by2 - by1) * scaleY).toInt().coerceIn(0, imgHeight - objY)
+            } else {
+                objX = ((cxPx - wPx / 2) * scaleX).toInt().coerceIn(0, imgWidth)
+                objY = ((cyPx - hPx / 2) * scaleY).toInt().coerceIn(0, imgHeight)
+                objW = (wPx * scaleX).toInt().coerceIn(0, imgWidth - objX)
+                objH = (hPx * scaleY).toInt().coerceIn(0, imgHeight - objY)
+            }
 
             // Quadrant-relative distance filter (2×2 mosaic). Inlined to a
             // single `when` over bestClass; thresholds were precomputed above.
@@ -862,6 +945,7 @@ class YoloDetector(private val context: Context) {
         output: FloatArray,
         imgWidth: Int,
         imgHeight: Int,
+        geom: LetterboxGeometry?,
         confThreshold: Float,
         detectPerson: Boolean,
         detectCar: Boolean,
@@ -870,8 +954,8 @@ class YoloDetector(private val context: Context) {
         minRelativeHeight: Float
     ): List<Detection> {
 
-        val scaleX = imgWidth.toFloat() / inputSize
-        val scaleY = imgHeight.toFloat() / inputSize
+        val scaleX = imgWidth.toFloat() / (geom?.contentW ?: inputSize)
+        val scaleY = imgHeight.toFloat() / (geom?.contentH ?: inputSize)
 
         // Size-gate reference frame: the crop IS the reference frame — see the
         // rationale block in parseOutput (the /2 mosaic-era bug).
@@ -965,6 +1049,13 @@ class YoloDetector(private val context: Context) {
             if (!tensorIsPixelUnits) {
                 x1 *= inputSize; y1 *= inputSize
                 x2 *= inputSize; y2 *= inputSize
+            }
+            if (geom != null) {
+                // Letterboxed: clip to the content box, then shift out the padding.
+                x1 = x1.coerceIn(geom.padX, geom.padX + geom.contentW) - geom.padX
+                x2 = x2.coerceIn(geom.padX, geom.padX + geom.contentW) - geom.padX
+                y1 = y1.coerceIn(geom.padY, geom.padY + geom.contentH) - geom.padY
+                y2 = y2.coerceIn(geom.padY, geom.padY + geom.contentH) - geom.padY
             }
 
             val objX = (x1 * scaleX).toInt().coerceIn(0, imgWidth)
@@ -1130,6 +1221,13 @@ class YoloDetector(private val context: Context) {
             floatOutput = null
             boxesScratch = null
             nmsScratch = null
+            letterboxProcessor = null
+            letterboxGeom = null
+            letterboxSrcW = -1
+            letterboxSrcH = -1
+            letterboxBytes = null
+            letterboxBuffer = null
+            letterboxImage = null
         }
     }
 }

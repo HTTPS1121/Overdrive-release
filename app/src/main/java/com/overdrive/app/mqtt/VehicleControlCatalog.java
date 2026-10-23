@@ -321,6 +321,11 @@ public final class VehicleControlCatalog {
                 return null;
             }
             if ("number".equals(platform)) {
+                // ambient_colour also takes a strict #RRGGBB, matched to the nearest palette colour.
+                if ("ambient_colour".equals(key) && value.startsWith("#")
+                        && com.overdrive.app.byd.light.AmbientPalette.parseRgb(value) > 0) {
+                    return value;
+                }
                 try {
                     int number = Integer.parseInt(value);
                     if (number < min || number > max) return null;
@@ -1089,9 +1094,15 @@ public final class VehicleControlCatalog {
                         ? null : snap.hazard));
 
         // ── Ambient lights colour — number (real state, 1-based palette index) ──
+        // A strict #RRGGBB payload picks the nearest palette colour instead of an index.
         register(number("ambient_colour", "Ambient Lights Colour", "mdi:format-color-fill", "config",
-                "ambient_colour", 1, 31, 1, "", (sub, payload, snap) ->
-                        ControlAction.of(new VehicleCommandRouter.AmbientColourCommand(pInt(payload, 1)))));
+                "ambient_colour", 1, 31, 1, "", (sub, payload, snap) -> {
+                    int rgb = payload != null && payload.trim().startsWith("#")
+                            ? com.overdrive.app.byd.light.AmbientPalette.parseRgb(payload) : -1;
+                    return ControlAction.of(rgb > 0
+                            ? VehicleCommandRouter.AmbientColourCommand.rgb(rgb, "both")
+                            : new VehicleCommandRouter.AmbientColourCommand(pInt(payload, 1)));
+                }));
 
         // ── Ambient lights main switch — switch (whole cabin) ────────────────
         // State published to ambient_enabled ONLY when the vehicle actually reports it (the
@@ -1108,6 +1119,13 @@ public final class VehicleControlCatalog {
                         ControlAction.of(new VehicleCommandRouter.AmbientPowerCommand(truthy(payload))),
                 snap -> snap == null || snap.ambientEnabled == com.overdrive.app.byd.BydVehicleData.UNAVAILABLE
                         ? null : snap.ambientEnabled == 1));
+
+        // ── Cabin (reading) light — switch; state only when the trim reports it ──
+        register(sw("reading_light", "Cabin Light", "mdi:ceiling-light", "config", "reading_light",
+                "1", "0", (sub, payload, snap) ->
+                        ControlAction.of(new VehicleCommandRouter.ReadingLightCommand(truthy(payload))),
+                snap -> snap == null || snap.readingLight == com.overdrive.app.byd.BydVehicleData.UNAVAILABLE
+                        ? null : snap.readingLight == 1));
 
         // ── Ambient lights brightness — number, whole cabin, 0-100% ──────────
         // Optimistic (echo): the SDK exposes a 0..5 LEVEL per zone, not a whole-cabin percent,

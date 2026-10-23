@@ -364,7 +364,8 @@
 /* Ambient-colour swatch grid — matches the Vehicle Control page's colour picker
    (round chips + active ring) instead of the old drag-a-gradient slider. The value
    stored is still the 1-based palette index; this is just a friendlier front-end. */
-.form-grid .row .inputs > .colour-swatches {
+.form-grid .row .inputs > .colour-swatches,
+.form-grid .cond-value-body > .colour-swatches {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -374,7 +375,8 @@
     background: none;
     height: auto;
 }
-.form-grid .row .inputs > .colour-swatches .colour-swatch {
+.form-grid .row .inputs > .colour-swatches .colour-swatch,
+.form-grid .cond-value-body > .colour-swatches .colour-swatch {
     width: 24px; height: 24px;
     border-radius: 50%;
     border: 2px solid transparent;
@@ -384,14 +386,17 @@
     -webkit-tap-highlight-color: transparent;
     -webkit-transition: all .15s; transition: all .15s;
 }
-.form-grid .row .inputs > .colour-swatches .colour-swatch:hover {
+.form-grid .row .inputs > .colour-swatches .colour-swatch:hover,
+.form-grid .cond-value-body > .colour-swatches .colour-swatch:hover {
     -webkit-transform: scale(1.15); transform: scale(1.15);
 }
-.form-grid .row .inputs > .colour-swatches .colour-swatch.active {
+.form-grid .row .inputs > .colour-swatches .colour-swatch.active,
+.form-grid .cond-value-body > .colour-swatches .colour-swatch.active {
     border-color: var(--vc-text-primary, #fff);
     box-shadow: 0 0 6px currentColor;
     -webkit-transform: scale(1.1); transform: scale(1.1);
 }
+.form-grid .cond-value-body > .colour-swatches { margin: 0; }
 .description-tooltip.visible {
     opacity: 1;
 }
@@ -811,3 +816,569 @@
 /* Same reason, on the live-signal hint's label→value pair (a flex row, so RTL
    reverses the order and a bare margin-right would land on the outer edge). */
 [dir="rtl"] .signal-hint-label { margin-right: 0; margin-left: 6px; }
+
+/* ===== BLOCK BUILDER (revamp) ===========================================================
+   Editor = colour-coded blocks WHEN → IF → WAIT → THEN (→ ELSE) holding step tiles; every
+   step carries an icon chip + its text, so hue is never the only signal. Hue goes on icon
+   chips, the 3px left bar, connectors and soft tints only — text stays on-surface(-variant).
+   Raw hex is allowed ONLY in this palette; everything below uses var(--auto-<key>[-soft]).
+   Chrome-58: sibling margins (no flex gap), no :is/:has/inset/logical props. */
+:root {
+    --auto-when: #5DDBB6;    --auto-when-soft: rgba(93, 219, 182, 0.14);
+    --auto-if: #F5C067;      --auto-if-soft: rgba(245, 192, 103, 0.14);
+    --auto-wait: #85CFFF;    --auto-wait-soft: rgba(133, 207, 255, 0.14);
+    --auto-then: #7EE08A;    --auto-then-soft: rgba(126, 224, 138, 0.14);
+    --auto-else: #FF9E80;    --auto-else-soft: rgba(255, 158, 128, 0.14);
+    --auto-loop: #C4A7FF;    --auto-loop-soft: rgba(196, 167, 255, 0.16);
+    --auto-var: #7FDDE8;     --auto-var-soft: rgba(127, 221, 232, 0.14);
+    --auto-group: #A5B4FC;   --auto-group-soft: rgba(165, 180, 252, 0.16);
+    --auto-vehicle: #7EE08A; --auto-vehicle-soft: rgba(126, 224, 138, 0.14);
+    --auto-climate: #6FD3F5; --auto-climate-soft: rgba(111, 211, 245, 0.14);
+    --auto-body: #A9C1D9;    --auto-body-soft: rgba(169, 193, 217, 0.16);
+    --auto-light: #F7D774;   --auto-light-soft: rgba(247, 215, 116, 0.14);
+    --auto-safety: #FFB37A;  --auto-safety-soft: rgba(255, 179, 122, 0.14);
+    --auto-drive: #B9E36A;   --auto-drive-soft: rgba(185, 227, 106, 0.14);
+    --auto-media: #FF9ECF;   --auto-media-soft: rgba(255, 158, 207, 0.14);
+    --auto-display: #8DB7FF; --auto-display-soft: rgba(141, 183, 255, 0.14);
+    --auto-system: var(--on-surface-variant); --auto-system-soft: var(--well-2);
+    --auto-surv: #FF8A8A;    --auto-surv-soft: rgba(255, 138, 138, 0.14);
+    --auto-adv: #C3B5D9;     --auto-adv-soft: rgba(195, 181, 217, 0.16);
+    --auto-sensor: #E0C9A6;  --auto-sensor-soft: rgba(224, 201, 166, 0.14);
+    --auto-other: var(--on-surface-variant); --auto-other-soft: var(--well-2);
+}
+:root[data-theme="light"] {
+    --auto-when: #007A62;    --auto-when-soft: rgba(0, 122, 98, 0.10);
+    --auto-if: #8C5A00;      --auto-if-soft: rgba(140, 90, 0, 0.10);
+    --auto-wait: #00658F;    --auto-wait-soft: rgba(0, 101, 143, 0.10);
+    --auto-then: #2E7D32;    --auto-then-soft: rgba(46, 125, 50, 0.10);
+    --auto-else: #B23C17;    --auto-else-soft: rgba(178, 60, 23, 0.10);
+    --auto-loop: #6A45C8;    --auto-loop-soft: rgba(106, 69, 200, 0.10);
+    --auto-var: #00737F;     --auto-var-soft: rgba(0, 115, 127, 0.10);
+    --auto-group: #4053B8;   --auto-group-soft: rgba(64, 83, 184, 0.10);
+    --auto-vehicle: #2E7D32; --auto-vehicle-soft: rgba(46, 125, 50, 0.10);
+    --auto-climate: #006B8F; --auto-climate-soft: rgba(0, 107, 143, 0.10);
+    --auto-body: #3E5A73;    --auto-body-soft: rgba(62, 90, 115, 0.10);
+    --auto-light: #7A6200;   --auto-light-soft: rgba(122, 98, 0, 0.10);
+    --auto-safety: #A04E00;  --auto-safety-soft: rgba(160, 78, 0, 0.10);
+    --auto-drive: #4F6E00;   --auto-drive-soft: rgba(79, 110, 0, 0.10);
+    --auto-media: #A62C6E;   --auto-media-soft: rgba(166, 44, 110, 0.10);
+    --auto-display: #2D5BB8; --auto-display-soft: rgba(45, 91, 184, 0.10);
+    --auto-surv: #B3261E;    --auto-surv-soft: rgba(179, 38, 30, 0.10);
+    --auto-adv: #5E4F78;     --auto-adv-soft: rgba(94, 79, 120, 0.10);
+    --auto-sensor: #6E5A3A;  --auto-sensor-soft: rgba(110, 90, 58, 0.10);
+}
+
+/* Step hue key → --step / --step-soft (editor rows and list recipe chips). */
+[data-step-cat="when"]    { --step: var(--auto-when);    --step-soft: var(--auto-when-soft); }
+[data-step-cat="if"]      { --step: var(--auto-if);      --step-soft: var(--auto-if-soft); }
+[data-step-cat="wait"]    { --step: var(--auto-wait);    --step-soft: var(--auto-wait-soft); }
+[data-step-cat="then"]    { --step: var(--auto-then);    --step-soft: var(--auto-then-soft); }
+[data-step-cat="else"]    { --step: var(--auto-else);    --step-soft: var(--auto-else-soft); }
+[data-step-cat="loop"]    { --step: var(--auto-loop);    --step-soft: var(--auto-loop-soft); }
+[data-step-cat="var"]     { --step: var(--auto-var);     --step-soft: var(--auto-var-soft); }
+[data-step-cat="group"]   { --step: var(--auto-group);   --step-soft: var(--auto-group-soft); }
+[data-step-cat="vehicle"] { --step: var(--auto-vehicle); --step-soft: var(--auto-vehicle-soft); }
+[data-step-cat="climate"] { --step: var(--auto-climate); --step-soft: var(--auto-climate-soft); }
+[data-step-cat="body"]    { --step: var(--auto-body);    --step-soft: var(--auto-body-soft); }
+[data-step-cat="light"]   { --step: var(--auto-light);   --step-soft: var(--auto-light-soft); }
+[data-step-cat="safety"]  { --step: var(--auto-safety);  --step-soft: var(--auto-safety-soft); }
+[data-step-cat="drive"]   { --step: var(--auto-drive);   --step-soft: var(--auto-drive-soft); }
+[data-step-cat="media"]   { --step: var(--auto-media);   --step-soft: var(--auto-media-soft); }
+[data-step-cat="display"] { --step: var(--auto-display); --step-soft: var(--auto-display-soft); }
+[data-step-cat="system"]  { --step: var(--auto-system);  --step-soft: var(--auto-system-soft); }
+[data-step-cat="surv"]    { --step: var(--auto-surv);    --step-soft: var(--auto-surv-soft); }
+[data-step-cat="adv"]     { --step: var(--auto-adv);     --step-soft: var(--auto-adv-soft); }
+[data-step-cat="sensor"]  { --step: var(--auto-sensor);  --step-soft: var(--auto-sensor-soft); }
+[data-step-cat="other"]   { --step: var(--auto-other);   --step-soft: var(--auto-other-soft); }
+
+/* ── Section blocks ── */
+.form-grid .section[data-section] {
+    --block: var(--auto-other);
+    --block-soft: var(--auto-other-soft);
+    position: relative;
+    margin: 0 0 24px;
+    padding: 14px 14px 16px;
+    border-bottom: none;
+    border-radius: var(--radius-lg);
+    background: var(--well);
+}
+.form-grid .section[data-section="triggers"]    { --block: var(--auto-when); --block-soft: var(--auto-when-soft); }
+.form-grid .section[data-section="conditions"]  { --block: var(--auto-if);   --block-soft: var(--auto-if-soft); }
+.form-grid .section[data-section="delay"]       { --block: var(--auto-wait); --block-soft: var(--auto-wait-soft); }
+.form-grid .section[data-section="actions"]     { --block: var(--auto-then); --block-soft: var(--auto-then-soft); }
+.form-grid .section[data-section="elseActions"] { --block: var(--auto-else); --block-soft: var(--auto-else-soft); }
+/* 2px connector in the block hue, from the previous block down to this block's chip
+   (14px padding + half the 40px chip − 1). */
+.form-grid .section[data-section] + .section[data-section]::before {
+    content: "";
+    position: absolute;
+    left: 33px;
+    top: -24px;
+    width: 2px;
+    height: 24px;
+    background: var(--block);
+}
+/* ELSE branches off THEN: indented, joined by an L-shaped connector. */
+.form-grid .section[data-section="actions"] + .section[data-section="elseActions"] { margin-left: 28px; }
+.form-grid .section[data-section="actions"] + .section[data-section="elseActions"]::before {
+    left: -15px;
+    width: 13px;
+    height: 56px;
+    background: none;
+    border-left: 2px solid var(--block);
+    border-bottom: 2px solid var(--block);
+    border-bottom-left-radius: 12px;
+}
+.form-grid .section-head {
+    display: flex;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.form-grid .section-icon {
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+    margin-right: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    background: var(--block-soft);
+    color: var(--block);
+}
+.form-grid .section-icon svg { width: 22px; height: 22px; display: block; }
+.form-grid .section-head-text { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; word-wrap: break-word; }
+.form-grid .section-head .label { font-size: var(--fs-title); font-weight: 600; color: var(--on-surface); }
+.form-grid .section-head .description {
+    display: block;
+    margin-top: 2px;
+    font-size: var(--fs-label);
+    color: var(--on-surface-variant);
+}
+/* "And" between top-level rows: a small joiner pill on the block tint. */
+.form-grid .section[data-section] > .step-join {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    margin: 2px 0 2px 10px;
+    padding: 2px 10px;
+    border-radius: var(--radius-full);
+    background: var(--block-soft);
+    font-size: var(--fs-caption);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--on-surface);
+}
+/* Delay value (the block's only control) sits on the well — lift it to the tile colour. */
+.form-grid .section[data-section] > .row:not([data-step-cat]) > .input { background-color: var(--tile); }
+
+/* ── Step tiles (top-level + nested + condition-group rows) ── */
+.form-grid .row[data-step-cat] {
+    position: relative;
+    align-items: flex-start;
+    margin: 8px 0;
+    padding: 8px 8px 6px 10px;
+    border-left: 3px solid var(--step, var(--auto-other));
+    border-radius: var(--radius-md);
+    background: var(--tile);
+}
+.form-grid .row > .step-icon {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    margin: 5px 10px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    background: var(--step-soft, var(--auto-other-soft));
+    color: var(--step, var(--auto-other));
+}
+.form-grid .row > .step-icon svg { width: 20px; height: 20px; display: block; }
+/* Category tag: its own line above the step's fields; hidden until a type is picked. */
+.form-grid .row .inputs > .step-tag {
+    flex: 0 0 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin: 2px 5px 0;
+    font-size: var(--fs-caption);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--on-surface-variant);
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+}
+.form-grid .row .inputs > .step-tag:empty { display: none; }
+.form-grid .row[data-step-cat] > .delete-container { align-self: flex-start; margin-top: 5px; margin-bottom: 0; }
+.form-grid .row[data-step-cat] .icon-btn {
+    border-color: transparent;
+    border-radius: var(--radius-full);
+    background: var(--well);
+    color: var(--on-surface-variant);
+}
+.form-grid .row[data-step-cat] .icon-btn.danger { background: var(--danger-soft); color: var(--danger); }
+.form-grid .row[data-step-cat] > .icon-btn.danger { margin-top: 5px; }
+
+/* ── Nested control flow (If then/else, Loop body, action-group list) ──
+   The branch box inherits the parent step's --step: a soft tint + 2px connector dropping
+   from under the parent's icon chip (box pulled left: 41px field inset − 17px). */
+.form-grid .nested-actions {
+    margin: 8px 0 4px;
+    padding: 8px 8px 8px 12px;
+    border-left: 2px solid var(--step, var(--auto-group));
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    background: var(--step-soft, var(--auto-group-soft));
+}
+.form-grid .row .inputs > .nested-actions {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: none;
+    margin: 6px 5px 4px;
+}
+.form-grid .row[data-step-cat] > .inputs > .nested-actions { margin-left: -24px; }
+.form-grid .nested-actions-label {
+    display: flex;
+    align-items: center;
+    margin: 0 0 2px;
+    font-size: var(--fs-label);
+    font-weight: 600;
+    color: var(--on-surface-variant);
+}
+.form-grid .nested-actions-label .branch-icon {
+    flex: 0 0 auto;
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin-right: 6px;
+    color: var(--step, var(--auto-group));
+}
+.form-grid .nested-actions-label .branch-icon svg { width: 16px; height: 16px; display: block; }
+
+/* ── Condition groups: a parenthesised sub-block in the IF hue ── */
+.form-grid .condition-group.card {
+    position: relative;
+    margin: 8px 0 10px;
+    padding: 10px 10px 12px 12px;
+    border: none;
+    border-left: 2px solid var(--auto-if);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    background: var(--auto-if-soft);
+    box-shadow: none;
+}
+
+/* ── "Add Row +" / "Add condition group +": dashed-outline tonal pills ── */
+.form-grid .add-button,
+.form-grid .add-group-button {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    margin-top: 8px;
+    padding: 8px 18px;
+    border: 1px dashed var(--block, var(--outline));
+    border-radius: var(--radius-full);
+    background: var(--block-soft, var(--well));
+    color: var(--on-surface);
+    font-weight: 600;
+}
+.form-grid .nested-actions > .add-button {
+    border-color: var(--step, var(--auto-group));
+    background: transparent;
+}
+.form-grid .condition-group > .add-button { border-color: var(--auto-if); background: transparent; }
+
+/* ── AND/OR: segmented pill driving the (visually hidden, still present) select ── */
+.form-grid .logic-toggle { position: relative; margin: 4px 0 6px; }
+.form-grid .logic-select.logic-select-native {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    min-width: 0;
+    max-width: 1px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    clip: rect(0 0 0 0);
+}
+.form-grid .logic-seg {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    padding: 3px;
+    border-radius: var(--radius-full);
+    background: var(--tile);
+}
+.form-grid .condition-group > .logic-seg { margin-bottom: 6px; }
+.form-grid .logic-seg > .logic-seg-btn {
+    min-width: 72px;
+    min-height: 40px;
+    padding: 6px 16px;
+    border-radius: var(--radius-full);
+    font-size: var(--fs-label);
+}
+
+/* ── Narrow screens: shallower ELSE indent ── */
+@media (max-width: 600px) {
+    .form-grid .section[data-section] { padding: 12px 12px 14px; }
+    .form-grid .section[data-section] + .section[data-section]::before { left: 31px; }
+    .form-grid .section[data-section="actions"] + .section[data-section="elseActions"] { margin-left: 16px; }
+    .form-grid .section[data-section="actions"] + .section[data-section="elseActions"]::before { left: -11px; width: 9px; height: 54px; }
+}
+
+/* ── Car (head unit): 56px targets, 40px chips, ≥15px text ── */
+:root[data-android-embed="1"] .form-grid .row > .step-icon { width: 40px; height: 40px; }
+:root[data-android-embed="1"] .form-grid .row > .step-icon svg { width: 22px; height: 22px; }
+:root[data-android-embed="1"] .form-grid .row[data-step-cat] > .inputs > .nested-actions { margin-left: -26px; }
+:root[data-android-embed="1"] .form-grid .row[data-step-cat] .icon-btn { width: 56px; height: 56px; }
+:root[data-android-embed="1"] .form-grid .add-button,
+:root[data-android-embed="1"] .form-grid .add-group-button,
+:root[data-android-embed="1"] .form-grid .logic-seg > .logic-seg-btn { min-height: 56px; font-size: 15px; }
+:root[data-android-embed="1"] .form-grid .row .inputs > .step-tag,
+:root[data-android-embed="1"] .form-grid .section[data-section] > .step-join,
+:root[data-android-embed="1"] .form-grid .nested-actions-label,
+:root[data-android-embed="1"] .form-grid .section-head .description { font-size: 15px; }
+
+/* ── RTL: mirror bars, chips, connectors and the branch pull ── */
+[dir="rtl"] .form-grid .section[data-section] + .section[data-section]::before { left: auto; right: 33px; }
+[dir="rtl"] .form-grid .section[data-section="actions"] + .section[data-section="elseActions"] { margin-left: 0; margin-right: 28px; }
+[dir="rtl"] .form-grid .section[data-section="actions"] + .section[data-section="elseActions"]::before {
+    left: auto;
+    right: -15px;
+    border-left: none;
+    border-right: 2px solid var(--block);
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 12px;
+}
+[dir="rtl"] .form-grid .section-icon { margin-right: 0; margin-left: 12px; }
+[dir="rtl"] .form-grid .section[data-section] > .step-join { margin: 2px 10px 2px 0; }
+[dir="rtl"] .form-grid .row[data-step-cat] {
+    padding: 8px 10px 6px 8px;
+    border-left: none;
+    border-right: 3px solid var(--step, var(--auto-other));
+}
+[dir="rtl"] .form-grid .row > .step-icon { margin: 5px 0 0 10px; }
+[dir="rtl"] .form-grid .row[data-step-cat] > .delete-container { margin-left: 0; margin-right: auto; }
+[dir="rtl"] .form-grid .nested-actions {
+    padding: 8px 12px 8px 8px;
+    border-left: none;
+    border-right: 2px solid var(--step, var(--auto-group));
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+[dir="rtl"] .form-grid .row[data-step-cat] > .inputs > .nested-actions { margin-left: 5px; margin-right: -24px; }
+[dir="rtl"] .form-grid .nested-actions-label .branch-icon { margin-right: 0; margin-left: 6px; }
+[dir="rtl"] .form-grid .condition-group.card {
+    padding: 10px 12px 12px 10px;
+    border-left: none;
+    border-right: 2px solid var(--auto-if);
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+[dir="rtl"] .form-grid .logic-select.logic-select-native { left: auto; right: 0; }
+@media (max-width: 600px) {
+    [dir="rtl"] .form-grid .section[data-section] + .section[data-section]::before { left: auto; right: 31px; }
+    [dir="rtl"] .form-grid .section[data-section="actions"] + .section[data-section="elseActions"] { margin-left: 0; margin-right: 16px; }
+    [dir="rtl"] .form-grid .section[data-section="actions"] + .section[data-section="elseActions"]::before { left: auto; right: -11px; }
+}
+:root[data-android-embed="1"][dir="rtl"] .form-grid .row[data-step-cat] > .inputs > .nested-actions { margin-left: 5px; margin-right: -26px; }
+
+/* ===== LIST CARDS: recipe line (WHEN → IF → WAIT → THEN → ELSE chips) =====
+   buildAutomationText(…, { recipe: true }) wraps the same text pieces in chips, so the
+   card text is unchanged; the <br> separators stay in the DOM, the lines lay out as flex. */
+#automationList .info.recipe-info > br { display: none; }
+#automationList .info .automation-name {
+    display: block;
+    font-size: var(--fs-title);
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--on-surface);
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+}
+#automationList .info .automation-stats {
+    display: block;
+    margin-top: 2px;
+    font-size: var(--fs-label);
+    color: var(--on-surface-variant);
+}
+#automationList .recipe-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 8px;
+    margin-bottom: -6px;   /* cancels the last row of chip margins */
+}
+#automationList .recipe-line:empty { display: none; }
+#automationList .recipe-line > * { margin: 0 6px 6px 0; }
+#automationList .recipe-sec,
+#automationList .recipe-chip {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    color: var(--on-surface);
+}
+#automationList .recipe-sec {
+    padding: 3px 10px 3px 6px;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--step, var(--auto-other));
+    font-size: var(--fs-caption);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+#automationList .recipe-chip {
+    padding: 4px 10px 4px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--step-soft, var(--auto-other-soft));
+    font-size: var(--fs-label);
+    line-height: 1.35;
+}
+#automationList .recipe-sec > svg,
+#automationList .recipe-chip > svg {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin-right: 6px;
+    color: var(--step, var(--auto-other));
+}
+#automationList .recipe-text {
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    word-break: break-word;
+}
+#automationList .recipe-join {
+    font-size: var(--fs-caption);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--on-surface-variant);
+}
+
+/* Card actions (publish/export, run, duplicate, edit, delete) + mode select: tonal. */
+#automationList .actions .icon-btn {
+    width: 40px;
+    height: 40px;
+    border-color: transparent;
+    border-radius: var(--radius-full);
+    background: var(--well);
+    color: var(--on-surface-variant);
+}
+#automationList .actions .icon-btn.danger { background: var(--danger-soft); color: var(--danger); }
+#automationList .automation-mode-select {
+    min-height: 40px;
+    border-color: transparent;
+    border-radius: var(--radius-full);
+    background-color: var(--well);
+    color: var(--on-surface);
+    font-weight: 600;
+}
+@media (max-width: 773px) {
+    #automationList .actions { max-width: 92px; }   /* two 40px columns (+6px margins) */
+}
+/* Phones: the recipe gets the full card width; actions move to their own row below it. */
+@media (max-width: 600px) {
+    #automationList .header { flex-wrap: wrap; align-items: flex-start; }
+    #automationList .header > .info { flex: 1 1 100%; }
+    #automationList .header > .actions { max-width: none; margin: 8px 0 0 -6px; }
+}
+
+/* Car: 56px targets, ≥15px text, 18px chip icons. */
+:root[data-android-embed="1"] #automationList .actions .icon-btn { width: 56px; height: 56px; }
+:root[data-android-embed="1"] #automationList .automation-mode-select { min-height: 56px; font-size: 15px; }
+:root[data-android-embed="1"] #automationList .recipe-sec,
+:root[data-android-embed="1"] #automationList .recipe-chip,
+:root[data-android-embed="1"] #automationList .recipe-join,
+:root[data-android-embed="1"] #automationList .info .automation-stats { font-size: 15px; }
+:root[data-android-embed="1"] #automationList .recipe-sec > svg,
+:root[data-android-embed="1"] #automationList .recipe-chip > svg { width: 18px; height: 18px; }
+@media (max-width: 773px) {
+    :root[data-android-embed="1"] #automationList .actions { max-width: 124px; }
+}
+
+/* RTL mirrors. */
+[dir="rtl"] #automationList .recipe-line > * { margin: 0 0 6px 6px; }
+[dir="rtl"] #automationList .recipe-sec { padding: 3px 6px 3px 10px; }
+[dir="rtl"] #automationList .recipe-chip { padding: 4px 6px 4px 10px; }
+[dir="rtl"] #automationList .recipe-sec > svg,
+[dir="rtl"] #automationList .recipe-chip > svg { margin-right: 0; margin-left: 6px; }
+@media (max-width: 600px) {
+    [dir="rtl"] #automationList .header > .actions { margin: 8px 0 0 0; }   /* button margins already sit on the far side */
+}
+
+/* Keep the community publish button's primary signal (community-automations.css) as a
+   primary-tonal variant, and restore hover feedback the tonal rules above out-specify. */
+#automationList .actions .icon-btn.community-publish-btn { background: var(--primary-soft); color: var(--primary); }
+@media (hover: hover) {
+    .form-grid .row[data-step-cat] .icon-btn:hover,
+    #automationList .actions .icon-btn:hover { background: var(--well-2); color: var(--on-surface); }
+    .form-grid .row[data-step-cat] .icon-btn.danger:hover,
+    #automationList .actions .icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+    #automationList .actions .icon-btn.community-publish-btn:hover { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
+}
+
+/* ===== RUN NOW FEEDBACK ===== */
+/* While the test request is out the card shows a sweeping bar and the button a spinner;
+   success pops a drawn check and a soft glow, failure shakes the button red. */
+#automationList .card { position: relative; }
+#automationList .card::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 24px;
+    right: 24px;
+    height: 3px;
+    border-radius: 0 0 3px 3px;
+    opacity: 0;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--primary), transparent) no-repeat;
+    background-size: 40% 100%;
+    transition: opacity 0.2s ease;
+}
+#automationList .card.is-running::after { opacity: 1; animation: auto-run-sweep 1.1s ease-in-out infinite; }
+#automationList .card.is-done { animation: auto-run-glow 0.9s ease-out; }
+#automationList .card.is-failed { animation: auto-run-glow-fail 0.9s ease-out; }
+#automationList .actions .icon-btn.run-btn { transition: background-color 0.2s ease, color 0.2s ease; }
+#automationList .actions .icon-btn.run-btn.is-running { background: var(--primary-soft); color: var(--primary); cursor: progress; opacity: 1; }
+#automationList .actions .icon-btn.run-btn.is-running svg { animation: auto-run-spin 0.8s linear infinite; }
+#automationList .actions .icon-btn.run-btn.is-done { background: var(--primary); color: var(--on-primary); animation: auto-run-pop 0.4s cubic-bezier(0.2, 0.9, 0.3, 1.3); }
+#automationList .actions .icon-btn.run-btn.is-failed { background: var(--danger-soft); color: var(--danger); animation: auto-run-shake 0.4s ease; }
+.run-btn .run-check { stroke-dasharray: 24; stroke-dashoffset: 24; animation: auto-run-draw 0.35s ease-out 0.05s forwards; }
+#automationList .card.is-done .recipe-sec,
+#automationList .card.is-done .recipe-chip { animation: auto-run-flow 0.5s ease-out both; animation-delay: calc(var(--run-i, 0) * 70ms); }
+@keyframes auto-run-flow {
+    0% { box-shadow: 0 0 0 0 transparent; transform: none; }
+    35% { box-shadow: 0 0 0 2px var(--step, var(--primary)); transform: translateY(-1px); }
+    100% { box-shadow: 0 0 0 0 transparent; transform: none; }
+}
+@keyframes auto-run-sweep { 0% { background-position: -67% 0; } 100% { background-position: 167% 0; } }
+@keyframes auto-run-spin { to { transform: rotate(360deg); } }
+@keyframes auto-run-draw { to { stroke-dashoffset: 0; } }
+@keyframes auto-run-pop { 0% { transform: scale(0.8); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
+@keyframes auto-run-shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 50% { transform: translateX(4px); } 75% { transform: translateX(-2px); } }
+@keyframes auto-run-glow { 0% { box-shadow: 0 0 0 0 var(--primary-glow); } 100% { box-shadow: 0 0 0 14px transparent; } }
+@keyframes auto-run-glow-fail { 0% { box-shadow: 0 0 0 0 var(--danger-soft); } 100% { box-shadow: 0 0 0 14px transparent; } }
+@media (prefers-reduced-motion: reduce) {
+    #automationList .card.is-running::after { animation: none; background-size: 100% 100%; }
+    #automationList .card.is-done,
+    #automationList .card.is-failed,
+    #automationList .actions .icon-btn.run-btn.is-done,
+    #automationList .actions .icon-btn.run-btn.is-failed { animation: none; }
+    #automationList .actions .icon-btn.run-btn.is-running svg { animation-duration: 2.4s; }
+    .run-btn .run-check { animation: none; stroke-dashoffset: 0; }
+    #automationList .card.is-done .recipe-sec,
+    #automationList .card.is-done .recipe-chip { animation: none; }
+}

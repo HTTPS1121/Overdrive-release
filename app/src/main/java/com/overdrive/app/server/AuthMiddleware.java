@@ -22,17 +22,21 @@ import java.util.Set;
  *            blocking traffic relayed via cloudflared / zrok / ngrok which
  *            all forward to localhost but inject these proxy headers.
  *
- * Public paths (no auth required at all):
+ * Public paths (no auth required at all) — the authoritative list is PUBLIC_PATHS /
+ * PUBLIC_PREFIXES below; this summary must not drift from it:
+ * - /auth/status      - login page needs the deviceId hint before the user has a JWT
  * - /auth/token       - Login endpoint (must be reachable)
  * - /auth/logout      - Logout endpoint (idempotent)
  * - /login.html       - Login page UI
  * - /login            - Login alias
- * - /shared/*         - Static assets (CSS, JS, fonts, models)
  * - /favicon.ico      - Browser favicon
+ * - /manifest.json    - PWA manifest discovery (browser-internal fetch, no Bearer)
+ * - /sw.js            - service-worker registration (same)
+ * - /shared/*         - Static assets (CSS, JS, fonts, models)
+ * - /i18n/*           - Language catalogs
  *
- * Notably NOT public anymore:
+ * Notably NOT public:
  * - /status           - leaks ACC/charging/recording state, requires auth
- * - /auth/status      - leaks deviceId, requires auth
  */
 public class AuthMiddleware {
 
@@ -59,22 +63,6 @@ public class AuthMiddleware {
 
     // Cookie name for JWT
     private static final String JWT_COOKIE_NAME = "byd_session";
-
-    /**
-     * Check if request is authenticated.
-     */
-    public static boolean checkAuth(String path, String cookieHeader, String authHeader, OutputStream out) throws Exception {
-        return checkAuth(path, cookieHeader, authHeader, out, null, false);
-    }
-
-    /**
-     * Check if request is authenticated (with client address only).
-     * Backwards-compat overload — assumes no tunnel headers (caller didn't pass them).
-     */
-    public static boolean checkAuth(String path, String cookieHeader, String authHeader,
-                                     OutputStream out, java.net.SocketAddress clientAddress) throws Exception {
-        return checkAuth(path, cookieHeader, authHeader, out, clientAddress, false);
-    }
 
     /**
      * Full check with tunnel-header awareness.
@@ -144,7 +132,8 @@ public class AuthMiddleware {
             }
             // JWT was provided but invalid — log and fall through to Tier 2
             // (a stale cached JWT shouldn't lock out a legitimate same-device caller).
-            log("JWT invalid for " + path + ": " + validation.error);
+            log("JWT invalid for " + HttpServer.redactQueryToken(path)
+                    + ": " + validation.error);
         }
 
         // Tier 2 — loopback safety net. Trust 127.0.0.1 / ::1 ONLY when no
@@ -177,10 +166,26 @@ public class AuthMiddleware {
             if (validation.valid) {
                 return true;
             }
-            log("JWT invalid for " + path + ": " + validation.error);
+            log("JWT invalid for " + HttpServer.redactQueryToken(path)
+                    + ": " + validation.error);
         }
         return handleUnauthorized(path, out,
             jwt == null || jwt.isEmpty() ? "No session token" : "Invalid session token");
+    }
+
+    /**
+     * Whether these headers carry a currently-valid JWT, independent of the public-path
+     * and loopback tiers. Lets a caller distinguish "authenticated" from "merely local"
+     * for the few privileges the loopback safety net must not grant.
+     */
+    public static boolean hasValidJwt(String cookieHeader, String authHeader) {
+        String jwt = jwtFromHeaders(cookieHeader, authHeader);
+        if (jwt == null || jwt.isEmpty()) return false;
+        try {
+            return AuthManager.validateJwt(jwt).valid;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String jwtFromHeaders(String cookieHeader, String authHeader) {
@@ -241,7 +246,10 @@ public class AuthMiddleware {
      * For page requests, redirects to login.
      */
     private static boolean handleUnauthorized(String path, OutputStream out, String reason) throws Exception {
-        log("Unauthorized: " + path + " - " + reason);
+        // Redact before logging: `path` still carries its query string, and a failed
+        // /thumb/... or /parking/asset/... request carries a signed `?t=` token that is an
+        // HMAC over the device secret. Every auth failure used to write it out verbatim.
+        log("Unauthorized: " + HttpServer.redactQueryToken(path) + " - " + reason);
         
         // API requests get 401 JSON
         if (path.startsWith("/api/") || path.startsWith("/ws") || 
@@ -253,8 +261,17 @@ public class AuthMiddleware {
             return false;
         }
         
-        // Page requests get redirected to login
-        String redirectUrl = "/login.html?redirect=" + urlEncode(path);
+        // Page requests get redirected to login.
+        //
+        // Redact BEFORE encoding. /parking/asset/... is not in the API list above, so an
+        // expired signed asset URL lands here, and urlEncode turns its `?t=<jws>` into
+        // `%3Ft%3D<jws>` — which the browser then sends as a query value on /login.html,
+        // where the request-line log cannot match `t=` any more and the token is written
+        // out in full. Redacting first means the token never enters the redirect at all.
+        // The target is only used to bounce the user back after login, and a request whose
+        // signed token just failed has nothing to return to.
+        String redirectUrl = "/login.html?redirect="
+                + urlEncode(HttpServer.redactQueryToken(path));
         HttpResponse.sendRedirect(out, redirectUrl);
         return false;
     }

@@ -90,6 +90,12 @@ public final class BydCloudConfig {
         }
     }
 
+    /** The cloudDataMerge toggle alone, without the credential decrypt/migration of a full load. */
+    public static boolean isCloudDataMergeEnabled() {
+        JSONObject bydCloud = UnifiedConfigManager.loadConfig().optJSONObject("bydCloud");
+        return bydCloud != null && bydCloud.optBoolean("cloudDataMerge", false);
+    }
+
     /**
      * Load config from UnifiedConfigManager.
      * Handles legacy plaintext values transparently.

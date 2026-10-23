@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="navmap_google_layers_cd">Слои карты</string>
+    <string name="navmap_google_type_default">Карта Google</string>
+    <string name="navmap_google_type_satellite">Спутник</string>
+    <string name="navmap_google_type_hybrid">Гибрид</string>
+    <string name="navmap_google_type_terrain">Рельеф</string>
+    <string name="navmap_google_type_overdrive">Карта OverDrive</string>
+    <string name="navmap_google_traffic">Пробки</string>
+    <string name="navmap_google_traffic_on">Пробки включены</string>
+    <string name="navmap_google_traffic_off">Пробки выключены</string>
+    <string name="navmap_google_traffic_paused">Показ пробок приостановлен до %1$s (бесплатный суточный лимит)</string>
+    <string name="navmap_google_map_paused">Карта Google приостановлена до %1$s (бесплатный суточный лимит)</string>
+    <string name="navmap_google_map_unavailable">Карта Google недоступна, показана карта OverDrive</string>
+    <string name="navmap_google_key_problem">Проблема с ключом Google Maps. Проверьте настройки RoadSense.</string>
+    <string name="navmap_google_route_key_problem">Маршрутизация Google отклонила ключ. Проверьте настройки RoadSense.</string>
+    <string name="navmap_google_route_limit">Лимит маршрутизации Google на сегодня исчерпан</string>
+    <string name="navmap_google_arrived">Вы прибыли в пункт назначения</string>
+    <string name="navmap_google_traffic_delay">+%1$s из-за пробок</string>
+    <string name="navmap_google_no_delays">Без задержек из-за пробок</string>
+    <string name="navmap_google_faster_route">Найден более быстрый маршрут, экономия %1$s</string>
+    <string name="navmap_google_faster_route_switch">Переключиться</string>
+    <string name="navmap_google_routes_by_google">Маршруты от Google</string>
+    <string name="navmap_google_routing_provided_by">Маршрутизацию обеспечивает %1$s</string>
+    <string name="navmap_google_place_failed">Не удалось открыть это место</string>
+    <string name="navmap_google_finding_place">Поиск места…</string>
+</resources>

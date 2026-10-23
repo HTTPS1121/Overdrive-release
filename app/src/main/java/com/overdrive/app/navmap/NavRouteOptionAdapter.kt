@@ -10,6 +10,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.color.MaterialColors
 import com.overdrive.app.R
 import com.overdrive.app.navmap.nav.NavRoute
+import com.overdrive.app.navmap.nav.RouteProvider
 
 /**
  * Adapter for the route-options bottom sheet: one row per candidate route
@@ -104,12 +105,14 @@ class NavRouteOptionAdapter(
         private val pillModerate: TextView = itemView.findViewById(R.id.pillModerate)
         private val pillMinor: TextView = itemView.findViewById(R.id.pillMinor)
         private val pillStatus: TextView = itemView.findViewById(R.id.pillStatus)
+        private val pillTraffic: TextView = itemView.findViewById(R.id.pillTraffic)
 
         fun bind(route: NavRoute, position: Int) {
             val ctx = itemView.context
             tvLabel.text = ctx.getString(R.string.roadsense_map_route_option, position + 1)
             tvDistance.text = formatDistance(route.totalDistanceMeters)
             tvEta.text = formatEta(ctx, route.totalDurationSeconds)
+            bindTrafficPill(route)
 
             // Hazards-along-route status. Three states:
             //  - has hazards → severity count pills
@@ -167,6 +170,37 @@ class NavRouteOptionAdapter(
                     notifyItemChanged(pos)
                 }
                 onRouteSelected(pos)
+            }
+        }
+
+        /** Traffic-delay pill: shown for traffic-aware (Google) routes, gone otherwise. */
+        private fun bindTrafficPill(route: NavRoute) {
+            val ctx = itemView.context
+            val delay = route.trafficDelaySeconds
+            val neutralText = MaterialColors.getColor(
+                itemView, com.google.android.material.R.attr.colorOnSurfaceVariant
+            )
+            when {
+                delay >= 60.0 -> {
+                    pillTraffic.text = ctx.getString(R.string.navmap_google_traffic_delay, formatEta(ctx, delay))
+                    val bg = when {
+                        delay >= 600.0 -> R.drawable.bg_hazard_pill_severe
+                        delay >= 180.0 -> R.drawable.bg_hazard_pill_moderate
+                        else -> R.drawable.bg_route_status_pill
+                    }
+                    pillTraffic.setBackgroundResource(bg)
+                    pillTraffic.setTextColor(
+                        if (bg == R.drawable.bg_route_status_pill) neutralText else android.graphics.Color.WHITE
+                    )
+                    pillTraffic.visibility = View.VISIBLE
+                }
+                route.provider == RouteProvider.GOOGLE -> {
+                    pillTraffic.setText(R.string.navmap_google_no_delays)
+                    pillTraffic.setBackgroundResource(R.drawable.bg_route_status_pill)
+                    pillTraffic.setTextColor(neutralText)
+                    pillTraffic.visibility = View.VISIBLE
+                }
+                else -> pillTraffic.visibility = View.GONE
             }
         }
 

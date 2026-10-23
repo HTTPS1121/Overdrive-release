@@ -27,6 +27,18 @@ public class CanonicalSohResolverTest {
     }
 
     @Test
+    public void validOemReadingIsPreservedBelowTheEstimateFloor() {
+        for (boolean phev : new boolean[]{false, true}) {
+            SohEstimator.ResolvedSoh result = SohEstimator.resolveDisplaySoh(
+                    phev, 1.0, 93.0, 100.0, 92.0);
+
+            assertEquals(1.0, result.getPercent(), 0.0);
+            assertEquals(1.0, result.getOemPercent(), 0.0);
+            assertEquals("oem", result.getSource());
+        }
+    }
+
+    @Test
     public void bevFallsBackToEstimateThenCalibrationWhenOemIsUnavailable() {
         SohEstimator.ResolvedSoh live = SohEstimator.resolveDisplaySoh(
                 false, -1, 90.0, 96.2, 95.0);

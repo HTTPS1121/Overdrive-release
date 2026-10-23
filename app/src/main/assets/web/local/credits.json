@@ -87,6 +87,18 @@
     {
       "name": "Zalman",
       "github": "HTTPS1121"
+    },
+    {
+      "name": "Zalman",
+      "github": "HTTPS1121"
+    },
+    {
+      "name": "Caio Trevisan",
+      "github": "caiocezart"
+    },
+    {
+      "name": "Taha Zahit Hakyemez",
+      "github": "TahaZahit"
     }
   ],
   "supporters": [
@@ -110,6 +122,11 @@
     {
       "name": "Cedric Carre",
       "tier": "platinum"
+    },
+    {
+      "name": "Amarildo Souza",
+      "tier": "platinum",
+      "count": 3
     },
     {
       "name": "Adrian b",
@@ -149,9 +166,8 @@
       "tier": "gold"
     },
     {
-      "name": "Amarildo Souza",
-      "tier": "gold",
-      "count": 2
+      "name": "Khanh Nguyen",
+      "tier": "gold"
     },
     {
       "name": "Jan Bleckmann",
@@ -192,6 +208,18 @@
     },
     {
       "name": "Miguel Eiras Franco",
+      "tier": "silver"
+    },
+    {
+      "name": "Lachlan Haase",
+      "tier": "silver"
+    },
+    {
+      "name": "Jason Chatterton",
+      "tier": "silver"
+    },
+    {
+      "name": "Jose Souza",
       "tier": "silver"
     },
     {
@@ -252,7 +280,8 @@
     },
     {
       "name": "Gerald Montero",
-      "tier": "bronze"
+      "tier": "bronze",
+      "count": 2
     },
     {
       "name": "Carlos Medina",
@@ -306,7 +335,8 @@
     },
     {
       "name": "Jacques Millard",
-      "tier": "bronze"
+      "tier": "bronze",
+      "count": 2
     },
     {
       "name": "Andrea Enrico Rossi",
@@ -314,6 +344,34 @@
     },
     {
       "name": "Carios Medina",
+      "tier": "bronze"
+    },
+    {
+      "name": "Fabien Charles",
+      "tier": "bronze"
+    },
+    {
+      "name": "Vitaly Artemyev",
+      "tier": "bronze"
+    },
+    {
+      "name": "Giuseppe Gelmini",
+      "tier": "bronze"
+    },
+    {
+      "name": "Ross Ellwood",
+      "tier": "bronze"
+    },
+    {
+      "name": "Sevki Akdemir",
+      "tier": "bronze"
+    },
+    {
+      "name": "Chi Lung Ng",
+      "tier": "bronze"
+    },
+    {
+      "name": "Rafael Romano",
       "tier": "bronze"
     }
   ]

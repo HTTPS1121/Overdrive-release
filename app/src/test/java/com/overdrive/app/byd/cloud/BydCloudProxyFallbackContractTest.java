@@ -22,14 +22,9 @@ import org.junit.Test;
 /**
  * Guards the BYD-cloud proxy fallback contract.
  *
- * <p>The local proxy probe (ProxyHelper) is a blind loopback TCP connect: it
- * cannot tell a general-egress proxy (sing-box, Tailscale fronting an exit
- * node) from the tailnet-only Tailscale SOCKS listener that the MQTT settings
- * expose for private brokers. BYD's cloud endpoints are public internet, so
- * when the tailnet-only listener wins the probe, every cloud operation used
- * to fail for as long as the listener was up — the listener itself probes
- * healthy, so cache invalidation could never deselect it. Both cloud legs
- * must therefore fall back:
+ * <p>BYD's cloud endpoints are public internet, reached through the sing-box
+ * egress proxy when it is up (never the tailnet-only Tailscale listener). A
+ * proxy can die mid-session, so both cloud legs must fall back:
  *
  * <ul>
  *   <li>HTTP transport (login, commands, realtime polling, DI5 parked
@@ -164,20 +159,20 @@ public class BydCloudProxyFallbackContractTest {
     }
 
     @Test
-    public void failClosedPrivacyConsumersMustNeverGainADirectFallback()
+    public void singleRoutePrivacyConsumersMustNeverGainADirectFallback()
             throws IOException {
-        // GenAI and community sync intentionally fail closed when proxy-only
-        // routing is expected — "harmonizing" them onto the fallback chain
-        // would silently leak privacy-sensitive traffic onto a direct dial.
+        // GenAI and community sync take exactly one route per request —
+        // "harmonizing" them onto the fallback chain would silently leak
+        // privacy-sensitive traffic onto a direct dial.
         String genai = read(
                 "app/src/main/java/com/overdrive/app/genai/GenAiRuntime.java");
         String community = read(
                 "app/src/main/java/com/overdrive/app/community/sync/CommunitySyncProvider.kt");
 
-        assertTrue(genai.contains("ProxyHelper.getFailClosedHttpProxy()"));
+        assertTrue(genai.contains("ProxyHelper.routeFor("));
         assertFalse(genai.contains("chainProxySelector()"));
         assertFalse(genai.contains("proxyRouteChain("));
-        assertTrue(community.contains(".proxy(com.overdrive.app.mqtt.ProxyHelper.getFailClosedHttpProxy())"));
+        assertTrue(community.contains(".proxySelector(com.overdrive.app.mqtt.ProxyHelper.singleRouteSelector())"));
         assertFalse(community.contains("chainProxySelector()"));
         assertFalse(community.contains("proxyRouteChain("));
     }

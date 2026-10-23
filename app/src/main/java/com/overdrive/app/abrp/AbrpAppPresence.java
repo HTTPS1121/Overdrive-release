@@ -117,7 +117,7 @@ public class AbrpAppPresence {
     private String runShell(String cmd) {
         Process p = null;
         try {
-            p = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
             StringBuilder sb = new StringBuilder();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;

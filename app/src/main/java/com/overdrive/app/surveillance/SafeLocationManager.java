@@ -34,7 +34,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class SafeLocationManager {
 
     private static final String TAG = "SafeLocation";
-    private static final String CONFIG_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/safe_locations.json");
+    private static final String CONFIG_FILE = com.overdrive.app.util.ScratchRoot.path("safe_locations.json");
     private static final int MAX_ZONES = 10;
     private static final double EARTH_RADIUS_M = 6_371_000.0;
     // Exit-hysteresis margin (m). Once inside a zone, the car must move beyond
@@ -46,6 +46,9 @@ public class SafeLocationManager {
     private static volatile SafeLocationManager instance;
 
     private final CopyOnWriteArrayList<SafeLocation> zones = new CopyOnWriteArrayList<>();
+    // Geometry publication only. Never hold this across file I/O, GPS callbacks,
+    // lifecycle recalculation or proximity command locks.
+    private final Object geometryLock = new Object();
     private volatile boolean featureEnabled = true;
     // Suppression axis: true only when surveillance should be held off here
     // (feature toggle ON + inside a zone whose own switch is ON). Drives the
@@ -81,61 +84,72 @@ public class SafeLocationManager {
     // ========================================================================
 
     public SafeLocation addZone(String name, double lat, double lng, int radiusM) {
-        if (zones.size() >= MAX_ZONES) {
+        return addZone(new SafeLocation(name, lat, lng, radiusM));
+    }
+
+    /** API and IPC retain original coordinate presence instead of parsed defaults. */
+    public SafeLocation addZone(JSONObject input) {
+        return addZone(SafeLocation.fromNewZoneInput(input));
+    }
+
+    private SafeLocation addZone(SafeLocation requested) {
+        SafeLocation zone;
+        synchronized (geometryLock) {
+            if (zones.size() >= MAX_ZONES) zone = null;
+            else {
+                zone = requested;
+                zones.add(zone);
+            }
+        }
+        if (zone == null) {
             CameraDaemon.log(TAG + ": Max zones reached (" + MAX_ZONES + ")");
             return null;
         }
-        SafeLocation zone = new SafeLocation(name, lat, lng, radiusM);
-        zones.add(zone);
         saveToFile();
-        invalidateGeoCacheNear(lat, lng, radiusM);
+        invalidateGeoCacheNear(zone.getLatitude(), zone.getLongitude(), zone.getRadiusMeters());
         // Re-evaluate immediately — maybe we just added a zone we're inside
         reevaluateZone();
-        CameraDaemon.log(TAG + ": Added zone '" + name + "' at " + lat + "," + lng + " r=" + radiusM + "m");
+        CameraDaemon.log(TAG + ": Added zone '" + zone.getName() + "' at "
+                + zone.getLatitude() + "," + zone.getLongitude() + " r=" + zone.getRadiusMeters() + "m");
         return zone;
     }
 
     public boolean updateZone(String id, JSONObject updates) {
-        for (SafeLocation zone : zones) {
-            if (zone.getId().equals(id)) {
-                // Capture pre-edit centroid so we can sweep BOTH the old and
-                // new locations from the geocache. A zone moved 5 km away
-                // would otherwise leave a stale public-address row at the
-                // old centroid.
-                double oldLat = zone.getLatitude();
-                double oldLng = zone.getLongitude();
-                int oldRad = zone.getRadiusMeters();
+        ZoneSnapshot before = null, after = null;
+        synchronized (geometryLock) {
+            for (SafeLocation zone : zones) if (zone.getId().equals(id)) {
+                before = new ZoneSnapshot(zone);
                 if (updates.has("name")) zone.setName(updates.optString("name"));
-                if (updates.has("lat")) zone.setLatitude(updates.optDouble("lat"));
-                if (updates.has("lng")) zone.setLongitude(updates.optDouble("lng"));
+                zone.applyCoordinateUpdates(updates);
                 if (updates.has("radiusM")) zone.setRadiusMeters(updates.optInt("radiusM"));
                 if (updates.has("enabled")) zone.setEnabled(updates.optBoolean("enabled"));
-                saveToFile();
-                invalidateGeoCacheNear(oldLat, oldLng, oldRad);
-                invalidateGeoCacheNear(zone.getLatitude(), zone.getLongitude(),
-                        zone.getRadiusMeters());
-                reevaluateZone();
-                return true;
+                after = new ZoneSnapshot(zone);
+                break;
             }
         }
-        return false;
+        if (after == null) return false;
+        saveToFile();
+        invalidateGeoCacheNear(before.latitude, before.longitude, before.radiusMeters);
+        invalidateGeoCacheNear(after.latitude, after.longitude, after.radiusMeters);
+        reevaluateZone();
+        return true;
     }
 
     public boolean removeZone(String id) {
-        for (SafeLocation zone : zones) {
-            if (zone.getId().equals(id)) {
-                double zLat = zone.getLatitude();
-                double zLng = zone.getLongitude();
-                int zRad = zone.getRadiusMeters();
+        ZoneSnapshot removed = null;
+        synchronized (geometryLock) {
+            for (SafeLocation zone : zones) if (zone.getId().equals(id)) {
+                removed = new ZoneSnapshot(zone);
                 zones.remove(zone);
-                saveToFile();
-                invalidateGeoCacheNear(zLat, zLng, zRad);
-                reevaluateZone();
-                CameraDaemon.log(TAG + ": Removed zone '" + zone.getName() + "'");
-                return true;
+                break;
             }
         }
-        return false;
+        if (removed == null) return false;
+        saveToFile();
+        invalidateGeoCacheNear(removed.latitude, removed.longitude, removed.radiusMeters);
+        reevaluateZone();
+        CameraDaemon.log(TAG + ": Removed zone '" + removed.name + "'");
+        return true;
     }
 
     /**
@@ -158,6 +172,31 @@ public class SafeLocationManager {
 
     public List<SafeLocation> getZones() {
         return new ArrayList<>(zones);
+    }
+
+    /** A complete immutable zone publication for independent action gates. */
+    public static final class ZoneSnapshot {
+        public final String id, name;
+        public final double latitude, longitude;
+        public final int radiusMeters;
+        public final boolean geometryValid;
+
+        private ZoneSnapshot(SafeLocation zone) {
+            id = zone.getId();
+            name = zone.getName();
+            latitude = zone.getLatitude();
+            longitude = zone.getLongitude();
+            radiusMeters = zone.getRadiusMeters();
+            geometryValid = zone.hasValidProximityGeometry();
+        }
+    }
+
+    public List<ZoneSnapshot> getGeometrySnapshot() {
+        synchronized (geometryLock) {
+            List<ZoneSnapshot> snapshot = new ArrayList<>(zones.size());
+            for (SafeLocation zone : zones) snapshot.add(new ZoneSnapshot(zone));
+            return java.util.Collections.unmodifiableList(snapshot);
+        }
     }
 
     public void setFeatureEnabled(boolean enabled) {
@@ -414,8 +453,8 @@ public class SafeLocationManager {
             JSONObject root = new JSONObject();
             root.put("enabled", featureEnabled);
             JSONArray arr = new JSONArray();
-            for (SafeLocation z : zones) {
-                arr.put(z.toJson());
+            synchronized (geometryLock) {
+                for (SafeLocation z : zones) arr.put(z.toJson());
             }
             root.put("zones", arr);
 
@@ -454,9 +493,13 @@ public class SafeLocationManager {
             featureEnabled = root.optBoolean("enabled", true);
             JSONArray arr = root.optJSONArray("zones");
             if (arr != null) {
-                zones.clear();
+                List<SafeLocation> loaded = new ArrayList<>();
                 for (int i = 0; i < arr.length() && i < MAX_ZONES; i++) {
-                    zones.add(new SafeLocation(arr.getJSONObject(i)));
+                    loaded.add(new SafeLocation(arr.getJSONObject(i)));
+                }
+                synchronized (geometryLock) {
+                    zones.clear();
+                    zones.addAll(loaded);
                 }
             }
         } catch (Exception e) {
@@ -478,11 +521,14 @@ public class SafeLocationManager {
             json.put("zoneCount", zones.size());
 
             GpsMonitor gps = GpsMonitor.getInstance();
-            json.put("hasGps", gps.hasLocation());
-            if (gps.hasLocation()) {
-                json.put("lat", gps.getLatitude());
-                json.put("lng", gps.getLongitude());
-                json.put("accuracy", gps.getAccuracy());
+            GpsMonitor.GpsFixSnapshot fix = gps.getFixSnapshot();
+            json.put("hasGps", fix.hasLocation());
+            if (fix.hasLocation()) {
+                json.put("lat", fix.latitude);
+                json.put("lng", fix.longitude);
+                json.put("accuracy", fix.accuracy);
+                long fixAgeMs = GpsMonitor.fixAgeMs(fix);
+                json.put("gpsFixAgeMs", fixAgeMs >= 0L ? fixAgeMs : JSONObject.NULL);
             }
 
             JSONArray arr = new JSONArray();

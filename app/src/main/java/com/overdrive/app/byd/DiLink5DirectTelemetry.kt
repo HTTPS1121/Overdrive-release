@@ -35,23 +35,34 @@ object DiLink5DirectTelemetry {
     private val ownerLock = Any()
     @Volatile private var dynamicsOwner = Owner.UNKNOWN
     @Volatile private var turnOwner = Owner.UNKNOWN
-    @Volatile private var lastDynamics: CarSvcTelemetry.DynamicObservation? = null
-    @Volatile private var lastDynamicsAtMs = 0L
+    private class TimedDynamics(
+        val observation: CarSvcTelemetry.DynamicObservation,
+        val atMs: Long
+    )
+    @Volatile private var lastDynamics: TimedDynamics? = null
     @Volatile private var lastTurn = -1
     @Volatile private var lastTurnAtMs = 0L
 
     @JvmStatic
-    fun currentDynamics(): CarSvcTelemetry.DynamicObservation? {
+    fun currentDynamics(): CarSvcTelemetry.DynamicObservation? = readDynamics(byField = false)
+
+    /**
+     * [currentDynamics] for trip/overlay sampling: when the full tuple fails, each field is decoded
+     * on its own (-1 when its read fails) instead of serving the cache. Null when no field decodes.
+     */
+    @JvmStatic
+    fun currentDynamicsByField(): CarSvcTelemetry.DynamicObservation? = readDynamics(byField = true)
+
+    private fun readDynamics(byField: Boolean): CarSvcTelemetry.DynamicObservation? {
         if (!DiLink5Platform.isSelected()) return null
         if (dynamicsOwner == Owner.CAR_SERVICE) return null
 
         val now = SystemClock.elapsedRealtime()
-        val observation = decodeDynamics(
-            read(TX_FLOAT, DEV_SPEED, FID_SPEED),
-            read(TX_INT, DEV_SPEED, FID_ACCEL),
-            read(TX_INT, DEV_SPEED, FID_BRAKE),
-            read(TX_INT, DEV_GEAR, FID_GEAR)
-        )
+        val speed = read(TX_FLOAT, DEV_SPEED, FID_SPEED)
+        val accel = read(TX_INT, DEV_SPEED, FID_ACCEL)
+        val brake = read(TX_INT, DEV_SPEED, FID_BRAKE)
+        val gear = read(TX_INT, DEV_GEAR, FID_GEAR)
+        val observation = decodeDynamics(speed, accel, brake, gear)
         if (dynamicsOwner == Owner.UNKNOWN) {
             synchronized(ownerLock) {
                 if (dynamicsOwner == Owner.UNKNOWN) {
@@ -64,18 +75,24 @@ object DiLink5DirectTelemetry {
         }
         if (dynamicsOwner != Owner.DIRECT) return null
         if (observation != null) {
-            lastDynamics = observation
-            lastDynamicsAtMs = now
+            synchronized(ownerLock) {
+                val previous = lastDynamics
+                if (previous == null || now >= previous.atMs) {
+                    lastDynamics = TimedDynamics(observation, now)
+                }
+            }
             return observation
         }
+        if (byField) return decodeDynamicsByField(speed, accel, brake, gear)
         val cached = lastDynamics ?: return null
-        val age = now - lastDynamicsAtMs
+        // Aged after the failed reads, so a stalled read cannot make the cached value look newer.
+        val age = SystemClock.elapsedRealtime() - cached.atMs
         return if (age in 0..DIRECT_CACHE_MS) {
             CarSvcTelemetry.DynamicObservation(
-                cached.speedKmh,
-                cached.accelPercent,
-                cached.brakePercent,
-                cached.gear,
+                cached.observation.speedKmh,
+                cached.observation.accelPercent,
+                cached.observation.brakePercent,
+                cached.observation.gear,
                 age
             )
         } else {
@@ -130,6 +147,22 @@ object DiLink5DirectTelemetry {
         )
     }
 
+    internal fun decodeDynamicsByField(
+        speed: RawRead?,
+        accel: RawRead?,
+        brake: RawRead?,
+        gear: RawRead?
+    ): CarSvcTelemetry.DynamicObservation? {
+        val speedKmh = decodeFloat(speed, 0f, 400f)?.let { Math.round(it) } ?: -1
+        val accelPercent = decodeInt(accel, 0, 100) ?: -1
+        val brakePercent = decodeInt(brake, 0, 100) ?: -1
+        val gearMode = decodeInt(gear, 1, 6) ?: -1
+        if (speedKmh < 0 && accelPercent < 0 && brakePercent < 0 && gearMode < 0) return null
+        return CarSvcTelemetry.DynamicObservation(
+            speedKmh, accelPercent, brakePercent, gearMode, 0L
+        )
+    }
+
     internal fun decodeTurn(read: RawRead?): Int? =
         decodeInt(read, 0, 7)
 
@@ -158,7 +191,6 @@ object DiLink5DirectTelemetry {
             dynamicsOwner = Owner.UNKNOWN
             turnOwner = Owner.UNKNOWN
             lastDynamics = null
-            lastDynamicsAtMs = 0L
             lastTurn = -1
             lastTurnAtMs = 0L
         }

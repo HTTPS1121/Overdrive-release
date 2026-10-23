@@ -26,6 +26,10 @@
         android:icon="@drawable/ic_vehicle_control"
         android:title="@string/rail_vehicle" />
     <item
+        android:id="@+id/remoteAccessFragment"
+        android:icon="@drawable/ic_overlay_mode_proximity"
+        android:title="@string/nav_page_remote_access" />
+    <item
         android:id="@+id/tripsFragment"
         android:icon="@drawable/ic_trips"
         android:title="@string/rail_trips" />

@@ -96,6 +96,25 @@
                     android:visibility="gone"
                     tools:text="SD"
                     tools:visibility="visible" />
+
+                <!-- SafeKeep backup state; bound only while SafeKeep is on. -->
+                <TextView
+                    android:id="@+id/tvSafeKeepBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:ellipsize="end"
+                    android:fontFamily="sans-serif-medium"
+                    android:gravity="center_vertical"
+                    android:maxWidth="160dp"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="4dp"
+                    android:singleLine="true"
+                    android:textColor="@android:color/white"
+                    android:textSize="11sp"
+                    android:visibility="gone"
+                    tools:text="SAVED"
+                    tools:visibility="visible" />
             </LinearLayout>
 
             <TextView

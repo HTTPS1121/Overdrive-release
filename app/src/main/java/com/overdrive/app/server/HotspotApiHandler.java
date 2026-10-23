@@ -304,7 +304,7 @@ public class HotspotApiHandler {
         String cmd = "am start-foreground-service -n " + BRIDGE_SERVICE
                 + " --es action " + action;
         try {
-            Process p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             java.io.InputStream is = p.getInputStream();
             Thread drain = new Thread(() -> {
                 byte[] buf = new byte[1024];

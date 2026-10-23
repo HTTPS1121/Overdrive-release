@@ -41,6 +41,8 @@
     // The daemon inherits the sentry/dashcam choice until the user sets this
     // card's toggles; the API reports that as `inherited: true`.
     var geo = { enabled: false, allowOnline: false, inherited: true };
+    // Resolves true once `geo` holds the server's state; saves merge onto it.
+    var geoLoad = Promise.resolve(false);
 
     function paintGeocoding(p) {
         if (!p) return;
@@ -57,11 +59,16 @@
     }
 
     function loadGeocoding() {
-        if (!$('parkingGeocodingEnabled')) return Promise.resolve();
-        return fetch('/api/settings/geocoding', { cache: 'no-store' })
+        if (!$('parkingGeocodingEnabled')) return Promise.resolve(false);
+        geoLoad = fetch('/api/settings/geocoding', { cache: 'no-store' })
             .then(function (r) { return r.json(); })
-            .then(function (d) { if (d && d.parking) paintGeocoding(d.parking); })
-            .catch(function () { /* card keeps its defaults */ });
+            .then(function (d) {
+                if (!d || !d.parking) return false;
+                paintGeocoding(d.parking);
+                return true;
+            })
+            .catch(function () { return false; /* card keeps its defaults */ });
+        return geoLoad;
     }
 
     // Flip-reflow-restore so the Chrome 58 WebView repaints the slider
@@ -78,6 +85,8 @@
         /** Optional page hook: called with the saved config after every successful write. */
         onSaved: null,
         paint: paint,
+        /** Pages that fetch /api/parking/status themselves call this instead of init(). */
+        loadGeocoding: loadGeocoding,
         init: function () {
             if (!$('parkingEnabled')) return Promise.resolve();
             loadGeocoding();
@@ -92,24 +101,32 @@
          * silently resetting it to off.
          */
         saveGeocoding: function (key, value) {
-            var next = { enabled: geo.enabled, allowOnline: geo.allowOnline };
-            next[key] = !!value;
-            if (!next.enabled) next.allowOnline = false;
-            return fetch('/api/settings/geocoding', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ parking: next })
-            }).then(function (r) { return r.json(); }).then(function (d) {
-                if (d && d.success && d.parking) {
-                    paintGeocoding(d.parking);
-                    toast(t('parking.settings_saved'), 'success');
-                } else {
+            return geoLoad.then(function (ok) { return ok || loadGeocoding(); }).then(function (ok) {
+                if (!ok) {
+                    toast(t('parking.enable_failed'), 'error');
+                    setChecked('parkingGeocodingEnabled', geo.enabled);
+                    setChecked('parkingGeocodingOnline', geo.allowOnline);
+                    return;
+                }
+                var next = { enabled: geo.enabled, allowOnline: geo.allowOnline };
+                next[key] = !!value;
+                if (!next.enabled) next.allowOnline = false;
+                return fetch('/api/settings/geocoding', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ parking: next })
+                }).then(function (r) { return r.json(); }).then(function (d) {
+                    if (d && d.success && d.parking) {
+                        paintGeocoding(d.parking);
+                        toast(t('parking.settings_saved'), 'success');
+                    } else {
+                        toast(t('parking.enable_failed'), 'error');
+                        loadGeocoding();
+                    }
+                }).catch(function () {
                     toast(t('parking.enable_failed'), 'error');
                     loadGeocoding();
-                }
-            }).catch(function () {
-                toast(t('parking.enable_failed'), 'error');
-                loadGeocoding();
+                });
             });
         },
         save: function (key, value) {

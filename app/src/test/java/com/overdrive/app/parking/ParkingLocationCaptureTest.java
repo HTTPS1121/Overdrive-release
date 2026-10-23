@@ -41,11 +41,27 @@ public class ParkingLocationCaptureTest {
     }
 
     @Test
-    public void wallClockFallbackWhenNoMonotonicStamp() {
+    public void fixWithoutMonotonicStampIsKeptButNeverCalledFresh() {
+        // The sidecar restarted in the garage and replayed its disk cache: the
+        // fix arrives with fixElapsedMs=0 and a send time refreshed every second
+        // by the keep-alive. Send time says nothing about the fix's age.
         ParkingSession s = apply(new ParkingEnvironment.GpsFix(3.1, 101.6, 8f, 0L, 4_000_000L, false),
-                999L, 4_000_000L + 45_000L);
-        assertEquals(45_000L, s.fixAgeMs);
-        assertEquals(ParkingSession.GPS_FRESH, s.gpsQuality);
+                999L, 4_000_000L + 800L);
+        assertTrue("last-known position is still the best answer", s.hasFix());
+        assertEquals("age is unknowable", -1L, s.fixAgeMs);
+        assertEquals(ParkingSession.GPS_STALE, s.gpsQuality);
+        assertEquals(-1L, ParkingLocationCapture.fixAgeMs(
+                new ParkingEnvironment.GpsFix(3.1, 101.6, 8f, 0L, 4_000_000L, false), 999L, 4_000_800L));
+    }
+
+    @Test
+    public void crossBootMonotonicStampIsUnknownNotFresh() {
+        // A stamp from a longer previous uptime is ahead of this boot's clock.
+        ParkingSession s = apply(new ParkingEnvironment.GpsFix(3.1, 101.6, 8f, 9_000_000L, 4_000_000L, false),
+                120_000L, 4_000_000L + 1_000L);
+        assertTrue(s.hasFix());
+        assertEquals(-1L, s.fixAgeMs);
+        assertEquals(ParkingSession.GPS_STALE, s.gpsQuality);
     }
 
     @Test

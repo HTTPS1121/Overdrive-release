@@ -72,8 +72,7 @@ class WireGuardLauncher(
             return "nohup sh -c 'while :; do ${WireGuardPaths.BINARY} " +
                 "-config ${WireGuardPaths.CONFIG} " +
                 "-socks 127.0.0.1:${WireGuardPaths.SOCKS_PORT} " +
-                "-status ${WireGuardPaths.STATUS} " +
-                "-proxy-flag ${WireGuardPaths.PROXY_FLAG}$upstream; " +
+                "-status ${WireGuardPaths.STATUS}$upstream; " +
                 "[ \$? -eq ${WireGuardPaths.RELOAD_EXIT_CODE} ] || break; done' " +
                 "> ${WireGuardPaths.LOG} 2>&1 &"
         }

@@ -63,7 +63,7 @@ public class TailscaleDeploymentContractTest {
                 "Tailscale binary is stale; waiting for app-side redeployment",
                 deployment);
         int directLaunch = source.indexOf(
-                "/data/local/tmp/.tailscale/tailscaled --tun", tailscaleCase);
+                "ScratchRoot.path(\".tailscale/tailscaled\") + \" --tun", tailscaleCase);
 
         assertTrue(tailscaleCase >= 0);
         assertTrue(deployment > tailscaleCase);

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">지도 레이어</string>
+    <string name="navmap_google_type_default">Google 지도</string>
+    <string name="navmap_google_type_satellite">위성</string>
+    <string name="navmap_google_type_hybrid">하이브리드</string>
+    <string name="navmap_google_type_terrain">지형</string>
+    <string name="navmap_google_type_overdrive">OverDrive 지도</string>
+    <string name="navmap_google_traffic">실시간 교통 정보</string>
+    <string name="navmap_google_traffic_on">실시간 교통 정보 켜짐</string>
+    <string name="navmap_google_traffic_off">실시간 교통 정보 꺼짐</string>
+    <string name="navmap_google_traffic_paused">실시간 교통 정보가 %1$s까지 일시 중지됨 (일일 무료 한도 도달)</string>
+    <string name="navmap_google_map_paused">Google 지도가 %1$s까지 일시 중지됨 (일일 무료 한도 도달)</string>
+    <string name="navmap_google_map_unavailable">Google 지도를 사용할 수 없어 OverDrive 지도를 표시합니다</string>
+    <string name="navmap_google_key_problem">Google Maps 키에 문제가 있습니다. RoadSense 설정을 확인하세요.</string>
+    <string name="navmap_google_route_key_problem">Google 경로 안내에서 키를 거부했습니다. RoadSense 설정을 확인하세요.</string>
+    <string name="navmap_google_route_limit">오늘의 Google 경로 안내 한도에 도달했습니다</string>
+    <string name="navmap_google_arrived">목적지에 도착했습니다</string>
+    <string name="navmap_google_traffic_delay">정체 +%1$s</string>
+    <string name="navmap_google_no_delays">정체 없음</string>
+    <string name="navmap_google_faster_route">더 빠른 경로를 찾았습니다(%1$s 단축)</string>
+    <string name="navmap_google_faster_route_switch">전환</string>
+    <string name="navmap_google_routes_by_google">경로 제공: Google</string>
+    <string name="navmap_google_routing_provided_by">경로 안내 제공: %1$s</string>
+    <string name="navmap_google_place_failed">해당 장소를 열 수 없습니다</string>
+    <string name="navmap_google_finding_place">장소 찾는 중…</string>
+</resources>

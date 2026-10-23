@@ -49,6 +49,19 @@ public class OverlayPermissionAssetContractTest {
         assertTrue(source.contains("if (visible && !bsCloseAttached"));
     }
 
+    @Test
+    public void messageToastFallbackPreservesColorAndRequestedPosition()
+            throws Exception {
+        String source = read(
+                "src/main/java/com/overdrive/app/overlay/MessageOverlayService.java");
+        assertTrue(source.contains("showStyledToastFallback(intent)"));
+        assertTrue(source.contains("toast.setView(buildToastView("));
+        assertTrue(source.contains("accentFor(intent.getStringExtra(\"severity\"))"));
+        assertTrue(source.contains("toast.setGravity("));
+        assertTrue(source.contains("gravityFor(position)"));
+        assertFalse(source.contains("android.widget.Toast.makeText"));
+    }
+
     private static void assertUsesChecker(String relativePath) throws Exception {
         String source = read(relativePath);
         assertTrue(relativePath, source.contains("OverlayPermissionChecker.isGranted"));

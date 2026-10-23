@@ -18,8 +18,16 @@ import java.util.UUID;
  * Play Audio / Speak path in {@link AudioPlaybackController} — this shells
  * {@code am start-foreground-service} against the exported app-process
  * {@code MessageOverlayService}, which draws a {@code TYPE_APPLICATION_OVERLAY} window in
- * the real app process. Fire-and-forget (no waitFor) so a slow {@code am} never stalls the
- * HTTP-worker / keymap-fire thread.
+ * the real app process.
+ *
+ * <p>Two dispatch flavours. {@link #showToast}/{@link #showDialog} are fire-and-forget (no
+ * waitFor; the {@code am} launch is queued and nothing is learned about the outcome).
+ * {@link #showToastAcknowledged}/{@link #showDialogAcknowledged} additionally wait — bounded by
+ * {@link #ACK_TIMEOUT_MS} — for the service to report over a one-use loopback socket whether
+ * the message actually reached the screen, and why not (or via which delivery fallback).
+ * The automation / key-mapping API ({@code /api/vehicle/message})
+ * and the remote-message API both use the acknowledged flavour: with fire-and-forget the
+ * daemon logged "dispatched" for toasts the app process had silently refused (2026-09-23).
  */
 public final class MessageOverlayController {
 
@@ -29,12 +37,25 @@ public final class MessageOverlayController {
     private static final String PKG = "com.overdrive.app";
     private static final String SERVICE = "com.overdrive.app/.overlay.MessageOverlayService";
     private static final String ACTION_DISMISS = "com.overdrive.app.action.DISMISS_MESSAGE";
-    private static final int ACK_TIMEOUT_MS = 3000;
+    /**
+     * Upper bound on waiting for the app process to acknowledge a message. A warm process
+     * answers in well under a second; the budget exists for a COLD start (the a11y watchdog
+     * force-stops and respawns the app process, after which the next {@code am} launch has to
+     * bring the whole process up before the service can run). A genuine refusal (permission
+     * gate) is acknowledged immediately and never waits this long; only "the service never
+     * ran" burns the full timeout, and that IS the failure being reported.
+     */
+    private static final int ACK_TIMEOUT_MS = 5000;
 
     private MessageOverlayController() {}
 
     public static final class DisplayResult {
         public final boolean displayed;
+        /**
+         * Why the message was NOT displayed — or, when {@link #displayed} is true and this is
+         * non-empty, which fallback delivered it because the overlay window could not be
+         * used. Empty for a clean overlay display.
+         */
         public final String reason;
 
         private DisplayResult(boolean displayed, String reason) {
@@ -46,8 +67,18 @@ public final class MessageOverlayController {
             return new DisplayResult(true, "");
         }
 
+        /** Displayed through a fallback transport; {@code reason} names that fallback. */
+        public static DisplayResult degraded(String reason) {
+            return new DisplayResult(true, reason);
+        }
+
         public static DisplayResult failed(String reason) {
             return new DisplayResult(false, reason);
+        }
+
+        /** True when the message reached the screen only through a fallback path. */
+        public boolean isDegraded() {
+            return displayed && !reason.isEmpty();
         }
     }
 
@@ -138,12 +169,18 @@ public final class MessageOverlayController {
                     return DisplayResult.failed(
                             "Message acknowledgement was rejected");
                 }
-                return "DISPLAYED".equals(status)
-                        ? DisplayResult.displayed()
-                        : DisplayResult.failed(
-                                reason == null || reason.trim().isEmpty()
-                                        ? "The car could not display the message"
-                                        : reason);
+                boolean displayed = "DISPLAYED".equals(status);
+                boolean reasonGiven = reason != null && !reason.trim().isEmpty();
+                if (displayed) {
+                    // A reason on a DISPLAYED ack means the service used the styled toast
+                    // fallback (overlay window unavailable). Keep it so the caller can log
+                    // the permission/window problem even though presentation was preserved.
+                    return reasonGiven
+                            ? DisplayResult.degraded(reason.trim())
+                            : DisplayResult.displayed();
+                }
+                return DisplayResult.failed(
+                        reasonGiven ? reason : "The car could not display the message");
             } catch (SocketTimeoutException timeout) {
                 return DisplayResult.failed(
                         "The car did not acknowledge the message");
@@ -187,7 +224,7 @@ public final class MessageOverlayController {
 
     private static void exec(String cmd) {
         try {
-            Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
         } catch (Throwable t) {
             logger.warn("exec failed [" + cmd + "]: " + t.getMessage());
         }

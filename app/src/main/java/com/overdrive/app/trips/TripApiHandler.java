@@ -656,10 +656,81 @@ public class TripApiHandler {
         try {
             response.put("success", true);
             response.put("summary", rollupsArray);
+            response.put("period", buildPeriodTotals(db, params, days));
         } catch (Exception e) {
             logger.error("Error building summary response", e);
         }
         return response;
+    }
+
+    /** Upper bound on the trips one period total reads (years of daily driving). */
+    private static final int PERIOD_TOTALS_MAX_TRIPS = 5000;
+
+    /**
+     * Totals for exactly the trips GET /api/trips lists for the same window — the last
+     * {@code days} days, or {@code from}/{@code to} — so the summary tiles agree with the list.
+     * The weekly rollups only describe calendar weeks. Each trip is enriched and summed the way
+     * the web page sums the trips it has loaded.
+     */
+    private JSONObject buildPeriodTotals(TripDatabase db, Map<String, String> params, int days)
+            throws Exception {
+        long fromMs = getLongParam(params, "from", 0L);
+        long toMs = getLongParam(params, "to", 0L);
+        boolean range = fromMs > 0 || toMs > 0;
+        long from = range ? fromMs : System.currentTimeMillis() - ((long) days * 86400000L);
+        long to = range ? toMs : Long.MAX_VALUE;
+        List<TripRecord> trips = db.getTripsBetweenWithoutMoments(from, to, PERIOD_TOTALS_MAX_TRIPS);
+
+        // The page's SoC fallback for trips without a kWh figure uses this pack size.
+        double nominalKwh = 0;
+        try {
+            com.overdrive.app.abrp.SohEstimator soh =
+                com.overdrive.app.monitor.SocHistoryDatabase.getInstance().getSohEstimator();
+            if (soh != null) nominalKwh = soh.getNominalCapacityKwh();
+        } catch (Throwable ignored) {}
+
+        double distance = 0, energy = 0, cost = 0, socDelta = 0, litres = 0, fuelCost = 0;
+        long duration = 0, scoreSum = 0;
+        int scored = 0;
+        boolean anyPhev = false;
+        for (TripRecord t : trips) {
+            enrichTripEnergy(t);
+            distance += t.distanceKm;
+            duration += t.durationSeconds;
+            double e = t.getEnergyUsedKwh();
+            if (e <= 0 && t.socEnd > 0 && t.socStart > t.socEnd) {
+                double pack = (t.kwhStart > 0 && t.socStart > 5) ? t.kwhStart / (t.socStart / 100.0)
+                        : (nominalKwh > 0 ? nominalKwh : 82.56);
+                e = ((t.socStart - t.socEnd) / 100.0) * pack;
+            }
+            energy += e;
+            cost += t.tripCost;
+            if (t.socEnd > 0 && t.socStart > t.socEnd) socDelta += t.socStart - t.socEnd;
+            int a = t.anticipationScore, s = t.smoothnessScore, sd = t.speedDisciplineScore,
+                    ef = t.efficiencyScore, c = t.consistencyScore;
+            if (a != 0 || s != 0 || sd != 0 || ef != 0 || c != 0) {
+                scoreSum += (a + s + sd + ef + c) / 5;
+                scored++;
+            }
+            if (t.isPhev) anyPhev = true;
+            litres += t.litresUsed;
+            fuelCost += t.fuelCost;
+        }
+
+        JSONObject period = new JSONObject();
+        period.put("tripCount", trips.size());
+        period.put("totalDistanceKm", distance);
+        period.put("totalDurationSeconds", duration);
+        period.put("scoredTrips", scored);
+        if (scored > 0) period.put("avgScore", scoreSum / scored);
+        period.put("totalEnergyKwh", energy);
+        period.put("totalSocDelta", socDelta);
+        period.put("totalCost", cost);
+        period.put("totalLitres", litres);
+        period.put("totalFuelCost", fuelCost);
+        period.put("anyPhev", anyPhev);
+        period.put("truncated", trips.size() >= PERIOD_TOTALS_MAX_TRIPS);
+        return period;
     }
 
     /**

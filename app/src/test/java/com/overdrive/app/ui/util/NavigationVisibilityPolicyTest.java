@@ -50,4 +50,22 @@ public class NavigationVisibilityPolicyTest {
                 restored
         );
     }
+
+    @Test
+    public void newProximityIsDiscoverableWithoutRestoringItemsTheUserHid() {
+        Set<String> catalog =
+                new LinkedHashSet<>(Arrays.asList("vehicle", "trips", "proximity"));
+        Set<String> seenBeforeUpdate =
+                new LinkedHashSet<>(Arrays.asList("vehicle", "trips"));
+        Set<String> stored = Collections.singleton("vehicle");
+        assertEquals(
+                new LinkedHashSet<>(Arrays.asList("vehicle", "proximity")),
+                NavigationVisibilityPolicy.resolveWithNewDefaults(
+                        stored, catalog, seenBeforeUpdate)
+        );
+        assertEquals(
+                Collections.singleton("vehicle"),
+                NavigationVisibilityPolicy.resolveWithNewDefaults(stored, catalog, catalog)
+        );
+    }
 }

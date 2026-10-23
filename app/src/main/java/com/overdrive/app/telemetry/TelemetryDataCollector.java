@@ -208,6 +208,52 @@ public class TelemetryDataCollector {
     private boolean speedSourceInvalidated = false;
     private int invalidatedFrozenSpeedKmh = -1;
 
+    // Backstop for a stalled reader: a healthy DI5 observation ages up to 2 s dump TTL + 1 s poll +
+    // 2 x a dump that still succeeds (4 s process timeout) before the next one lands.
+    private static final long DILINK5_DYNAMICS_MAX_AGE_MS = 12_000L;
+    // A dump lands with its sample at most 4 s timeout + 1 s poll old; older means the reader stalled.
+    private static final long DILINK5_FROZEN_SAMPLE_MAX_AGE_MS = 6_000L;
+    private static final long DILINK5_DIRECT_MAX_AGE_MS = 3_000L;
+    // DI5: the car's speed value held since it last changed, checked against GPS over a recent window
+    // of the hold: its live fixes (with Doppler km so far), when one last came, since when P has read.
+    private static final float DILINK5_HOLD_FIX_MAX_ACCURACY_M = 50f;
+    private int diLink5HoldKmh = -1;
+    private long diLink5HoldSeenAtMs = -1L;
+    private long diLink5HoldParkedSinceMs = -1L;
+    // DI5, across holds: when GPS last showed the car moving at the value, when a live fix last came, the
+    // last fix with Doppler, and the fix before this one.
+    private long diLink5HoldMovingSeenAtMs = -1L;
+    private long diLink5LiveFixAtMs = -1L;
+    private long diLink5FixesResumedAtMs = -1L;
+    private long diLink5DopplerFixId = 0L;
+    private double diLink5DopplerKmh = 0;
+    private long diLink5PrevFixId = 0L;
+    private double diLink5PrevFixLat = 0, diLink5PrevFixLon = 0;
+    private float diLink5PrevFixAccuracyM = 0f;
+    private long diLink5HoldLastFixId = 0L;
+    private final java.util.ArrayDeque<HoldFix> diLink5HoldFixes = new java.util.ArrayDeque<>();
+    // The hold's last 60 s of Doppler from accurate fixes, each with its trailing 20 s median.
+    private final java.util.ArrayDeque<HoldDoppler> diLink5HoldDoppler = new java.util.ArrayDeque<>();
+    // The hold's current run of standing fixes (Doppler under 3, within their accuracy of its first), and
+    // whether one outlasted what the value could stand.
+    private long diLink5HoldStillFromId = 0L;
+    private double diLink5HoldStillLat = 0, diLink5HoldStillLon = 0;
+    private float diLink5HoldStillAccuracyM = 0f;
+    private boolean diLink5HoldStoodThrough = false;
+    private long diLink5HoldContradictedSinceFixId = 0L;
+    private int diLink5HoldContradictingFixes = 0;
+    private boolean diLink5HoldContradicted = false;
+    // One reader thread per process, started on the first DI5 read, however many collectors exist.
+    private static final java.util.concurrent.ExecutorService DILINK5_READER =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "DI5Dynamics");
+                t.setDaemon(true);
+                return t;
+            });
+    private final java.util.concurrent.atomic.AtomicBoolean diLink5ReadPending =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile com.overdrive.app.byd.BydDataCollector.DiLink5Dynamics diLink5Dynamics;
+
     /**
      * Initialize BYD device handles via reflection using PermissionBypassContext.
      * Each device is initialized independently — if one fails, others still work.
@@ -560,7 +606,14 @@ public class TelemetryDataCollector {
                 getAccelerateDeepnessMethod;
         Method polledGetBrakeDeepnessMethod =
                 getBrakeDeepnessMethod;
-        if (polledSpeedDevice != null
+        final boolean diLink5 =
+                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        if (diLink5) {
+            applyDiLink5Dynamics();
+            speedKmh = lastSpeedValid ? lastSpeedKmh : 0;
+            accelPercent = lastAccelValid ? lastAccelPercent : 0;
+            brakePercent = lastBrakeValid ? lastBrakePercent : 0;
+        } else if (polledSpeedDevice != null
                 && polledGetCurrentSpeedMethod != null
                 && polledGetAccelerateDeepnessMethod != null
                 && polledGetBrakeDeepnessMethod != null) {
@@ -665,12 +718,30 @@ public class TelemetryDataCollector {
                 captureTrustworthyGpsSpeed(
                         pollElapsedRealtimeMs,
                         System.currentTimeMillis());
-        boolean sustainedSpeedContradiction =
-                updateSpeedContradiction(
+        // DI5 speed is a car_service snapshot that can stop updating, a valid 0 included.
+        boolean sustainedSpeedContradiction = diLink5
+                ? diLink5HeldSpeedContradicted(speedKmh, pollElapsedRealtimeMs)
+                : updateSpeedContradiction(
                         speedKmh,
                         gpsSpeedEvidence,
                         pollElapsedRealtimeMs);
-        if (sustainedSpeedContradiction
+        if (diLink5) {
+            // DI5 has no SDK device to rebind: a speed that live GPS keeps contradicting is quarantined
+            // while the source still delivers it; a sample that stopped being refreshed is only unknown.
+            if (sustainedSpeedContradiction) {
+                if (pollElapsedRealtimeMs - lastSpeedReadElapsedRealtimeMs
+                        <= DILINK5_FROZEN_SAMPLE_MAX_AGE_MS) {
+                    invalidateFrozenSpeed(speedKmh);
+                } else {
+                    lastSpeedValid = false;
+                }
+                speedKmh = 0;
+                accelPercent = 0;
+                brakePercent = 0;
+                lastAccelValid = false;
+                lastBrakeValid = false;
+            }
+        } else if (sustainedSpeedContradiction
                 || speedSourceInvalidated) {
             SpeedReconnectResult reconnect =
                     maybeReconnectSpeedDevice(
@@ -977,6 +1048,414 @@ public class TelemetryDataCollector {
         return true;
     }
 
+    /**
+     * DI5 has no SDK speed device in the daemon. Applies the newest DI5 observation, stamped with
+     * its source time, and queues the next read off this thread.
+     */
+    private void applyDiLink5Dynamics() {
+        requestDiLink5Dynamics();
+        long now = SystemClock.elapsedRealtime();
+        com.overdrive.app.byd.BydDataCollector.DiLink5Dynamics d = diLink5Dynamics;
+        // The newest read decides: a failed read (null) or a field it lacks is unknown, not held.
+        boolean fresh = d != null && isFreshDiLink5(now, d.observedAtElapsedMs);
+        long at = fresh ? d.observedAtElapsedMs : 0L;
+        if (fresh && d.speedKmh >= 0 && d.speedKmh <= 300) {
+            if (at >= lastSpeedReadElapsedRealtimeMs) {
+                acceptSpeedCandidate((int) Math.round(d.speedKmh), at);
+            }
+        } else {
+            lastSpeedValid = false;
+        }
+        if (fresh && isValidPedalPercent(d.accelPercent)) {
+            if (at >= lastAccelReadElapsedRealtimeMs) {
+                lastAccelPercent = d.accelPercent;
+                lastAccelValid = true;
+                lastAccelReadElapsedRealtimeMs = at;
+            }
+        } else {
+            lastAccelValid = false;
+        }
+        if (fresh && isValidPedalPercent(d.brakePercent)) {
+            if (at >= lastBrakeReadElapsedRealtimeMs) {
+                lastBrakePercent = d.brakePercent;
+                lastBrakeValid = true;
+                lastBrakeReadElapsedRealtimeMs = at;
+            }
+        } else {
+            lastBrakeValid = false;
+        }
+        // A speed quarantined as frozen discredits the pedals from the same feed.
+        if (speedSourceInvalidated) {
+            lastAccelValid = false;
+            lastBrakeValid = false;
+        }
+    }
+
+    /** One read in flight, off the poll thread, and only while the daemon treats the car as on. */
+    private void requestDiLink5Dynamics() {
+        boolean carOn = com.overdrive.app.monitor.GearMonitor.getInstance().isRunning()
+                || com.overdrive.app.monitor.AccMonitor.isAccOn();
+        if (!carOn || !diLink5ReadPending.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            DILINK5_READER.execute(() -> {
+                com.overdrive.app.byd.BydDataCollector.DiLink5Dynamics read = null;
+                try {
+                    read = com.overdrive.app.byd.BydDataCollector.getInstance().readDiLink5DynamicsNow();
+                } catch (Throwable t) {
+                    logger.debug("DI5 dynamics read failed: " + t.getMessage());
+                } finally {
+                    // A failed read keeps the last observation while young (3 s on DIRECT, 6 s on the dump):
+                    // one glitch is not an outage. A read that lacks a field still makes it unknown.
+                    com.overdrive.app.byd.BydDataCollector.DiLink5Dynamics prev = diLink5Dynamics;
+                    long bridgeMs = com.overdrive.app.byd.DiLink5DirectTelemetry.ownsDynamics()
+                            ? DILINK5_DIRECT_MAX_AGE_MS : DILINK5_FROZEN_SAMPLE_MAX_AGE_MS;
+                    diLink5Dynamics = read != null ? read
+                            : prev != null && SystemClock.elapsedRealtime() - prev.observedAtElapsedMs <= bridgeMs
+                                    ? prev : null;
+                    diLink5ReadPending.set(false);
+                }
+            });
+        } catch (Throwable t) {
+            diLink5ReadPending.set(false);
+        }
+    }
+
+    private static boolean isFreshDiLink5(
+            long nowElapsedRealtimeMs,
+            long observedAtElapsedRealtimeMs) {
+        long age = nowElapsedRealtimeMs - observedAtElapsedRealtimeMs;
+        // The binder is read every poll, so only the car_service dump cycle needs the long backstop.
+        long maxAge = com.overdrive.app.byd.DiLink5DirectTelemetry.ownsDynamics()
+                ? DILINK5_DIRECT_MAX_AGE_MS : DILINK5_DYNAMICS_MAX_AGE_MS;
+        return observedAtElapsedRealtimeMs > 0L
+                && age >= 0L
+                && age <= maxAge;
+    }
+
+    /**
+     * DI5: whether the car's speed value, held since it last changed, is frozen. Over a recent window
+     * of the hold (live fixes at most 5 s apart) GPS must show about the value: Doppler averaged over
+     * the fixes that carry it (the sidecar sends 0.0 for a fix without speed; a 0.0 the car could have
+     * braked to is a stop), and the displacement against the fixes' accuracy. It contradicts when the
+     * car is slower by max(a sixth, 10% + 5 km/h) of the value (a dashboard speed may over-read that
+     * much; half at most) or faster by 5% plus the accuracy margin; positions alone decide where
+     * Doppler covers under half the window, more strictly. The window is as long as that needs at the
+     * fixes' accuracy. From 20 km/h it also contradicts when the hold's Doppler varies (20 s medians
+     * spread by max(10 km/h, 8%) over 30 s+), which a live value would have followed, and from 8 km/h
+     * when held through a standstill it could not have stood. The value is frozen once the contradiction
+     * has lasted 10 s, longer than the dump's lag. In P a non-zero value held 10 s (20 s while live
+     * fixes come) is frozen unless GPS showed the car moving at it (or the value before) in the last
+     * 20 s (30 s without fixes: a tunnel): the gear can misread P. Polls without a valid speed pause the
+     * hold, and restart its P clock.
+     */
+    private boolean diLink5HeldSpeedContradicted(int speedKmh, long nowElapsedMs) {
+        GpsMonitor.GpsFixSnapshot fix = GpsMonitor.getInstance().getFixSnapshot();
+        if (isLiveDiLink5Fix(fix, nowElapsedMs)) {
+            // Fixes back after a gap (a tunnel; sparse fixes are not one): motion could not be watched in
+            // it, so quiet time starts again here.
+            if (diLink5LiveFixAtMs >= 0L && nowElapsedMs - diLink5LiveFixAtMs > SPEED_CONTRADICTION_MIN_DURATION_MS) {
+                diLink5FixesResumedAtMs = nowElapsedMs;
+            }
+            diLink5LiveFixAtMs = nowElapsedMs;
+        }
+        if (!lastSpeedValid) {
+            return false;
+        }
+        // A pause in the hold (no valid speed) restarts its P clock and standing run: neither was watched.
+        if (nowElapsedMs - diLink5HoldSeenAtMs > 2_000L) {
+            diLink5HoldParkedSinceMs = -1L;
+            diLink5HoldStillFromId = 0L;
+        }
+        if (speedKmh != diLink5HoldKmh
+                || nowElapsedMs - diLink5HoldSeenAtMs > SPEED_CONTRADICTION_MIN_DURATION_MS) {
+            diLink5HoldKmh = speedKmh;
+            diLink5HoldParkedSinceMs = -1L;
+            diLink5HoldFixes.clear();
+            diLink5HoldDoppler.clear();
+            diLink5HoldStillFromId = 0L;
+            diLink5HoldStoodThrough = false;
+            diLink5HoldContradicted = false;
+        }
+        diLink5HoldSeenAtMs = nowElapsedMs;
+        if (com.overdrive.app.monitor.GearMonitor.getInstance().getCurrentGear()
+                != com.overdrive.app.monitor.GearMonitor.GEAR_P) {
+            diLink5HoldParkedSinceMs = -1L;
+        } else if (diLink5HoldParkedSinceMs < 0L) {
+            diLink5HoldParkedSinceMs = nowElapsedMs;
+        }
+        boolean fixesCome = diLink5LiveFixAtMs >= 0L && nowElapsedMs - diLink5LiveFixAtMs <= 5_000L;
+        // While fixes come, as long as the value needs to clear twice their jitter: up to 60 s for a creep
+        // (6 km/h or less), 30 s above, so a value frozen in P is not kept long.
+        long showMs = speedKmh > 0 ? Math.round(2 * 2 * Math.max(1f, (float) Math.ceil(fix.accuracy))
+                / 1000.0 / speedKmh * 3_600_000.0) + 5_000L : 0L;
+        long parkedWaitMs = fixesCome ? Math.max(2 * SPEED_CONTRADICTION_MIN_DURATION_MS,
+                Math.min(speedKmh <= 6 ? 60_000L : 30_000L, showMs)) : SPEED_CONTRADICTION_MIN_DURATION_MS;
+        long motionQuietMs = fixesCome ? parkedWaitMs : 3 * SPEED_CONTRADICTION_MIN_DURATION_MS;
+        long quietSinceMs = Math.max(diLink5HoldMovingSeenAtMs, diLink5FixesResumedAtMs);
+        if (speedKmh > 0 && diLink5HoldParkedSinceMs >= 0L
+                && nowElapsedMs - diLink5HoldParkedSinceMs >= parkedWaitMs
+                && nowElapsedMs - quietSinceMs >= motionQuietMs) {
+            return true;
+        }
+        long fixId = fix.fixElapsedMs > 0L ? fix.fixElapsedMs : fix.lastUpdate;
+        if (fixId == diLink5HoldLastFixId || !isLiveDiLink5Fix(fix, nowElapsedMs)) {
+            return diLink5HoldContradicted;
+        }
+        float accuracyM = Math.max(1f, (float) Math.ceil(fix.accuracy));
+        double rawKmh = fix.speed >= 0f && !Float.isInfinite(fix.speed) ? fix.speed * 3.6 : 0.0;
+        boolean carriesDoppler = carriesDiLink5Doppler(fixId, fix, accuracyM, rawKmh);
+        HoldFix last = diLink5HoldFixes.peekLast();
+        if (last == null || fixId < last.id || fixId - last.id > 5_000L) {
+            diLink5HoldFixes.clear();
+            diLink5HoldDoppler.clear();
+            diLink5HoldFixes.addLast(new HoldFix(fixId, fix.latitude, fix.longitude, accuracyM, 0, 0L));
+            addHoldDoppler(fixId, accuracyM, rawKmh);
+            diLink5HoldStillFromId = 0L;
+            trackHoldStill(fixId, fix, accuracyM, rawKmh, speedKmh);
+            diLink5HoldContradictedSinceFixId = 0L;
+            diLink5HoldContradicted = false;
+        } else {
+            // Doppler under 3 km/h is a standstill's noise, which a long stop would otherwise add up.
+            long stepMs = fixId - last.id;
+            HoldFix now = new HoldFix(fixId, fix.latitude, fix.longitude, accuracyM,
+                    last.dopplerKm + (carriesDoppler && rawKmh >= 3.0 ? rawKmh * (stepMs / 3_600_000.0) : 0),
+                    last.dopplerMs + (carriesDoppler ? stepMs : 0L));
+            diLink5HoldFixes.addLast(now);
+            addHoldDoppler(fixId, accuracyM, rawKmh);
+            trackHoldStill(fixId, fix, accuracyM, rawKmh, speedKmh);
+            double boundEstKm = 2 * accuracyM / 1000.0;
+            double marginEstKm = Math.max(2 * boundEstKm, 0.025);
+            double shortKmh = Math.min(speedKmh / 2.0, Math.max(speedKmh / 6.0, speedKmh / 10.0 + 5.0));
+            double windowH = speedKmh > 0
+                    ? Math.max(Math.max(Math.max(0.080, 4 * boundEstKm) / speedKmh, 2 * boundEstKm / shortKmh),
+                            marginEstKm / Math.max(speedKmh / 20.0, 3.0))
+                    : marginEstKm / 5.0;
+            long windowMs = speedKmh > 0
+                    ? Math.max(15_000L, Math.min(300_000L, Math.round(windowH * 3_600_000.0)))
+                    : Math.max(30_000L, Math.min(150_000L, Math.round(windowH * 3_600_000.0)));
+            while (diLink5HoldFixes.size() > 2) {
+                java.util.Iterator<HoldFix> it = diLink5HoldFixes.iterator();
+                it.next();
+                if (it.next().id > fixId - windowMs) break;
+                diLink5HoldFixes.pollFirst();
+            }
+            HoldFix base = diLink5HoldFixes.peekFirst();
+            double hours = (fixId - base.id) / 3_600_000.0;
+            double expectedKm = speedKmh * hours;
+            double movedKm = haversineKm(base.lat, base.lon, fix.latitude, fix.longitude);
+            double boundKm = (base.accuracyM + accuracyM) / 1000.0;
+            double dopplerHours = (now.dopplerMs - base.dopplerMs) / 3_600_000.0;
+            boolean hasDoppler = dopplerHours >= hours / 2.0;
+            double dopplerKmh = hasDoppler ? (now.dopplerKm - base.dopplerKm) / dopplerHours : 0.0;
+            double reachKm = (speedKmh - shortKmh) * hours;
+            // Doppler under 3 km/h reads 0, so it can only judge speeds above that.
+            boolean slower = speedKmh > 0 && (hasDoppler && speedKmh - shortKmh >= 3.0
+                    ? dopplerKmh < speedKmh - shortKmh && movedKm < reachKm + boundKm
+                    : movedKm + boundKm < reachKm);
+            boolean faster = hasDoppler
+                    ? dopplerKmh >= 1.05 * speedKmh + 3.0
+                            && movedKm >= 1.05 * expectedKm + Math.max(2 * boundKm, 0.025)
+                    : movedKm >= 1.05 * expectedKm + Math.max(4 * boundKm, 0.050);
+            boolean varies = speedKmh >= 20 && heldDopplerVaries(speedKmh);
+            if (speedKmh > 0 && movedRecentlyAtDiLink5Speed(speedKmh, now, boundEstKm)) {
+                diLink5HoldMovingSeenAtMs = nowElapsedMs;
+            }
+            if (!slower && !faster && !varies && !diLink5HoldStoodThrough) {
+                diLink5HoldContradictedSinceFixId = 0L;
+            } else if (diLink5HoldContradictedSinceFixId == 0L) {
+                diLink5HoldContradictedSinceFixId = fixId;
+                diLink5HoldContradictingFixes = 1;
+            } else {
+                diLink5HoldContradictingFixes++;
+            }
+            diLink5HoldContradicted = diLink5HoldContradictedSinceFixId > 0L
+                    && diLink5HoldContradictingFixes >= SPEED_CONTRADICTION_MIN_FIXES
+                    && fixId - diLink5HoldContradictedSinceFixId >= SPEED_CONTRADICTION_MIN_DURATION_MS;
+        }
+        diLink5HoldLastFixId = fixId;
+        return diLink5HoldContradicted;
+    }
+
+    /**
+     * DI5: whether a live fix's Doppler counts. A 0.0 counts as a stop within 8 s of the last fix with
+     * Doppler, if the car could have braked to it (at most 25 km/h per second) and the step from the
+     * fix before is one of standing or the last of braking (5 m of jitter, or 12.5 km/h); else it is a
+     * fix without speed, which a long stop's positions judge instead. Spans holds.
+     */
+    private boolean carriesDiLink5Doppler(long fixId, GpsMonitor.GpsFixSnapshot fix, float accuracyM, double rawKmh) {
+        boolean carries = rawKmh > 0.0;
+        if (!carries && diLink5DopplerFixId > 0L && fixId > diLink5DopplerFixId
+                && fixId - diLink5DopplerFixId <= 8_000L
+                && diLink5DopplerKmh <= 25.0 * ((fixId - diLink5DopplerFixId) / 1000.0)
+                && diLink5PrevFixId > 0L && fixId > diLink5PrevFixId) {
+            double stepKm = haversineKm(diLink5PrevFixLat, diLink5PrevFixLon, fix.latitude, fix.longitude);
+            double allowKm = Math.max(Math.min((diLink5PrevFixAccuracyM + accuracyM) / 1000.0, 0.005),
+                    12.5 * ((fixId - diLink5PrevFixId) / 3_600_000.0));
+            carries = stepKm <= allowKm;
+        }
+        if (rawKmh > 0.0) {
+            diLink5DopplerFixId = fixId;
+            diLink5DopplerKmh = rawKmh;
+        }
+        diLink5PrevFixId = fixId;
+        diLink5PrevFixLat = fix.latitude;
+        diLink5PrevFixLon = fix.longitude;
+        diLink5PrevFixAccuracyM = accuracyM;
+        return carries;
+    }
+
+    /**
+     * DI5: whether the car was seen moving at the value lately (so a P is a misread), over the last 10-60
+     * s (long enough for the value to clear 3x the fixes' accuracy) and at least 5 s: Doppler at half the
+     * value (3 km/h at least) with the positions not standing, or the positions clear of twice the
+     * accuracy.
+     */
+    private boolean movedRecentlyAtDiLink5Speed(int speedKmh, HoldFix now, double boundEstKm) {
+        long spanMs = Math.max(10_000L, Math.min(60_000L,
+                Math.round(3 * boundEstKm / speedKmh * 3_600_000.0)));
+        HoldFix from = null;
+        for (HoldFix f : diLink5HoldFixes) {
+            if (f.id >= now.id - spanMs) {
+                from = f;
+                break;
+            }
+        }
+        if (from == null || now.id - from.id < 5_000L) return false;
+        double hours = (now.id - from.id) / 3_600_000.0;
+        double expectedKm = speedKmh * hours;
+        double movedKm = haversineKm(from.lat, from.lon, now.lat, now.lon);
+        double boundKm = (from.accuracyM + now.accuracyM) / 1000.0;
+        double dopplerHours = (now.dopplerMs - from.dopplerMs) / 3_600_000.0;
+        if (dopplerHours >= hours / 2.0
+                && (now.dopplerKm - from.dopplerKm) / dopplerHours >= Math.max(3.0, speedKmh / 2.0)
+                && movedKm >= expectedKm / 4.0) {
+            return true;
+        }
+        // Doppler reads 0 under 3 km/h: the positions can still show a creep.
+        return movedKm >= Math.max(2 * boundKm, expectedKm / 2.0);
+    }
+
+    /**
+     * DI5: tracks the hold's run of standing fixes. A live value follows a stop within its lag (12 s at
+     * most, failed reads bridged), so a value from 8 km/h held through a standstill longer than 15 s, and
+     * than even its fully over-read speed needs to clear twice the jitter, is frozen (a jam's short stops).
+     */
+    private void trackHoldStill(long fixId, GpsMonitor.GpsFixSnapshot fix, float accuracyM, double rawKmh,
+            int speedKmh) {
+        if (rawKmh >= 3.0) {
+            diLink5HoldStillFromId = 0L;
+            return;
+        }
+        if (diLink5HoldStillFromId == 0L
+                || haversineKm(diLink5HoldStillLat, diLink5HoldStillLon, fix.latitude, fix.longitude)
+                        > (diLink5HoldStillAccuracyM + accuracyM) / 1000.0) {
+            diLink5HoldStillFromId = fixId;
+            diLink5HoldStillLat = fix.latitude;
+            diLink5HoldStillLon = fix.longitude;
+            diLink5HoldStillAccuracyM = accuracyM;
+            return;
+        }
+        double realMinKmh = (speedKmh - 4.0) / 1.1;
+        if (speedKmh < 8 || realMinKmh <= 0) return;
+        long needMs = Math.max(15_000L, Math.round(2 * (diLink5HoldStillAccuracyM + accuracyM) / 1000.0
+                / realMinKmh * 3_600_000.0));
+        if (fixId - diLink5HoldStillFromId >= needMs) diLink5HoldStoodThrough = true;
+    }
+
+    /**
+     * DI5: keeps the hold's last 60 s of Doppler (fixes within 20 m, 3 km/h+), each with the median of a
+     * full trailing 20 s (16+ samples over 18 s+), which a stray reading or seconds of noise cannot move.
+     */
+    private void addHoldDoppler(long fixId, float accuracyM, double rawKmh) {
+        while (!diLink5HoldDoppler.isEmpty() && diLink5HoldDoppler.peekFirst().id < fixId - 60_000L) {
+            diLink5HoldDoppler.pollFirst();
+        }
+        if (accuracyM > GPS_SPEED_MAX_ACCURACY_M || rawKmh < 3.0) return;
+        java.util.ArrayList<Double> recent = new java.util.ArrayList<>();
+        recent.add(rawKmh);
+        long oldestId = fixId;
+        for (java.util.Iterator<HoldDoppler> it = diLink5HoldDoppler.descendingIterator(); it.hasNext(); ) {
+            HoldDoppler d = it.next();
+            if (d.id <= fixId - 20_000L) break;
+            recent.add(d.kmh);
+            oldestId = d.id;
+        }
+        double medianKmh = Double.NaN;
+        int n = recent.size();
+        if (n >= 16 && fixId - oldestId >= 18_000L) {
+            java.util.Collections.sort(recent);
+            medianKmh = n % 2 == 1 ? recent.get(n / 2) : (recent.get(n / 2 - 1) + recent.get(n / 2)) / 2.0;
+        }
+        diLink5HoldDoppler.addLast(new HoldDoppler(fixId, rawKmh, medianKmh));
+    }
+
+    /** DI5: whether the hold's 20 s Doppler medians spread by max(10 km/h, 8%) over 30 s or more of it. */
+    private boolean heldDopplerVaries(int speedKmh) {
+        if (diLink5HoldDoppler.size() < 20
+                || diLink5HoldDoppler.peekLast().id - diLink5HoldDoppler.peekFirst().id < 30_000L) {
+            return false;
+        }
+        double lo = Double.POSITIVE_INFINITY, hi = Double.NEGATIVE_INFINITY;
+        for (HoldDoppler d : diLink5HoldDoppler) {
+            if (Double.isNaN(d.medianKmh)) continue;
+            lo = Math.min(lo, d.medianKmh);
+            hi = Math.max(hi, d.medianKmh);
+        }
+        return hi - lo >= Math.max(10.0, 0.08 * speedKmh);
+    }
+
+    private static final class HoldDoppler {
+        final long id;
+        final double kmh, medianKmh;
+
+        HoldDoppler(long id, double kmh, double medianKmh) {
+            this.id = id;
+            this.kmh = kmh;
+            this.medianKmh = medianKmh;
+        }
+    }
+
+    private static final class HoldFix {
+        final long id;
+        final double lat, lon;
+        final float accuracyM;
+        // Since the hold's window began: Doppler km, and the time covered by fixes that carry Doppler.
+        final double dopplerKm;
+        final long dopplerMs;
+
+        HoldFix(long id, double lat, double lon, float accuracyM, double dopplerKm, long dopplerMs) {
+            this.id = id;
+            this.lat = lat;
+            this.lon = lon;
+            this.accuracyM = accuracyM;
+            this.dopplerKm = dopplerKm;
+            this.dopplerMs = dopplerMs;
+        }
+    }
+
+    /** DI5: a fix from the live sidecar, at most 5 s old, within the hold check's accuracy gate. */
+    private static boolean isLiveDiLink5Fix(GpsMonitor.GpsFixSnapshot fix, long nowElapsedMs) {
+        if (fix == null || fix.loadedFromCache
+                || !(fix.accuracy > 0f) || fix.accuracy > DILINK5_HOLD_FIX_MAX_ACCURACY_M) {
+            return false;
+        }
+        long ageMs = fix.fixElapsedMs > 0L
+                ? nowElapsedMs - fix.fixElapsedMs
+                : fix.lastUpdate > 0L ? System.currentTimeMillis() - fix.lastUpdate : -1L;
+        return ageMs >= 0L && ageMs <= GPS_SPEED_MAX_AGE_MS;
+    }
+
+    private static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 6371.0 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
     private SpeedReconnectResult maybeReconnectSpeedDevice(
             long generation,
             long nowElapsedRealtimeMs,
@@ -1230,7 +1709,10 @@ public class TelemetryDataCollector {
 
     private void invalidateFrozenSpeed(int frozenSpeedKmh) {
         if (!speedSourceInvalidated) {
-            logger.warn("Invalidating frozen CAN speed "
+            logger.warn(com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                    ? "Invalidating frozen DI5 speed " + frozenSpeedKmh
+                            + "km/h after sustained live GPS disagreement"
+                    : "Invalidating frozen CAN speed "
                     + frozenSpeedKmh
                     + "km/h after sustained live GPS disagreement"
                     + " and failed source recovery");

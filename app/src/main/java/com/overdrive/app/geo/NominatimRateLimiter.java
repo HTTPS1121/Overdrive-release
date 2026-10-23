@@ -132,12 +132,8 @@ public final class NominatimRateLimiter {
 
     private static void writeCooldownUntilMs(long ms) {
         // Read-modify-write under the UnifiedConfigManager INSTANCE monitor
-        // to serialize against /api/settings/geocoding POST handlers that
-        // also read-merge-write the same section. UnifiedConfigManager is
-        // a Kotlin object — `synchronized(this)` inside its methods locks
-        // on the singleton INSTANCE field, NOT on the Class object. We
-        // MUST lock on the same INSTANCE; locking on .class would create
-        // a separate monitor and leave the TOCTOU race open.
+        // to serialize against the /api/settings/geocoding POST handler, the
+        // only other geocoding.advanced writer; it locks the same INSTANCE.
         //
         // We also build the `advanced` delta from a *fresh* JSONObject so a
         // concurrent reader of the live cached `geocoding.advanced` object

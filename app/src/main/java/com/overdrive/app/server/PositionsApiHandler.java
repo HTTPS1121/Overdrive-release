@@ -168,10 +168,25 @@ public final class PositionsApiHandler {
             // so a picker built from the table alone would offer colours the car rejects.
             try {
                 Context cctx = resolveContext();
-                cur.put("ambientColourMax", com.overdrive.app.byd.AmbientProbe.colourMax(cctx));
+                boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+                int colourMax;
+                String[] palette = null;
+                if (diLink5) {
+                    // One bridge read for both: the car's colour count and, if reported, its palette.
+                    com.overdrive.app.byd.VehicleActuatorBridge.DiLink5AmbientColours read =
+                            com.overdrive.app.byd.VehicleActuatorBridge.readDiLink5AmbientColours(cctx);
+                    colourMax = read.count == com.overdrive.app.byd.BydVehicleData.UNAVAILABLE
+                            ? 31 : Math.min(read.count, 31);
+                    // A 7-colour DI5 car numbers its own named colours, not the first 7 of the table.
+                    palette = read.palette != null ? read.palette
+                            : com.overdrive.app.byd.light.AmbientPalette.paletteFor(colourMax, true);
+                } else {
+                    colourMax = com.overdrive.app.byd.AmbientProbe.colourMax(cctx);
+                }
+                cur.put("ambientColourMax", colourMax);
                 cur.put("ambientPalette",
-                        new JSONArray(java.util.Arrays.asList(
-                                com.overdrive.app.byd.light.LightConstants.AMBIENT_COLOURS)));
+                        new JSONArray(java.util.Arrays.asList(palette != null ? palette
+                                : com.overdrive.app.byd.light.LightConstants.AMBIENT_COLOURS)));
             } catch (Throwable ignore) { }
             HttpResponse.sendJson(out, cur.toString());
             return true;

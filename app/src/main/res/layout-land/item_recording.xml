@@ -73,6 +73,25 @@
                 android:buttonTint="?attr/colorPrimary"
                 android:gravity="center"
                 android:visibility="gone" />
+
+            <!-- SafeKeep backup state; bound only while SafeKeep is on. -->
+            <TextView
+                android:id="@+id/tvSafeKeepBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_margin="4dp"
+                android:ellipsize="end"
+                android:gravity="center_vertical"
+                android:maxWidth="100dp"
+                android:paddingHorizontal="6dp"
+                android:paddingVertical="2dp"
+                android:singleLine="true"
+                android:textColor="@android:color/white"
+                android:textSize="10sp"
+                android:visibility="gone"
+                tools:text="SAVED"
+                tools:visibility="visible" />
         </FrameLayout>
 
         <LinearLayout

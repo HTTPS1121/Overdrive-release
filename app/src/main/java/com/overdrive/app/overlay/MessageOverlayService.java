@@ -94,25 +94,43 @@ public final class MessageOverlayService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+        String kind = orDefault(intent.getStringExtra("kind"), "toast");
+        boolean dialog = "dialog".equalsIgnoreCase(kind);
         // A running-app can't render an overlay without the permission; a shell `am`
         // launch bypasses the in-app grant flow, so guard here and cleanly no-op.
         if (!OverlayPermissionChecker.isGranted(this)) {
-            logger.warn("SYSTEM_ALERT_WINDOW not granted; cannot show message");
-            sendAcknowledgement(intent, false,
-                    "Display-over-other-apps permission is not granted in the car");
+            logger.warn("SYSTEM_ALERT_WINDOW not granted; cannot show message overlay");
+            // A toast still has a way to the screen: the platform toast queue needs no
+            // overlay permission. Use our own view and gravity so the requested severity
+            // accent and top/center/bottom position survive that fallback. A dialog is a
+            // deliberate hold-until-OK prompt; a 2-5 s toast is not the same thing, so
+            // dialogs stay strict.
+            if (!dialog && showStyledToastFallback(intent)) {
+                sendAcknowledgement(intent, true,
+                        FALLBACK_PREFIX + PERMISSION_REASON);
+            } else {
+                sendAcknowledgement(intent, false, PERMISSION_REASON);
+            }
             stopSelf();
             return START_NOT_STICKY;
         }
         try {
-            String kind = orDefault(intent.getStringExtra("kind"), "toast");
             boolean displayed;
-            if ("dialog".equalsIgnoreCase(kind)) {
+            String reason = "";
+            if (dialog) {
                 displayed = showDialog(intent);
             } else {
                 displayed = showToast(intent);
+                // The pre-check passed but WindowManager still refused the overlay window.
+                // Preserve presentation through the toast queue and keep the reason visible
+                // to the daemon.
+                if (!displayed && hasMessage(intent) && showStyledToastFallback(intent)) {
+                    displayed = true;
+                    reason = FALLBACK_PREFIX + "the car refused the overlay window";
+                }
             }
             sendAcknowledgement(intent, displayed,
-                    displayed ? "" : "The car could not add the message overlay");
+                    displayed ? reason : "The car could not add the message overlay");
         } catch (Throwable t) {
             logger.warn("Show failed: " + t.getMessage());
             sendAcknowledgement(intent, false,
@@ -120,6 +138,56 @@ public final class MessageOverlayService extends Service {
             stopSelf();
         }
         return START_NOT_STICKY;
+    }
+
+    /** Same wording as RemoteCommunicationAvailability.overlayPermission() so every surface
+     *  (daemon log, remote-message API, settings guidance) names the gap identically. */
+    private static final String PERMISSION_REASON =
+            "Display-over-other-apps permission is not granted in the car";
+    private static final String FALLBACK_PREFIX =
+            "Shown through the Android toast queue: ";
+
+    private static boolean hasMessage(Intent intent) {
+        return !orDefault(intent.getStringExtra("message"), "").isEmpty();
+    }
+
+    /**
+     * Last-resort rendering for {@code kind=toast}. A custom {@link android.widget.Toast}
+     * view needs no SYSTEM_ALERT_WINDOW grant and, because this app targets API 25, remains
+     * app-rendered on newer Android releases. Reusing the overlay view and requested gravity
+     * keeps severity color and position intact instead of falling back to the native text
+     * toast's theme and fixed bottom placement. Runs on the main thread (onStartCommand).
+     *
+     * @return true when the styled toast was handed to the platform toast queue
+     */
+    @SuppressWarnings("deprecation")
+    private boolean showStyledToastFallback(Intent intent) {
+        String message = orDefault(intent.getStringExtra("message"), "");
+        if (message.isEmpty()) return false;
+        String position = orDefault(intent.getStringExtra("position"), "bottom");
+        boolean longToast = "long".equalsIgnoreCase(
+                orDefault(intent.getStringExtra("duration"), "short"));
+        try {
+            Context ctx = themedContext();
+            android.widget.Toast toast =
+                    new android.widget.Toast(getApplicationContext());
+            toast.setView(buildToastView(
+                    ctx, message, accentFor(intent.getStringExtra("severity"))));
+            toast.setDuration(longToast
+                    ? android.widget.Toast.LENGTH_LONG
+                    : android.widget.Toast.LENGTH_SHORT);
+            toast.setGravity(
+                    gravityFor(position),
+                    0,
+                    "center".equalsIgnoreCase(position.trim()) ? 0 : dp(ctx, 40));
+            toast.show();
+            logger.warn("Overlay unavailable; message shown through styled toast fallback"
+                    + " at " + position.trim().toLowerCase());
+            return true;
+        } catch (Throwable t) {
+            logger.warn("Styled toast fallback failed: " + t.getMessage());
+            return false;
+        }
     }
 
     // ── Toast ────────────────────────────────────────────────────────────────
@@ -133,8 +201,18 @@ public final class MessageOverlayService extends Service {
         int accent = accentFor(intent.getStringExtra("severity"));
 
         Context ctx = themedContext();
-        int pad = dp(ctx, 16);
+        TextView tv = buildToastView(ctx, message, accent);
 
+        if (!replaceOverlay(tv, toastLayoutParams(gravityFor(position)))) {
+            return false;
+        }
+        scheduleDismiss(dur);
+        return true;
+    }
+
+    /** One presentation for both overlay-window and platform-toast delivery paths. */
+    private static TextView buildToastView(Context ctx, String message, int accent) {
+        int pad = dp(ctx, 16);
         TextView tv = new TextView(ctx);
         tv.setText(message);
         tv.setTextColor(Color.WHITE);
@@ -145,14 +223,9 @@ public final class MessageOverlayService extends Service {
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xF2202124);                 // near-opaque charcoal
         bg.setCornerRadius(dp(ctx, 8));
-        bg.setStroke(dp(ctx, 2), accent);         // severity edge
+        bg.setStroke(dp(ctx, 2), accent);        // severity edge
         tv.setBackground(bg);
-
-        if (!replaceOverlay(tv, toastLayoutParams(gravityFor(position)))) {
-            return false;
-        }
-        scheduleDismiss(dur);
-        return true;
+        return tv;
     }
 
     // ── Dialog ───────────────────────────────────────────────────────────────

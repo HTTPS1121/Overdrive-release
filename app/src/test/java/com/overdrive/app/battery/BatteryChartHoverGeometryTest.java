@@ -24,10 +24,13 @@ import org.junit.Test;
 public class BatteryChartHoverGeometryTest {
 
     @Test
-    public void bothPerformanceScriptCopiesStayIdentical() throws Exception {
-        assertEquals(
-                readRepositoryFile("app/src/main/assets/web/shared/performance.js"),
-                readRepositoryFile("app/src/main/assets/web/local/shared/performance.js"));
+    public void performanceScriptShipsOnce() throws Exception {
+        // web/local/shared was a symlinked second copy that the APK packaged in full.
+        assertFalse(java.nio.file.Files.exists(
+                java.nio.file.Paths.get("src/main/assets/web/local/shared"), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || java.nio.file.Files.exists(
+                java.nio.file.Paths.get("app/src/main/assets/web/local/shared"), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+        assertTrue(readRepositoryFile("app/src/main/assets/web/shared/performance.js").length() > 0);
     }
 
     @Test

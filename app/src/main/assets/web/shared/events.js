@@ -1405,7 +1405,7 @@ BYD.events = {
                     '<span class="inflight-badge"><span class="inflight-dot"></span>' + BYD.i18n.t('events.recording_badge') + '</span>' +
                 '</div>' +
                 '<div class="recording-info">' +
-                    '<div class="recording-name"><span class="recording-badge live">' + BYD.i18n.t('events.live_badge') + '</span>' + fname + '</div>' +
+                    '<div class="clip-line"><span class="recording-badge live">' + BYD.i18n.t('events.live_badge') + '</span><span class="clip-time">' + fname + '</span></div>' +
                     '<div class="recording-meta"><span>' + BYD.i18n.t('events.available_in_seconds') + '</span></div>' +
                 '</div>' +
             '</div>';
@@ -1551,6 +1551,15 @@ BYD.events = {
         return '';
     },
 
+    // Stroke icons for the clip cards: actor chips and the place line.
+    _CARD_ICONS: {
+        person: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/></svg>',
+        vehicle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 17H3v-5l2.2-5.1A2 2 0 0 1 7 5.7h10a2 2 0 0 1 1.8 1.2L21 12v5h-2M3 12h18M9.5 17h5"/><circle cx="7.5" cy="17" r="2"/><circle cx="16.5" cy="17" r="2"/></svg>',
+        bike: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6h2l1.5 11.5M5.5 17.5 9 9h7.5l-5 8.5M9 9 8 6H6"/></svg>',
+        animal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.8 1C6.5 17.5 6.5 17.5 4.5 16.8A3.5 3.5 0 0 1 5.5 10Z"/></svg>',
+        place: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>'
+    },
+
     renderRecordings() {
         const list = document.getElementById('recordingsList');
 
@@ -1592,12 +1601,18 @@ BYD.events = {
             return;
         }
 
+        // Day headers (mock .day-head) from the date each card used to show;
+        // the list arrives newest first, so a header starts each new date.
+        const icons = this._CARD_ICONS;
+        let lastDay = null;
         list.innerHTML = inflightHtml + visible.map(rec => {
             const recordingKey = this.recordingKey(rec);
             const thumbId = this._thumbDomId(recordingKey);
             const badge = rec.type === 'sentry' ? BYD.i18n.t('events.badge_sentry') : rec.type === 'proximity' ? BYD.i18n.t('events.badge_proximity') : rec.type === 'replay' ? BYD.i18n.t('events.badge_replay') : BYD.i18n.t('events.badge_normal');
-            const fname = rec.filename.length > 28 ? rec.filename.substring(0, 25) + '...' : rec.filename;
             const isSelected = this.selectedFiles.has(recordingKey);
+            const day = rec.dateFormatted || '';
+            const dayHead = day && day !== lastDay ? '<h2 class="day-head">' + day + '</h2>' : '';
+            lastDay = day;
             
             // Checkbox for select mode
             const checkbox = this.selectMode 
@@ -1638,11 +1653,13 @@ BYD.events = {
             // visible at the file level. Omitted when the server couldn't
             // classify (rec.storage absent) so legacy rows render unchanged.
             const storageChip = this._storageChip(rec.storage);
+            // Chip row (mock .ctag): actor counts, then severity, then proximity.
             let actorPills = '';
-            if (personCount > 0)  actorPills += '<span class="pill">👤 ' + personCount + '</span>';
-            if (vehicleCount > 0) actorPills += '<span class="pill">🚗 ' + vehicleCount + '</span>';
-            if (bikeCount > 0)    actorPills += '<span class="pill">🚲 ' + bikeCount + '</span>';
-            if (animalCount > 0)  actorPills += '<span class="pill">🐾 ' + animalCount + '</span>';
+            if (personCount > 0)  actorPills += '<span class="pill" title="' + BYD.i18n.t('events.actor_person') + '">' + icons.person + personCount + '</span>';
+            if (vehicleCount > 0) actorPills += '<span class="pill" title="' + BYD.i18n.t('events.actor_vehicle') + '">' + icons.vehicle + vehicleCount + '</span>';
+            if (bikeCount > 0)    actorPills += '<span class="pill" title="' + BYD.i18n.t('events.actor_bike') + '">' + icons.bike + bikeCount + '</span>';
+            if (animalCount > 0)  actorPills += '<span class="pill" title="' + BYD.i18n.t('events.actor_animal') + '">' + icons.animal + animalCount + '</span>';
+            actorPills += sevBadge;
             if (proxLabel)        actorPills += '<span class="pill prox-' + (rec.peakProximity || 'UNKNOWN') + '">' + proxLabel + '</span>';
             const actorRow = actorPills ? '<div class="actor-summary">' + actorPills + '</div>' : '';
 
@@ -1661,33 +1678,43 @@ BYD.events = {
                     .replace(/</g, '&lt;')
                     .replace(/>/g, '&gt;')
                     .replace(/"/g, '&quot;');
-                placeRow = '<div class="recording-place">📍 ' + escaped + '</div>';
+                placeRow = '<div class="recording-place">' + icons.place + escaped + '</div>';
             }
 
-            return '<div class="recording-card' + (isSelected ? ' selected' : '') + (sevClass ? ' ' + sevClass : '') + '" data-recording-key="' + recordingKey + '" data-filename="' + rec.filename + '" onclick="' + cardClick + '">' +
+            // Thumbnail meta (mock .clip-dur): duration when the server sends one, and the file size.
+            const thumbMeta = (rec.duration ? '<span class="duration-badge">' + rec.duration + '</span>' : '') +
+                (rec.sizeFormatted ? '<span>' + rec.sizeFormatted + '</span>' : '');
+
+            return dayHead + '<div class="recording-card' + (isSelected ? ' selected' : '') + (sevClass ? ' ' + sevClass : '') + '" data-recording-key="' + recordingKey + '" data-filename="' + rec.filename + '" onclick="' + cardClick + '">' +
                 checkbox +
                 '<div class="recording-thumbnail" id="' + thumbId + '" data-thumb="' + thumbUrl + '">' +
                 '<div class="thumb-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg></div>' +
                 '<div class="play-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>' +
-                (rec.duration ? '<span class="duration-badge">' + rec.duration + '</span>' : '') +
+                '<span class="recording-badge clip-type ' + rec.type + '">' + badge + '</span>' +
+                (thumbMeta ? '<span class="thumb-meta">' + thumbMeta + '</span>' : '') +
+                '<span class="sk-badge" data-sk-file="' + rec.filename + '" hidden></span>' +
                 '</div>' +
                 '<div class="recording-info">' +
-                '<div class="recording-name"><span class="recording-badge ' + rec.type + '">' + badge + '</span>' + sevBadge + fname + '</div>' +
-                '<div class="recording-meta"><span>' + rec.dateFormatted + '</span><span>' + rec.timeFormatted + '</span><span>' + rec.sizeFormatted + '</span>' + storageChip + '</div>' +
+                '<div class="clip-line"><span class="clip-time">' + rec.timeFormatted + '</span>' + storageChip + '</div>' +
                 placeRow +
                 actorRow +
-                '</div>' +
+                '<div class="recording-foot">' +
+                '<span class="recording-name" title="' + rec.filename + '">' + rec.filename + '</span>' +
                 (this.selectMode ? '' : 
                 '<div class="recording-actions">' +
                 '<button class="action-btn" onclick="event.stopPropagation(); BYD.events.createIncidentPack(\'' + recordingKey + '\')" title="Create AI evidence pack"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/><path d="M5 5l14 14"/></svg></button>' +
                 '<button class="action-btn" onclick="event.stopPropagation(); BYD.events.downloadVideo(\'' + recordingKey + '\')" title="' + BYD.i18n.t('common.download') + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>' +
                 '<button class="action-btn delete" onclick="event.stopPropagation(); BYD.events.deleteRecording(\'' + recordingKey + '\')" title="' + BYD.i18n.t('common.delete') + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
                 '</div>') +
+                '</div>' +
+                '</div>' +
                 '</div>';
         }).join('');
         
         // Load thumbnails async after render
         this.loadThumbnailsAsync();
+        // SafeKeep backup badges (no-op when SafeKeep is off).
+        if (window.SafeKeepBadges) window.SafeKeepBadges.decorate();
     },
     
     // Load thumbnails asynchronously without blocking
@@ -2308,6 +2335,8 @@ BYD.events = {
             if (wrap && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
                 if ('aspectRatio' in wrap.style) {
                     wrap.style.aspectRatio = videoEl.videoWidth + ' / ' + videoEl.videoHeight;
+                    // Lets events.html cap the frame width so it fits the screen height.
+                    wrap.style.setProperty('--video-ar', (videoEl.videoWidth / videoEl.videoHeight).toFixed(4));
                 } else {
                     wrap.style.paddingBottom =
                         ((videoEl.videoHeight / videoEl.videoWidth) * 100) + '%';
@@ -2778,6 +2807,7 @@ BYD.events = {
         if (wrap) {
             wrap.style.aspectRatio = '';
             wrap.style.paddingBottom = '';
+            wrap.style.removeProperty('--video-ar');
         }
 
         this.unbindTransport();

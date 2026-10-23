@@ -42,6 +42,7 @@
     <string name="cd_recording_status">記錄狀態</string>
     <string name="cd_trip_tracking_status">旅行跟蹤狀態</string>
     <string name="cd_mic_status">麥克風捕捉狀態</string>
+    <string name="cd_replay_status">即時重播狀態</string>
     <string name="cd_video_thumbnail">影片細圖片</string>
     <string name="cd_play">播放</string>
     <string name="cd_back">返回</string>
@@ -99,8 +100,8 @@
     <string name="url_copied_no_browser">找不到瀏覽器。已複製連結：%1$s</string>
     <!-- dialog_tailscale_settings -->
     <string name="tailscale_generate_login_url">生成登入 URL</string>
-    <string name="tailscale_scan_to_login">掃描到登入</string>
-    <string name="tailscale_qr_waiting">在 URL登入等待...</string>
+    <string name="tailscale_scan_to_login">掃描以登入</string>
+    <string name="tailscale_qr_waiting">等候登入網址中…</string>
     <string name="tailscale_enable_proxy">啟用Tailscale代理</string>
     <string name="tailscale_proxy_explainer">透過MQTT通往Tailscale,</string>
     <string name="tailscale_proxy_warning">在啟用時, MQTT 傳達到公共經紀商 (HiveMQ, AWS IoT 等) 會失败.  Tailscale 只有通往尾聲網的路由.</string>
@@ -226,7 +227,7 @@
     <string name="reset_cat_trips">行程</string>
     <string name="reset_cat_trips_desc">旅行歷史,航線,週/月的行程</string>
     <string name="reset_cat_soc_history">SoC &amp; 12V 的歷史</string>
-    <string name="reset_cat_soc_history_desc">接收時間,電壓記錄</string>
+    <string name="reset_cat_soc_history_desc">剩餘電量記錄, 充電記錄, 和電壓記錄</string>
     <string name="reset_cat_soh">顯示的數量</string>
     <string name="reset_cat_soh_desc">在 BMS 中重新檢測名稱容量,重新種植估計</string>
     <string name="reset_cat_abrp_token">ABRP 權杖</string>
@@ -238,12 +239,12 @@
     <string name="reset_cat_sentry_events">監控活動</string>
     <string name="reset_cat_sentry_events_desc">監控活動剪貼和JSON側車</string>
     <string name="reset_cat_proximity">靠近的記錄</string>
-    <string name="reset_cat_proximity_desc">雷達啟動事件MP4</string>
+    <string name="reset_cat_proximity_desc">雷達觸發事件影片MP4</string>
     <string name="reset_cat_trip_files">旅行遠隔測量檔案</string>
     <string name="reset_cat_trip_files_desc">在磁盤上進行 JSON 每次旅行遠隔測量</string>
     <!-- fragment_abrp_settings -->
     <!-- fragment_recording_library -->
-    <string name="recording_lib_chip_any">沒有任何問題</string>
+    <string name="recording_lib_chip_any">所有</string>
     <string name="recording_lib_chip_person">人</string>
     <string name="recording_lib_chip_vehicle">汽車</string>
     <string name="recording_lib_chip_bike">單車</string>
@@ -266,7 +267,7 @@
     <string name="recording_lib_chip_type_normal">普通</string>
     <string name="recording_lib_chip_type_proximity">接近</string>
     <string name="recording_lib_date_today">今天</string>
-    <string name="recording_lib_date_yesterday">沒有任何問題.</string>
+    <string name="recording_lib_date_yesterday">昨日</string>
     <string name="recording_lib_clip_count">片 %1$d</string>
     <string name="recording_lib_clip_count_one">片 %1$d</string>
     <string name="recording_lib_pick_date">選擇一個日期</string>
@@ -306,7 +307,7 @@
     <string name="toast_share_recordings">正在分享 %1$d 個錄影</string>
     <!-- fragment_sentry_config -->
     <!-- fragment_video_player -->
-    <string name="player_title_recording">錄音</string>
+    <string name="player_title_recording">影片</string>
     <string name="player_time_zero">沒有人知道.</string>
     <string name="player_time_separator"> / </string>
     <!-- fragment_daemons -->
@@ -314,7 +315,7 @@
     <!-- Subtitle on the Daemons hero header before the first state arrives. -->
     <string name="daemons_count_pending">這裡有許多貨物.</string>
     <!-- Subtitle on the Daemons hero header. %1$d running, %2$d total. -->
-    <string name="daemons_count_fmt">在 %1$d 的 %2$d 上行</string>
+    <string name="daemons_count_fmt"> %1$d / %2$d 執行中</string>
     <!-- dialog_time_window -->
     <!-- dialog_update_progress -->
     <string name="update_preparing">準備更新...</string>
@@ -432,7 +433,8 @@
     <string name="toast_soh_reset_failed_with_message">重置失敗: %1$s</string>
     <string name="toast_select_at_least_one_category">選擇至少一個類別</string>
     <string name="toast_reset_failed_with_error">沒有重置: %1$s</string>
-    <string name="toast_traffic_monitor_changing">這裡是 %1$s 交通監測器.</string>
+    <string name="toast_traffic_monitor_enabling">正在啟用流量監控…</string>
+    <string name="toast_traffic_monitor_disabling">正在停用流量監控…</string>
     <string name="dialog_close">關閉</string>
     <string name="dialog_reset">重設</string>
     <string name="dialog_delete">刪除</string>
@@ -450,14 +452,15 @@
     <string name="dialog_reset_complete_title">完成重置</string>
     <string name="dialog_traffic_cannot_check_title">無法檢查狀況</string>
     <string name="dialog_traffic_cannot_check_message">應用程式需要ADB接入來管理系統包. 請確認:\n\n• 在開發者選項中已啟用USB Debugging\n• ADB授權提示已被接受\n\n狀態會自动更新,一旦連接.</string>
-    <string name="dialog_traffic_disable_title">關閉BYD交通監測器?</string>
-    <string name="dialog_traffic_disable_message">BYD 交通監控器 (com.byd.trafficmonitor) 是一個內建系統應用程式,持續監控道路交通情況在背景下.\n\n️ 為什麼禁用它?\n\n• 使用移動數據 (即使停車時)\n• 使用CPU和電池在背景下\n• 不需要使用別的導航應用程式\n• 可以干擾Dashcam的網絡使用\n\n 這可以安全禁用.</string>
-    <string name="dialog_traffic_enable_title">請重新啟動BYD交通監測器?</string>
-    <string name="dialog_traffic_enable_message">BYD 交通監測器目前已禁用.\n\n重新啟動將恢復導航地圖內置的交通覆蓋.請注意,它將在背景中運行,並消耗移動數據.\n\n啟動後需要硬式重啟 (保持中盤控制台按 5 秒).</string>
-    <string name="dialog_traffic_status_title">交通監測器%1$s</string>
+    <string name="dialog_traffic_disable_title">停用 BYD 流量監控？</string>
+    <string name="dialog_traffic_disable_message">BYD 流量監控（com.byd.trafficmonitor）是內建的系統應用程式，用於控制哪些應用程式可以使用行動數據。它會阻止包括 OverDrive 在內的第三方應用程式使用車輛內建的 SIM 卡。\n\n為什麼要停用它？\n\n• 讓 OverDrive 和您安裝的其他應用程式能透過 BYD SIM 卡上網\n• 若要透過 BYD SIM 卡遠端連線您的車輛，必須將其停用\n\n您的導航、藍牙及其他所有車輛功能都不受影響。\n\n停用後需要強制重新開機（按住中控台按鈕 5 秒）。</string>
+    <string name="dialog_traffic_enable_title">重新啟用 BYD 流量監控？</string>
+    <string name="dialog_traffic_enable_message">BYD 流量監控目前已停用。\n\n重新啟用後，它會再次阻止 OverDrive 和其他第三方應用程式使用車輛內建的 SIM 卡，因此將無法再透過 BYD SIM 卡進行遠端接入。\n\n啟用後需要強制重新開機（按住中控台按鈕 5 秒）。</string>
+    <string name="dialog_traffic_status_enabled">流量監控已啟用</string>
+    <string name="dialog_traffic_status_disabled">流量監控已停用</string>
     <string name="dialog_traffic_reboot_message">請重新啟動: 按下中央控制台按5秒.</string>
-    <string name="traffic_monitor_loading">交通監測:檢查...</string>
-    <string name="traffic_monitor_tap_to_check">交通監測器 (點擊查詢)</string>
+    <string name="traffic_monitor_loading">流量監控：正在檢查…</string>
+    <string name="traffic_monitor_tap_to_check">流量監控（點按以檢查）</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">行程</string>
     <string name="reset_label_soc_history">關於 SoC + 12V 的歷史</string>
@@ -507,12 +510,16 @@
     <string name="toast_token_cannot_be_empty">符號不能空</string>
     <string name="dialog_tailscale_settings_title">Tailscale 道設定</string>
     <string name="dialog_tailscale_settings_message">設定 Tailscale</string>
-    <string name="tailscale_failed_login_url">沒有生成登入URL</string>
-    <string name="tailscale_logged_in_relogin">登入. 點擊登入另一個帳戶</string>
+    <string name="tailscale_failed_login_url">生成登入網址失敗</string>
+    <string name="tailscale_logged_in_relogin">已登入! 點擊以登入另一個帳戶</string>
     <string name="dialog_tailscale_proxy_enable_title">請啟動Tailscale代理?</string>
     <string name="dialog_tailscale_proxy_enable_message">這種路由將MQTT通過Tailscale,以便您在您的尾聲網上無法接觸私人經紀人.\n\n當您啟用:\n• MQTT到尾聲網中的經紀人工作時 (例如,在尾聲網上的裝置上使用 Mosquitto),\n• MQTT到公共經紀人 (HiveMQ, AWS IoT等) 會失败.</string>
     <string name="dialog_zrok_reset_title">重置Zrok環境</string>
     <string name="dialog_zrok_reset_message">這會:\n•停止zrok道如果運行\n•從這個裝置中移除zrok環境\n•删除保存的令牌\n\n你需要重新輸入你的令牌,重新啟動.</string>
+    <string name="dialog_tunnel_conflict_title">另一個隧道正在執行</string>
+    <string name="dialog_tunnel_conflict_message">%1$s 已在執行。要切換到 %2$s（這會停止 %1$s），還是同時執行兩個隧道？\n\n兩個隧道同時執行時：\n• 可透過兩個公開連結存取儀表板\n• 閒置時的行動數據用量會略為增加\n• 重新啟動後兩者都會自動啟動</string>
+    <string name="dialog_tunnel_conflict_switch">切換</string>
+    <string name="dialog_tunnel_conflict_run_both">同時執行</string>
     <string name="toast_resetting_zrok">還原zrok環境...</string>
     <string name="toast_zrok_reset_success">Zrok環境重置. 輸入新的令牌,重新設定.</string>
     <string name="toast_zrok_reset_partial">環境重置 (令牌檔案可能需要手動清理)</string>
@@ -573,9 +580,9 @@
     <string name="setup_overlay_already_granted">已授予</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">解決問題的建議</string>
-    <string name="setup_traffic_title">禁用BYD 交通監控器</string>
-    <string name="setup_traffic_body">BYD 交通監測器阻止第三方應用程序進入網路. 禁用它,讓 OverDrive 和您安裝的任何其他應用程式實際上使用網路.</string>
-    <string name="setup_traffic_button">公開的交通監測器</string>
+    <string name="setup_traffic_title">停用 BYD 流量監控</string>
+    <string name="setup_traffic_body">BYD 流量監控會阻止第三方應用程式連上網際網路。停用後，OverDrive 及您安裝的任何其他應用程式才能真正使用網路。之後需要強制重新開機。</string>
+    <string name="setup_traffic_button">開啟流量監控</string>
     <string name="setup_camera_fix_title">攝影機提供黑色或不正确的訊息?</string>
     <string name="setup_camera_fix_body">攝影機探測器,設定攝影機ID為0,按 Save,然後重新啟動攝影機模擬器. 如果傳遞仍錯誤,請使用攝影機ID重複.</string>
     <!-- Recording storage path -->
@@ -627,7 +634,7 @@
     <string name="settings_section_appearance">這樣的外觀</string>
     <string name="settings_section_recording">錄音</string>
     <string name="settings_section_surveillance">監控</string>
-    <string name="settings_section_daemons">子</string>
+    <string name="settings_section_daemons">後台</string>
     <string name="settings_section_privacy">隱私與資料</string>
     <string name="settings_section_overlay">狀態覆蓋</string>
     <string name="settings_section_security">安全性</string>
@@ -636,6 +643,7 @@
     <string name="settings_overlay_camera_subtitle">在錄音活動中顯示REC/ PROX標志.</string>
     <string name="settings_overlay_trip_title">表示 Trip</string>
     <string name="settings_overlay_trip_subtitle">顯示TRIP章, 在檢測行程進行時.</string>
+    <string name="settings_overlay_replay_title">即時回放指示器</string>
     <!-- Was "About & updates" — Check for Updates row was removed from
          the About page, so the menu / rail label is now just "About". -->
     <string name="settings_section_about">關於</string>
@@ -656,9 +664,11 @@
          personality without being corny — short, warm, specific. -->
     <string name="settings_about_support_section">靠像你這樣的人動力</string>
     <string name="settings_about_support_share_title">告訴另一位車主</string>
-    <string name="settings_about_support_share_value">每個共享的連結都幫助另一位BYD老板發現Overdrive.</string>
+    <string name="settings_about_support_share_value">每一次分享都幫助另一位 BYD 車主發現 Overdrive</string>
     <string name="settings_about_support_share_message">查看Overdrive 開放源監控和Dashcam的BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">分享 Overdrive</string>
+    <string name="settings_about_youtube_title">在 YouTube 上訂閱</string>
+    <string name="settings_about_youtube_value">按讚、訂閱、分享——每一次觀看都在幫助 Overdrive 成長。</string>
     <string name="settings_about_open_link_failed">沒有辦法打開連結.</string>
     <string name="settings_about_open_link_copied">沒有搜尋器. URL複製: %1$s</string>
     <string name="settings_about_support_kofi_title">在下次發行中,</string>
@@ -683,12 +693,14 @@
     <!-- Recordings page (header + segmented control + page actions) -->
     <string name="recordings_title">錄影</string>
     <string name="recordings_segment_dashcam">行車記錄器</string>
+    <string name="recordings_segment_replays">重播</string>
     <string name="recordings_segment_surveillance">監控</string>
     <string name="recordings_action_settings">設定</string>
     <!-- Hero subtitle: "%1$d today · %2$d total · %3$s" where %3$s is a pre-formatted size like "42 GB". -->
     <string name="recordings_summary_format">現在的%1$d · %2$d總數 · %3$s</string>
     <!-- Per-segment label with running count, e.g. "Dashcam · 118". -->
     <string name="recordings_segment_dashcam_count">幕 · %d</string>
+    <string name="recordings_segment_replays_count">重播 · %d</string>
     <string name="recordings_segment_surveillance_count">監控 · %d</string>
     <!-- Layout-time placeholder for the counts subtitle before the scan completes. -->
     <string name="recordings_summary_pending"> 其他國家</string>
@@ -697,7 +709,7 @@
     <string name="recordings_preview_placeholder_body">請按左邊任何項目的鍵,</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">網路控制台</string>
-    <string name="diagnostics_section_traffic">交通監測器</string>
+    <string name="diagnostics_section_traffic">流量監控</string>
     <string name="diagnostics_section_camera_probe">攝影機探測器</string>
     <string name="diagnostics_section_battery">電池健康</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -770,7 +782,7 @@
     <string name="dashboard_metric_vehicle">汽車</string>
     <!-- Hero chips: at-a-glance pills under the greeting that summarize the
          three most important live signals (tunnel, services, recording). -->
-    <string name="dashboard_chip_recording_active">正在錄音</string>
+    <string name="dashboard_chip_recording_active">正在錄影</string>
     <string name="dashboard_chip_recording_idle">閒置</string>
     <string name="dashboard_vehicle_tap_to_set">按一下設定</string>
     <string name="dashboard_vehicle_summary">%1$.1f kWh · %2$s</string>
@@ -779,6 +791,7 @@
     <string name="vehicle_dialog_capacity_suffix">kWh</string>
     <string name="vehicle_dialog_capacity_helper">5至120 kWh。保留以使用模型預設值。</string>
     <string name="vehicle_dialog_model_label">模型</string>
+    <string name="vehicle_model_seagull">比亞迪海鷗</string>
     <string name="vehicle_dialog_save">儲存</string>
     <string name="vehicle_dialog_reset">預定自动檢測</string>
     <string name="vehicle_dialog_invalid_capacity">容量必須為 5 - 120 kWh</string>
@@ -813,6 +826,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">預備/後期緩衝器,代克,存儲限制.</string>
     <string name="settings_section_surveillance_subtitle">檢測區域,時間表,運動敏感性.</string>
+    <string name="settings_section_storage_subtitle">錄影儲存位置、空間上限、BYD 行車記錄器清理。</string>
     <string name="settings_section_daemons_subtitle">Cloudflared、Zrok、Telegram、MQTT 執行程式。</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">關於OverDrive</string>
@@ -938,7 +952,7 @@
     <!-- First-launch welcome — only shown on the very first dashboard visit. -->
     <string name="dashboard_insight_welcome">歡迎使用 — Overdrive 現在是您的第二雙眼睛。</string>
     <!-- Parking delta. %1$s = absolute SOC delta string ("8%"); %2$s = absolute kWh string ("4 kWh"). -->
-    <string name="dashboard_insight_parked_charged_kwh">在停車場上, 接收了%1$s (≈%2$s)</string>
+    <string name="dashboard_insight_parked_charged_kwh">停泊期間充了 %1$s (≈%2$s)</string>
     <string name="dashboard_insight_parked_charged">在停車場上拿起%1$s</string>
     <string name="dashboard_insight_parked_drained_kwh">自從你停車後使用了%1$s (≈%2$s)</string>
     <string name="dashboard_insight_parked_drained">自從你停車後使用了%1$s</string>
@@ -1184,7 +1198,7 @@
     <string name="onboarding_later">稍後再設定</string>
     <string name="onboarding_camera_pano_body">使用箭頭找出拼接的四宮格畫面。請從「下方」判讀：左下是後方，右下是左側。</string>
     <string name="onboarding_expert_roadsense_body">RoadSense 利用車輛的動態感測器與 GPS 偵測路面危險 — 顛簸、坑洞、減速丘 — 並在接近已知地點前提醒您。它的分頁涵蓋偵測、危險地圖、警示提示音與盲點。開啟主開關即可使用任何功能。</string>
-    <string name="onboarding_expert_traffic_title">流量監控 — 遠端存取必需</string>
+    <string name="onboarding_expert_traffic_title">流量監控 — 遠端接入所必需</string>
     <string name="onboarding_expert_daemons_body">這些開關會啟動與停止背景服務。關閉相機、監控或 ACC Sentry 會停止錄影，並維持關閉直到您重新開啟 — 即使重新啟動後也是如此。</string>
     <string name="onboarding_camera_verify_repick">重新選擇</string>
     <string name="onboarding_dash_chips_body">上方的標籤顯示錄影、服務與遠端連線。它們會自動更新 — 並非按鈕。</string>
@@ -1275,6 +1289,7 @@
     <string name="onboarding_expert_chapter_label">第 %1$d 章，共 %2$d 章</string>
     <string name="rail_charging">充電</string>
     <string name="rail_automations">自動化</string>
+    <string name="rail_key_mapping">按鍵映射</string>
     <string name="onboarding_skip">略過</string>
     <string name="onboarding_expert_traffic_body">BYD 內建的流量監控會阻止其他應用程式使用車輛內建的 SIM 卡。若您想透過 BYD SIM 遠端連線您的車輛，必須在此將其停用。主機會重新開機以套用變更。</string>
     <string name="onboarding_expert_surveillance_body">在此微調偵測、畫質與儲存空間。這些會以由車輛提供的應用程式內設定頁開啟 — 空白畫面只是表示協助程式仍在啟動中。</string>
@@ -1315,6 +1330,7 @@
     <string name="projection_done_adjusting">完成</string>
     <string name="projection_bounds_hint_idle">鏡像區域</string>
     <string name="projection_status_adjust">拖曳以移動 · 拖曳一角以調整大小。</string>
+    <string name="projection_preset_full">全螢幕</string>
     <string name="projection_scale_title">縮放</string>
     <string name="projection_scale_desc">儀表板鏡像如何填滿鏡像區域。</string>
     <string name="projection_scale_fit">符合</string>
@@ -1328,6 +1344,10 @@
     <string name="projection_autostart_conflict_confirm">使用此應用程式</string>
     <string name="projection_app_uninstalled">該應用程式已被解除安裝。</string>
     <string name="projection_status_service_down">鏡像服務尚未就緒 — 請重新啟動應用程式（或攝影機守護程序）後再試一次。</string>
+    <string name="projection_status_connecting">正在連線至儀表板…</string>
+    <string name="projection_status_mirror_unavailable">鏡像無法使用</string>
+    <string name="projection_fullscreen_enter">全螢幕</string>
+    <string name="projection_fullscreen_exit">結束全螢幕</string>
     <string name="dashboard_modern_vehicle_status">車輛狀態</string>
     <string name="vehicle_dialog_detection">偵測：%1$s</string>
     <string name="vehicle_dialog_detection_auto">自動</string>
@@ -1339,4 +1359,17 @@
     <string name="rail_section_automation">自動化</string>
     <string name="rail_section_system">系統</string>
     <string name="rail_collapse_label">收合</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">正在聆聽…</string>
+    <string name="voice_overlay_thinking">正在思考…</string>
+    <string name="voice_overlay_speaking">正在回覆…</string>
+    <string name="voice_overlay_done">完成</string>
+    <string name="voice_overlay_cancelled">已取消</string>
+    <string name="voice_overlay_not_understood">抱歉，我沒聽清楚</string>
+    <string name="voice_overlay_offline">AI 助理無法使用</string>
+    <string name="voice_overlay_busy">助理已在使用中</string>
+    <string name="voice_overlay_blocked_moving">行駛中無法使用</string>
+    <string name="voice_overlay_refused">無法透過語音執行此操作</string>
+    <string name="voice_overlay_failed">無法完成該操作</string>
 </resources>

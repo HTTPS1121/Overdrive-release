@@ -106,7 +106,8 @@ public class ExternalStorageApiHandler {
                 && (now - lastAutoRefreshMs) > AUTO_REFRESH_MIN_INTERVAL_MS) {
             lastAutoRefreshMs = now;
             cleaner.refresh();
-            storage.refreshSdCard();
+            // Off the request thread (seconds on slow units); the next poll sees it.
+            storage.refreshSdCardAsync();
         }
         
         JSONObject response = new JSONObject();

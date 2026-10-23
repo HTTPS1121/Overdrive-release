@@ -392,9 +392,9 @@ class RoadSenseController @JvmOverloads constructor(
                         if (lastKnownEnabled == now) return
                         lastKnownEnabled = now
                         // CRITICAL: this callback runs INSIDE UnifiedConfigManager's
-                        // synchronized(this) monitor (notifyListeners is called under it).
+                        // config lock (notifyListeners is called under it).
                         // reconcile()'s stop() can take ~2 s (awaitTermination + H2 close +
-                        // sidecar exec); running it here would hold the global config monitor
+                        // sidecar exec); running it here would hold the global config lock
                         // that long and stall EVERY other config read in the daemon (incl. the
                         // recording pipeline). So hop onto a short-lived daemon thread — a real
                         // enable/disable flip is rare (a user tap), so a thread per flip is
@@ -411,7 +411,7 @@ class RoadSenseController @JvmOverloads constructor(
             }
         }
         // Bring the running state in line with the persisted flag right now (boot thread —
-        // not under the config monitor, so a synchronous start() here is fine).
+        // not under the config lock, so a synchronous start() here is fine).
         reconcile()
     }
 

@@ -1411,10 +1411,8 @@ class DashboardFragment : Fragment() {
      * Read /api/performance/soh/nominal + /api/models/selected and render
      * "82.5 kWh · BYD Seal" or "Tap to set" if no nominal yet.
      *
-     * Both calls run on a worker thread (HTTP). While the daemon is still
-     * starting (always the case right after an app update) the nominal call
-     * fails or answers 503; the tile then keeps its current text and asks
-     * again instead of showing "Tap to set" until the app is reopened.
+     * Both calls run on a worker thread (HTTP). While the nominal is unknown
+     * (call failed, or 503 during daemon start) the tile keeps its text and retries.
      */
     private fun refreshVehicleTile() {
         if (metricVehicleValue == null) return
@@ -1559,7 +1557,9 @@ class DashboardFragment : Fragment() {
                 // value rather than leaving the field showing the previous
                 // model's number.
                 if (entry.nominalKwh > 0) {
-                    capInput.setText(String.format("%.1f", entry.nominalKwh))
+                    // Locale.ROOT: the field accepts only ASCII digits and '.', so a localized
+                    // prefill ("82,5", Arabic digits) could not be saved again.
+                    capInput.setText(String.format(java.util.Locale.ROOT, "%.1f", entry.nominalKwh))
                 }
             }
         }
@@ -1683,7 +1683,7 @@ class DashboardFragment : Fragment() {
                 if (!isAdded || view == null) return@post
 
                 // Capacity input — current user value if any.
-                if (initialKwh > 0) capInput.setText(String.format("%.1f", initialKwh))
+                if (initialKwh > 0) capInput.setText(String.format(java.util.Locale.ROOT, "%.1f", initialKwh))
 
                 // Model dropdown — populate using a Material adapter so the
                 // popup uses M3 list-item styling. setText(filter=false) sets

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>تابع السير</item>
+        <item>انطلق</item>
+        <item>الوصول إلى الوجهة</item>
+        <item>الوجهة على اليمين</item>
+        <item>الوجهة على اليسار</item>
+        <item>انعطف قليلًا لليمين</item>
+        <item>انعطف يمينًا</item>
+        <item>انعطف بحدة يمينًا</item>
+        <item>استدر للخلف</item>
+        <item>انعطف بحدة يسارًا</item>
+        <item>انعطف يسارًا</item>
+        <item>انعطف قليلًا لليسار</item>
+        <item>اسلك المنحدر</item>
+        <item>اسلك المخرج</item>
+        <item>استمر مباشرةً</item>
+        <item>الزم اليمين</item>
+        <item>الزم اليسار</item>
+        <item>اندمج</item>
+        <item>اندمج يمينًا</item>
+        <item>اندمج يسارًا</item>
+        <item>ادخل الدوار</item>
+        <item>اخرج من الدوار</item>
+        <item>استقل العبّارة</item>
+        <item>انزل من العبّارة</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>تابع السير على</item>
+        <item>انطلق على</item>
+        <item>الوصول إلى</item>
+        <item>الوجهة على اليمين في</item>
+        <item>الوجهة على اليسار في</item>
+        <item>انعطف قليلًا لليمين إلى</item>
+        <item>انعطف يمينًا إلى</item>
+        <item>انعطف بحدة يمينًا إلى</item>
+        <item>استدر للخلف إلى</item>
+        <item>انعطف بحدة يسارًا إلى</item>
+        <item>انعطف يسارًا إلى</item>
+        <item>انعطف قليلًا لليسار إلى</item>
+        <item>اسلك المنحدر إلى</item>
+        <item>اسلك المخرج إلى</item>
+        <item>استمر مباشرةً على</item>
+        <item>الزم اليمين على</item>
+        <item>الزم اليسار على</item>
+        <item>اندمج في</item>
+        <item>اندمج يمينًا في</item>
+        <item>اندمج يسارًا في</item>
+        <item>عبر الدوار إلى</item>
+        <item>اخرج من الدوار إلى</item>
+        <item>استقل العبّارة:</item>
+        <item>انزل من العبّارة إلى</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>الأول</item>
+        <item>الثاني</item>
+        <item>الثالث</item>
+        <item>الرابع</item>
+        <item>الخامس</item>
+        <item>السادس</item>
+        <item>السابع</item>
+        <item>الثامن</item>
+        <item>التاسع</item>
+        <item>العاشر</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">اسلك المخرج %1$s</string>
+    <string name="nav_hud_roundabout_exit_onto">اسلك المخرج %1$s إلى</string>
+    <string name="nav_hud_towards">باتجاه</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">مخرج %1$s</string>
+    <string name="nav_hud_then">ثم</string>
+    <string name="nav_hud_arrive">الوصول</string>
+    <string name="nav_hud_recenter">إعادة التوسيط</string>
+    <string name="nav_hud_end">إنهاء</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">م</string>
+    <string name="nav_hud_unit_km">كم</string>
+    <string name="nav_hud_unit_ft">قدم</string>
+    <string name="nav_hud_unit_mi">ميل</string>
+    <string name="nav_hud_unit_kmh">كم/س</string>
+    <string name="nav_hud_unit_mph">ميل/س</string>
+    <string name="nav_hud_cd_mute">كتم التوجيه الصوتي</string>
+    <string name="nav_hud_cd_unmute">إلغاء كتم التوجيه الصوتي</string>
+    <string name="nav_hud_cd_overview">عرض المسار بالكامل</string>
+    <string name="nav_hud_cd_overview_exit">العودة إلى عرض القيادة</string>
+    <string name="nav_hud_cd_end">إنهاء التنقل</string>
+    <string name="nav_hud_cd_recenter">إعادة التوسيط على السيارة</string>
+    <string name="nav_hud_cd_compass_heading_up">البوصلة: اتجاه السير للأعلى. انقر لجعل الشمال للأعلى</string>
+    <string name="nav_hud_cd_compass_north_up">البوصلة: الشمال للأعلى. انقر لجعل اتجاه السير للأعلى</string>
+    <string name="nav_hud_cd_back">مغادرة الخريطة</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">ثم بعد %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">الوصول الساعة %1$s، المتبقي %2$s و%3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">تأخير مروري: %1$s</string>
+</resources>

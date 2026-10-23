@@ -246,8 +246,16 @@ public class Di4ProducerRecoveryTest {
 
         String pipeline = readRepositoryFile(
                 "app/src/main/java/com/overdrive/app/surveillance/GpuSurveillancePipeline.java");
-        assertTrue(pipeline.contains(
-                "camera.requestDiLink4ProducerRecovery(\"acc-on persistent handle\")"));
+        assertTrue(pipeline.contains("camera.onDiLink4AccOn();"));
+        String camera = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/camera/PanoramicCameraGpu.java");
+        String accOn = method(camera,
+                "public void onDiLink4AccOn() {",
+                "\n    private volatile boolean previewKickFirstByteLogged");
+        assertOrdered(accOn,
+                "if (!USE_DILINK4_AVM_PATH) return;",
+                "requestDiLink4ProducerRecovery(\"acc-on persistent handle\")",
+                "reopenReleasedDiLink4Camera(");
     }
 
     private static String method(String source, String start, String end) {

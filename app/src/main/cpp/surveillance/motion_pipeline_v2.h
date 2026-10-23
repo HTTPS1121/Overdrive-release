@@ -18,6 +18,7 @@
 #define MOTION_PIPELINE_V2_H
 
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -31,8 +32,11 @@
 #define V2_QUADRANT_HEIGHT   240
 #define V2_BLOCK_SIZE        32
 #define V2_GRID_COLS         (V2_QUADRANT_WIDTH / V2_BLOCK_SIZE)   // 10
-#define V2_GRID_ROWS         (V2_QUADRANT_HEIGHT / V2_BLOCK_SIZE)  // 7 (240/32=7.5, truncated)
-#define V2_TOTAL_BLOCKS      (V2_GRID_COLS * V2_GRID_ROWS)        // 70
+#define V2_GRID_ROWS         ((V2_QUADRANT_HEIGHT + V2_BLOCK_SIZE - 1) / V2_BLOCK_SIZE) // 8, last row 16 px
+#define V2_TOTAL_BLOCKS      (V2_GRID_COLS * V2_GRID_ROWS)        // 80
+#define V2_POLICY_ROWS       (V2_QUADRANT_HEIGHT / V2_BLOCK_SIZE) // Original 7-row calibration
+#define V2_POLICY_BLOCKS     (V2_GRID_COLS * V2_POLICY_ROWS)      // Original flash/mass basis: 70
+#define V2_GEOMETRY_ABI      2
 #define V2_FRAME_HISTORY     4    // Ring buffer depth (N vs N-3 = 300ms at 10 FPS)
 #define V2_COMPARE_OFFSET    3    // Compare current frame with N-3
 #define V2_CENTROID_HISTORY  100  // 10 seconds at 10 FPS — MUST cover the full
@@ -174,7 +178,7 @@ struct QuadrantResultV2 {
 
     // Stage 4b flow coherence. Declared BEFORE blockConfidence[] so the Java
     // deserializer (MotionPipelineV2.deserializeResult) reads these two floats
-    // immediately before the trailing 70-float array — keep this order in sync.
+    // immediately before the trailing confidence array — keep this order in sync.
     // -1 = "not computed" (warmup, no component, or coherence stage absent):
     //   Java treats <0 as unavailable and falls back to the person-tracker test.
     float flowCoherence;        // |net flow| / |gross flow| over largest component, EMA-smoothed
@@ -196,6 +200,11 @@ struct QuadrantResultV2 {
     // Per-block confidence (for heatmap overlay)
     float blockConfidence[V2_TOTAL_BLOCKS];
 };
+
+static_assert(sizeof(PipelineConfigV2) == 100, "V2 config ABI changed");
+static_assert(offsetof(QuadrantResultV2, blockConfidence) == 52, "V2 result prefix ABI changed");
+static_assert(sizeof(QuadrantResultV2) == 52 + V2_TOTAL_BLOCKS * sizeof(float),
+              "V2 result size does not match its geometry descriptor");
 
 // ============================================================================
 // Per-Quadrant Persistent State

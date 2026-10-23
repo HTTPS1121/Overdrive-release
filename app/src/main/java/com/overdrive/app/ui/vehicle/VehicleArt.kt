@@ -29,9 +29,8 @@ object VehicleArt {
         "m6" -> R.drawable.vehicle_m6
         "seagull" -> R.drawable.vehicle_seagull
         "destroyer", "destroyer05" -> R.drawable.vehicle_destroyer05
-        // Shark currently reuses seal.glb in the manifest; keep its still in
-        // lockstep with the actual 3D asset until a dedicated model ships.
-        "shark" -> R.drawable.vehicle_seal
+        // Own still; the 3D views keep seal.glb until a shark model ships.
+        "shark" -> R.drawable.vehicle_shark
         else -> R.drawable.vehicle_fallback
     }
 

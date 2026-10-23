@@ -110,8 +110,22 @@ window.SafeLocations = {
         if (gpsEl) {
             gpsEl.textContent = data.hasGps
                 ? data.lat.toFixed(6) + ', ' + data.lng.toFixed(6) + ' (±' + Math.round(data.accuracy) + 'm)'
+                    + this.fixAgeSuffix(data.gpsFixAgeMs)
                 : '--';
         }
+    },
+
+    // The coordinates are the last fix; say how old it is once it stops being live.
+    fixAgeSuffix(ageMs) {
+        if (ageMs === undefined) return '';
+        if (typeof ageMs !== 'number') return ' · ' + this.text('status.stale', null, 'Stale');
+        const minutes = Math.floor(ageMs / 60000);
+        if (minutes < 1) return '';
+        if (minutes < 60) {
+            return ' · ' + this.text('dashboard.time_minutes_ago', { n: minutes }, minutes + 'm ago');
+        }
+        const hours = Math.floor(minutes / 60);
+        return ' · ' + this.text('dashboard.time_hours_ago', { n: hours }, hours + 'h ago');
     },
 
     updateUI() {
@@ -655,7 +669,12 @@ window.SafeLocations = {
         if (!confirmed) return;
 
         try {
-            await this._enqueueWrite(() => this.requestJson('/api/surveillance/safe-locations', {
+            // Send the id in the query string: the in-app WebView can drop
+            // DELETE request bodies (same head-unit quirk ChargingApiHandler
+            // works around), which surfaced as a "Missing zone id" error.
+            // The handler reads ?id= before the body; the JSON body stays as
+            // a fallback for clients that do forward it.
+            await this._enqueueWrite(() => this.requestJson('/api/surveillance/safe-locations?id=' + encodeURIComponent(id), {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id })

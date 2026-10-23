@@ -3,7 +3,7 @@ package com.overdrive.app.power;
 import org.json.JSONObject;
 
 /**
- * Immutable snapshot of the DiLink 5 parked keep-alive (Experimental) settings.
+ * Immutable snapshot of the DiLink 5 parked keep-alive settings.
  *
  * <p>Parsed from the flat {@code surveillance.*} keys seeded by
  * {@code UnifiedConfigManager.applyDefaults} (flat, not nested, because
@@ -21,6 +21,8 @@ public final class Di5ParkedKeepAliveSettings {
     public static final String KILL_SWITCH_PROPERTY = "persist.overdrive.di5_keepalive";
 
     public static final String KEY_ENABLED = "di5ParkedKeepAlive";
+    public static final String KEY_PARKED_LINK =
+            "di5ParkedKeepAliveLink";
     public static final String KEY_MCU_HOLD = "di5ParkedKeepAliveMcuHold";
     public static final String KEY_MCU_POWER_HOLD = "di5ParkedKeepAliveMcuPowerHold";
     public static final String KEY_CAMERA_HEARTBEAT = "di5ParkedKeepAliveCameraHeartbeat";
@@ -35,6 +37,7 @@ public final class Di5ParkedKeepAliveSettings {
 
     // Defaults mirror UnifiedConfigManager.applyDefaults.
     public static final boolean DEFAULT_ENABLED = false;
+    public static final boolean DEFAULT_PARKED_LINK = true;
     public static final boolean DEFAULT_MCU_HOLD = true;
     public static final boolean DEFAULT_MCU_POWER_HOLD = true;  // OEM-app parity (V1 default)
     public static final boolean DEFAULT_CAMERA_HEARTBEAT = false;
@@ -59,6 +62,7 @@ public final class Di5ParkedKeepAliveSettings {
     public final boolean enabledInConfig;
     /** Kill switch observed at snapshot time. */
     public final boolean killSwitchActive;
+    public final boolean parkedLinkInConfig;
     public final boolean mcuHoldInConfig;
     public final boolean mcuPowerHoldInConfig;
     public final boolean cameraHeartbeatInConfig;
@@ -72,6 +76,7 @@ public final class Di5ParkedKeepAliveSettings {
     private Di5ParkedKeepAliveSettings(
             boolean enabledInConfig,
             boolean killSwitchActive,
+            boolean parkedLinkInConfig,
             boolean mcuHoldInConfig,
             boolean mcuPowerHoldInConfig,
             boolean cameraHeartbeatInConfig,
@@ -83,6 +88,7 @@ public final class Di5ParkedKeepAliveSettings {
             int voltageMaxAgeSeconds) {
         this.enabledInConfig = enabledInConfig;
         this.killSwitchActive = killSwitchActive;
+        this.parkedLinkInConfig = parkedLinkInConfig;
         this.mcuHoldInConfig = mcuHoldInConfig;
         this.mcuPowerHoldInConfig = mcuPowerHoldInConfig;
         this.cameraHeartbeatInConfig = cameraHeartbeatInConfig;
@@ -113,6 +119,9 @@ public final class Di5ParkedKeepAliveSettings {
         return new Di5ParkedKeepAliveSettings(
                 optBoolean(s, KEY_ENABLED, DEFAULT_ENABLED),
                 killSwitchActive,
+                optBoolean(s, KEY_PARKED_LINK,
+                        optBoolean(s, ParkedLinkContract.LEGACY_CONFIG_KEY,
+                                DEFAULT_PARKED_LINK)),
                 optBoolean(s, KEY_MCU_HOLD, DEFAULT_MCU_HOLD),
                 optBoolean(s, KEY_MCU_POWER_HOLD, DEFAULT_MCU_POWER_HOLD),
                 optBoolean(s, KEY_CAMERA_HEARTBEAT, DEFAULT_CAMERA_HEARTBEAT),
@@ -138,6 +147,22 @@ public final class Di5ParkedKeepAliveSettings {
     /** Master switch, after the kill switch. Nothing is effective when false. */
     public boolean isEnabled() {
         return enabledInConfig && !killSwitchActive;
+    }
+
+    /** Optional local transport, independent of cloud connectivity. */
+    public boolean isParkedLinkEffective() {
+        return isEnabled() && parkedLinkInConfig;
+    }
+
+    /** Seed the renamed diagnostic key without erasing an existing opt-out. */
+    public static void ensureLinkConfig(JSONObject surveillance) {
+        if (surveillance == null || surveillance.has(KEY_PARKED_LINK)) return;
+        try {
+            surveillance.put(KEY_PARKED_LINK,
+                    optBoolean(surveillance, ParkedLinkContract.LEGACY_CONFIG_KEY,
+                            DEFAULT_PARKED_LINK));
+        } catch (Exception ignored) {
+        }
     }
 
     /** Sentry flags + bounded MCU wake. */
@@ -172,7 +197,10 @@ public final class Di5ParkedKeepAliveSettings {
 
     /** True when at least one lever would actually do something. */
     public boolean hasAnyEffectiveLever() {
-        return isMcuHoldEffective() || isCameraHeartbeatEffective() || isApHoldEffective();
+        return isParkedLinkEffective()
+                || isMcuHoldEffective()
+                || isCameraHeartbeatEffective()
+                || isApHoldEffective();
     }
 
     public long reassertMillis() {
@@ -190,6 +218,11 @@ public final class Di5ParkedKeepAliveSettings {
             o.put("enabled", isEnabled());
             o.put("enabledInConfig", enabledInConfig);
             o.put("killSwitchActive", killSwitchActive);
+            o.put("parkedLink",
+                    isParkedLinkEffective());
+            // Read-only compatibility for existing diagnostic consumers.
+            o.put(ParkedLinkContract.LEGACY_SETTINGS_STATUS_KEY,
+                    isParkedLinkEffective());
             o.put("mcuHold", isMcuHoldEffective());
             o.put("mcuPowerHold", isMcuPowerHoldEffective());
             o.put("cameraHeartbeat", isCameraHeartbeatEffective());

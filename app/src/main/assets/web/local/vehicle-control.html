@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
+    <script src="../shared/theme.js?v=11"></script>
     <script src="../shared/skeleton.js?v=4"></script>
     <!-- View-mode bootstrap. Runs before first paint so the lite/immersive
          chrome renders without flicker. 'lite' (default) boots controls-only:
@@ -30,14 +30,15 @@
             }
         })();
     </script>
-    <script src="../shared/app-shell.js?v=7"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
-    <link rel="stylesheet" href="../shared/vehicle-control.css?v=47">
+    <script src="../shared/app-shell.js?v=18"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
+    <link rel="stylesheet" href="../shared/vehicle-control.css?v=51">
 </head>
 <body>
     <div class="app-layout">
         <!-- Sidebar (hidden by WebViewFragment injection, but kept for standalone browser access) -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content">
@@ -190,21 +191,35 @@
                     <div class="vc-panel" id="vcPanel">
                         <!-- Security controls -->
                         <div class="vc-panel-row" id="panelSecurity" style="display:none;">
-                            <button class="vc-tile" id="btnLock" title="Lock" data-requires-cloud="true">
+                            <button class="vc-tile" id="btnLock" title="Lock" data-requires-cloud="true" data-local-key-ok="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                                 <span data-i18n="vehicle.lock">Lock</span>
                             </button>
-                            <button class="vc-tile" id="btnUnlock" title="Unlock" data-i18n-attr="title:vehicle.unlock" data-requires-cloud="true">
+                            <button class="vc-tile" id="btnUnlock" title="Unlock" data-i18n-attr="title:vehicle.unlock" data-requires-cloud="true" data-local-key-ok="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 5-5 5 5 0 0 1 5 5"/></svg>
                                 <span data-i18n="vehicle.unlock">Unlock</span>
                             </button>
-                            <button class="vc-tile" id="btnFlash" title="Flash" data-i18n-attr="title:vehicle.flash" data-requires-cloud="true">
+                            <button class="vc-tile" id="btnRemoteAccess" type="button" title="Proximity" data-i18n-attr="title:nav.remote_access">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6V3l8 9-8 9v-6l8-9M9 6l8 12"/><path d="M5 8a6 6 0 0 0 0 8M2 5a10 10 0 0 0 0 14"/></svg>
+                                <span data-i18n="vehicle.remote_access_short">Proximity</span>
+                            </button>
+                            <button class="vc-tile" id="btnFlash" title="Flash" data-i18n-attr="title:vehicle.flash" data-requires-cloud="true" data-local-key-ok="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                                 <span data-i18n="vehicle.flash">Flash</span>
                             </button>
-                            <button class="vc-tile" id="btnFindCar" title="Find car" data-i18n-attr="title:vehicle_control.find_car_label" data-requires-cloud="true">
+                            <button class="vc-tile" id="btnFindCar" title="Find car" data-i18n-attr="title:vehicle_control.find_car_label" data-requires-cloud="true" data-local-key-ok="true">
                                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 10.9c-.61 0-1.1.49-1.1 1.1s.49 1.1 1.1 1.1c.61 0 1.1-.49 1.1-1.1s-.49-1.1-1.1-1.1zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19z"/></svg>
                                 <span data-i18n="vehicle_control.find_car_label">Find car</span>
+                            </button>
+                            <!-- Vehicle power. Local rail only; hidden until the daemon
+                                 confirms that rail exists on this car. -->
+                            <button class="vc-tile" id="btnPowerOn" title="Power on" data-i18n-attr="title:vehicle.power_on" style="display:none;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
+                                <span data-i18n="vehicle.power_on">Power on</span>
+                            </button>
+                            <button class="vc-tile" id="btnPowerOff" title="Power off" data-i18n-attr="title:vehicle.power_off" style="display:none;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64A9 9 0 0 1 20.77 15"/><path d="M6.16 6.16a9 9 0 1 0 12.68 12.68"/><path d="M12 2v4"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                                <span data-i18n="vehicle.power_off">Power off</span>
                             </button>
                         </div>
                         <!-- Trunk controls -->
@@ -494,10 +509,17 @@
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 7H8a5 5 0 0 0 0 10h2Z"/><circle cx="14" cy="8" r=".6"/><circle cx="14" cy="12" r=".6"/><circle cx="14" cy="16" r=".6"/><circle cx="17.5" cy="8" r=".4"/><circle cx="17.5" cy="12" r=".4"/><circle cx="17.5" cy="16" r=".4"/><circle cx="21" cy="8" r=".2"/><circle cx="21" cy="12" r=".2"/><circle cx="21" cy="16" r=".2"/></svg>
                                     <span data-i18n="vehicle.btn_drl">DRL</span>
                                 </button>
+                                <button class="vc-tile" id="btnCabinLight" title="Cabin light" data-i18n-attr="title:vehicle.btn_cabin_light_title">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v5"/><path d="M6 7h12l4 9H2l4-9Z"/><path d="M9.17 16a3 3 0 1 0 5.66 0"/></svg>
+                                    <span data-i18n="vehicle.btn_cabin_light">Cabin</span>
+                                </button>
                             </div>
                             <div class="ambient-wrapper">
                                 <div class="ambient-head">
                                     <span class="ambient-title" data-i18n="vehicle.ambient_lights">Ambient Lights</span>
+                                    <label class="vc-ambient-rgb" title="Any colour" data-i18n-attr="title:vehicle.ambient_any_colour">
+                                        <input type="color" id="ambientRgbPicker" value="#ffffff" aria-label="Any colour" data-i18n-attr="aria-label:vehicle.ambient_any_colour" />
+                                    </label>
                                 </div>
                                 <div class="ambient-track">
                                     <input type="range" id="ambientColourSlider" class="vc-ambient-slider" min="1" max="31" step="1" value="1" aria-label="Ambient Colour" />
@@ -581,6 +603,137 @@
                                 </section>
                             </div>
                         </div>
+                        <!-- Driving-safety guards. The same settings as Automations → Safety, so
+                             each switch covers its action from every command source. The list
+                             stays hidden until the daemon's values are verified. -->
+                        <div class="vc-panel-row" id="panelSafety" style="display:none;">
+                            <div class="vc-safety-note" data-i18n="automation.safety_warning">These guards apply to matching vehicle actions started through OverDrive's Automations, Action Groups, Key Mapping, Quick Controls, MQTT, Vehicle Controls, and saved seat positions. Turning one off lets OverDrive attempt that action while the car is moving or its state is unknown. Advanced raw shell, CAN, and diagnostic actions are outside these guards.</div>
+                            <div class="vc-safety-status" id="vcSafetyStatus" role="status" data-i18n="automation.safety_loading">Loading safety settings…</div>
+                            <div class="vc-safety-list" id="vcSafetyList" style="display:none;">
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyDoorLocksName" data-i18n="automation.safety_door_locks">Door lock and unlock</span>
+                                        <span class="vc-safety-desc" id="vcSafetyDoorLocksDesc" data-i18n="automation.safety_door_locks_desc">Block locking or unlocking the doors unless the car is safely parked.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="doorLocks" checked aria-labelledby="vcSafetyDoorLocksName" aria-describedby="vcSafetyDoorLocksDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyHornLightsName" data-i18n="automation.safety_horn_lights">Horn and light flash</span>
+                                        <span class="vc-safety-desc" id="vcSafetyHornLightsDesc" data-i18n="automation.safety_horn_lights_desc">Block sounding the horn or flashing the lights (Find car, Flash) unless the car is safely parked.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="hornLights" checked aria-labelledby="vcSafetyHornLightsName" aria-describedby="vcSafetyHornLightsDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyTrunkName" data-i18n="automation.safety_trunk">Trunk movement</span>
+                                        <span class="vc-safety-desc" id="vcSafetyTrunkDesc" data-i18n="automation.safety_trunk_desc">Block opening or closing the tailgate. Stop remains available.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="trunk" checked aria-labelledby="vcSafetyTrunkName" aria-describedby="vcSafetyTrunkDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyMirrorFoldName" data-i18n="automation.safety_mirror_fold">Fold mirrors</span>
+                                        <span class="vc-safety-desc" id="vcSafetyMirrorFoldDesc" data-i18n="automation.safety_mirror_fold_desc">Block folding the exterior mirrors. Unfolding remains available.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="mirrorFold" checked aria-labelledby="vcSafetyMirrorFoldName" aria-describedby="vcSafetyMirrorFoldDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyPositioningName" data-i18n="automation.safety_positioning">Seat, steering and mirror positioning</span>
+                                        <span class="vc-safety-desc" id="vcSafetyPositioningDesc" data-i18n="automation.safety_positioning_desc">Block seat-memory recall and saved-position movement. The vehicle may still require Park itself.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="positioning" checked aria-labelledby="vcSafetyPositioningName" aria-describedby="vcSafetyPositioningDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyHeadlightOffName" data-i18n="automation.safety_headlight_off">Turn headlights off</span>
+                                        <span class="vc-safety-desc" id="vcSafetyHeadlightOffDesc" data-i18n="automation.safety_headlight_off_desc">Block selecting headlight Off. Auto, parking lights and low beam remain available.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="headlightOff" checked aria-labelledby="vcSafetyHeadlightOffName" aria-describedby="vcSafetyHeadlightOffDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyDisplayBrightnessName" data-i18n="automation.safety_display_brightness">Display brightness</span>
+                                        <span class="vc-safety-desc" id="vcSafetyDisplayBrightnessDesc" data-i18n="automation.safety_display_brightness_desc">Block changes to infotainment, driver-cluster and HUD brightness.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="displayBrightness" checked aria-labelledby="vcSafetyDisplayBrightnessName" aria-describedby="vcSafetyDisplayBrightnessDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyDisplayPowerName" data-i18n="automation.safety_display_power">Display power</span>
+                                        <span class="vc-safety-desc" id="vcSafetyDisplayPowerDesc" data-i18n="automation.safety_display_power_desc">Block screen power changes and turning the HUD off. Turning the HUD on remains available.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="displayPower" checked aria-labelledby="vcSafetyDisplayPowerName" aria-describedby="vcSafetyDisplayPowerDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcSafetyScreenMediaName" data-i18n="automation.safety_screen_media">Full-screen media</span>
+                                        <span class="vc-safety-desc" id="vcSafetyScreenMediaDesc" data-i18n="automation.safety_screen_media_desc">Block full-screen playback. Speaker-only audio remains available.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" data-vc-safety-key="screenMedia" checked aria-labelledby="vcSafetyScreenMediaName" aria-describedby="vcSafetyScreenMediaDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-safety-fixed" data-i18n="automation.safety_always_on">Vehicle power on/off and IVI reboot always require the car to be parked. These guards cannot be turned off.</div>
+                            </div>
+                        </div>
+                        <!-- Remote-key diagnostics (experimental): the command-format selector and
+                             the MCU readiness-gate toggle. Local settings only; no cloud leg. -->
+                        <div class="vc-panel-row" id="panelRemoteKeyDiag" style="display:none;">
+                            <div class="vc-safety-note" data-i18n="vehicle.rkdiag_intro">Diagnostics (experimental). These remote-key options help only on a car that does not respond to the current command format. A change takes effect on the next lock, unlock or power command.</div>
+                            <div class="vc-safety-status" id="vcRkdiagStatus" role="status" data-i18n="vehicle.rkdiag_loading">Loading diagnostics…</div>
+                            <div class="vc-rkdiag-body" id="vcRkdiagBody" style="display:none;">
+                                <div class="vc-rkdiag-row">
+                                    <span class="vc-safety-name" id="vcRkdiagFormatLabel" data-i18n="vehicle.rkdiag_format">Remote-key command format</span>
+                                    <select class="vc-rkdiag-select" id="vcRkdiagFormat" aria-labelledby="vcRkdiagFormatLabel">
+                                        <option value="fixed" data-i18n="vehicle.rkdiag_format_fixed">Current (fixed 26-byte frame) — default</option>
+                                        <option value="dynamic" data-i18n="vehicle.rkdiag_format_dynamic">Experimental: dynamic 73-byte frame</option>
+                                    </select>
+                                    <span class="vc-safety-desc" data-i18n="vehicle.rkdiag_format_warning">The dynamic format is untested. Only enable it on a car that does not respond to the current format, and switch back if it does not help.</span>
+                                </div>
+                                <div class="vc-safety-row">
+                                    <div class="vc-safety-info">
+                                        <span class="vc-safety-name" id="vcRkdiagGateName" data-i18n="vehicle.rkdiag_gate">MCU readiness gate before lock, unlock and power</span>
+                                        <span class="vc-safety-desc" id="vcRkdiagGateDesc" data-i18n="vehicle.rkdiag_gate_desc">Wake the vehicle controller and wait briefly before a door or power frame. On by default; recommended.</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" role="switch" id="vcRkdiagGate" checked aria-labelledby="vcRkdiagGateName" aria-describedby="vcRkdiagGateDesc">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="vc-rkdiag-status-grid">
+                                    <div class="vc-rkdiag-stat"><span class="vc-safety-desc" data-i18n="vehicle.rkdiag_mcu_status">Live MCU status</span><span id="vcRkdiagMcuStatus">—</span></div>
+                                    <div class="vc-rkdiag-stat"><span class="vc-safety-desc" data-i18n="vehicle.rkdiag_active_format">Active format</span><span id="vcRkdiagActiveFormat">—</span></div>
+                                    <div class="vc-rkdiag-stat"><span class="vc-safety-desc" data-i18n="vehicle.rkdiag_rail">Local rail</span><span id="vcRkdiagRail">—</span></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Category tabs — always visible -->
@@ -641,6 +794,19 @@
                             </svg>
                             <span>System</span>
                         </button>
+                        <!-- Parking glyph: these guards hold an action until the car is parked.
+                             The dot means at least one of them is switched off. -->
+                        <button class="vc-tab" data-panel="panelSafety" onclick="VC.togglePanel('panelSafety', this)">
+                            <span class="tab-dot"></span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></svg>
+                            <span data-i18n="automation.tab_safety">Safety</span>
+                        </button>
+                        <!-- Sliders glyph: experimental remote-key diagnostics. -->
+                        <button class="vc-tab" data-panel="panelRemoteKeyDiag" onclick="VC.togglePanel('panelRemoteKeyDiag', this)">
+                            <span class="tab-dot"></span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+                            <span data-i18n="vehicle.tab_remote_key_diag">Diagnostics</span>
+                        </button>
                     </div>
                     </div>
                 </div>
@@ -665,8 +831,8 @@
     <!-- core.js polls /status every 5s and populates the sidebar status card
          (12V, ACC, SOC, range, SOH, fuel, network). Without it those values
          all stay unread since vehicle-control.js only manages the 3D scene. -->
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <!-- Mode-gated loader. In immersive mode this injects the heavy stack
          (SotaPlayer + three.js + Draco/GLTF/Orbit + gsap ≈ 820 KB of script,
          plus the 1.6 MB GLB the scene then fetches) in strict order via
@@ -687,7 +853,7 @@
                 '../shared/vendor/gsap.min.js?v=12'
             ];
             var chain = window.VC_LITE ? [] : window.VC_VENDOR_CHAIN.slice();
-            chain.push('../shared/vehicle-control.js?v=vclite31');
+            chain.push('../shared/vehicle-control.js?v=vclite38');
             for (var i = 0; i < chain.length; i++) {
                 var s = document.createElement('script');
                 s.src = chain[i];

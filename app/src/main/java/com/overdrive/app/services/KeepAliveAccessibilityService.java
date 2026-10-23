@@ -139,10 +139,11 @@ public class KeepAliveAccessibilityService extends AccessibilityService {
         // was already open before this service connected. Future window changes
         // update the same cache from onAccessibilityEvent().
         AccessibilityNodeInfo root = null;
+        String seededPkg = null;
         try {
             root = getRootInActiveWindow();
-            KeyMapDispatcher.INSTANCE.onForegroundPackageChanged(
-                    root != null ? stringValue(root.getPackageName()) : null);
+            seededPkg = root != null ? stringValue(root.getPackageName()) : null;
+            KeyMapDispatcher.INSTANCE.onForegroundPackageChanged(seededPkg);
         } catch (Throwable t) {
             KeyMapDispatcher.INSTANCE.onForegroundPackageChanged(null);
             Log.w(TAG, "Unable to seed active package: " + t.getMessage());
@@ -153,6 +154,16 @@ public class KeepAliveAccessibilityService extends AccessibilityService {
                 } catch (Throwable ignored) {
                 }
             }
+        }
+        // The widgets' reading, in its own try so it never touches the one above. There is no class here,
+        // and a window of ours, the system UI's or the keyboard's says nothing about the app on top.
+        try {
+            if (seededPkg == null || !(seededPkg.equals(getPackageName()) || seededPkg.equals("com.android.systemui")
+                    || seededPkg.equals(imePackage()))) {
+                KeyMapDispatcher.INSTANCE.onTopAppChanged(seededPkg, null);
+            }
+        } catch (Throwable t) {
+            KeyMapDispatcher.INSTANCE.onTopAppChanged(null, null);
         }
 
         // Prime the key-mapping snapshot off-thread so the first hardware key
@@ -212,6 +223,12 @@ public class KeepAliveAccessibilityService extends AccessibilityService {
                 // conditional mapping never suppresses the vehicle's default key action.
                 KeyMapDispatcher.INSTANCE.onForegroundPackageChanged(null);
             }
+            // The widgets' reading is kept apart, so it never changes what key mappings see.
+            try {
+                trackTopApp(event);
+            } catch (Throwable t) {
+                KeyMapDispatcher.INSTANCE.onTopAppChanged(null, null);
+            }
             return;
         }
 
@@ -229,6 +246,51 @@ public class KeepAliveAccessibilityService extends AccessibilityService {
 
     private static String stringValue(CharSequence value) {
         return value != null ? value.toString() : null;
+    }
+
+    /**
+     * For the home-screen widgets: every window change tells them to ask the daemon what is on top, and an
+     * activity becomes their stand-in reading. Overlays (ours too), popups, dialogs, the shade and the
+     * keyboard send this event as well, and nothing announces it when they close, so they never become it.
+     */
+    private void trackTopApp(AccessibilityEvent event) {
+        // a second screen (the cluster) has its own top app
+        if (android.os.Build.VERSION.SDK_INT >= 33 && event.getDisplayId() != android.view.Display.DEFAULT_DISPLAY) return;
+        KeyMapDispatcher.INSTANCE.onWindowEvent();
+        String pkg = stringValue(event.getPackageName());
+        String cls = stringValue(event.getClassName());
+        if (pkg != null && !isActivityWindow(pkg, cls)) return;
+        KeyMapDispatcher.INSTANCE.onTopAppChanged(pkg, cls);
+    }
+
+    /** Package of the current keyboard, or null. */
+    private String imePackage() {
+        String id = android.provider.Settings.Secure.getString(getContentResolver(),
+                android.provider.Settings.Secure.DEFAULT_INPUT_METHOD);
+        if (id == null) return null;
+        int slash = id.indexOf('/');
+        return slash > 0 ? id.substring(0, slash) : id;
+    }
+
+    // Window class → "is an activity of that package", looked up once each (events arrive on the main thread).
+    private final java.util.HashMap<String, Boolean> activityClasses = new java.util.HashMap<>();
+
+    /** True when {@code cls} is an activity of {@code pkg}. A missing class name counts as one, as before. */
+    private boolean isActivityWindow(String pkg, String cls) {
+        if (cls == null || cls.isEmpty()) return true;
+        String key = pkg + "/" + cls;
+        Boolean known = activityClasses.get(key);
+        if (known != null) return known;
+        boolean activity;
+        try {
+            getPackageManager().getActivityInfo(new android.content.ComponentName(pkg, cls), 0);
+            activity = true;
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            activity = false;
+        }
+        if (activityClasses.size() >= 256) activityClasses.clear();
+        activityClasses.put(key, activity);
+        return activity;
     }
 
     /**

@@ -244,7 +244,9 @@
       "check_update": "⬆️ Güncellemeleri Kontrol Et",
       "backup": "💾 Yedekle",
       "stop": "⛔ Durdur",
-      "start": "✅ Başlat"
+      "start": "✅ Başlat",
+      "tunnel_switch": "🔁 Geçiş yap: {0}",
+      "tunnel_run_both": "➕ İkisini de çalıştır"
     },
     "daemons": {
       "title": "🤖 *Daemon'lar*\n\n"
@@ -289,7 +291,8 @@
       "status_running": "{0}: ✅ Çalışıyor",
       "status_stopped": "{0}: ⛔ Durdurulmuş",
       "action_usage": "Kullanım: /daemon {0} start|stop|status",
-      "tunnel_url": "🌐 *Tünel URL'si*\n{0}"
+      "tunnel_url": "🌐 *Tünel URL'si*\n{0}",
+      "tunnel_conflict": "⚠️ {0} zaten çalışıyor.\n\nGeçiş yapılsın mı ({0} durdurulur ve {1} başlatılır), yoksa iki tünel birlikte mi çalışsın?"
     },
     "events": {
       "invalid_hours": "⚠️ Geçersiz saat değeri. Kullanım: `/events [saat] [sayfa]`\nÖrnek: `/events 12 2`",
@@ -1069,6 +1072,7 @@
     "door_open_warning_description": "Yaklaşan trafik nedeniyle kapı açma uyarısının bir taraf için uyarı verip vermediği. Uyarılar kısa sürdüğü için sinyal, son uyarıdan sonra birkaç saniye açık tutulur.",
     "side_left": "Sol",
     "side_right": "Sağ",
+    "side_any": "Herhangi bir taraf",
     "seatbelt": "Emniyet kemeri",
     "seatbelt_description": "Bir emniyet kemeri takıldığında veya çıkarıldığında tetiklenir. Sürücü veya ön yolcu koltuğunu seçin.",
     "buckled": "Takılı",
@@ -1129,10 +1133,10 @@
     "locked": "Kilitli",
     "unlocked": "Açık",
     "unlock_source": "Kilit açma kaynağı",
-    "unlock_source_description": "Aracın kilidinin en son nasıl açıldığı.",
+    "unlock_source_description": "Anahtar kumandasının kilit açma düğmesine basıldıktan sonraki 2 dakika boyunca ve bu süre içinde başlayan sürüşün sonuna kadar Anahtar kumandası düğmesi; aksi hâlde Diğer / Bilinmiyor.",
     "unlock_source_fob": "Anahtar kumandası düğmesi",
     "easy_entry": "Kolay biniş",
-    "easy_entry_description": "Sürücü koltuğunun kolay biniş hareketinin boşta mı, hareket hâlinde mi yoksa hareketten sonra yerine oturmuş mu olduğu.",
+    "easy_entry_description": "Anahtar kumandasıyla kilit açıldıktan sonra sürücü koltuğunun kolay biniş hareketi: Boşta, Hareket ediyor veya durduktan sonra Yerine oturdu (1 dakika boyunca korunur).",
     "easy_entry_idle": "Boşta",
     "easy_entry_moving": "Hareket ediyor",
     "easy_entry_settled": "Yerine oturdu",
@@ -1254,7 +1258,7 @@
     "compute_variable_description": "Bir sayı hesaplar ve bir değişkende saklar. + - * / % işleçlerini, parantezleri ve min, max, clamp, round, floor, ceil, abs, sqrt ve pow işlevlerini destekler. Canlı bir araç değeri için ${signal:NAME}, başka bir değişken için ${var:NAME} kullanın — örn. 500 + (${signal:batteryLevel} - 20) * 3.75. Bir değer okunamazsa (henüz bildirim yapmamış bir sinyal) değişken değiştirilmeden bırakılır.",
     "variable_expression": "İfade",
     "capture_variable": "Geçerli değeri değişkene kaydet",
-    "capture_variable_description": "Geçerli medya ses seviyesini veya EV bataryasının şarj durumunu adlandırılmış bir değişken olarak kaydeder. Kaydedilen sayı, sonraki otomasyon adımlarında kullanılabilecek anlık bir değerdir; örneğin medya ses seviyesini geri yüklemek için.",
+    "capture_variable_description": "Geçerli medya ses seviyesini, EV bataryasının şarj durumunu ya da ortam ışığının rengini veya parlaklığını adlandırılmış bir değişken olarak kaydeder. Kaydedilen sayı, sonraki otomasyon adımlarında kullanılabilecek anlık bir değerdir; örneğin medya ses seviyesini veya ortam ışıklarını geri yüklemek için.",
     "capture_source": "Geçerli değer",
     "capture_media_volume": "Medya ses seviyesi",
     "capture_battery_soc": "Batarya SOC (%)",
@@ -1276,7 +1280,7 @@
     "mqtt_payload": "Yük",
     "mqtt_retain": "Kalıcı (retain)",
     "mqtt_trigger": "MQTT mesajı",
-    "mqtt_trigger_description": "MQTT broker'ınız <base>/automation/<channel> konusuna yayın yaptığında tetiklenir (ör. Home Assistant'tan). Kanal adını girin ve eşleşecek değeri belirleyin.",
+    "mqtt_trigger_description": "MQTT broker'ınız <base>/automation/<channel> konusuna yayın yaptığında tetiklenir (ör. Home Assistant'tan). Kanal adını (yalnızca harf, rakam, '.', '_' ve '-') girin ve eşleşecek değeri belirleyin.",
     "mqtt_channel": "Kanal",
     "mqtt_value": "Değer",
     "mode_force_ev": "Zorunlu EV",
@@ -1296,7 +1300,8 @@
     "wireless_charging_right": "Kablosuz şarj (sağ)",
     "wireless_charging_right_description": "Sağ kablosuz şarj pedini açar veya kapatır. (Yalnızca iki pedli araçlarda.)",
     "apply_seat_position": "Koltuk ve ayna konumunu uygula",
-    "apply_seat_position_description": "Sürücü koltuğunu ve iki kapı aynasını OverDrive'da kayıtlı bir konuma getirir. Konumlar, araçta bir konum düğmesine basılı tutularak aracın kendi hafıza yuvalarından alınır ya da Koltuk konumları sayfasında kaydedilir. Araç açık olmalıdır."
+    "apply_seat_position_description": "Sürücü koltuğunu ve iki kapı aynasını OverDrive'da kayıtlı bir konuma getirir. Konumlar, araçta bir konum düğmesine basılı tutularak aracın kendi hafıza yuvalarından alınır ya da Koltuk konumları sayfasında kaydedilir. Araç açık olmalıdır.",
+    "unlock_source_none": "Diğer / Bilinmiyor"
   },
   "messages": {
     "logged_out": "Çıkış yapıldı",
@@ -1339,9 +1344,9 @@
     "notify": {
       "started_title": "Park edildi",
       "ended_title": "Araca dönüldü",
-      "ended_body": "Uzakta geçen süre: {0}\n{1} olay · {2} araç geldi veya gitti",
+      "ended_body": "Uzakta geçen süre: {0} · {1} olay · {2} araç geldi veya gitti",
       "ended_body_short": "{0} araç geldi veya gitti",
-      "ended_body_unwatched": "Uzakta geçen süre: {0}\nSentry devrede değil ({1})",
+      "ended_body_unwatched": "Uzakta geçen süre: {0} · Sentry devrede değil ({1})",
       "ended_events": "{0} olay",
       "nothing_critical": "Kritik bir şey yok",
       "no_place": "Konum alınamadı",

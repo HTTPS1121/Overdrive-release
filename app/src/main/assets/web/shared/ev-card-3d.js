@@ -320,6 +320,9 @@
         this._observer = null;
         this._needsRender = false;
         this._renderScheduled = false;
+        this._renderFrame = null;
+        this._sizePoll = null;
+        this._dracoLoaders = [];
 
         var self = this;
         loadVendor().then(function () {
@@ -470,7 +473,7 @@
                     self._lastW = sz.w; self._lastH = sz.h;
                     self._handleResize();
                 }
-                setTimeout(pollSize, 250);
+                self._sizePoll = setTimeout(pollSize, 250);
             })();
         }
     };
@@ -529,6 +532,11 @@
         var widthScale  = (visibleW * fitFill) / Math.max(modelW, 1e-6);
         var heightScale = (visibleH * fitFill) / Math.max(modelH, 1e-6);
         var s = Math.min(widthScale, heightScale);
+        // Side view: refine against what the camera actually sees. The bounds fit
+        // works on the origin plane, but the near side of the body is closer to the
+        // camera and projects larger, so wide cards (the phone drawer) cropped the
+        // bumpers.
+        if (this.view === 'side' && this._fitPoints) s = this._fitProjected(s, 0.92);
         // Reset → apply, instead of multiplyScalar, so repeated calls
         // converge instead of compounding.
         this.carModel.scale.set(s, s, s);
@@ -544,6 +552,34 @@
             this.carModel.position.y += this._naturalSize.y * s * 0.2;
             this.carModel.position.x -= this._naturalSize.x * s * 0.1;
         }
+    };
+
+    // Scale the sampled vertices so their projection spans `fill` of the canvas
+    // (normalised device coords) on the tighter axis. Converges in 2-3 passes.
+    OverdriveEvCard3D.prototype._fitProjected = function (s, fill) {
+        var T = window.THREE;
+        var pts = this._fitPoints;
+        var cam = this.camera;
+        cam.updateMatrixWorld(true);
+        cam.updateProjectionMatrix();
+        var v = new T.Vector3();
+        var view = new T.Vector3();
+        for (var pass = 0; pass < 4; pass++) {
+            var worst = 0;
+            var behind = false;
+            for (var i = 0; i < pts.length; i += 3) {
+                v.set(pts[i] * s, pts[i + 1] * s, pts[i + 2] * s);
+                // A point at or past the near plane projects garbage: halve and retry.
+                if (view.copy(v).applyMatrix4(cam.matrixWorldInverse).z > -cam.near) { behind = true; break; }
+                v.project(cam);
+                if (Math.abs(v.x) > worst) worst = Math.abs(v.x);
+                if (Math.abs(v.y) > worst) worst = Math.abs(v.y);
+            }
+            if (behind) { s *= 0.5; continue; }
+            if (!(worst > 0)) break;
+            s *= fill / worst;
+        }
+        return s;
     };
 
     OverdriveEvCard3D.prototype._observeVisibility = function () {
@@ -625,7 +661,8 @@
         if (this._renderScheduled) return;
         var self = this;
         this._renderScheduled = true;
-        requestAnimationFrame(function () {
+        this._renderFrame = requestAnimationFrame(function () {
+            self._renderFrame = null;
             self._renderScheduled = false;
             if (self._needsRender) self._renderOnce();
         });
@@ -646,6 +683,7 @@
     };
 
     OverdriveEvCard3D.prototype.setModel = function (modelId) {
+        if (this._disposed) return;
         this.pendingModel = modelId;
         // Vendor must be FULLY loaded — three.min.js + GLTFLoader.js +
         // DRACOLoader.js — before we can call into the loader chain.
@@ -668,7 +706,7 @@
         this.activeModelId = modelId;
 
         loadManifest().then(function (manifest) {
-            if (gen !== self._loadGen) return;
+            if (self._disposed || gen !== self._loadGen) return;
             if (!manifest) return; // no manifest → canvas stays empty
             var modelEntry = null;
             var manifestModels = manifest.models || [];
@@ -679,23 +717,35 @@
                 }
             }
             resolveModelUrl(modelId, manifest, function (url, err) {
-                if (gen !== self._loadGen || err || !url) return;
+                if (self._disposed || gen !== self._loadGen || err || !url) return;
                 self._loadGlb(url, gen, modelEntry);
             });
         });
     };
 
     OverdriveEvCard3D.prototype._loadGlb = function (url, gen, modelEntry) {
+        if (this._disposed || gen !== this._loadGen) return;
         var self = this;
         var T = window.THREE;
         var loader = new T.GLTFLoader();
         var draco = new T.DRACOLoader();
+        this._dracoLoaders.push(draco);
         draco.setDecoderPath(VENDOR + 'draco/');
         draco.setDecoderConfig({ type: 'js' });
         loader.setDRACOLoader(draco);
 
+        function releaseDraco() {
+            var index = self._dracoLoaders.indexOf(draco);
+            if (index < 0) return;
+            self._dracoLoaders.splice(index, 1);
+            try { draco.dispose(); } catch (e) {}
+        }
         loader.load(url, function (gltf) {
-            if (gen !== self._loadGen) return;
+            releaseDraco();
+            if (self._disposed || gen !== self._loadGen) {
+                disposeModelTree(gltf.scene);
+                return;
+            }
             self._disposeCarModel();
             self.carModel = gltf.scene;
             self.bodyPaintMeshes = [];
@@ -751,6 +801,9 @@
             var preBox = new T.Box3().setFromObject(self.carModel);
             var preSize = preBox.getSize(new T.Vector3());
             self._naturalSize = { x: preSize.x, y: preSize.y, z: preSize.z };
+            self._fitPoints = (self.view === 'side')
+                ? sampleModelPoints(T, self.carModel, preBox.getCenter(new T.Vector3()))
+                : null;
             self._autoFit();
 
             self.scene.add(self.carModel);
@@ -759,15 +812,38 @@
             // schedules its own render so we don't double-schedule.
             self.setColor(self.pendingColor);
         }, undefined, function (err) {
+            releaseDraco();
+            if (self._disposed || gen !== self._loadGen) return;
             if (window.console) console.warn('[ev-card-3d] glb load failed:', url, err);
         });
     };
 
-    OverdriveEvCard3D.prototype._disposeCarModel = function () {
-        if (!this.carModel) return;
-        var T = window.THREE;
-        this.scene.remove(this.carModel);
-        this.carModel.traverse(function (n) {
+    // Up to ~3000 vertices of the model at natural scale, relative to its bounds
+    // centre — what _fitProjected projects through the camera.
+    function sampleModelPoints(T, model, center) {
+        model.updateMatrixWorld(true);
+        var total = 0;
+        model.traverse(function (n) {
+            var pos = n.isMesh && n.geometry && n.geometry.attributes && n.geometry.attributes.position;
+            if (pos) total += pos.count;
+        });
+        var step = Math.max(1, Math.ceil(total / 3000));
+        var out = [];
+        var v = new T.Vector3();
+        model.traverse(function (n) {
+            var pos = n.isMesh && n.geometry && n.geometry.attributes && n.geometry.attributes.position;
+            if (!pos) return;
+            for (var i = 0; i < pos.count; i += step) {
+                v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(n.matrixWorld).sub(center);
+                out.push(v.x, v.y, v.z);
+            }
+        });
+        return out.length ? new Float32Array(out) : null;
+    }
+
+    function disposeModelTree(model) {
+        if (!model || typeof model.traverse !== 'function') return;
+        model.traverse(function (n) {
             if (n.geometry) n.geometry.dispose();
             if (n.material) {
                 var mats = Array.isArray(n.material) ? n.material : [n.material];
@@ -777,6 +853,12 @@
                 }
             }
         });
+    }
+
+    OverdriveEvCard3D.prototype._disposeCarModel = function () {
+        if (!this.carModel) return;
+        if (this.scene) this.scene.remove(this.carModel);
+        disposeModelTree(this.carModel);
         this.carModel = null;
         this.bodyPaintMeshes = [];
     };
@@ -784,6 +866,21 @@
     OverdriveEvCard3D.prototype.dispose = function () {
         if (this._disposed) return;
         this._disposed = true;
+        ++this._loadGen;
+        this._afterRenderCbs = [];
+        if (this._renderFrame !== null) {
+            cancelAnimationFrame(this._renderFrame);
+            this._renderFrame = null;
+        }
+        if (this._sizePoll !== null) {
+            clearTimeout(this._sizePoll);
+            this._sizePoll = null;
+        }
+        this._renderScheduled = false;
+        for (var d = 0; d < this._dracoLoaders.length; d++) {
+            try { this._dracoLoaders[d].dispose(); } catch (e) {}
+        }
+        this._dracoLoaders = [];
         if (this._observer) this._observer.disconnect();
         if (this._resizeObserver) try { this._resizeObserver.disconnect(); } catch (e) {}
         if (this._onResize) window.removeEventListener('resize', this._onResize);

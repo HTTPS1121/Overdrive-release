@@ -77,12 +77,40 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
     /** drive_away: poll cadence for "has the gear left P" after ACC-on. */
     static final long GEAR_WATCH_POLL_MS = 3_000L;
     /**
-     * drive_away: polls without a fresh non-P reading before the close falls
-     * back to acc_on (~2 min). Bounds the mode on trims with no gear feed.
+     * drive_away: polls WITHOUT ANY fresh gear reading (a P reading is
+     * knowledge and never counts) before GPS decides, or the close falls back
+     * to acc_on (~2 min). Bounds the mode on trims with no gear feed.
      */
     static final int GEAR_WATCH_MAX_ATTEMPTS = 40;
+    /**
+     * drive_away: consecutive polls without a reading AFTER a P was seen before
+     * the gear evidence is no longer trusted to prove "never moved" (a feed that
+     * died mid-drive would otherwise read as P throughout). 30 s can hide at
+     * most a same-driveway shuffle; the daemon's ACC-off teardown stops the gear
+     * poller a moment before the parking hook fires, so a short streak is normal.
+     */
+    static final int GEAR_WATCH_GAP_POLLS = 10;
+    /** A fix older than this cannot say whether the car moved (garage). */
+    static final long GPS_MOVE_MAX_FIX_AGE_MS = 5L * 60_000L;
+    /** Displacement below this is GPS drift on a parked car, not a drive. */
+    static final double GPS_MOVE_MIN_M = 120.0;
     /** Arrival read retries while the session is open, before the queue takes over. */
     static final int SIGNAGE_ARRIVAL_MAX_ATTEMPTS = 5;
+    /**
+     * return / power_on: an ACC-on closes the session only once it has HELD for
+     * this long. The daemon's ACC line flaps for a few seconds without anyone
+     * in the car — an acc_sentry restart probing ON before the hardware answers
+     * OFF, a head-unit power glitch, an IPC race — and closing on the edge
+     * turned every such flap into a "Back at car" plus a one-minute junk row
+     * (field log: one flap every 68 s for a quarter of an hour).
+     */
+    static final long ACC_ON_SETTLE_MS = 30_000L;
+    /**
+     * Human evidence window for an ACC-on that did not settle: a guarded door
+     * open or an unlock within this long before the flap means the owner was
+     * at the car, so the flap WAS a return (and the switch-off a new park).
+     */
+    static final long ACC_FLAP_HUMAN_WINDOW_MS = 10L * 60_000L;
     static final int SIGNAGE_BATCH = 3;
     static final long REARM_SESSION_MAX_GAP_MS = 24L * 3600_000L;
     /**
@@ -93,6 +121,14 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
     static final long DOOR_RETURN_MIN_AGE_MS = 180_000L;
     /** Door activity (open OR close) within this window means "still unloading". */
     static final long DOOR_QUIET_MS = 60_000L;
+    /**
+     * An unlock counts as the return only once a door opens within this window
+     * (or the car powers on). Proximity / walk-away locking and a lagging cloud
+     * lock state unlock-and-relock an untouched car for hours; each of those
+     * unlocks used to close the session with a "Back at car" and the re-lock
+     * silently opened the next one — a message storm with nobody at the car.
+     */
+    static final long UNLOCK_CONFIRM_MS = 3L * 60_000L;
     /** Boot recovery waits for the daemon's ACC reading to become authoritative. */
     static final long RECOVER_RETRY_MS = 5_000L;
     static final int RECOVER_MAX_ATTEMPTS = 24;
@@ -144,6 +180,26 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
     private ScheduledFuture<?> signageTask;
     /** drive_away: the "has the gear left P yet" poll armed at ACC-on. */
     private ScheduledFuture<?> gearTask;
+    /** drive_away: ACC is on and the live session is waiting for the gear to leave P (worker-only). */
+    private boolean gearWatchArmed;
+    /** drive_away: the current watch has seen at least one FRESH P reading (worker-only). */
+    private boolean gearWatchSawPark;
+    /** drive_away: consecutive reading-less polls since the last fresh reading (worker-only). */
+    private int gearWatchNullStreak;
+    /** drive_away: the feed went silent for {@link #GEAR_WATCH_GAP_POLLS} after a P — evidence incomplete. */
+    private boolean gearWatchGap;
+    /** Wall-clock of the last "powered on without driving" resume of the live session; 0 = none. */
+    private long resumedAtMs;
+    /** Wall-clock of an unlock awaiting its door-open confirmation; 0 = none (worker-only). */
+    private long unlockPendingMs;
+    /** Settle window for an ACC-on close; package-visible so tests can shorten it. */
+    volatile long accOnSettleMs = ACC_ON_SETTLE_MS;
+    /** return / power_on: the ACC-on whose close is waiting to settle (worker-only). */
+    private ScheduledFuture<?> accOnSettleTask;
+    private long pendingAccOnGeneration = Long.MIN_VALUE;
+    private long pendingAccOnSinceMs;
+    /** Wall-clock of the last door open that passed the return-age guard; 0 = none (worker-only). */
+    private long lastGuardedDoorOpenMs;
 
     public ParkingController(ParkingConfig.Source configSource, ParkingEnvironment env,
                              Supplier<ParkingStore> storeFactory) {
@@ -309,6 +365,10 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
         returnInProgress = false;
         adoptedAwaitingEdge = false;
         arrivedTask = null; tickTask = null; pruneTask = null; signageTask = null; gearTask = null;
+        gearWatchArmed = false; gearWatchSawPark = false; gearWatchNullStreak = 0; gearWatchGap = false;
+        resumedAtMs = 0L; unlockPendingMs = 0L;
+        accOnSettleTask = null; pendingAccOnGeneration = Long.MIN_VALUE; pendingAccOnSinceMs = 0L;
+        lastGuardedDoorOpenMs = 0L;
         if (s != null) s.close();
         store = null;
         observer = null; snapshotter = null; harvester = null; notifier = null; signageReader = null;
@@ -401,7 +461,11 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
     }
 
     @Override public void onUnlockWhileParked() {
-        submit(() -> handleReturnSignal(ParkingSession.END_UNLOCK));
+        submit(this::handleUnlock);
+    }
+
+    @Override public void onLockWhileParked() {
+        submit(this::handleLock);
     }
 
     @Override public void onEventFinalized(File mp4, List<Actor> actors, long segmentStartMs,
@@ -462,6 +526,32 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
         long now = env.nowMs();
         ParkingSession open = current;
         if (open != null) {
+            if (pendingAccOnGeneration != Long.MIN_VALUE) {
+                // ACC went off again before its ACC-on settled.
+                long heldMs = now - pendingAccOnSinceMs;
+                cancel(accOnSettleTask); accOnSettleTask = null;
+                pendingAccOnGeneration = Long.MIN_VALUE;
+                boolean human = (lastGuardedDoorOpenMs > 0L && now - lastGuardedDoorOpenMs <= ACC_FLAP_HUMAN_WINDOW_MS)
+                        || (unlockPendingMs > 0L && now - unlockPendingMs <= ACC_FLAP_HUMAN_WINDOW_MS)
+                        || carMovedSinceParkStart(open);
+                if (!human) {
+                    // Nobody opened a door, nothing was unlocked, the car is where
+                    // it was: a power glitch / probe race on the ACC line, not the
+                    // owner. The park never ended — keep the session exactly as it
+                    // was, dropping the "returned" stills that power-on took.
+                    discardReturnedStills(open);
+                    open.transitionGeneration = generation;
+                    store.updateSession(open);
+                    env.log("Parking: ACC flapped on/off for " + heldMs + " ms with no door, unlock or"
+                            + " GPS evidence — ignored, session " + open.sessionId + " continues");
+                    return;
+                }
+                // The owner was at the car: that ACC-on was the return, this
+                // ACC-off is a new park.
+                closeSession(open, ParkingSession.END_ACC_ON, true);
+                openSession(generation, false);
+                return;
+            }
             if (adoptedAwaitingEdge && now - adoptedAtMs <= ADOPT_EDGE_WINDOW_MS) {
                 // The daemon's boot-time ACC-off edge for the park we already
                 // adopted from the store: same park, just record the generation.
@@ -471,10 +561,18 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
                 env.log("Parking session " + open.sessionId + " confirmed by boot ACC-off edge");
                 return;
             }
-            // Still-open row at ACC-off: either a missed ACC-on edge (stale
-            // session), or drive_away kept it open through a power cycle that
-            // never left P (sat in the car, switched off again). Close it
-            // silently — the new row opening below carries the park onward.
+            if (gearWatchArmed && !carMovedSinceParkStart(open)) {
+                // drive_away: the car was powered on but never left P (sat in
+                // it, warmed it up, checked something) and is now off again.
+                // That is the SAME park — resume the session instead of
+                // superseding it with a duplicate row at the same spot.
+                resumeSession(open, generation);
+                return;
+            }
+            // Still-open row at ACC-off: a missed ACC-on edge (stale session),
+            // or a drive_away session whose car did move (gear feed silent, GPS
+            // says otherwise). Close it silently — the new row opening below
+            // carries the park onward.
             closeSession(open, ParkingSession.END_SUPERSEDED, false);
         } else {
             // Boot while parked, recovery still waiting for an authoritative ACC
@@ -507,13 +605,18 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
                 // here. Sentry is off while the car is on, so the 1 Hz harvester
                 // tick has nothing to feed on: stop it now instead of at close.
                 store.updateSession(s);
-                stopTick();
-                cancel(gearTask);
-                final String sid = s.sessionId;
-                gearTask = schedule(() -> gearWatchAttempt(sid, 1), GEAR_WATCH_POLL_MS);
-                env.log("Parking: drive-away watch armed for " + sid);
-            } else {
+                armGearWatch(s);
+            } else if (accOnSettleMs <= 0L) {
                 closeSession(s, ParkingSession.END_ACC_ON, true);
+            } else {
+                // Close only once the ACC-on has held (see ACC_ON_SETTLE_MS);
+                // handleAccOff decides whether an earlier ACC-off was a flap.
+                store.updateSession(s);           // persist the returned-stills bookkeeping
+                pendingAccOnGeneration = generation;
+                pendingAccOnSinceMs = env.nowMs();
+                cancel(accOnSettleTask);
+                final String sid = s.sessionId;
+                accOnSettleTask = schedule(() -> settleAccOn(sid, generation), accOnSettleMs);
             }
         }
         // Rows left open by a previous daemon incarnation are over too: the car
@@ -524,30 +627,113 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
         schedule(this::retryMissingPlaces, SIGNAGE_AFTER_ACC_ON_MS);
     }
 
+    /** The ACC-on held for the settle window: a real power-on, close now. */
+    void settleAccOn(String sessionId, long generation) {
+        ParkingSession s = current;
+        if (s == null || !s.sessionId.equals(sessionId) || pendingAccOnGeneration != generation) return;
+        pendingAccOnGeneration = Long.MIN_VALUE;
+        accOnSettleTask = null;
+        closeSession(s, ParkingSession.END_ACC_ON, true);
+    }
+
+    /** drive_away, ACC on: start (or restart) the gear watch on the live session. */
+    private void armGearWatch(ParkingSession s) {
+        stopTick();
+        cancel(gearTask);
+        gearWatchArmed = true;
+        gearWatchSawPark = false;
+        gearWatchNullStreak = 0;
+        gearWatchGap = false;
+        final String sid = s.sessionId;
+        gearTask = schedule(() -> gearWatchAttempt(sid, 1), GEAR_WATCH_POLL_MS);
+        env.log("Parking: drive-away watch armed for " + sid);
+    }
+
+    private void disarmGearWatch() {
+        cancel(gearTask); gearTask = null;
+        gearWatchArmed = false;
+        gearWatchSawPark = false;
+        gearWatchNullStreak = 0;
+        gearWatchGap = false;
+    }
+
     /**
      * drive_away wait: the car is on but the session is still open. Close on
-     * the first FRESH non-P gear reading; after {@link #GEAR_WATCH_MAX_ATTEMPTS}
-     * polls without one, fall back to the power-on close so a trim with no
-     * usable gear feed degrades to end-at-power-on (+ ~2 min), never to a
-     * session that will not close. An ACC-off in the meantime supersedes the
-     * row on its own edge; the identity guard then retires this watch.
+     * the first FRESH non-P gear reading. A fresh P reading is knowledge — the
+     * car is still here — so the watch simply continues for as long as ACC
+     * stays on (ACC-off then resumes or supersedes, see handleAccOff). Only
+     * when NO reading at all arrives for {@link #GEAR_WATCH_MAX_ATTEMPTS} polls
+     * does it fall back to the power-on close, so a trim without a usable gear
+     * feed degrades to end-at-power-on (+ ~2 min), never to a session that will
+     * not close.
      */
     void gearWatchAttempt(String sessionId, int attempt) {
         ParkingSession s = current;
-        if (s == null || !s.sessionId.equals(sessionId) || !s.isOpen()) return;
+        if (s == null || !s.sessionId.equals(sessionId) || !s.isOpen() || !gearWatchArmed) return;
         Boolean inPark = null;
         try { inPark = env.gearInPark(); } catch (Throwable ignored) {}
         if (inPark != null && !inPark) {
             closeSession(s, ParkingSession.END_DRIVE_AWAY, true);
             return;
         }
-        if (attempt >= GEAR_WATCH_MAX_ATTEMPTS) {
-            env.log("Parking: no non-P gear reading after " + attempt
+        if (inPark != null) {
+            gearWatchSawPark = true;
+            gearWatchNullStreak = 0;
+        } else if (!gearWatchSawPark && attempt >= GEAR_WATCH_MAX_ATTEMPTS) {
+            env.log("Parking: no gear reading at all after " + attempt
                     + " polls — closing " + sessionId + " as acc_on");
             closeSession(s, ParkingSession.END_ACC_ON, true);
             return;
+        } else if (gearWatchSawPark && ++gearWatchNullStreak >= GEAR_WATCH_GAP_POLLS) {
+            gearWatchGap = true;
         }
         gearTask = schedule(() -> gearWatchAttempt(sessionId, attempt + 1), GEAR_WATCH_POLL_MS);
+    }
+
+    /**
+     * Did the car leave the spot it parked at? Decides whether an ACC-off that
+     * ends a drive_away watch resumes the session (no) or supersedes it (yes).
+     * The gear watch's own evidence comes first: a fresh P seen and never a
+     * non-P means it stayed. Without gear evidence, a fresh GPS fix well away
+     * from the park is the tiebreaker; no usable fix (garage) reads as "stayed",
+     * because a duplicate row at the same spot is the mistake this exists to
+     * prevent, and a genuinely moved car is caught by the next real drive-away.
+     */
+    boolean carMovedSinceParkStart(ParkingSession s) {
+        // Continuous gear evidence is definitive; a feed that went silent after
+        // the P could have missed a whole drive, so GPS must decide instead.
+        if (gearWatchSawPark && !gearWatchGap) return false;
+        if (s == null || !s.hasFix()) return false;
+        ParkingEnvironment.GpsFix fix;
+        try { fix = env.readGpsFix(); } catch (Throwable t) { return false; }
+        if (fix == null || !fix.hasLocation() || fix.loadedFromCache) return false;
+        long age = ParkingLocationCapture.fixAgeMs(fix, env.nowElapsedMs(), env.nowMs());
+        if (age < 0 || age > GPS_MOVE_MAX_FIX_AGE_MS) return false;
+        double d = ParkingLocationCapture.distanceM(s.lat, s.lng, fix.lat, fix.lng);
+        // Both fixes' error circles must not explain the displacement.
+        double slack = Math.max(0f, s.accuracyM) + Math.max(0f, fix.accuracyM);
+        return d > Math.max(GPS_MOVE_MIN_M, slack);
+    }
+
+    /** drive_away, powered on without driving, off again: same park, keep the session. */
+    private void resumeSession(ParkingSession s, long generation) {
+        disarmGearWatch();
+        resumedAtMs = env.nowMs();
+        s.transitionGeneration = generation;
+        // The "returned" stills taken at that power-on show the owner getting
+        // in and not leaving; drop them so the real departure's set is the one
+        // the page shows (assets are listed from disk, not from the flag).
+        discardReturnedStills(s);
+        store.updateSession(s);
+        startTick();                       // sentry may re-arm for the rest of the park
+        env.log("Parking session resumed " + s.sessionId + " (powered on without driving)");
+    }
+
+    /** Drop a power-on's "returned" stills: that power-on turned out not to be the departure. */
+    private void discardReturnedStills(ParkingSession s) {
+        s.returnedSnapshotOk = false;
+        s.returnedSnapshotMs = 0L;
+        deleteStills(sessionDir(s.sessionId), ParkingSnapshotter.PREFIX_RETURNED);
     }
 
     /**
@@ -562,18 +748,62 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
         lastDoorActivityMs = now;
         ParkingSession s = current;
         if (s == null || !open) return;
-        if (now - s.startedMs < DOOR_RETURN_MIN_AGE_MS) return;   // driver leaving
+        // A resumed drive_away session (powered on, never left P, off again) is
+        // being exited right now: that door activity is the driver leaving again.
+        long since = Math.max(s.startedMs, resumedAtMs);
+        if (now - since < DOOR_RETURN_MIN_AGE_MS) return;         // driver leaving
+        // Past the age guard a door open is somebody AT the car, whether or not
+        // it goes on to count as a return below; an ACC flap right after it is
+        // then a real power-on, not a glitch (handleAccOff).
+        lastGuardedDoorOpenMs = now;
+        if (unlockPendingMs > 0L && now - unlockPendingMs <= UNLOCK_CONFIRM_MS) {
+            // Unlocked moments ago and now a door opens: the owner is getting
+            // in. That IS the return, whatever the recent door activity was.
+            unlockPendingMs = 0L;
+            handleReturnSignal(ParkingSession.END_UNLOCK);
+            return;
+        }
         if (!quiet) return;                                        // still unloading
         handleReturnSignal(ParkingSession.END_DOOR_OPEN);
     }
 
     /**
-     * Unlock / door-open while parked: the owner is back. With the default
-     * endTrigger this closes the session; with power_on / drive_away it only
-     * refreshes the "returned" stills (the LAST walk-up before the configured
-     * end wins — a mid-park door-open that never becomes a departure is
-     * overwritten by the real return) and the session closes later at ACC-on
-     * or gear-out-of-P.
+     * Doors unlocked while parked. Not a return by itself: the owner may be
+     * grabbing something and re-locking, and proximity / walk-away locking or a
+     * lagging cloud lock state unlock-and-relock an untouched car all night.
+     * The "returned" stills are taken NOW (surveillance tears the camera
+     * pipeline down right after this unlock); the close waits for a door to
+     * open ({@link #handleDoorEvent}) or the car to power on. A re-lock first
+     * ({@link #handleLock}) withdraws it.
+     */
+    void handleUnlock() {
+        ParkingSession s = current;
+        if (s == null) return;
+        long now = env.nowMs();
+        long since = Math.max(s.startedMs, resumedAtMs);
+        if (now - since < DOOR_RETURN_MIN_AGE_MS) return;         // just parked / just re-armed
+        if (config.snapshots) {
+            captureReturned(s);
+            store.updateSession(s);
+        }
+        unlockPendingMs = now;
+    }
+
+    /** Locked again while parked: an unlock nobody followed through on was not a return. */
+    void handleLock() {
+        if (unlockPendingMs > 0L) {
+            env.log("Parking: unlock withdrawn by re-lock (no door opened) — not a return");
+        }
+        unlockPendingMs = 0L;
+    }
+
+    /**
+     * A confirmed return (guarded door-open, or unlock followed by a door):
+     * the owner is back. With the default endTrigger this closes the session;
+     * with power_on / drive_away it only refreshes the "returned" stills (the
+     * LAST walk-up before the configured end wins — a mid-park door-open that
+     * never becomes a departure is overwritten by the real return) and the
+     * session closes later at ACC-on or gear-out-of-P.
      */
     void handleReturnSignal(String trigger) {
         ParkingSession s = current;
@@ -728,7 +958,12 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
     /** Close the LIVE session: tears down timers/harvester state, then finalizes the row. */
     private void closeSession(ParkingSession s, String trigger, boolean notify) {
         cancel(arrivedTask); arrivedTask = null;
-        cancel(gearTask); gearTask = null;
+        disarmGearWatch();
+        cancel(accOnSettleTask); accOnSettleTask = null;
+        pendingAccOnGeneration = Long.MIN_VALUE;
+        resumedAtMs = 0L;
+        unlockPendingMs = 0L;
+        lastGuardedDoorOpenMs = 0L;
         stopTick();
         long now = env.nowMs();
         observer.endSession(s, now);
@@ -809,7 +1044,11 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
             }
             s.neighbourCount = neighbours;
         } catch (Throwable ignored) {}
-        if (notify && !s.notifiedEnded) {
+        // "Back at car" answers "what happened while you were away" — it only
+        // makes sense for a park the user was told about. A stop too short for
+        // its "Parked" (switched on again before the arrival stills) ends in
+        // silence instead of a lone "Away 1 m · 0 events".
+        if (notify && s.notifiedStarted && !s.notifiedEnded) {
             notifier.publishEnded(s, events >= 0 ? s.eventCount : -1, moved, critical);
             s.notifiedEnded = true;
         }
@@ -864,18 +1103,44 @@ public final class ParkingController implements ParkingHooks.Listener, Detection
         }
         boolean accOn;
         try { accOn = env.isAccOn(); } catch (Throwable t) { accOn = false; }
+        long age = env.nowMs() - open.startedMs;
+        boolean adoptable = age >= 0 && age < ADOPT_MAX_AGE_MS;
         if (accOn) {
+            if (adoptable && ParkingConfig.END_TRIGGER_DRIVE_AWAY.equals(config.endTrigger)) {
+                // drive_away: an open row with the car on is the mode's normal
+                // waiting state, not a leftover — the daemon restarted while the
+                // owner sat in the car. Adopt it and let the gear watch decide
+                // (non-P → drove away; still P at ACC-off → same park resumes).
+                closeOtherOpenRows(open.sessionId, ParkingSession.END_SUPERSEDED, false);
+                adopt(open, false);
+                armGearWatch(open);
+                scheduleSignageQueue(SIGNAGE_AFTER_ACC_ON_MS);
+                return;
+            }
             closeOtherOpenRows(null, ParkingSession.END_RECOVERED, true);
             scheduleSignageQueue(SIGNAGE_AFTER_ACC_ON_MS);
             return;
         }
-        long age = env.nowMs() - open.startedMs;
-        if (age < 0 || age >= ADOPT_MAX_AGE_MS) {
+        if (!adoptable) {
             closeOtherOpenRows(null, ParkingSession.END_RECOVERED, false);
             return;
         }
         closeOtherOpenRows(open.sessionId, ParkingSession.END_SUPERSEDED, false);
         adopt(open, true);
+    }
+
+    /** Remove one prefix's stills ({@code <prefix>_front.jpg …, <prefix>_mosaic.jpg}) from a session dir. */
+    private static void deleteStills(File dir, String prefix) {
+        if (dir == null || !dir.isDirectory()) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            String n = f.getName();
+            if (n.startsWith(prefix + "_") && n.endsWith(".jpg")) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
     }
 
     /** Make an open store row the live session (worker thread). */

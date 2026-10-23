@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">地圖圖層</string>
+    <string name="navmap_google_type_default">Google 地圖</string>
+    <string name="navmap_google_type_satellite">衛星</string>
+    <string name="navmap_google_type_hybrid">混合</string>
+    <string name="navmap_google_type_terrain">地形</string>
+    <string name="navmap_google_type_overdrive">OverDrive 地圖</string>
+    <string name="navmap_google_traffic">即時路況</string>
+    <string name="navmap_google_traffic_on">即時路況已開啟</string>
+    <string name="navmap_google_traffic_off">即時路況已關閉</string>
+    <string name="navmap_google_traffic_paused">即時路況暫停至 %1$s（已達每日免費上限）</string>
+    <string name="navmap_google_map_paused">Google 地圖暫停至 %1$s（已達每日免費上限）</string>
+    <string name="navmap_google_map_unavailable">Google 地圖無法使用，正在顯示 OverDrive 地圖</string>
+    <string name="navmap_google_key_problem">Google Maps 金鑰有問題。請檢查 RoadSense 設定。</string>
+    <string name="navmap_google_route_key_problem">Google 路線規劃拒絕了此金鑰。請檢查 RoadSense 設定。</string>
+    <string name="navmap_google_route_limit">今日 Google 路線規劃已達上限</string>
+    <string name="navmap_google_arrived">已抵達目的地</string>
+    <string name="navmap_google_traffic_delay">塞車 +%1$s</string>
+    <string name="navmap_google_no_delays">沒有塞車</string>
+    <string name="navmap_google_faster_route">找到更快的路線，可節省 %1$s</string>
+    <string name="navmap_google_faster_route_switch">切換</string>
+    <string name="navmap_google_routes_by_google">路線由 Google 提供</string>
+    <string name="navmap_google_routing_provided_by">路線規劃由 %1$s 提供</string>
+    <string name="navmap_google_place_failed">無法開啟該地點</string>
+    <string name="navmap_google_finding_place">正在尋找地點…</string>
+</resources>

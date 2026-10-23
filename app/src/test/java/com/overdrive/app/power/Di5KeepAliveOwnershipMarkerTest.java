@@ -12,6 +12,8 @@ import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collections;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -68,6 +70,39 @@ public class Di5KeepAliveOwnershipMarkerTest {
         Di5KeepAliveOwnershipMarker.Record r = m.read();
         assertNotNull(r);
         assertTrue(r.has(Di5KeepAliveOwnershipMarker.LEVER_MCU_POWER));
+    }
+
+    @Test
+    public void parkedLinkLeverRoundTrips() throws Exception {
+        Di5KeepAliveOwnershipMarker m =
+                new Di5KeepAliveOwnershipMarker(
+                        new File(tmp.getRoot(), "owner.json"));
+        assertTrue(m.record(
+                4L, Collections.singletonList("parkedlink"), 1L, 7));
+        Di5KeepAliveOwnershipMarker.Record r = m.read();
+        assertNotNull(r);
+        assertTrue(r.has(
+                Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK));
+    }
+
+    @Test
+    public void oldMarkerRetainsReleaseOwnershipAndDeduplicatesAliases() throws Exception {
+        File file = new File(tmp.getRoot(), "owner.json");
+        JSONObject old = new JSONObject()
+                .put("generation", 4L)
+                .put("levers", new JSONArray(Arrays.asList(
+                        ParkedLinkContract.LEGACY_MARKER_LEVER, "parkedlink")));
+        Files.write(file.toPath(), old.toString().getBytes(StandardCharsets.UTF_8));
+        Di5KeepAliveOwnershipMarker marker = new Di5KeepAliveOwnershipMarker(file);
+        Di5KeepAliveOwnershipMarker.Record record = marker.read();
+        assertNotNull(record);
+        assertEquals(Collections.singletonList("parkedlink"), record.levers);
+        assertTrue(record.has(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK));
+        assertTrue(record.has(ParkedLinkContract.LEGACY_MARKER_LEVER));
+        assertTrue(marker.record(4L, record.levers, 2L, 7));
+        assertEquals("parkedlink", new JSONObject(new String(
+                Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8))
+                .getJSONArray("levers").getString(0));
     }
 
     @Test

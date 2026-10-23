@@ -34,6 +34,9 @@ public class AutomationQueue {
         private final java.util.EnumMap<LatestStateStream, LatestStateTag>
                 latestStatePublicationGenerations =
                 new java.util.EnumMap<>(LatestStateStream.class);
+        // One run of the same automation triggered while this started chain was pending or
+        // running; enqueued when this chain finishes. Guarded by lock.
+        private DelayedAutomation heldRetrigger;
 
         /**
          * A queue with a delay for items
@@ -685,7 +688,29 @@ public class AutomationQueue {
         if (mutation == null) return;
         synchronized (lock) {
             mutation.run();
+            dropSupersededChainsLocked();
         }
+    }
+
+    /**
+     * Caller holds {@link #lock}. A yielded chain whose definition was just replaced,
+     * disabled or deleted can only end at its next attempt; end it now so a run held
+     * behind it is not delayed by the old pause.
+     */
+    private static void dropSupersededChainsLocked() {
+        java.util.ArrayList<DelayedAutomation> superseded = new java.util.ArrayList<>();
+        automationQueue.removeIf(item -> {
+            boolean drop = item.isAutomation()
+                    && item.latestStatePublicationGenerations.isEmpty()
+                    && Automations.queuedCursorSuperseded(item.getId(), item.actionCursor);
+            if (drop) superseded.add(item);
+            return drop;
+        });
+        for (DelayedAutomation chain : superseded) {
+            queueItems.remove(chain.getQueueKey());
+            releaseHeldRetriggerLocked(chain);
+        }
+        if (!superseded.isEmpty()) lock.notifyAll();
     }
 
     /**
@@ -1378,6 +1403,10 @@ public class AutomationQueue {
                                         && !isolatedExecutors.containsKey(
                                                 Thread.currentThread())) {
                                     requeueUnrunClaimLocked(item);
+                                } else if (completed
+                                        && !isolatedExecutors.containsKey(
+                                                Thread.currentThread())) {
+                                    releaseHeldRetriggerLocked(item);
                                 }
                                 inFlightActions.remove(Thread.currentThread());
                                 if (!Automations.isDisabled()
@@ -1560,9 +1589,10 @@ public class AutomationQueue {
      * Synchronized on {@link #lock} so the DelayQueue and its queueItems shadow-set stay consistent.
      *
      * @param id The id of the item to remove from the queue if it exists
+     * @return true when a pending item was removed
      */
-    public static void removeFromQueue(String id) {
-        if (id == null) return;
+    public static boolean removeFromQueue(String id) {
+        if (id == null) return false;
         java.util.List<String> replay;
         synchronized (lock) {
             java.util.ArrayList<DelayedAutomation> removedItems =
@@ -1596,7 +1626,8 @@ public class AutomationQueue {
                             return match;
                         });
             }
-            if (!removed) return;
+            removed |= dropHeldRetriggersLocked(id);
+            if (!removed) return false;
             for (DelayedAutomation removedItem : removedItems) {
                 queueItems.remove(removedItem.getQueueKey());
             }
@@ -1604,6 +1635,7 @@ public class AutomationQueue {
             lock.notifyAll();
         }
         logQueuedReplacementReplays(replay);
+        return true;
     }
 
     /**
@@ -1643,6 +1675,9 @@ public class AutomationQueue {
                             false);
                 }
                 boolean duplicateOrdinary = publication == null && queueItems.contains(id);
+                if (duplicateOrdinary) {
+                    holdBehindStartedChainLocked(id, delay);
+                }
                 if (!admitted && !duplicateOrdinary) {
                     if (!hasQueueCapacityLocked(false)) {
                         capacityRejected = true;
@@ -1659,6 +1694,9 @@ public class AutomationQueue {
                         admitted = true;
                     }
                 }
+                // A live publication's run re-evaluates the rule; one held behind the chain
+                // would only run it a second time.
+                if (admitted && publication != null) dropHeldRetriggersLocked(id);
             }
             if (!admitted && publication != null) {
                 retainLatestStateActionLocked(id, publication);
@@ -1813,6 +1851,10 @@ public class AutomationQueue {
                                             && !isolatedExecutors.containsKey(
                                                     Thread.currentThread())) {
                                         requeueUnrunClaimLocked(item);
+                                    } else if (completed
+                                            && !isolatedExecutors.containsKey(
+                                                    Thread.currentThread())) {
+                                        releaseHeldRetriggerLocked(item);
                                     }
                                     if (!Automations.isDisabled()
                                             && enableReconciliationPending) {
@@ -2173,6 +2215,13 @@ public class AutomationQueue {
         isolatedExecutors.put(executor, barrier);
         isolatedExecutorSinceNanos.put(executor, System.nanoTime());
         barrier.isolatedExecutorCount++;
+        if (!Automations.isDisabled()) {
+            // The detached chain never reaches its release; its held run is ordinary work.
+            InFlightAction normalAction = inFlightActions.get(executor);
+            if (normalAction != null) releaseHeldRetriggerLocked(normalAction.item);
+            DelayedAutomation claim = barrier.generation.claims.get(executor);
+            if (claim != null) releaseHeldRetriggerLocked(claim);
+        }
     }
 
     /**
@@ -2640,11 +2689,114 @@ public class AutomationQueue {
                 ? 0L : item.actionCursor.resumeAtNanos();
         if (resumeAtNanos != 0L) {
             item.startTime = Math.max(System.nanoTime(), resumeAtNanos);
+            // Edited, disabled or deleted while this attempt ran: it could only end.
+            if (item.latestStatePublicationGenerations.isEmpty()
+                    && Automations.queuedCursorSuperseded(item.getId(), item.actionCursor)) {
+                releaseHeldRetriggerLocked(item);
+                ensureWorker();
+                return;
+            }
         }
-        // A newer trigger for the same automation supersedes this failed claim.
         if (queueItems.add(item.getQueueKey())) {
             enqueueItemLocked(item);
+        } else if (resumeAtNanos != 0L && adoptPendingRetriggerLocked(item)) {
+            // A yielded chain resumes; the trigger admitted while it ran waits behind it.
+            enqueueItemLocked(item);
         }
+        // Otherwise a newer trigger for the same automation supersedes this failed claim.
         ensureWorker();
+    }
+
+    /** Caller holds {@link #lock}. The queued item owning {@code queueKey}, or null. */
+    private static DelayedAutomation queuedItemLocked(String queueKey) {
+        for (DelayedAutomation item : automationQueue) {
+            if (queueKey.equals(item.getQueueKey())) return item;
+        }
+        for (DelayedAutomation item : urgentReadyQueue) {
+            if (queueKey.equals(item.getQueueKey())) return item;
+        }
+        for (ShutdownDrainGeneration generation : activeDrainGenerationsLocked()) {
+            for (DelayedAutomation item : generation.pending) {
+                if (queueKey.equals(item.getQueueKey())) return item;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Caller holds {@link #lock}. Keep ONE trigger that lands while the same automation's
+     * started chain is queued (yielded in a pause or wait); it runs after that chain.
+     */
+    private static void holdBehindStartedChainLocked(String id, int delay) {
+        DelayedAutomation chain = queuedItemLocked(id);
+        if (chain == null || !chain.hasStartedCursor() || chain.heldRetrigger != null) return;
+        chain.heldRetrigger = new DelayedAutomation(id, delay, null, 0L, 0L, false);
+        logger.info("Holding automation re-trigger until its running chain finishes: " + id);
+    }
+
+    /**
+     * Caller holds {@link #lock}. Move the plain pending run that owns {@code chain}'s key
+     * behind the chain. False when the owner is anything else (including work a shutdown
+     * drain already picked), which keeps it superseding.
+     */
+    private static boolean adoptPendingRetriggerLocked(DelayedAutomation chain) {
+        DelayedAutomation pending = null;
+        for (DelayedAutomation item : automationQueue) {
+            if (chain.getQueueKey().equals(item.getQueueKey())) {
+                pending = item;
+                break;
+            }
+        }
+        if (pending == null || !pending.isAutomation() || pending.hasStartedCursor()
+                || pending.urgent
+                || !pending.latestStatePublicationGenerations.isEmpty()) {
+            return false;
+        }
+        if (!automationQueue.remove(pending)) return false;
+        if (chain.heldRetrigger == null) {
+            chain.heldRetrigger = pending;
+            logger.info("Holding automation re-trigger until its running chain finishes: "
+                    + chain.getId());
+        }
+        return true;
+    }
+
+    /** Caller holds {@link #lock}. Enqueue the run held behind a chain that just finished. */
+    private static void releaseHeldRetriggerLocked(DelayedAutomation finished) {
+        DelayedAutomation held = finished.heldRetrigger;
+        if (held == null) return;
+        finished.heldRetrigger = null;
+        if (queueItems.contains(held.getQueueKey())) return; // a pending run already covers it
+        if (!hasQueueCapacityLocked(false)) {
+            logger.error("Automation queue capacity reached; rejecting: " + held.getId());
+            return;
+        }
+        enqueueItemLocked(held);
+        queueItems.add(held.getQueueKey());
+        logger.info("Releasing held automation re-trigger: " + held.getId());
+        ensureWorker();
+    }
+
+    /** Caller holds {@link #lock}. Discard any run held behind {@code id}'s started chain. */
+    private static boolean dropHeldRetriggersLocked(String id) {
+        boolean dropped = false;
+        for (DelayedAutomation item : automationQueue) dropped |= dropHeldLocked(item, id);
+        for (DelayedAutomation item : urgentReadyQueue) dropped |= dropHeldLocked(item, id);
+        for (InFlightAction action : inFlightActions.values()) {
+            dropped |= dropHeldLocked(action.item, id);
+        }
+        for (ShutdownDrainGeneration generation : activeDrainGenerationsLocked()) {
+            for (DelayedAutomation item : generation.pending) dropped |= dropHeldLocked(item, id);
+            for (DelayedAutomation item : generation.claims.values()) {
+                dropped |= dropHeldLocked(item, id);
+            }
+        }
+        return dropped;
+    }
+
+    private static boolean dropHeldLocked(DelayedAutomation item, String id) {
+        if (item.heldRetrigger == null || !id.equals(item.getId())) return false;
+        item.heldRetrigger = null;
+        return true;
     }
 }

@@ -160,6 +160,8 @@
     <string name="camera_mode_current_default">Current: Default</string>
     <string name="camera_mode_current_dilink4">Current: DiLink 4</string>
     <string name="camera_mode_current_dilink5">Current: DiLink 5</string>
+    <string name="camera_mode_option_camera2">Camera2 360 — Atto 3 EVO / DiLink 100</string>
+    <string name="camera_mode_current_camera2">Current: Camera2 360</string>
     <string name="camera_mode_save">Apply &amp; restart</string>
     <string name="camera_mode_hint">Changing the mode restarts the camera daemon. If video looks wrong (squished, missing quadrants, red overlay), try the other mode.</string>
 
@@ -174,6 +176,14 @@
     <string name="camera_dilink5_mapping_shark">Shark / DMO — 8,9,5,4</string>
     <string name="camera_dilink5_mapping_hint">The opposite-pairs option is only a candidate for the reported symptom; verify all four previews before applying. Saving restarts the camera daemon.</string>
     <string name="camera_dilink5_mapping_unchanged">Camera order is already selected.</string>
+    <string name="camera2_order_title">360 Camera Order</string>
+    <string name="camera2_order_subtitle">Order of the four views in the 360 camera image. Keep Auto unless the front, rear, left and right views appear in the wrong places.</string>
+    <string name="camera2_order_current_auto">Current: Auto / camera default</string>
+    <string name="camera2_order_current_format">Current: %1$s</string>
+    <string name="camera2_order_auto">Auto — camera default</string>
+    <string name="camera2_order_standard">Standard — front, right, left, rear</string>
+    <string name="camera2_order_opposite">Swap front/rear + left/right — rear, left, right, front</string>
+    <string name="camera2_order_hint">Applies to recordings, live view, detection and alerts. Saving restarts the camera daemon.</string>
 
     <!-- DiLink 4 compatibility options (only effective in DiLink 4 mode) -->
     <string name="camera_dilink4_tweaks_title">DiLink 4 Compatibility</string>
@@ -579,6 +589,25 @@
     <string name="recording_lib_storage_sd">SD</string>
     <string name="recording_lib_storage_usb">USB</string>
     <string name="recording_lib_storage_internal">INT</string>
+    <!-- SafeKeep backup state pill on each clip (shown only while SafeKeep is on). -->
+    <string name="recording_safekeep_saved">SAVED</string>
+    <string name="recording_safekeep_queued">QUEUED</string>
+    <string name="recording_safekeep_waiting">WAITING</string>
+    <string name="recording_safekeep_failed">FAILED</string>
+    <string name="recording_safekeep_uploading">UPLOADING %1$d%%</string>
+    <string name="recording_safekeep_locked">LOCKED</string>
+    <string name="cd_recording_safekeep_state">SafeKeep: %1$s</string>
+    <string name="action_safekeep_upload_now">Upload now</string>
+    <string name="action_safekeep_lock">Lock</string>
+    <string name="action_safekeep_unlock">Unlock</string>
+    <string name="action_safekeep_open_cloud">Open in cloud</string>
+    <string name="toast_safekeep_upload_queued">Uploading as soon as possible</string>
+    <string name="toast_safekeep_no_storage">No storage connected yet</string>
+    <string name="toast_safekeep_locked">Locked — kept on the car and uploaded first</string>
+    <string name="toast_safekeep_unlocked">Unlocked</string>
+    <string name="toast_safekeep_lock_full">Locked-clip space is full — unlock something or raise the limit in SafeKeep.</string>
+    <string name="toast_safekeep_action_failed">SafeKeep couldn\'t do that: %1$s</string>
+    <string name="toast_safekeep_open_failed">No app can open this link</string>
     <!-- Toast shown when a multi-select share is dispatched. -->
     <string name="toast_share_recordings">Sharing %1$d recordings</string>
 
@@ -735,7 +764,8 @@
     <string name="toast_soh_reset_failed_with_message">Reset failed: %1$s</string>
     <string name="toast_select_at_least_one_category">Select at least one category</string>
     <string name="toast_reset_failed_with_error">Reset failed: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s traffic monitor…</string>
+    <string name="toast_traffic_monitor_enabling">Enabling Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">Disabling Traffic Monitor…</string>
     <string name="toast_traffic_monitor_persist_failed">Applied, but the preference could not be saved — it will not survive a firmware update.</string>
 
     <string name="dialog_close">Close</string>
@@ -760,12 +790,13 @@
     <string name="dialog_traffic_cannot_check_message">ADB connection is not ready yet.\n\nThe app needs ADB access to manage system packages. Please ensure:\n\n• USB Debugging is enabled in Developer Options\n• The ADB authorization prompt has been accepted\n\nThe status will update automatically once connected.</string>
 
     <string name="dialog_traffic_disable_title">Disable BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_disable_message">The BYD Traffic Monitor (com.byd.trafficmonitor) is a built-in system app that continuously monitors road traffic conditions in the background.\n\nWhy disable it?\n\n• Consumes mobile data (even when parked)\n• Uses CPU and battery in the background\n• Not needed if you use a separate navigation app\n• Can interfere with the dashcam\'s network usage\n\nThis is safe to disable — it only affects the built-in traffic overlay on the map. Your navigation, Bluetooth, and all other car functions remain unaffected.\n\nA hard reboot is required after disabling (hold center console button 5 seconds).</string>
+    <string name="dialog_traffic_disable_message">The BYD Traffic Monitor (com.byd.trafficmonitor) is a built-in system app that controls which apps may use mobile data. It blocks third-party apps, including OverDrive, from using the car\'s built-in SIM.\n\nWhy disable it?\n\n• Lets OverDrive and other apps you install use the internet over the BYD SIM\n• Required to reach your car remotely over the BYD SIM\n\nYour navigation, Bluetooth, and all other car functions remain unaffected.\n\nA hard reboot is required after disabling (hold center console button 5 seconds).</string>
 
     <string name="dialog_traffic_enable_title">Re-enable BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_enable_message">The BYD Traffic Monitor is currently disabled.\n\nRe-enabling it will restore the built-in traffic overlay on the navigation map. Note that it will run in the background and consume mobile data.\n\nA hard reboot is required after enabling (hold center console button 5 seconds).</string>
+    <string name="dialog_traffic_enable_message">The BYD Traffic Monitor is currently disabled.\n\nRe-enabling it will block OverDrive and other third-party apps from using the car\'s built-in SIM again, so remote access over the BYD SIM will stop working.\n\nA hard reboot is required after enabling (hold center console button 5 seconds).</string>
 
-    <string name="dialog_traffic_status_title">Traffic Monitor %1$s</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor enabled</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor disabled</string>
     <string name="dialog_traffic_reboot_message">The change has been applied.\n\nPlease perform a hard reboot now:\nPress and hold the central console button for 5 seconds.</string>
 
     <string name="traffic_monitor_loading">Traffic Monitor: Checking…</string>
@@ -829,6 +860,24 @@
     <string name="daemon_config_paid_token">Paid version requires a token. Tap to set up.</string>
     <string name="daemon_config_not_logged_in">Not logged in. Tap to set up.</string>
     <string name="daemon_status_stop_failed">Stop failed: %1$s</string>
+    <string name="daemon_status_connect_failed">Couldn\'t connect</string>
+    <string name="daemon_status_retry_in">%1$s • retrying in %2$d min</string>
+    <string name="cloudflared_no_output">cloudflared produced no output</string>
+    <string name="cloudflared_start_cancelled">Cloudflared was stopped before it started</string>
+    <string name="daemon_status_prepare_failed">Could not prepare daemon start: %1$s</string>
+    <string name="cloudflared_error_paid_token">Paid version requires a token</string>
+    <string name="zrok_error_no_token">❌ No Zrok token configured. Tap to configure.</string>
+    <string name="singbox_status_running">Sing-box proxy running on port 8119</string>
+    <string name="cloudflared_error_launch_timeout">Cloudflared launch timed out</string>
+    <string name="cloudflared_error_launch_failed">Cloudflared launch failed: %1$s</string>
+    <string name="cloudflared_error_binary_missing">libcloudflared.so not found. Add it to jniLibs/arm64-v8a/</string>
+    <string name="cloudflared_error_install_failed">Failed to install cloudflared</string>
+    <string name="cloudflared_error_install_failed_detail">Failed to install cloudflared: %1$s</string>
+    <string name="cloudflared_error_spawn_failed">Launch failed: %1$s</string>
+    <string name="cloudflared_error_no_url">Failed to get URL. Log tail:\n%1$s</string>
+    <string name="cloudflared_error_url_timeout">Timed out waiting for tunnel URL</string>
+    <string name="cloudflared_error_proxy">Proxy Error: Is sing-box running on port 8119?\n%1$s</string>
+    <string name="cloudflared_error_connection">Cloudflared connection error: %1$s</string>
     <string name="daemon_uptime_fmt">Uptime: %1$s</string>
     <string name="daemon_subprocess_pid">%1$s (PID: %2$d)</string>
     <string name="toast_cloudflared_encrypt_failed">Could not secure Cloudflared token.</string>
@@ -854,6 +903,10 @@
     <string name="dialog_tailscale_proxy_enable_message">This routes MQTT through Tailscale so you can reach a private broker on your tailnet without port forwarding.\n\nWhile enabled:\n• MQTT to a tailnet broker works (e.g. Mosquitto on a device on your tailnet)\n• MQTT to public brokers (HiveMQ, AWS IoT, etc.) will fail — Tailscale only routes to your tailnet\n• The Tailscale daemon will restart to apply the change\n• Other app traffic and the rest of the device are not affected\n\nYou can turn this off anytime.</string>
     <string name="dialog_zrok_reset_title">Reset Zrok Environment</string>
     <string name="dialog_zrok_reset_message">This will:\n• Stop the zrok tunnel if running\n• Remove the zrok environment from this device\n• Delete the saved token\n\nYou will need to re-enter your token and re-enable. This uses one of your 5 device slots on zrok.io.\n\nAre you sure?</string>
+    <string name="dialog_tunnel_conflict_title">Another tunnel is running</string>
+    <string name="dialog_tunnel_conflict_message">%1$s is already running. Switch to %2$s (this stops %1$s), or run both tunnels side by side?\n\nWith both running:\n• The dashboard is reachable from two public links\n• Idle mobile data use goes up slightly\n• Both start automatically after a reboot</string>
+    <string name="dialog_tunnel_conflict_switch">Switch</string>
+    <string name="dialog_tunnel_conflict_run_both">Run both</string>
     <string name="toast_resetting_zrok">Resetting zrok environment…</string>
     <string name="toast_zrok_reset_success">Zrok environment reset. Enter a new token to set up again.</string>
     <string name="toast_zrok_reset_partial">Environment reset (token file may need manual cleanup)</string>
@@ -955,6 +1008,7 @@
     <string name="nav_page_abrp">ABRP</string>
     <string name="nav_page_mqtt">MQTT</string>
     <string name="nav_page_byd_cloud">BYD Cloud</string>
+    <string name="nav_page_remote_access">Proximity</string>
     <string name="nav_page_assistant">Assistant</string>
 
     <!-- StatusOverlayService persistent notification (foreground service) -->
@@ -1114,7 +1168,7 @@
     <string name="settings_backup_settings_only">Settings only</string>
     <string name="settings_backup_with_trips">Include trips</string>
     <!-- Support-development section: tiered options, low-cost first.
-         star → spread → coffee, in that visual order. Copy aims for
+         star → spread → YouTube → coffee, in that visual order. Copy aims for
          personality without being corny — short, warm, specific. -->
     <string name="settings_about_support_section">Powered by people like you</string>
 
@@ -1122,6 +1176,9 @@
     <string name="settings_about_support_share_value">Every shared link helps another BYD owner discover Overdrive.</string>
     <string name="settings_about_support_share_message">Check out Overdrive — open-source surveillance &amp; dashcam for BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Share Overdrive</string>
+    <string name="settings_about_youtube_title">Subscribe on YouTube</string>
+    <string name="settings_about_youtube_value">Like, subscribe &amp; share — every view helps Overdrive grow.</string>
+    <string name="settings_about_youtube_url" translatable="false">https://www.youtube.com/@OverDrive-ys</string>
     <string name="settings_about_open_link_failed">Couldn\'t open link.</string>
     <string name="settings_about_open_link_copied">No browser found. URL copied: %1$s</string>
 
@@ -1242,6 +1299,117 @@
     <string name="diagnostics_section_traffic">Traffic monitor</string>
     <string name="diagnostics_section_camera_probe">Camera probe</string>
     <string name="diagnostics_section_battery">Battery health</string>
+    <string name="diagnostics_section_daemon_storage">Daemon storage</string>
+
+    <!-- Diagnostics "Vehicle setup" card: read-only detected vs configured summary -->
+    <string name="vehicle_setup_title">Vehicle setup</string>
+    <string name="vehicle_setup_checking">Checking…</string>
+    <string name="vehicle_setup_detected">Detected: %1$s</string>
+    <string name="vehicle_setup_configured">Configured: %1$s</string>
+    <string name="vehicle_setup_platform_dilink100">DiLink 100 head unit</string>
+    <string name="vehicle_setup_platform_dilink5">DiLink 5 head unit</string>
+    <string name="vehicle_setup_platform_legacy">DiLink 3/4 head unit</string>
+    <string name="vehicle_setup_platform_unknown">not recognised</string>
+    <string name="vehicle_setup_unconfirmed">%1$s (unconfirmed)</string>
+    <string name="vehicle_setup_shared_firmware">%1$s · Shark 6 or another model</string>
+    <string name="vehicle_setup_running">%1$s (running: %2$s)</string>
+    <string name="vehicle_setup_no_model">no model set</string>
+    <string name="vehicle_setup_storage_standard">standard storage</string>
+    <string name="vehicle_setup_storage_alternate">alternate storage</string>
+    <string name="vehicle_setup_storage_mismatch">storage mismatch</string>
+    <string name="vehicle_setup_storage_split">The camera service starts in a different storage folder than the app</string>
+    <string name="vehicle_setup_match">Matches this head unit</string>
+    <string name="vehicle_setup_differs">Suggested for this head unit: %1$s</string>
+    <string name="vehicle_setup_service_offline">Camera service not running</string>
+    <string name="vehicle_setup_pending_hint">Setup not finished. Open this card and tap Run vehicle setup.</string>
+    <string name="vehicle_setup_shark_storage_hint">Shark 6 only: if the camera service never starts, turn on Alternate daemon storage in Daemon storage</string>
+    <string name="vehicle_setup_details_title">Vehicle setup details</string>
+    <string name="vehicle_setup_copy">Copy</string>
+    <string name="vehicle_setup_copied">Copied</string>
+    <string name="vehicle_setup_mode_default">Default</string>
+    <string name="vehicle_setup_mode_dilink4" translatable="false">DiLink 4</string>
+    <string name="vehicle_setup_mode_dilink5" translatable="false">DiLink 5</string>
+    <string name="vehicle_setup_mode_camera2" translatable="false">Camera2 360</string>
+    <string name="vehicle_setup_run">Run vehicle setup</string>
+    <string name="vehicle_setup_pick_title">Choose your car</string>
+    <string name="vehicle_setup_pick_checking">Checking this head unit…</string>
+    <string name="vehicle_setup_pick_subtitle">OverDrive sets up storage, the camera system and the battery for it.</string>
+    <string name="vehicle_setup_detected_badge">Detected</string>
+    <string name="vehicle_setup_not_listed">My car isn\'t listed</string>
+    <string name="vehicle_setup_not_listed_badge">Default settings</string>
+    <string name="vehicle_setup_row_not_listed">Default settings. No car model is set.</string>
+    <string name="vehicle_setup_row_not_listed_kept">Default settings. Your saved car (%1$s) stays selected.</string>
+    <string name="vehicle_setup_next">Next</string>
+    <string name="vehicle_setup_back">Back</string>
+    <string name="vehicle_setup_apply">Apply</string>
+    <string name="vehicle_setup_retry">Retry</string>
+    <string name="vehicle_setup_done">Done</string>
+    <string name="vehicle_setup_change">Change</string>
+    <string name="vehicle_setup_review_title">Review the setup</string>
+    <string name="vehicle_setup_review_subtitle">Nothing changes until you tap Apply.</string>
+    <string name="vehicle_setup_row_unchanged">Already set</string>
+    <string name="vehicle_setup_row_kwh">%1$s kWh battery</string>
+    <string name="vehicle_setup_row_camera">Camera system: %1$s</string>
+    <string name="vehicle_setup_row_camera_detected">Detected on this head unit</string>
+    <string name="vehicle_setup_row_camera_model">Recommended for this car</string>
+    <string name="vehicle_setup_row_camera_chosen">Chosen by you</string>
+    <string name="vehicle_setup_row_camera_restart">Restarts the camera service (about a minute)</string>
+    <string name="vehicle_setup_row_order">Shark camera order</string>
+    <string name="vehicle_setup_row_order_auto">Automatic (8·9·5·4)</string>
+    <string name="vehicle_setup_row_order_kept">Your saved order is kept: %1$s</string>
+    <string name="vehicle_setup_row_camera_unsupported">DiLink 5 is not available on this head unit</string>
+    <string name="vehicle_setup_row_storage_check">Checked first. If this head unit locks the standard folder (Shark 6), alternate storage is turned on and the app restarts once; settings saved in the standard folder stay there.</string>
+    <string name="vehicle_setup_row_storage_repair">Checked first. If this head unit locks the standard folder (Shark 6), the app moves to the folder the camera service already uses and restarts once.</string>
+    <string name="vehicle_setup_row_storage_split">The app and the camera service use different folders. Fix it in Diagnostics → Daemon storage.</string>
+    <string name="vehicle_setup_resume_title">Finish setting up your car?</string>
+    <string name="vehicle_setup_resume_subtitle">%1$s · %2$s</string>
+    <string name="vehicle_setup_discard">Discard</string>
+    <string name="vehicle_setup_continue">Continue</string>
+    <string name="vehicle_setup_step_storage_check">Check daemon storage</string>
+    <string name="vehicle_setup_storage_not_needed">Not needed on this head unit</string>
+    <string name="vehicle_setup_storage_repair_skipped">Not changed: the standard folder works here. Fix the mismatch in Diagnostics → Daemon storage.</string>
+    <string name="vehicle_setup_fail_restart_unverifiable">Could not confirm a camera service restart because ADB is not connected. Your choices are saved.</string>
+    <string name="vehicle_setup_storage_switched">Switched to alternate storage</string>
+    <string name="vehicle_setup_storage_busy">another storage switch is still running</string>
+    <string name="vehicle_setup_row_camera_current">Your current choice</string>
+    <string name="vehicle_setup_row_camera_default">Default for cars not listed</string>
+    <string name="vehicle_setup_fail_storage_check">Could not check daemon storage over ADB.</string>
+    <string name="vehicle_setup_camera_choice_title">Camera system</string>
+    <string name="vehicle_setup_apply_title">Setting up your car</string>
+    <string name="vehicle_setup_apply_subtitle">Keep the car parked. This can take a few minutes.</string>
+    <string name="vehicle_setup_step_storage">Switch to alternate daemon storage</string>
+    <string name="vehicle_setup_step_service">Wait for the camera service</string>
+    <string name="vehicle_setup_step_model">Set the vehicle to %1$s</string>
+    <string name="vehicle_setup_step_camera">Switch the camera system to %1$s</string>
+    <string name="vehicle_setup_step_verify">Check the camera service</string>
+    <string name="vehicle_setup_start_service">Start camera service now</string>
+    <string name="vehicle_setup_fail_storage">Storage switch failed: %1$s</string>
+    <string name="vehicle_setup_fail_storage_kept">the app is still on the standard folder after restarting</string>
+    <string name="vehicle_setup_fail_service">The camera service did not start.</string>
+    <string name="vehicle_setup_fail_model">The vehicle could not be saved.</string>
+    <string name="vehicle_setup_fail_model_reason">The vehicle could not be saved: %1$s</string>
+    <string name="vehicle_setup_fail_camera_save">The camera system could not be saved.</string>
+    <string name="vehicle_setup_fail_camera_switch">The camera service did not come back with the new camera system.</string>
+    <string name="vehicle_setup_fail_restart">The camera service did not restart. Your choices are saved.</string>
+    <string name="vehicle_setup_done_title">All set</string>
+    <string name="vehicle_setup_done_subtitle">Open Live view to check the cameras.</string>
+
+    <!-- Daemon storage (scratch root) dialog. Reachable without a running
+         daemon: on a head unit whose shell cannot write /data/local/tmp this
+         is the only way to bring the daemons up at all. -->
+    <string name="scratch_root_dialog_title">Daemon storage</string>
+    <string name="scratch_root_dialog_intro">OverDrive shares its settings, locks and logs between the app and its background daemons through a folder owned by the ADB shell. On some head units (BYD Shark 6 and other DiLink 5.0 units) the firmware locks that folder down, the shell cannot create files there, and no daemon can start.</string>
+    <string name="scratch_root_current_folder">Current folder: %1$s</string>
+    <string name="scratch_root_switch_label">Alternate daemon storage</string>
+    <string name="scratch_root_switch_summary">Only turn this on if the daemons cannot start on this head unit. Nothing is moved or deleted: the app starts with fresh settings in the other folder, and turning it back off returns to the existing ones. Changing it stops all daemons and restarts OverDrive.</string>
+    <string name="scratch_root_paths">Standard: %1$s\nAlternate: %2$s</string>
+    <string name="scratch_root_confirm_title">Restart OverDrive?</string>
+    <string name="scratch_root_confirm_enable">All daemons will be stopped, storage will switch to the alternate folder and OverDrive will restart. Camera mode and other settings need to be chosen again afterwards.</string>
+    <string name="scratch_root_confirm_disable">All daemons will be stopped, storage will switch back to the standard folder and OverDrive will restart.</string>
+    <string name="scratch_root_working">Switching daemon storage…</string>
+    <string name="scratch_root_failed">Could not switch daemon storage: %1$s</string>
+    <string name="scratch_root_failed_adb">ADB shell is not reachable. Enable USB/wireless debugging and try again.</string>
+    <string name="scratch_root_restart">Restart now</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
 
     <!-- SOTA Diagnostics dashboard -->
@@ -1288,6 +1456,8 @@
     <string name="integrations_abrp_desc">Push live battery and route data to A Better Routeplanner for charging predictions.</string>
     <string name="integrations_mqtt_desc">Publish vehicle telemetry to Home Assistant or any MQTT broker.</string>
     <string name="integrations_byd_cloud_desc">Connect your BYD app account to enable remote commands like door lock, flash lights, and horn.</string>
+    <string name="nav_page_safekeep">SafeKeep</string>
+    <string name="integrations_safekeep_desc">Keep a safe copy of sentry clips, dashcam recordings and trips in your own Google Drive, OneDrive, NAS or S3 storage.</string>
     <string name="integrations_configure_button">Configure</string>
 
     <!-- Settings → About / Privacy actions (rows) -->
@@ -1374,6 +1544,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Pre/post buffers, codec, storage limits.</string>
     <string name="settings_section_surveillance_subtitle">Detection zones, schedule, motion sensitivity.</string>
+    <string name="settings_section_storage_subtitle">Where recordings go, space limits, BYD dashcam cleanup.</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT runners.</string>
 
     <!-- About / data row subtitles -->
@@ -1596,6 +1767,8 @@
          RoadSense — road-hazard detection feature
          ============================================================ -->
     <string name="rail_roadsense">RoadSense</string>
+    <string name="rail_widgets">Widgets</string>
+    <string name="widget_builder_open_elsewhere">Open the widget builder on your phone or computer</string>
     <string name="rail_hazard_map">Map</string>
     <string name="roadsense_title">RoadSense</string>
     <string name="roadsense_pill_scanning">Scanning</string>
@@ -1815,6 +1988,7 @@
     <string name="projection_cast">Cast to cluster</string>
     <string name="projection_stop">Stop</string>
     <string name="projection_cast_failed">Couldn\'t cast that app to the cluster.</string>
+    <string name="projection_resize_not_applied">The cluster didn\'t accept that window size.</string>
     <string name="projection_dilink5_mode_required">Set Vehicle Mode to DiLink 5 in Diagnostics, then restart the camera service.</string>
     <string name="projection_status_idle">Not projecting.</string>
     <string name="projection_status_live">Live mirror — tap and swipe to control.</string>
@@ -1822,6 +1996,10 @@
     <string name="projection_status_none">Nothing is projected yet — choose an app and cast.</string>
     <string name="projection_status_unsupported">Live mirror isn\'t supported on this vehicle. The app is still projected on the cluster.</string>
     <string name="projection_status_service_down">Mirror service isn\'t ready — restart the app (or the camera daemon) and try again.</string>
+    <string name="projection_status_connecting">Connecting to the cluster…</string>
+    <string name="projection_status_mirror_unavailable">Mirror unavailable</string>
+    <string name="projection_fullscreen_enter">Full screen</string>
+    <string name="projection_fullscreen_exit">Exit full screen</string>
     <string name="projection_note_single_app">One app can be projected on the cluster at a time.</string>
     <string name="projection_adjust_bounds">Resize</string>
     <string name="projection_done_adjusting">Done</string>
@@ -1850,6 +2028,17 @@
     <string name="projection_autostart_conflict_body">RoadSense is set to auto-project the map to the driver cluster when the car powers on. The cluster can only show one thing at a time. Turn that off and auto-start this app instead?</string>
     <string name="projection_autostart_conflict_confirm">Use this app</string>
     <string name="projection_app_uninstalled">That app is no longer installed.</string>
+
+    <!-- Cluster transport (which OEM protocol drives the cluster projection) -->
+    <string name="projection_transport_title">Cluster transport</string>
+    <string name="projection_transport_desc">Which OEM protocol drives the cluster. Auto detects it from the firmware; change this only if casting fails.</string>
+    <string name="projection_transport_auto">Auto</string>
+    <string name="projection_transport_legacy">Legacy</string>
+    <string name="projection_transport_dilink5">DiLink 5</string>
+    <string name="projection_transport_active">Active: %1$s (%2$s)</string>
+    <string name="projection_transport_restart_required">Saved. Restart the camera service to apply.</string>
+    <string name="projection_transport_save_failed">Could not save the transport setting.</string>
+    <string name="projection_oem_cluster_takeover">The car\'s own cluster app keeps taking the cluster back on every available surface. Turn off the cluster\'s driving-assist (SR) view or navigation projection in the car settings, then try again.</string>
 
     <!-- ============================================================
          Network & Hotspot — share the built-in SIM's internet
@@ -1932,4 +2121,23 @@
     <string name="vehicle_dialog_value_pending">—</string>
 
     <string name="roi_tap_to_add_points">Tap to add points (%1$d-%2$d)</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Listening…</string>
+    <string name="voice_overlay_thinking">Thinking…</string>
+    <string name="voice_overlay_speaking">Speaking…</string>
+    <string name="voice_overlay_done">Done</string>
+    <string name="voice_overlay_cancelled">Cancelled</string>
+    <string name="voice_overlay_not_understood">Sorry, I didn\'t catch that</string>
+    <string name="voice_overlay_offline">AI assistant is unavailable</string>
+    <string name="voice_overlay_busy">The assistant is already in use</string>
+    <string name="voice_overlay_blocked_moving">Not available while driving</string>
+    <string name="voice_overlay_refused">That can\'t be done by voice</string>
+    <string name="voice_overlay_failed">Couldn\'t complete that</string>
+    <string name="voice_enroll_start">Say “OverDrive” 4 times, pausing in between (%1$d of %2$d)</string>
+    <string name="voice_enroll_next">Got it — again (%1$d of %2$d)</string>
+    <string name="voice_enroll_say">Say “OverDrive” (%1$d of %2$d)</string>
+    <string name="voice_enroll_learning">Learning your voice…</string>
+    <string name="voice_enroll_done">Got it — OverDrive knows your voice now</string>
+    <string name="voice_enroll_failed">Couldn\'t learn your voice. Try again in a quiet car</string>
 </resources>

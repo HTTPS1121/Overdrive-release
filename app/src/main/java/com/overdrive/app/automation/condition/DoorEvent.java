@@ -83,9 +83,6 @@ public final class DoorEvent {
 
         boolean open = state == BodyworkConstants.STATE_OPEN;
         EventData key = keyForArea(area);
-        if (key != null) {
-            Automations.update(key, open ? "open" : "closed", true);
-        }
 
         // Recompute the "any opening open" aggregate from the tracked per-area states.
         areaState.put(area, state);
@@ -93,7 +90,21 @@ public final class DoorEvent {
         for (Integer s : areaState.values()) {
             if (s != null && s == BodyworkConstants.STATE_OPEN) { anyOpen = true; break; }
         }
-        Automations.update(DOOR_ANY, anyOpen ? "open" : "closed", true);
+        final boolean anyOpenNow = anyOpen;
+
+        // One physical edge, two keys. Publish them as ONE observation so a rule that
+        // triggers on either key and conditions on the other reads the post-edge value of
+        // both. Publishing them back-to-back evaluated the per-door triggers while the
+        // aggregate still held its pre-edge value: "when the driver door changes, if any
+        // door == closed" was enqueued on OPEN and cancelled on CLOSE, so it never fired
+        // (2026-09-23 field log). See Automations.publishTogether for why a plain reorder
+        // would only move the staleness to the mirror rule.
+        Automations.publishTogether(() -> {
+            if (key != null) {
+                Automations.update(key, open ? "open" : "closed", true);
+            }
+            Automations.update(DOOR_ANY, anyOpenNow ? "open" : "closed", true);
+        });
     }
 
     /** Seed current state without routing the sample through notification listeners. */

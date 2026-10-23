@@ -50,9 +50,21 @@ class BootReceiver : BroadcastReceiver() {
         // independent second source that lets it exit sentry (and relight) while
         // still in P. Deliberately NOT on ACC_MODE_CHANGED, which fires on both
         // edges and carries no direction.
-        if (action == "com.byd.action.ACC_ON" || action == "com.byd.action.IGN_ON") {
+        if ((action == "com.byd.action.ACC_ON" || action == "com.byd.action.IGN_ON")
+            && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            // A manifest-receiver process may be killed as soon as onReceive()
+            // returns. Protect the FUSE write with goAsync(); the previous
+            // untracked daemon thread could disappear before publishing. Keep
+            // this DiLink 5-only so legacy ACC edges perform no new file I/O.
+            val pendingHintWrite = goAsync()
             com.overdrive.app.power.IgnitionBroadcastHint.publishAsync(
-                context.applicationContext)
+                context.applicationContext,
+                Runnable {
+                    try {
+                        pendingHintWrite.finish()
+                    } catch (_: Throwable) {
+                    }
+                })
         }
 
         // NOTE: plug edges are deliberately NOT forwarded to ChargingDetector here.
@@ -144,16 +156,11 @@ class BootReceiver : BroadcastReceiver() {
             "android.intent.action.QUICKBOOT_POWERON",
             "com.htc.intent.action.QUICKBOOT_POWERON" -> {
                 startDaemons(context, action)
-                // BYD DiLink does not cold-boot on ACC-on. It wakes from "quickboot"
-                // (services.jar com.android.server.accmodemanager.Utils.startAccOn) and then
-                // sends ACTION_BOOT_COMPLETED to every receiver with from_quickboot=true —
-                // on every ACC-on, not once per boot. Launching MainActivity there ran its
-                // full onCreate on the main thread each time the car was switched on, while
-                // the user was waiting for the home screen. Nothing it does at boot is needed
-                // on a wake: the daemons run as shell and survive quickboot, and the app
-                // process is already up. Keep the daemon check above (onOnly recovery relies
-                // on it) and skip the launch.
-                if (intent.getBooleanExtra("from_quickboot", false)) {
+                // DiLink 3 wakes from quickboot on every ACC-on and re-sends BOOT_COMPLETED
+                // (from_quickboot=true); the daemons survive, so skip the activity launch.
+                // DiLink 5 keeps it: MainActivity re-applies the daemon background grants.
+                if (intent.getBooleanExtra("from_quickboot", false)
+                    && !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
                     Log.d(TAG, "BOOT_COMPLETED from quickboot (ACC-on wake) — daemons checked, no activity launch")
                     return
                 }

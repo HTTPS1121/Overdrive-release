@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Continúa</item>
+        <item>Ponte en marcha</item>
+        <item>Llegada al destino</item>
+        <item>Destino a la derecha</item>
+        <item>Destino a la izquierda</item>
+        <item>Ligeramente a la derecha</item>
+        <item>Gira a la derecha</item>
+        <item>Giro cerrado a la derecha</item>
+        <item>Da la vuelta</item>
+        <item>Giro cerrado a la izquierda</item>
+        <item>Gira a la izquierda</item>
+        <item>Ligeramente a la izquierda</item>
+        <item>Toma la rampa</item>
+        <item>Toma la salida</item>
+        <item>Sigue recto</item>
+        <item>Mantente a la derecha</item>
+        <item>Mantente a la izquierda</item>
+        <item>Incorpórate</item>
+        <item>Incorpórate por la derecha</item>
+        <item>Incorpórate por la izquierda</item>
+        <item>Entra en la rotonda</item>
+        <item>Sal de la rotonda</item>
+        <item>Toma el ferri</item>
+        <item>Sal del ferri</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Continúa por</item>
+        <item>Sal por</item>
+        <item>Destino en</item>
+        <item>Destino a la derecha en</item>
+        <item>Destino a la izquierda en</item>
+        <item>Ligeramente a la derecha por</item>
+        <item>Gira a la derecha por</item>
+        <item>Giro cerrado a la derecha por</item>
+        <item>Da la vuelta por</item>
+        <item>Giro cerrado a la izquierda por</item>
+        <item>Gira a la izquierda por</item>
+        <item>Ligeramente a la izquierda por</item>
+        <item>Toma la rampa hacia</item>
+        <item>Toma la salida hacia</item>
+        <item>Sigue recto por</item>
+        <item>Mantente a la derecha por</item>
+        <item>Mantente a la izquierda por</item>
+        <item>Incorpórate a</item>
+        <item>Incorpórate por la derecha a</item>
+        <item>Incorpórate por la izquierda a</item>
+        <item>En la rotonda, toma</item>
+        <item>Sal de la rotonda por</item>
+        <item>Toma el ferri:</item>
+        <item>Sal del ferri por</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1.ª</item>
+        <item>2.ª</item>
+        <item>3.ª</item>
+        <item>4.ª</item>
+        <item>5.ª</item>
+        <item>6.ª</item>
+        <item>7.ª</item>
+        <item>8.ª</item>
+        <item>9.ª</item>
+        <item>10.ª</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Toma la %1$s salida</string>
+    <string name="nav_hud_roundabout_exit_onto">Toma la %1$s salida hacia</string>
+    <string name="nav_hud_towards">Dirección</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Salida %1$s</string>
+    <string name="nav_hud_then">Luego</string>
+    <string name="nav_hud_arrive">Llegada</string>
+    <string name="nav_hud_recenter">Centrar</string>
+    <string name="nav_hud_end">Finalizar</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Silenciar la guía por voz</string>
+    <string name="nav_hud_cd_unmute">Activar la guía por voz</string>
+    <string name="nav_hud_cd_overview">Mostrar toda la ruta</string>
+    <string name="nav_hud_cd_overview_exit">Volver a la vista de conducción</string>
+    <string name="nav_hud_cd_end">Finalizar navegación</string>
+    <string name="nav_hud_cd_recenter">Centrar en el vehículo</string>
+    <string name="nav_hud_cd_compass_heading_up">Brújula: dirección de marcha arriba. Toca para poner el norte arriba</string>
+    <string name="nav_hud_cd_compass_north_up">Brújula: norte arriba. Toca para poner la dirección de marcha arriba</string>
+    <string name="nav_hud_cd_back">Salir del mapa</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Luego, en %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Llegada a las %1$s, quedan %2$s y %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">%1$s de retraso por tráfico</string>
+</resources>

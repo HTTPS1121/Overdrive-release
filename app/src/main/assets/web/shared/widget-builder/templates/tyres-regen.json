@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "name": "Tyres & regen",
+  "size": "wide",
+  "about": "The built-in car (pack, motors, tyre pressures, drive and regen flow) as one layer, with your own text and charge bar beside it.",
+  "layers": [
+    { "type": "text", "name": "Label", "x": 26, "y": 52, "size": 15, "weight": 500,
+      "text": "=is_charging ? 'Charging' : power < 0 ? 'Regenerating' : 'Power'", "color": "text2" },
+    { "type": "text", "name": "Power", "x": 26, "y": 100, "size": 40, "weight": 600,
+      "text": "=is_charging ? fmt(charge_power, 1) : fmt(abs(power))", "unit": "kW",
+      "color": "=!is_charging && power < 0 ? regenText : text" },
+    { "type": "text", "name": "Tyres", "x": 26, "y": 130, "size": 15, "weight": 600,
+      "text": "=!known(tyre_fl) ? 'Tyres: no reading' : min(tyre_fl, tyre_fr, tyre_rl, tyre_rr) < tyre_low_bar ? 'Check tyres · lowest ' + tyre(min(tyre_fl, tyre_fr, tyre_rl, tyre_rr)) + ' ' + tyre_unit : 'Tyres OK · battery ' + fmt(soc) + '%'",
+      "color": "=known(tyre_fl) && min(tyre_fl, tyre_fr, tyre_rl, tyre_rr) < tyre_low_bar ? warn : text2" },
+    { "type": "bar", "name": "Charge bar", "x": 26, "y": 150, "w": 210, "h": 6, "value": "=soc / 100",
+      "color": "=ramp(soc, 0, glowDanger, 10, glowDanger, 18, glowWarn, 26, glowWarn, 34, glowAccent)", "track": "etch", "glow": 0.6, "motion": "liquid" },
+    { "type": "car", "name": "Car", "x": 267, "y": 6, "scale": 1,
+      "power": "=is_charging ? charge_power : power", "soc": "=soc",
+      "phase": "=is_charging ? 'charging' : driving ? 'driving' : 'parked'", "drive": "awd",
+      "fl": "=tyre_fl", "fr": "=tyre_fr", "rl": "=tyre_rl", "rr": "=tyre_rr" }
+  ]
+}

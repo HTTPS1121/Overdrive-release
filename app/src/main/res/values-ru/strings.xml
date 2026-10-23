@@ -282,8 +282,8 @@
     <string name="onboarding_expert_surveillance_body">Точное обнаружение, качество и хранение здесь. Они открыты как внутри-приложенные страницы конфигурации, обслуживаемые в вашем автомобиле — пустой экран означает, что помощник все еще запускается.</string>
     <string name="onboarding_expert_camprobe_title">Проб камеры — осторожный</string>
     <string name="onboarding_expert_camprobe_body">Это переопределяет каналы физической камеры и перезапускает камеры. Измените его, если лента выглядит неправильно — вы настроили это раньше в руководстве.</string>
-    <string name="onboarding_expert_traffic_title">Монитор трафика — необходим для удаленного доступа</string>
-    <string name="onboarding_expert_traffic_body">Встроенный Traffic Monitor блокирует другие приложения от использования встроенной SIM-карты автомобиля. Если вы хотите дистанционно добраться до своего автомобиля через BYD SIM, вы должны отключить его здесь. Главное устройство перезагрузится, чтобы применить изменения.</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — требуется для дистанционного доступа</string>
+    <string name="onboarding_expert_traffic_body">Встроенный Traffic Monitor от BYD блокирует использование встроенной SIM-карты автомобиля другими приложениями. Если вы хотите подключаться к автомобилю дистанционно через SIM-карту BYD, Traffic Monitor необходимо отключить здесь. Для применения изменения головной блок перезагрузится.</string>
     <string name="onboarding_expert_daemons_title">Услуги — обработка с осторожностью</string>
     <string name="onboarding_expert_daemons_body">Эти переключатели запускают и останавливают фоновые службы. Выключение камеры, монитора или ACC Sentry останавливает запись и не отключает ее до тех пор, пока вы их не включите, даже после перезагрузки.</string>
     <string name="onboarding_expert_security_title">Заблокировать PIN-кодом</string>
@@ -557,7 +557,8 @@
     <string name="toast_soh_reset_failed_with_message">Не удалось перезагрузить: %1$s</string>
     <string name="toast_select_at_least_one_category">Выберите хотя бы одну категорию</string>
     <string name="toast_reset_failed_with_error">Не удалось перезагрузить: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s traffic monitor…</string>
+    <string name="toast_traffic_monitor_enabling">Включение Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">Отключение Traffic Monitor…</string>
     <string name="dialog_close">Закрыть</string>
     <string name="dialog_reset">Сбросить</string>
     <string name="dialog_delete">Удалить</string>
@@ -575,14 +576,15 @@
     <string name="dialog_reset_complete_title">Перезагрузка завершена</string>
     <string name="dialog_traffic_cannot_check_title">Не могу проверить статус</string>
     <string name="dialog_traffic_cannot_check_message">Подключение ADB еще не готово.\n\nПриложение нуждается в доступе ADB для управления системными пакетами. Пожалуйста, убедитесь:\n\n• USB Debugging включена в параметрах разработчика\n• Просьба о разрешении ADB была принята\n\nСтатус будет обновляться автоматически после подключения.</string>
-    <string name="dialog_traffic_disable_title">Отключить монитор трафика BYD?</string>
-    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) - встроенное системное приложение, которое постоянно отслеживает условия дорожного движения в фоне.\n\n️ Почему отключить его?\n\n• Потребляет мобильные данные (даже при парковке)\n• Использует CPU и батарею в фоне\n• Не требуется, если вы используете отдельное навигационное приложение\n• Может помешать использованию сети Dashcam\n\nЭто безопасно отключить  это влияет только на встроенное перекрытие дорожного движения на карте. Ваша навигация, Bluetooth и все другие функции автомобиля остаются незатронутыми.\n\nСердкий перезагрузка</string>
-    <string name="dialog_traffic_enable_title">Возобновить управление на дороге BYD?</string>
-    <string name="dialog_traffic_enable_message">Монитор трафика BYD в настоящее время отключен.\n\nВосстановление его активации восстановит встроенный перекрытие трафика на навигационной карте. Обратите внимание, что он будет работать в фоне и потреблять мобильные данные.\n\nСердкое перезагрузка требуется после включения (поддерживайте кнопку центральной консоли 5 секунд).</string>
-    <string name="dialog_traffic_status_title">Монитор дорожного движения %1$s</string>
+    <string name="dialog_traffic_disable_title">Отключить BYD Traffic Monitor?</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) — встроенное системное приложение, которое контролирует, каким приложениям разрешено использовать мобильные данные. Оно блокирует использование встроенной SIM-карты автомобиля сторонними приложениями, включая OverDrive.\n\nЗачем отключать Traffic Monitor?\n\n• Позволяет OverDrive и другим установленным вами приложениям пользоваться интернетом через SIM-карту BYD\n• Необходимо для дистанционного доступа к автомобилю через SIM-карту BYD\n\nНавигация, Bluetooth и все остальные функции автомобиля не будут затронуты.\n\nПосле отключения требуется жёсткая перезагрузка (удерживайте кнопку на центральной консоли в течение 5 секунд).</string>
+    <string name="dialog_traffic_enable_title">Снова включить BYD Traffic Monitor?</string>
+    <string name="dialog_traffic_enable_message">В настоящее время BYD Traffic Monitor отключён.\n\nЕсли снова включить его, OverDrive и другие сторонние приложения опять не смогут использовать встроенную SIM-карту автомобиля, поэтому дистанционный доступ через SIM-карту BYD перестанет работать.\n\nПосле включения требуется жёсткая перезагрузка (удерживайте кнопку на центральной консоли в течение 5 секунд).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor включён</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor отключён</string>
     <string name="dialog_traffic_reboot_message">Изменение было применено.\n\nПожалуйста, выполните жесткий перезапуск сейчас:\nНажмите и держите кнопку центральной консоли в течение 5 секунд.</string>
-    <string name="traffic_monitor_loading">Монитор дорожного движения: проверка...</string>
-    <string name="traffic_monitor_tap_to_check">Монитор трафика (нажмите, чтобы проверить)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: проверка…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (нажмите, чтобы проверить)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">Поездки</string>
     <string name="reset_label_soc_history">История SoC + 12V</string>
@@ -638,6 +640,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Это направляет MQTT через Tailscale, чтобы вы могли добраться до частного брокера на вашей хвостовой сети без портового пересылки.\n\nПока включен:\n• MQTT к брокеру хвостовой сети работает (например, Mosquitto на устройстве на вашей хвостовой сети)\n• MQTT к публичным брокерам (HiveMQ, AWS IoT, и т. Д.) не удастся  Tailscale только маршруты к вашей хвостовой сети\n• Daemon Tailscale будет перезагрузиться, чтобы применить изменение\n• Другие приложения и трафик остального устройства не пострадают\n\nВы можете отключить это в любое время.</string>
     <string name="dialog_zrok_reset_title">Перезагрузка окружающей среды Zrok</string>
     <string name="dialog_zrok_reset_message">Это:\n• остановит туннель zrok, если он работает\n• удалите среду zrok с этого устройства\n• удалите сохраненный токен\n\nВы должны снова ввести свой токен и включить его снова. Это использует один из ваших 5 слотов устройств на zrok.io.\n\nВы уверены?</string>
+    <string name="dialog_tunnel_conflict_title">Уже работает другой тоннель</string>
+    <string name="dialog_tunnel_conflict_message">%1$s уже работает. Переключиться на %2$s (%1$s будет остановлен) или использовать оба тоннеля одновременно?\n\nКогда работают оба:\n• Панель управления доступна по двум публичным ссылкам\n• Расход мобильного трафика в режиме ожидания немного вырастет\n• Оба запускаются автоматически после перезагрузки</string>
+    <string name="dialog_tunnel_conflict_switch">Переключить</string>
+    <string name="dialog_tunnel_conflict_run_both">Использовать оба</string>
     <string name="toast_resetting_zrok">Сброс среды Zrok…</string>
     <string name="toast_zrok_reset_success">Восстановление среды Zrok. Введите новый токен для восстановления.</string>
     <string name="toast_zrok_reset_partial">Настройка окружающей среды (файл токена может потребовать ручной очистки)</string>
@@ -698,9 +704,9 @@
     <string name="setup_overlay_already_granted">Уже предоставлено</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">Советы и решение проблем</string>
-    <string name="setup_traffic_title">Отключить монитор трафика BYD</string>
-    <string name="setup_traffic_body">Монитор трафика BYD блокирует доступ третьих лиц к Интернету. Отключение позволяет OverDrive и любым другим приложениям, которые вы устанавливаете, фактически использовать сеть.</string>
-    <string name="setup_traffic_button">Открытый монитор трафика</string>
+    <string name="setup_traffic_title">Отключить BYD Traffic Monitor</string>
+    <string name="setup_traffic_body">BYD Traffic Monitor блокирует доступ сторонних приложений к интернету. Отключение Traffic Monitor позволяет OverDrive и любым другим установленным вами приложениям по-настоящему пользоваться сетью. После этого требуется жёсткая перезагрузка.</string>
+    <string name="setup_traffic_button">Откройте Traffic Monitor</string>
     <string name="setup_camera_fix_title">Камера подает черный или неточный?</string>
     <string name="setup_camera_fix_body">Зонд камеры, нажмите идентификатор камеры на 0, нажмите Save, а затем перезагрузите демона камеры. Если ленты все еще неправильны, повторяйте с идентификатором камеры 1. Оставьте раздел отображения нетронутым.</string>
     <!-- Recording storage path -->
@@ -814,6 +820,8 @@
     <string name="settings_about_support_share_value">Каждый общий ссылка помогает другому владельцу BYD обнаружить Overdrive.</string>
     <string name="settings_about_support_share_message">Проверьте Overdrive  открытый код наблюдения и дашкамы для BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Поделиться Overdrive</string>
+    <string name="settings_about_youtube_title">Подпишитесь на YouTube</string>
+    <string name="settings_about_youtube_value">Ставьте лайки, подписывайтесь и делитесь — каждый просмотр помогает Overdrive расти.</string>
     <string name="settings_about_open_link_failed">Не удалось открыть ссылку.</string>
     <string name="settings_about_open_link_copied">Никакой браузер не найден. URL скопирован: %1$s</string>
     <string name="settings_about_support_kofi_title">Заправляйте следующий выпуск</string>
@@ -852,7 +860,7 @@
     <string name="recordings_preview_placeholder_body">Нажмите на любую вещь слева, чтобы просматривать ее.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">Консоль ADB</string>
-    <string name="diagnostics_section_traffic">Монитор дорожного движения</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Зонд камеры</string>
     <string name="diagnostics_section_battery">Состояние батареи</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -968,6 +976,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Пре/пост буферы, кодеки, ограничения хранения.</string>
     <string name="settings_section_surveillance_subtitle">Зон обнаружения, график, чувствительность к движению.</string>
+    <string name="settings_section_storage_subtitle">Где хранятся записи, лимиты места, очистка видеорегистратора BYD.</string>
     <string name="settings_section_daemons_subtitle">Службы Cloudflared, Zrok, Telegram, MQTT.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">О OverDrive</string>
@@ -1373,6 +1382,10 @@
     <string name="projection_autostart_conflict_confirm">Использовать это приложение</string>
     <string name="projection_app_uninstalled">Это приложение больше не установлено.</string>
     <string name="projection_status_service_down">Служба зеркала не готова — перезапустите приложение (или демон камеры) и повторите попытку.</string>
+    <string name="projection_status_connecting">Подключение к панели…</string>
+    <string name="projection_status_mirror_unavailable">Зеркало недоступно</string>
+    <string name="projection_fullscreen_enter">Во весь экран</string>
+    <string name="projection_fullscreen_exit">Выйти из полноэкранного режима</string>
     <string name="cd_replay_status">Статус мгновенного повтора</string>
     <string name="recording_lib_type_replay">ПОВТОРИТЬ</string>
     <string name="settings_overlay_replay_title">Индикатор мгновенного повтора</string>
@@ -1660,4 +1673,17 @@
     <string name="settings_navigation_shown">показано</string>
     <string name="settings_navigation_hidden">скрыто</string>
     <string name="settings_navigation_option_state">%1$s, %2$s в навигации</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Слушаю…</string>
+    <string name="voice_overlay_thinking">Думаю…</string>
+    <string name="voice_overlay_speaking">Говорю…</string>
+    <string name="voice_overlay_done">Готово</string>
+    <string name="voice_overlay_cancelled">Отменено</string>
+    <string name="voice_overlay_not_understood">Извините, я не расслышал</string>
+    <string name="voice_overlay_offline">ИИ-ассистент недоступен</string>
+    <string name="voice_overlay_busy">Ассистент уже используется</string>
+    <string name="voice_overlay_blocked_moving">Недоступно во время движения</string>
+    <string name="voice_overlay_refused">Это нельзя сделать голосом</string>
+    <string name="voice_overlay_failed">Не удалось выполнить</string>
 </resources>

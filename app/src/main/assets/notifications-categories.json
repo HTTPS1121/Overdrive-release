@@ -47,6 +47,15 @@
       "note": "Range and trigger depend on Recording settings"
     },
     {
+      "id": "surveillance.impact",
+      "label": "Parked impact",
+      "group": "Surveillance",
+      "defaultEnabled": true,
+      "severity": "auto",
+      "defaultClickUrl": "/events.html?filter=surveillance",
+      "note": "Only when impact detection is switched on in Surveillance settings"
+    },
+    {
       "id": "vehicle.health.tyre.pressure",
       "label": "Tyre pressure alarm",
       "group": "Vehicle",
@@ -63,6 +72,25 @@
       "severity": "auto",
       "defaultClickUrl": "/vehicle-control.html",
       "note": "Slow or fast leak detected by TPMS sensor"
+    },
+    {
+      "id": "vehicle.health.battery",
+      "label": "Battery protection",
+      "group": "Vehicle",
+      "defaultEnabled": true,
+      "severity": "auto",
+      "defaultClickUrl": "/surveillance.html",
+      "note": "Sent when sentry stops to protect the 12V or drive battery"
+    },
+    {
+      "id": "vehicle.security.remote_access",
+      "label": "Proximity lock and unlock",
+      "group": "Security",
+      "defaultEnabled": true,
+      "severity": "critical",
+      "bypassQuietHours": true,
+      "defaultClickUrl": "/remote-access.html",
+      "note": "Priority results for Bluetooth proximity lock/unlock commands. Delivery requires explicit channel opt-in in Proximity; off by default."
     },
     {
       "id": "vehicle.security.door.opened",
@@ -172,6 +200,15 @@
       "severity": "warn",
       "defaultClickUrl": "/network.html",
       "note": "Fires when the hotspot passes its configured total data limit; the hotspot is turned off at the same time. Raise or reset the limit to use it again."
+    },
+    {
+      "id": "storage.write.error",
+      "label": "SD card / USB drive error",
+      "group": "Storage",
+      "defaultEnabled": true,
+      "severity": "warn",
+      "defaultClickUrl": "/recording.html",
+      "note": "The SD card or USB drive keeps refusing to save files (failing or corrupted). Recordings, sentry clips and trips meant for it are saved to internal storage until it works again. At most once an hour."
     }
   ]
 }

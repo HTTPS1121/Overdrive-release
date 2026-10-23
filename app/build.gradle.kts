@@ -1,9 +1,23 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
 
 val openh264Version = "2.6.0"
+
+// SafeKeep sign-in app IDs for official builds: safekeep-oauth.properties at the repo root
+// (gitignored) or -P / ~/.gradle/gradle.properties overrides.
+// Empty in source builds, where users enter their own app registration instead.
+val safeKeepOAuth = Properties().apply {
+    val f = rootProject.file("safekeep-oauth.properties")
+    if (f.isFile) f.inputStream().use { load(it) }
+}
+fun safeKeepOAuthField(key: String): String {
+    val v = ((project.findProperty(key) as? String) ?: safeKeepOAuth.getProperty(key, "")).trim()
+    return "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
 
 // Auto-download OpenH264 from Cisco's official binary releases
 tasks.register("downloadOpenH264") {
@@ -343,6 +357,14 @@ android {
         // the working build's generated BuildConfig (default-config fields).
         buildConfigField("boolean", "LOG_CAPTURE", "false")
         buildConfigField("String", "LOG_UPLOAD_URL", "\"\"")
+        // Hard-off for the in-car DiLink 5 BYD Cloud keep-alive poller in this
+        // release. A future build must deliberately flip this before the
+        // independent runtime config gate can enable network polling.
+        buildConfigField("boolean", "DI5_CLOUD_KEEPALIVE_POLLER_ENABLED", "false")
+        buildConfigField("String", "SAFEKEEP_GOOGLE_CLIENT_ID", safeKeepOAuthField("safekeep.google.clientId"))
+        buildConfigField("String", "SAFEKEEP_GOOGLE_CLIENT_SECRET", safeKeepOAuthField("safekeep.google.clientSecret"))
+        buildConfigField("String", "SAFEKEEP_MICROSOFT_CLIENT_ID", safeKeepOAuthField("safekeep.microsoft.clientId"))
+        buildConfigField("String", "SAFEKEEP_DROPBOX_APP_KEY", safeKeepOAuthField("safekeep.dropbox.appKey"))
     }
 
     buildFeatures {
@@ -610,6 +632,12 @@ dependencies {
     
     // Encrypted SharedPreferences for secure token/owner storage
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // SafeKeep SFTP destination (pure Java, BSD-style licence, no mandatory dependencies).
+    implementation("com.github.mwiede:jsch:2.28.7")
+    // SafeKeep age encryption uses Tink's X25519/HKDF. Already on the runtime classpath at this
+    // exact version via security-crypto; declared so it is visible at compile time.
+    implementation("com.google.crypto.tink:tink-android:1.8.0")
     
     // H2 Database - Pure Java embedded SQL (no native dependencies, no .so files)
     // Works for UID 2000 because it's 100% Java bytecode - no Android framework needed

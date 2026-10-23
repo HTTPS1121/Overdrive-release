@@ -47,7 +47,7 @@ public class VehiclePaintHintAssetTest {
                 "paintName.indexOf(paintMeshHint) < 0"));
 
         assertTrue(serviceWorker.contains(
-                "const CACHE_VERSION = 'overdrive-3d-v4';"));
+                "const CACHE_VERSION = 'overdrive-3d-v5';"));
     }
 
     @Test

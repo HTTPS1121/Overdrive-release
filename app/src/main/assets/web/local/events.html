@@ -10,9 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
         /* Events Page Specific Styles */
 
@@ -32,8 +33,7 @@
         .events-container {
             display: flex;
             flex-direction: column;
-            gap: 16px;
-            padding: 16px;
+            padding: var(--page-pad-y) var(--page-pad-x) 32px;
             min-width: 0;
             /* Live --vh (kept fresh across rotation by theme.js) instead of
                100dvh, which resolves stale on Android WebView after a
@@ -42,77 +42,74 @@
             min-height: calc(100vh - var(--header-height) - 32px);
             min-height: calc(var(--vh, 1vh) * 100 - var(--header-height) - 32px);
         }
-        
-        /* Top Bar with Calendar Toggle & Filters */
+        .events-container > * + * { margin-top: 16px; }
+        @media (max-width: 768px) {
+            .events-container { padding: 12px 16px 24px; }
+            .events-container > * + * { margin-top: 12px; }
+        }
+
+        /* Toolbar (mock .toolbar): date chip and type segments, then the storage meter and Select at the end. Wraps; margins stand in for flex gap. */
         .events-top-bar {
             display: flex;
-            gap: 8px;
-            align-items: stretch;
-            flex-direction: column;
+            flex-wrap: wrap;
+            align-items: center;
+            min-width: 0;
+            margin-right: -8px;
+            margin-bottom: -8px;
         }
-        
-        @media (min-width: 600px) {
-            .events-top-bar {
-                flex-direction: row;
-                align-items: center;
-                gap: 12px;
-            }
-        }
-        
-        /* Calendar Toggle Button */
+        .events-top-bar > * { margin: 0 8px 8px 0; }
+        [dir="rtl"] .events-top-bar { margin-right: 0; margin-left: -8px; }
+        [dir="rtl"] .events-top-bar > * { margin: 0 0 8px 8px; }
+        /* Notification hero image (events.js inserts it into this bar): its own line, first. */
+        #eventsHeroBanner { order: -1; flex: 0 0 auto; max-width: calc(100% - 8px); }
+
+        /* Date chip (mock .date-chip) */
         .calendar-toggle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            min-height: 44px;
+            min-width: 0;
+            max-width: 100%;
+            padding: 0 18px 0 14px;
+            border-radius: var(--radius-full);
+            background-color: var(--well);
+            color: var(--on-surface);
+            font-size: var(--fs-label);
+            font-weight: 600;
+            line-height: 1.25;
+            text-align: left;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
+        }
+        .calendar-toggle svg {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+            margin-right: 8px;
+            color: var(--primary);
+        }
+        .calendar-toggle > span { min-width: 0; overflow-wrap: break-word; }
+        [dir="rtl"] .calendar-toggle { padding: 0 14px 0 18px; text-align: right; }
+        [dir="rtl"] .calendar-toggle svg { margin-right: 0; margin-left: 8px; }
+        .calendar-toggle.has-date { background-color: var(--secondary-container); color: var(--on-secondary-container); }
+        .calendar-toggle.has-date svg { color: inherit; }
+        @media (hover: hover) {
+            .calendar-toggle:hover { background-color: var(--well-2); }
+            .calendar-toggle.has-date:hover { background-color: var(--secondary-container); }
+        }
+
+        .clear-date-btn {
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            padding: 10px 16px;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-md);
-            color: var(--text-primary);
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-            flex-shrink: 0;
-        }
-        
-        @media (min-width: 600px) {
-            .calendar-toggle {
-                justify-content: flex-start;
-            }
-        }
-        
-        .calendar-toggle:hover {
-            background: var(--bg-elevated);
-            border-color: var(--brand-primary);
-        }
-        
-        .calendar-toggle.has-date {
-            background: var(--brand-primary);
-            color: var(--bg-base);
-            border-color: var(--brand-primary);
-        }
-        
-        .calendar-toggle svg {
-            width: 18px;
-            height: 18px;
-        }
-        
-        .clear-date-btn {
             margin-left: 4px;
             padding: 2px;
             border-radius: 50%;
-            background: var(--panel-overlay-bg-faint);
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            background: var(--well-2);
         }
-        
-        .clear-date-btn:hover {
-            background: var(--panel-overlay-bg-soft);
-        }
-        
+
         /* Calendar Popup */
         .calendar-popup {
             position: fixed;
@@ -126,17 +123,21 @@
             align-items: flex-end;
             justify-content: center;
             padding: 0;
-            -webkit-backdrop-filter: blur(4px);
-            backdrop-filter: blur(4px);
         }
-        
+        @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+            .calendar-popup {
+                -webkit-backdrop-filter: blur(4px);
+                backdrop-filter: blur(4px);
+            }
+        }
+
         .calendar-popup.active {
             display: flex;
         }
-        
+
         .calendar-panel {
-            background: var(--bg-surface);
-            border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+            background: var(--tile-raised);
+            border-radius: var(--radius-xl) var(--radius-xl) 0 0;
             padding: 20px;
             padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
             width: 100%;
@@ -145,10 +146,10 @@
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 16px;
             box-shadow: var(--shadow-lg);
             animation: slideUp 0.3s ease;
         }
+        .calendar-panel > * + * { margin-top: 16px; }
         
         @keyframes slideUp {
             from { transform: translateY(100%); opacity: 0; }
@@ -162,9 +163,9 @@
             }
             
             .calendar-panel {
-                border-radius: var(--radius-lg);
-                max-width: 340px;
-                max-height: none;
+                border-radius: var(--radius-xl);
+                max-width: 360px;
+                max-height: 100%;
                 padding-bottom: 20px;
                 animation: popIn 0.2s ease;
             }
@@ -182,89 +183,84 @@
         }
         
         .calendar-title {
-            font-size: 18px;
+            min-width: 0;
+            font-size: var(--fs-title);
             font-weight: 600;
+            overflow-wrap: break-word;
         }
-        
+
         .calendar-nav {
             display: flex;
-            gap: 8px;
+            flex-shrink: 0;
         }
-        
+        .calendar-nav button + button { margin-left: 8px; }
+        [dir="rtl"] .calendar-nav button + button { margin-left: 0; margin-right: 8px; }
+        [dir="rtl"] .calendar-nav svg { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
+
         .calendar-nav button {
-            width: 32px;
-            height: 32px;
-            border-radius: var(--radius-sm);
-            background: var(--bg-elevated);
-            color: var(--text-secondary);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--well);
+            color: var(--on-surface-variant);
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        
-        .calendar-nav button:hover {
-            background: var(--bg-hover);
-            color: var(--text-primary);
-        }
-        
+
         .calendar-grid {
             display: grid;
-            grid-template-columns: repeat(7, 1fr);
-            gap: 4px;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            grid-gap: 4px;
         }
-        
+
         .calendar-weekday {
             text-align: center;
-            font-size: 11px;
+            font-size: var(--fs-caption);
             font-weight: 600;
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
             padding: 8px 0;
             text-transform: uppercase;
         }
-        
+
         .calendar-day {
-            aspect-ratio: 1;
             display: flex;
             align-items: center;
             justify-content: center;
-            border-radius: var(--radius-sm);
-            font-size: 13px;
+            border-radius: var(--radius-full);
+            font-size: var(--fs-label);
             font-weight: 500;
-            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+            color: var(--on-surface);
             cursor: pointer;
             position: relative;
-            transition: all 0.2s;
+            transition: background-color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
             min-height: 40px;
             -webkit-tap-highlight-color: transparent;
             touch-action: manipulation;
         }
-        
-        .calendar-day:hover {
-            background: var(--bg-hover);
-        }
-        
+
         .calendar-day:active {
-            background: var(--bg-elevated);
+            background: var(--well-2);
             transform: scale(0.95);
         }
-        
+
         .calendar-day.other-month {
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
             opacity: 0.5;
         }
-        
+
         .calendar-day.today {
-            background: var(--bg-elevated);
-            color: var(--text-primary);
-            font-weight: 600;
+            box-shadow: inset 0 0 0 1px var(--primary);
+            font-weight: 700;
         }
-        
+
         .calendar-day.selected {
-            background: var(--brand-primary);
-            color: var(--bg-base);
+            background: var(--primary);
+            color: var(--on-primary);
         }
-        
+
         .calendar-day.has-recordings::after {
             content: '';
             position: absolute;
@@ -272,292 +268,367 @@
             width: 4px;
             height: 4px;
             border-radius: 50%;
-            background: var(--brand-secondary);
+            background: var(--tertiary);
         }
-        
+
         .calendar-day.has-sentry::after {
             background: var(--danger);
             width: 6px;
             height: 6px;
         }
-        
+        .calendar-day.selected::after { background: currentColor; }
+
         .calendar-day.disabled {
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
             opacity: 0.3;
             cursor: not-allowed;
             pointer-events: none;
         }
-        
+
         .calendar-close {
-            margin-top: 8px;
-            padding: 10px;
-            background: var(--bg-elevated);
-            border-radius: var(--radius-md);
-            color: var(--text-secondary);
-            font-size: 13px;
-            font-weight: 500;
+            min-height: 44px;
+            padding: 0 20px;
+            background: var(--well-2);
+            border-radius: var(--radius-full);
+            color: var(--on-surface);
+            font-size: var(--fs-label);
+            font-weight: 600;
             text-align: center;
             cursor: pointer;
-            transition: all 0.2s;
+        }
+        @media (hover: hover) {
+            .calendar-nav button:hover { background: var(--well-2); color: var(--on-surface); }
+            .calendar-day:hover { background: var(--well); }
+            .calendar-day.selected:hover { background: var(--primary); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .calendar-panel { animation: none; }
+            .calendar-day { transition: none; }
+            .calendar-day:active { transform: none; }
         }
         
-        .calendar-close:hover {
-            background: var(--bg-hover);
-            color: var(--text-primary);
-        }
-        
-        /* Filter Tabs - Inline */
+        /* Type filter (mock .seg): segmented pill that scrolls sideways only when it cannot fit. */
         .filter-tabs {
             display: flex;
-            gap: 6px;
-            padding: 4px;
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            flex: 1;
             min-width: 0;
+        }
+
+        .filter-tabs::-webkit-scrollbar {
+            display: none;
+        }
+
+        .events-top-bar > .filter-tabs {
+            flex: 0 1 auto;
+            max-width: 100%;
+            padding: 3px;
+            border-radius: var(--radius-full);
+            background: var(--well);
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
             -ms-overflow-style: none;
         }
-        
-        .filter-tabs::-webkit-scrollbar {
-            display: none;
-        }
-        
+
         .filter-tab {
             flex: 0 0 auto;
-            padding: 8px 12px;
-            border-radius: var(--radius-sm);
-            font-size: 12px;
-            font-weight: 500;
-            color: var(--text-secondary);
+            min-height: 38px;
+            padding: 0 14px;
+            border-radius: var(--radius-full);
+            font-size: var(--fs-label);
+            font-weight: 600;
+            color: var(--on-surface-variant);
             text-align: center;
-            transition: all 0.2s;
             white-space: nowrap;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        
-        @media (min-width: 480px) {
-            .filter-tab {
-                flex: 1;
-            }
-        }
-        
-        .filter-tab:hover {
-            color: var(--text-primary);
-        }
-        
+        .filter-tab + .filter-tab { margin-left: 2px; }
+        [dir="rtl"] .filter-tab + .filter-tab { margin-left: 0; margin-right: 2px; }
+
         .filter-tab.active {
-            background: var(--bg-elevated);
-            color: var(--text-primary);
-            box-shadow: var(--shadow-sm);
+            background: var(--secondary-container);
+            color: var(--on-secondary-container);
         }
-        
-        /* Storage Stats - Compact inline */
+        /* Same check as the shared selected segment (revamp .btn-toggle), so state is not colour-only. */
+        .filter-tab.active::before {
+            content: "";
+            display: inline-block;
+            width: 10px;
+            height: 5px;
+            margin: 0 8px 3px 0;
+            border-bottom: 2px solid currentColor;
+            border-left: 2px solid currentColor;
+            vertical-align: middle;
+            -webkit-transform: rotate(-45deg);
+            transform: rotate(-45deg);
+        }
+        [dir="rtl"] .filter-tab.active::before { margin: 0 0 3px 8px; }
+        @media (hover: hover) {
+            .filter-tab:hover { color: var(--on-surface); }
+            .filter-tab.active:hover { color: var(--on-secondary-container); }
+        }
+
+        /* Storage meter: used space, bar, per-type counts (dot colours match the type badges). */
         .storage-stats {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 8px 14px;
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            font-size: 12px;
-            flex-wrap: wrap;
+            min-width: 0;
+            min-height: 44px;
+            padding: 6px 16px;
+            background: var(--well);
+            border-radius: var(--radius-full);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
         }
-        
-        @media (min-width: 600px) {
-            .storage-stats {
-                flex-wrap: nowrap;
-                justify-content: flex-start;
-            }
+        /* Trailing group: pushed to the end of the row and wraps as one. */
+        .events-top-bar > .toolbar-end {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            max-width: 100%;
+            margin: 0 8px 8px auto;
         }
-        
+        [dir="rtl"] .events-top-bar > .toolbar-end { margin: 0 auto 8px 8px; }
+        .toolbar-end > * + * { margin-left: 8px; }
+        [dir="rtl"] .toolbar-end > * + * { margin-left: 0; margin-right: 8px; }
+
         .storage-info {
             display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: flex-start;
+            min-width: 0;
+            color: inherit;
+            font-size: inherit;
         }
-        
+
         .storage-value {
             font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--text-primary);
+            font-variant-numeric: tabular-nums;
+            color: var(--on-surface);
+            white-space: nowrap;
         }
-        
+
         .storage-bar-mini {
-            width: 60px;
-            height: 4px;
-            background: var(--bg-elevated);
-            border-radius: 2px;
+            flex-shrink: 0;
+            width: 72px;
+            height: 6px;
+            margin-left: 10px;
+            background: var(--well-2);
+            border-radius: 3px;
             overflow: hidden;
         }
-        
+        [dir="rtl"] .storage-bar-mini { margin-left: 0; margin-right: 10px; }
+
         .storage-fill {
             height: 100%;
-            background: var(--brand-gradient);
-            border-radius: 2px;
+            background: var(--primary);
+            border-radius: 3px;
             transition: width 0.3s ease;
         }
-        
+
         .storage-breakdown {
             display: none;
         }
-        
+
         @media (min-width: 768px) {
             .storage-breakdown {
                 display: flex;
-                gap: 12px;
+                align-items: center;
+                margin-left: 14px;
             }
+            [dir="rtl"] .storage-breakdown { margin-left: 0; margin-right: 14px; }
         }
-        
+
         .storage-item {
             display: flex;
             align-items: center;
-            gap: 4px;
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
         }
-        
+        .storage-item + .storage-item { margin-left: 12px; }
+        [dir="rtl"] .storage-item + .storage-item { margin-left: 0; margin-right: 12px; }
+
         .storage-dot {
-            width: 6px;
-            height: 6px;
+            flex-shrink: 0;
+            width: 8px;
+            height: 8px;
+            margin-right: 6px;
             border-radius: 50%;
         }
-        
-        .storage-dot.normal { background: var(--brand-secondary); }
+        [dir="rtl"] .storage-dot { margin-right: 0; margin-left: 6px; }
+
+        .storage-dot.normal { background: var(--primary); }
         .storage-dot.sentry { background: var(--danger); }
-        .storage-dot.proximity { background: #fb923c; }
-        .storage-dot.replay { background: #3b82f6; }
-        
-        /* Recordings List Panel */
+        .storage-dot.proximity { background: var(--tertiary); }
+        .storage-dot.replay { background: var(--warning); }
+        @media (max-width: 599px) {
+            .storage-stats { padding: 6px 14px; }
+            .storage-bar-mini { width: 48px; }
+        }
+
+        /* Recordings: summary line, then clips grouped by day (mock .list-summary / .day-head / .media-grid). */
         .recordings-panel {
-            background: var(--bg-surface);
-            border-radius: var(--radius-lg);
             display: flex;
             flex-direction: column;
-            overflow: hidden;
+            min-width: 0;
             flex: 1;
-            /* min-height:0 lets this flex child shrink below the intrinsic
-               height of its (long) recordings list. Without it the panel
-               refuses to shrink in short/portrait viewports and the inner
-               list — instead of scrolling — pushes the pagination bar
-               (Prev/Next) off the bottom of the screen. The list's own
-               overflow-y:auto only engages once the panel is allowed to be
-               shorter than its content, which this unlocks. */
             min-height: 0;
         }
-        
+
+        /* Summary line: list title, then the count after a dot. */
         .recordings-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border-subtle);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-wrap: wrap;
+            align-items: baseline;
+            min-width: 0;
+            margin-bottom: 4px;
+            font-size: var(--fs-label);
+            line-height: 1.4;
+            color: var(--on-surface-variant);
         }
-        
+
         .recordings-title {
-            font-size: 16px;
+            min-width: 0;
             font-weight: 600;
+            color: var(--on-surface);
+            overflow-wrap: break-word;
         }
-        
+
         .recordings-count {
-            font-size: 13px;
-            color: var(--text-muted);
-            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
         }
-        
+        .recordings-count:not(:empty)::before { content: "\00B7"; margin: 0 6px; }
+
+        /* The page scrolls (no inner scroller), so the day headers can stick under the app bar. */
         .recordings-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            grid-gap: 12px;
+            align-content: start;
             flex: 1;
-            overflow-y: auto;
-            padding: 12px;
-            /* Pair with the panel's min-height:0 — the scroll container must
-               also be allowed to shrink below its content so overflow-y:auto
-               actually scrolls instead of expanding the column. */
+            min-width: 0;
+            /* 4px of padding, offset by the margin, keeps card rings clear of the column edge. */
+            margin: 0 -4px;
+            padding: 4px;
             min-height: 0;
         }
+        .recordings-list > .loading,
+        .recordings-list > .empty-state,
+        .recordings-list > .day-head { grid-column: 1 / -1; }
+        @media (min-width: 1600px) {
+            .recordings-list { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+        }
+        @media (max-width: 599px) {
+            .recordings-list { grid-template-columns: minmax(0, 1fr); }
+        }
+
+        /* Day header (mock .day-head): the clip date, pinned under the app bar while its clips scroll by. */
+        .day-head {
+            position: -webkit-sticky;
+            position: sticky;
+            top: var(--page-header-h, 64px);
+            z-index: 4;
+            margin: 0 -4px;
+            padding: 8px 4px 2px;
+            background: var(--page);
+            font-size: var(--fs-label);
+            font-weight: 700;
+            line-height: 1.35;
+            color: var(--on-surface-variant);
+        }
+        .recordings-list > .day-head ~ .day-head { margin-top: 8px; }
+        /* Phones: tighter so the first clip is on the first screen under the filters. */
+        @media (max-width: 599px) {
+            .recordings-header { margin-bottom: 0; }
+            .recordings-list > .day-head:first-child { padding-top: 4px; }
+        }
         
-        /* Recording Card with Thumbnail */
+        /* Clip card (mock .clip): 16:9 thumbnail with its badges on top, details below, actions in the last row. */
         .recording-card {
+            position: relative;
             display: flex;
-            gap: 12px;
-            padding: 12px;
-            background: var(--bg-elevated);
-            border-radius: var(--radius-md);
-            margin-bottom: 10px;
+            flex-direction: column;
+            min-width: 0;
+            background-color: var(--tile);
+            border-radius: var(--radius-tile);
+            box-shadow: var(--tile-shadow);
+            overflow: hidden;
             cursor: pointer;
-            transition: all 0.2s;
-            border: 1px solid transparent;
+            transition: transform var(--duration-fast) var(--easing-standard), box-shadow var(--duration-fast) var(--easing-standard);
             -webkit-tap-highlight-color: transparent;
         }
-        
-        .recording-card:hover {
-            background: var(--bg-hover);
-            border-color: var(--border-default);
-        }
-        
-        .recording-card:active {
-            transform: scale(0.99);
-        }
-        
-        .recording-thumbnail {
-            width: 100px;
-            height: 60px;
-            background: var(--bg-base);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-        }
-        
-        @media (min-width: 480px) {
-            .recording-thumbnail {
-                width: 140px;
-                height: 80px;
+
+        @media (hover: hover) {
+            .recording-card:hover {
+                box-shadow: var(--tile-shadow), 0 0 0 2px var(--hairline);
             }
         }
-        
+
+        .recording-card:active {
+            transform: scale(0.985);
+        }
+
+        .recording-thumbnail {
+            position: relative;
+            flex: 0 0 auto;
+            width: 100%;
+            height: 0;
+            /* 16:9 ratio box (no aspect-ratio on Chrome 58); every child is positioned inside it. */
+            padding-top: 56.25%;
+            background: var(--well-2);
+            overflow: hidden;
+        }
+
         .recording-thumbnail img,
         .recording-thumbnail video {
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
             height: 100%;
             object-fit: cover;
         }
-        
+
         .recording-thumbnail .thumb-placeholder {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            color: var(--text-muted);
-            font-size: 10px;
-            gap: 4px;
+            padding: 8px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            text-align: center;
         }
-        
+        .recording-thumbnail .thumb-placeholder span { margin-top: 6px; }
+
         .recording-thumbnail .thumb-placeholder svg {
-            width: 24px;
-            height: 24px;
-            opacity: 0.5;
+            width: 32px;
+            height: 32px;
+            opacity: 0.6;
         }
-        
+
         .recording-thumbnail .play-icon {
-            /* Visible on every event card, not just on hover. The head unit
-               is touch-only — there's no hover state — and the user
-               needs an obvious "this is a video, tap to play" affordance. */
+            /* Visible on every card, not just on hover: touch screens have no
+               hover, and the tile needs an obvious "tap to play" cue. */
             position: absolute;
+            top: 50%;
+            left: 50%;
             width: 44px;
             height: 44px;
-            background: var(--modal-backdrop);
-            border: 2px solid rgba(255, 255, 255, 0.9);
+            margin: -22px 0 0 -22px;
+            background: rgba(0, 0, 0, 0.55);
             border-radius: 50%;
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
             display: flex;
             align-items: center;
             justify-content: center;
-            opacity: 0.92;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-            transition: transform 0.15s ease-out, opacity 0.2s;
+            transition: transform 0.15s ease-out, box-shadow 0.2s;
         }
 
         .recording-thumbnail .play-icon svg {
@@ -566,66 +637,145 @@
             margin-left: 2px; /* nudge so the triangle reads centered */
         }
 
-        .recording-card:hover .play-icon,
-        .recording-card:focus-within .play-icon {
-            opacity: 1;
-            transform: scale(1.05);
+        @media (hover: hover) {
+            .recording-card:hover .play-icon {
+                box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+                transform: scale(1.06);
+            }
         }
-        
-        .recording-thumbnail .duration-badge {
+
+        /* Thumbnail badges (mock .clip-type / .clip-dur): dark pills so they read on any frame, in both themes. */
+        .recording-thumbnail .clip-type,
+        .recording-thumbnail .clip-type.proximity {
             position: absolute;
-            bottom: 4px;
-            right: 4px;
-            background: var(--modal-backdrop);
-            color: white;
-            font-size: 10px;
-            font-weight: 600;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: 'JetBrains Mono', monospace;
+            top: 8px;
+            left: 8px;
+            z-index: 1;
+            /* Keeps the top-right corner free for the select-mode checkbox. */
+            max-width: calc(100% - 68px);
+            height: 24px;
+            margin: 0;
+            padding: 0 9px;
+            overflow: hidden;
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.62);
+            color: #FFFFFF;
+            box-shadow: none;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 24px;
+            white-space: nowrap;
+            text-overflow: ellipsis;
         }
+        [dir="rtl"] .recording-thumbnail .clip-type { left: auto; right: 8px; margin: 0; }
+        .recording-thumbnail .clip-type::before {
+            content: "";
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            margin: 0 6px 1px 0;
+            border-radius: 50%;
+            vertical-align: middle;
+            background: #9AA5A0;
+        }
+        [dir="rtl"] .recording-thumbnail .clip-type::before { margin: 0 0 1px 6px; }
+        /* Fixed light dots: the pill is always dark. Same hues as the storage meter in the dark theme. */
+        .recording-thumbnail .clip-type.sentry::before { background: #FF8A7A; }
+        .recording-thumbnail .clip-type.proximity::before { background: #85CFFF; }
+        .recording-thumbnail .clip-type.normal::before { background: #5DDBB6; }
+        .recording-thumbnail .clip-type.replay::before { background: #FFB870; }
+
+        /* Bottom-right: duration (when the server sends one) and file size. */
+        .recording-thumbnail .thumb-meta {
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            z-index: 1;
+            max-width: calc(50% - 12px);
+            overflow: hidden;
+            padding: 2px 8px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.66);
+            color: #FFFFFF;
+            font-size: 12px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            line-height: 1.35;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        [dir="rtl"] .recording-thumbnail .thumb-meta { right: auto; left: 8px; }
+        .thumb-meta > span + span::before { content: "\00B7"; margin: 0 5px; }
+        /* SafeKeep backup state, bottom-left of the thumbnail (hidden while SafeKeep is off). */
+        .recording-thumbnail .sk-badge {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            z-index: 2;
+            max-width: calc(50% - 12px);
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            background: rgba(0, 0, 0, 0.66);
+            color: white;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.35;
+            padding: 2px 9px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        [dir="rtl"] .recording-thumbnail .sk-badge { left: auto; right: 8px; }
+        .recording-thumbnail .sk-badge[hidden] { display: none; }
+        .recording-thumbnail .sk-badge.sk-saved { background: rgba(22, 163, 74, 0.92); }
+        .recording-thumbnail .sk-badge.sk-up { background: rgba(37, 99, 235, 0.92); }
+        .recording-thumbnail .sk-badge.sk-queued,
+        .recording-thumbnail .sk-badge.sk-waiting { background: rgba(217, 119, 6, 0.92); }
+        .recording-thumbnail .sk-badge.sk-failed { background: rgba(220, 38, 38, 0.92); }
 
         /* In-flight recording placeholder. Pinned at the top of the list when
            the events page is opened from a notification before the encoder
            finishes its post-record window (~10–15 s). The card swaps to a
            normal recording entry the moment the rename completes. */
         .recording-card-inflight {
-            border: 1px solid rgba(0, 212, 170, 0.45);
-            background: linear-gradient(135deg, rgba(0, 212, 170, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+            background-image: linear-gradient(var(--primary-soft), var(--primary-soft));
+            box-shadow: var(--tile-shadow), 0 0 0 2px var(--primary);
             cursor: default;
         }
-        .recording-card-inflight:hover { border-color: rgba(0, 212, 170, 0.65); }
         .recording-card-inflight:active { transform: none; }
         .recording-card-inflight .inflight-badge {
             position: absolute;
-            bottom: 4px;
-            right: 4px;
+            bottom: 8px;
+            right: 8px;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            background: rgba(0, 212, 170, 0.85);
-            color: #0a0a0f;
-            font-size: 10px;
+            background: var(--primary);
+            color: var(--on-primary);
+            font-size: 12px;
             font-weight: 700;
             letter-spacing: 0.04em;
+            line-height: 1.35;
             text-transform: uppercase;
-            padding: 2px 8px;
-            border-radius: 4px;
+            padding: 2px 9px;
+            border-radius: 8px;
         }
+        [dir="rtl"] .recording-card-inflight .inflight-badge { right: auto; left: 8px; }
         .recording-card-inflight .inflight-dot {
             width: 6px;
             height: 6px;
-            background: #0a0a0f;
+            margin-right: 6px;
+            background: currentColor;
             border-radius: 50%;
             animation: inflight-pulse 1.2s ease-in-out infinite;
         }
+        [dir="rtl"] .recording-card-inflight .inflight-dot { margin-right: 0; margin-left: 6px; }
         @keyframes inflight-pulse {
             0%, 100% { opacity: 1; transform: scale(1); }
             50%      { opacity: 0.4; transform: scale(0.7); }
         }
         .recording-badge.live {
-            background: rgba(0, 212, 170, 0.18);
-            color: #00d4aa;
+            background: var(--primary-soft);
+            color: var(--primary);
         }
 
         /* Brief post-finalize highlight so the user can see the entry the
@@ -634,165 +784,257 @@
             animation: recording-just-finalized 1.6s ease-out;
         }
         @keyframes recording-just-finalized {
-            0%   { box-shadow: 0 0 0 2px rgba(0, 212, 170, 0.65); }
-            100% { box-shadow: 0 0 0 0 rgba(0, 212, 170, 0); }
+            0%   { box-shadow: 0 0 0 3px var(--primary); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
         }
-        
+
+        /* Details (mock .clip-body): time and storage, place, chips, then the file name with the clip actions. */
         .recording-info {
-            flex: 1;
             display: flex;
             flex-direction: column;
-            justify-content: center;
-            gap: 6px;
+            flex: 1 1 auto;
             min-width: 0;
+            padding: 12px 14px 14px;
         }
-        
-        .recording-name {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-primary);
+
+        .clip-line {
             display: flex;
             align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
+            min-width: 0;
         }
-        
+        .clip-time {
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            font-size: var(--fs-body);
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            line-height: 1.35;
+            color: var(--on-surface);
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .clip-line > .storage-chip { flex: 0 0 auto; margin-left: 8px; }
+        [dir="rtl"] .clip-line > .storage-chip { margin-left: 0; margin-right: 8px; }
+
         .recording-badge {
-            font-size: 9px;
-            font-weight: 600;
-            padding: 2px 6px;
-            border-radius: 4px;
-            text-transform: uppercase;
+            display: inline-block;
+            flex: 0 0 auto;
+            height: 24px;
+            margin: 0 8px 0 0;
+            padding: 0 9px;
+            border-radius: 12px;
+            background: var(--well-2);
+            color: var(--on-surface);
+            box-shadow: none;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 24px;
+            letter-spacing: 0;
+            text-transform: none;
+            white-space: nowrap;
         }
-        
-        .recording-badge.sentry {
-            background: rgba(239, 68, 68, 0.2);
-            color: var(--danger);
-        }
-        
-        .recording-badge.normal {
-            background: rgba(14, 165, 233, 0.2);
-            color: var(--brand-secondary);
-        }
-        
-        .recording-badge.proximity {
-            background: rgba(251, 146, 60, 0.2);
-            color: #fb923c;
-        }
+        [dir="rtl"] .recording-badge { margin: 0 0 0 8px; }
 
-        .recording-badge.replay {
-            background: rgba(59, 130, 246, 0.2);
-            color: #3b82f6;
-        }
-
-        /* v3 severity badges + actor summary (item 6) */
-        .recording-badge.sev-notice   { background: rgba(160,160,160,0.20); color: #c2c2c2; }
-        .recording-badge.sev-alert    { background: rgba(255,136,0,0.20);   color: #ff9b3d; }
-        .recording-badge.sev-critical { background: rgba(239,68,68,0.25);   color: #ff6b6b; }
-
-        .actor-summary {
-            font-size: 11px;
-            color: var(--text-muted);
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 2px;
-        }
-        .actor-summary .pill {
-            background: rgba(255,255,255,0.05);
-            border: 1px solid var(--border-subtle);
-            padding: 1px 6px;
-            border-radius: 999px;
-            font-size: 10px;
-        }
-        .actor-summary .prox-VERY_CLOSE { color: #ff6b6b; border-color: rgba(255,107,107,0.35); }
-        .actor-summary .prox-CLOSE      { color: #ff9b3d; border-color: rgba(255,155,61,0.35); }
-        .actor-summary .prox-MID        { color: #c2c2c2; }
-        .actor-summary .prox-FAR        { color: #888; }
-
-        /* Place chip — populated from sidecar geo.place via the daemon's
-           RecordingsApiHandler. Hidden when empty so legacy clips and
-           clips with no resolved place look identical to before. */
+        /* Place line — populated from sidecar geo.place via the daemon's
+           RecordingsApiHandler. Absent for legacy clips and clips with no
+           resolved place. */
         .recording-place {
-            font-size: 11px;
-            color: var(--text-muted);
             margin-top: 2px;
+            font-size: var(--fs-caption);
+            line-height: 1.4;
+            color: var(--on-surface-variant);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-
-        .recording-card.sev-alert    { box-shadow: inset 3px 0 0 #ff9b3d; }
-        .recording-card.sev-critical { box-shadow: inset 3px 0 0 #ff6b6b; }
-
-        /* v3 Actor / Severity / Proximity chip rows.
-           Lives in its own block below .events-top-bar so the desktop top-row
-           (calendar + type tabs + storage) keeps full breathing room. Each
-           row has a small label prefix and scrolls horizontally if narrow. */
-        .actor-filter-rows {
-            margin-top: 8px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            /* Collapse to the column width so each child row's
-               overflow-x:auto governs its own horizontal extent rather
-               than the widest row dictating the column width. */
-            min-width: 0;
+        .recording-place svg {
+            width: 13px;
+            height: 13px;
+            margin-right: 4px;
+            vertical-align: -2px;
         }
-        .filter-tabs-row2 {
-            /* Override .filter-tabs flex:1 so multiple rows stack properly */
-            flex: 0 0 auto;
+        [dir="rtl"] .recording-place svg { margin-right: 0; margin-left: 4px; }
+
+        /* Chips (mock .ctag): actor counts, severity, proximity. */
+        .actor-summary {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            margin: 8px -6px -6px 0;
+        }
+        [dir="rtl"] .actor-summary { margin: 8px 0 -6px -6px; }
+        .actor-summary .pill,
+        .actor-summary .recording-badge {
+            display: inline-flex;
+            align-items: center;
+            height: 26px;
+            margin: 0 6px 6px 0;
+            padding: 0 9px;
+            border-radius: 13px;
+            background: var(--well);
+            color: var(--on-surface-variant);
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        [dir="rtl"] .actor-summary .pill,
+        [dir="rtl"] .actor-summary .recording-badge { margin: 0 0 6px 6px; }
+        .actor-summary .pill svg { flex-shrink: 0; width: 14px; height: 14px; margin-right: 4px; }
+        [dir="rtl"] .actor-summary .pill svg { margin-right: 0; margin-left: 4px; }
+        .actor-summary .recording-badge.sev-alert    { background: var(--warning-soft); color: var(--warning); }
+        .actor-summary .recording-badge.sev-critical { background: var(--danger-soft); color: var(--danger); }
+        .actor-summary .prox-VERY_CLOSE { background: var(--danger-soft); color: var(--danger); }
+        .actor-summary .prox-CLOSE      { background: var(--warning-soft); color: var(--warning); }
+
+        /* Last row: file name, then the clip actions. Pinned to the card bottom so a row of cards lines up. */
+        .recording-foot {
             display: flex;
             align-items: center;
-            gap: 6px;
-            padding: 4px 6px;
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            /* min-width:0 lets this row shrink to its flex-column parent's
-               width so overflow-x:auto can actually scroll the chips
-               instead of the row widening past the viewport. */
             min-width: 0;
-            max-width: 100%;
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-            scrollbar-width: none;
-            -ms-overflow-style: none;
+            margin-top: auto;
+            padding-top: 10px;
         }
-        .filter-tabs-row2::-webkit-scrollbar { display: none; }
+        .recording-name {
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            font-size: var(--fs-caption);
+            line-height: 1.4;
+            color: var(--on-surface-variant);
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        /* File names are LTR: keep their order and cut the end in RTL too. */
+        [dir="rtl"] .recording-name { direction: ltr; text-align: right; }
+
+        /* v3 Actor / Severity / Proximity / Storage / Place chip rows (mock .filter-panel + .fchips).
+           One tile; each row is its label then chips that wrap. Margins stand in for flex gap. */
+        .actor-filter-rows {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            padding: 12px 16px 4px;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
+        }
+        .filter-tabs-row2 {
+            flex: 0 0 auto;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            min-width: 0;
+            margin-right: -8px;
+            padding: 0;
+            background: transparent;
+        }
+        [dir="rtl"] .filter-tabs-row2 { margin-right: 0; margin-left: -8px; }
+        .filter-tabs-row2 + .filter-tabs-row2 {
+            margin-top: 4px;
+            padding-top: 12px;
+            border-top: 1px solid var(--hairline);
+        }
         .filter-row-label {
             flex: 0 0 auto;
-            padding: 0 4px 0 2px;
-            font-size: 11px;
+            min-width: 88px;
+            max-width: 100%;
+            margin: 0 8px 8px 0;
+            font-size: var(--fs-label);
             font-weight: 600;
-            color: var(--text-muted);
-            letter-spacing: 0.02em;
-            white-space: nowrap;
+            color: var(--on-surface-variant);
+            overflow-wrap: break-word;
         }
+        [dir="rtl"] .filter-row-label { margin: 0 0 8px 8px; }
+        /* Chips: the shared tonal pill (revamp .checkbox-item) with a check on the selected one. */
         .filter-chip {
             flex: 0 0 auto;
-            background: transparent;
-            color: var(--text-muted);
-            border: 1px solid rgba(255,255,255,0.10);
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            cursor: pointer;
+            max-width: 100%;
+            min-height: 40px;
+            margin: 0 8px 8px 0;
+            padding: 0 16px;
+            border: 0;
+            border-radius: var(--radius-full);
+            background-color: var(--well);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            font-weight: 600;
+            line-height: 1.25;
             white-space: nowrap;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
+        [dir="rtl"] .filter-chip { margin: 0 0 8px 8px; }
         .filter-chip.active {
-            background: var(--bg-hover);
-            color: var(--text-primary, #fff);
-            border-color: rgba(255,255,255,0.25);
+            background-color: var(--secondary-container);
+            color: var(--on-secondary-container);
         }
-        .filter-chip.sev-notice.active   { background: rgba(160,160,160,0.20); }
-        .filter-chip.sev-alert.active    { background: rgba(255,136,0,0.20);   color: #ff9b3d; }
-        .filter-chip.sev-critical.active { background: rgba(239,68,68,0.25);   color: #ff6b6b; }
-        /* Storage chips — when active, tint to match the per-clip storage
-           badge palette (SD green, USB blue, internal neutral) so the filter
-           selection and the badges read as the same vocabulary. */
-        .filter-chip.storage-internal.active { background: rgba(255,255,255,0.10); }
-        .filter-chip.storage-sd.active       { background: rgba(16,185,129,0.18);  color: #34d399; border-color: rgba(16,185,129,0.38); }
-        .filter-chip.storage-usb.active      { background: rgba(59,130,246,0.18);  color: #60a5fa; border-color: rgba(59,130,246,0.38); }
+        .filter-chip.active::before {
+            content: "";
+            display: inline-block;
+            width: 10px;
+            height: 5px;
+            margin: 0 8px 3px -2px;
+            border-bottom: 2px solid currentColor;
+            border-left: 2px solid currentColor;
+            vertical-align: middle;
+            -webkit-transform: rotate(-45deg);
+            transform: rotate(-45deg);
+        }
+        [dir="rtl"] .filter-chip.active::before { margin: 0 -2px 3px 8px; }
+        @media (hover: hover) {
+            .filter-chip:not(.active):hover { background-color: var(--well-2); color: var(--on-surface); }
+        }
+        /* Selected severity and storage chips keep the clip badge colours, so the
+           filter and the badges read as the same vocabulary. */
+        .filter-chip.sev-alert.active    { background-color: var(--warning-soft); color: var(--warning); box-shadow: inset 0 0 0 1px var(--warning); }
+        .filter-chip.sev-critical.active { background-color: var(--danger-soft); color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+        .filter-chip.storage-sd.active   { background-color: var(--primary-soft); color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+        .filter-chip.storage-usb.active  { background-color: var(--tertiary-soft); color: var(--tertiary); box-shadow: inset 0 0 0 1px var(--tertiary); }
+        /* Phones: one scrolling line per filter group, so the clips start on the first screen. */
+        @media (max-width: 599px) {
+            .actor-filter-rows { padding: 4px 0; }
+            .filter-tabs-row2,
+            [dir="rtl"] .filter-tabs-row2 {
+                flex-wrap: nowrap;
+                margin: 0;
+                padding: 6px 12px 0;
+                overflow-x: auto;
+                overflow-y: hidden;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+            .filter-tabs-row2::-webkit-scrollbar { display: none; }
+            .filter-tabs-row2 + .filter-tabs-row2 { margin-top: 0; padding-top: 6px; }
+            .actor-filter-rows .filter-tabs-row2[data-filter-row] > * { margin-bottom: 6px; }
+            .filter-row-label { min-width: 0; margin-right: 12px; font-size: var(--fs-caption); white-space: nowrap; }
+            [dir="rtl"] .filter-row-label { margin: 0 0 8px 12px; }
+            .filter-tabs-row2 .place-search { flex: 0 0 200px; }
+        }
+        /* Wide screens: What | Severity, Distance | Storage, then Place across both columns. */
+        @media (min-width: 1280px) {
+            .actor-filter-rows {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+                grid-column-gap: 32px;
+                align-items: start;
+            }
+            .filter-tabs-row2[data-filter-row="severity"] { margin-top: 0; padding-top: 0; border-top: 0; }
+            .filter-tabs-row2[data-filter-row="place"] { grid-column: 1 / -1; }
+        }
+        @media (min-width: 1024px) {
+            :root[data-android-embed="1"] .actor-filter-rows {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+                grid-column-gap: 32px;
+                align-items: start;
+            }
+            :root[data-android-embed="1"] .filter-tabs-row2[data-filter-row="severity"] { margin-top: 0; padding-top: 0; border-top: 0; }
+            :root[data-android-embed="1"] .filter-tabs-row2[data-filter-row="place"] { grid-column: 1 / -1; }
+        }
 
         /* Place chips can carry user-edited SafeLocation labels and
            Nominatim strings — both can be arbitrarily long ("Wonderfully
@@ -801,7 +1043,7 @@
            horizontal scroller's intended scroll budget; the chip
            ellipsises individually rather than overflowing the row. */
         .filter-tabs-row2[data-filter-row="place"] .filter-chip {
-            max-width: 160px;
+            max-width: 220px;
             overflow: hidden;
             text-overflow: ellipsis;
         }
@@ -814,74 +1056,84 @@
            on /api/recordings + /api/recordings/places for substring
            match across short, medium, and displayName place labels. */
         .place-search {
-            flex: 0 0 auto;
-            display: inline-flex;
+            flex: 0 1 260px;
+            display: flex;
             align-items: center;
-            gap: 6px;
-            padding: 4px 6px 4px 10px;
-            background: var(--bg-base);
-            border: 1px solid rgba(255,255,255,0.10);
-            border-radius: 999px;
-            min-width: 180px;
-            max-width: 240px;
-            transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+            min-width: 0;
+            max-width: 100%;
+            min-height: 40px;
+            margin: 0 8px 8px 0;
+            padding: 0 6px 0 14px;
+            background: var(--well);
+            border: 0;
+            border-radius: var(--radius-full);
+            box-shadow: inset 0 0 0 1px var(--outline-variant);
+            transition: box-shadow var(--duration-fast) var(--easing-standard);
         }
+        [dir="rtl"] .place-search { margin: 0 0 8px 8px; padding: 0 14px 0 6px; }
         .place-search:focus-within {
-            border-color: var(--brand-primary, rgba(255,255,255,0.45));
-            background: var(--bg-surface);
-            box-shadow: 0 0 0 3px rgba(14,165,233,0.18);
+            box-shadow: inset 0 0 0 2px var(--primary);
         }
         .place-search.has-query {
-            border-color: rgba(255,255,255,0.25);
-            background: var(--bg-hover);
+            box-shadow: inset 0 0 0 1px var(--outline);
         }
         .place-search svg {
             flex: 0 0 auto;
-            width: 14px;
-            height: 14px;
-            color: var(--text-muted);
-            stroke-width: 2.2;
+            width: 18px;
+            height: 18px;
+            margin-right: 8px;
+            color: var(--on-surface-variant);
+            stroke-width: 2;
         }
+        [dir="rtl"] .place-search svg { margin-right: 0; margin-left: 8px; }
         .place-search input {
             flex: 1 1 auto;
+            width: 100%;
             min-width: 0;
+            height: 38px;
             background: transparent;
             border: 0;
-            outline: none;
-            color: var(--text-primary, #fff);
-            font-size: 12px;
+            color: var(--on-surface);
+            font-size: var(--fs-label);
             font-family: inherit;
-            padding: 4px 0;
+            padding: 0;
             line-height: 1.2;
         }
+        /* The field ring shows focus where :focus-within exists; Chrome 58 keeps the input's own outline. */
+        @supports selector(:focus-within) {
+            .place-search input:focus { outline: none; }
+        }
         .place-search input::placeholder {
-            color: var(--text-muted);
-            opacity: 0.85;
+            color: var(--on-surface-variant);
+            opacity: 1;
         }
         .place-search-clear {
             flex: 0 0 auto;
-            width: 22px;
-            height: 22px;
+            width: 32px;
+            height: 32px;
+            margin-left: 4px;
             border: 0;
-            border-radius: 999px;
+            border-radius: 50%;
             background: transparent;
-            color: var(--text-muted);
+            color: var(--on-surface-variant);
             cursor: pointer;
             display: none;
             align-items: center;
             justify-content: center;
             padding: 0;
         }
-        .place-search-clear:hover {
-            background: rgba(255,255,255,0.08);
-            color: var(--text-primary, #fff);
+        [dir="rtl"] .place-search-clear { margin-left: 0; margin-right: 4px; }
+        @media (hover: hover) {
+            .place-search-clear:hover { background: var(--well-2); color: var(--on-surface); }
         }
         .place-search.has-query .place-search-clear {
             display: inline-flex;
         }
-        .place-search-clear svg {
-            width: 12px;
-            height: 12px;
+        .place-search-clear svg,
+        [dir="rtl"] .place-search-clear svg {
+            width: 16px;
+            height: 16px;
+            margin: 0;
             color: inherit;
         }
         /* Active-search hint pill at the end of the place row. Mirrors
@@ -889,28 +1141,36 @@
            something even when zero chips are visible. */
         .place-search-hits {
             flex: 0 0 auto;
-            font-size: 10px;
-            color: var(--text-muted);
-            padding: 3px 8px;
-            border-radius: 999px;
-            background: rgba(255,255,255,0.06);
+            align-items: center;
+            min-height: 32px;
+            margin: 0 8px 8px 0;
+            padding: 0 12px;
+            border-radius: var(--radius-full);
+            background: var(--well-2);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
             white-space: nowrap;
             display: none;
         }
+        [dir="rtl"] .place-search-hits { margin: 0 0 8px 8px; }
         .place-search-hits.visible { display: inline-flex; }
-        @media (max-width: 480px) {
-            .place-search { min-width: 140px; max-width: 200px; }
+        @media (max-width: 599px) {
+            .place-search { flex: 1 1 100%; }
         }
 
 
+        /* Status line of the in-flight card. */
         .recording-meta {
-            font-size: 11px;
-            color: var(--text-muted);
             display: flex;
-            gap: 10px;
             flex-wrap: wrap;
             align-items: center;
+            margin: 4px 0 -4px;
+            font-size: var(--fs-caption);
+            font-variant-numeric: tabular-nums;
+            color: var(--on-surface-variant);
         }
+        .recording-meta > * { margin: 0 10px 4px 0; }
+        [dir="rtl"] .recording-meta > * { margin: 0 0 4px 10px; }
 
         /* Per-clip storage tag (INTERNAL / SD_CARD / USB). Makes the silent
            SD→internal fallback visible per file: the SD card on this BYD
@@ -922,133 +1182,146 @@
         .storage-chip {
             display: inline-flex;
             align-items: center;
-            gap: 3px;
-            padding: 1px 7px 1px 5px;
-            border-radius: 999px;
-            font-size: 10px;
+            height: 22px;
+            padding: 0 8px 0 6px;
+            border: 0;
+            border-radius: 11px;
+            font-size: 12px;
             font-weight: 600;
-            letter-spacing: 0.02em;
-            line-height: 1.5;
-            border: 1px solid var(--border-subtle);
+            letter-spacing: 0;
+            line-height: 1;
+            white-space: nowrap;
         }
-        .storage-chip svg { flex: 0 0 auto; opacity: 0.9; }
+        [dir="rtl"] .storage-chip { padding: 0 6px 0 8px; }
+        .storage-chip svg { flex: 0 0 auto; width: 12px; height: 12px; margin-right: 4px; opacity: 0.9; }
+        [dir="rtl"] .storage-chip svg { margin-right: 0; margin-left: 4px; }
         .storage-chip.storage-internal {
-            background: rgba(255,255,255,0.05);
-            color: var(--text-muted);
+            background: var(--well-2);
+            color: var(--on-surface-variant);
         }
         .storage-chip.storage-sd {
-            background: rgba(16,185,129,0.14);
-            border-color: rgba(16,185,129,0.38);
-            color: #34d399;
+            background: var(--primary-soft);
+            color: var(--primary);
         }
         .storage-chip.storage-usb {
-            background: rgba(59,130,246,0.14);
-            border-color: rgba(59,130,246,0.38);
-            color: #60a5fa;
+            background: var(--tertiary-soft);
+            color: var(--tertiary);
         }
 
+        /* Clip actions: small round tonal buttons at the end of the last row. */
         .recording-actions {
+            flex: 0 0 auto;
             display: flex;
-            flex-direction: column;
-            gap: 6px;
-            justify-content: center;
+            align-items: center;
+            margin-left: 8px;
         }
-        
+        [dir="rtl"] .recording-actions { margin-left: 0; margin-right: 8px; }
+
         .action-btn {
-            width: 32px;
-            height: 32px;
-            border-radius: var(--radius-sm);
-            background: var(--bg-base);
-            color: var(--text-secondary);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--well);
+            color: var(--on-surface-variant);
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        
-        .action-btn:hover {
-            background: var(--brand-primary);
-            color: var(--bg-base);
+        .action-btn + .action-btn { margin-left: 6px; }
+        [dir="rtl"] .action-btn + .action-btn { margin-left: 0; margin-right: 6px; }
+        .action-btn svg { width: 16px; height: 16px; }
+        @media (hover: hover) {
+            .action-btn:hover { background: var(--well-2); color: var(--on-surface); }
+            .action-btn.delete:hover { background: var(--danger-soft); color: var(--danger); }
         }
-        
-        .action-btn.delete:hover {
-            background: var(--danger);
-        }
-        
+
         /* Pagination */
         .pagination {
             display: flex;
+            flex-wrap: wrap;
             justify-content: center;
             align-items: center;
-            gap: 8px;
-            padding: 16px;
-            border-top: 1px solid var(--border-subtle);
+            padding: 16px 0 8px;
         }
-        
+
         .pagination-btn {
-            padding: 8px 16px;
-            background: var(--bg-elevated);
-            border-radius: var(--radius-sm);
-            color: var(--text-secondary);
-            font-size: 13px;
-            font-weight: 500;
-            transition: all 0.2s;
-            display: flex;
+            display: inline-flex;
             align-items: center;
-            gap: 6px;
+            min-height: 44px;
+            padding: 0 18px;
+            background: var(--well-2);
+            border-radius: var(--radius-full);
+            color: var(--on-surface);
+            font-size: var(--fs-label);
+            font-weight: 600;
         }
-        
-        .pagination-btn:hover:not(:disabled) {
-            background: var(--bg-hover);
-            color: var(--text-primary);
+        #prevPageBtn svg { margin-right: 6px; }
+        #nextPageBtn svg { margin-left: 6px; }
+        [dir="rtl"] #prevPageBtn svg { margin-right: 0; margin-left: 6px; }
+        [dir="rtl"] #nextPageBtn svg { margin-left: 0; margin-right: 6px; }
+        [dir="rtl"] .pagination-btn svg { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
+        @media (hover: hover) {
+            .pagination-btn:hover:not(:disabled) { background-image: linear-gradient(var(--state-hover), var(--state-hover)); }
         }
-        
+
         .pagination-btn:disabled {
-            opacity: 0.4;
+            opacity: 0.38;
             cursor: not-allowed;
         }
-        
+
         .pagination-info {
-            font-size: 13px;
-            color: var(--text-muted);
-            padding: 0 12px;
+            margin: 0 12px;
+            font-size: var(--fs-label);
+            font-variant-numeric: tabular-nums;
+            color: var(--on-surface-variant);
         }
-        
+
         /* Empty State */
         .empty-state {
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            padding: 60px 20px;
+            padding: 48px 20px;
             text-align: center;
         }
-        
+        .recordings-list > .empty-state {
+            border-radius: var(--radius-tile);
+            background: var(--tile);
+            box-shadow: var(--tile-shadow);
+        }
+
         .empty-icon {
-            width: 64px;
-            height: 64px;
-            color: var(--text-muted);
-            margin-bottom: 16px;
-            opacity: 0.5;
+            width: 48px;
+            height: 48px;
+            color: var(--on-surface-variant);
+            margin-bottom: 12px;
+            opacity: 0.7;
         }
-        
+
         .empty-title {
-            font-size: 16px;
+            font-size: var(--fs-title);
             font-weight: 600;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
+            color: var(--on-surface);
+            margin-bottom: 6px;
         }
-        
+
         .empty-text {
-            font-size: 13px;
-            color: var(--text-muted);
+            max-width: 46ch;
+            font-size: var(--fs-label);
+            color: var(--on-surface-variant);
         }
         
-        /* Video Modal */
+        /* Player (mock .player): a centred panel on wide screens, a bottom sheet on phones. */
         .video-modal {
             position: fixed;
-            inset: 0;
-            background: var(--modal-backdrop);
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            /* One dark scrim in both themes, as in the mock. */
+            background: rgba(0, 0, 0, 0.75);
             /* Above the body-level theme FAB (z-index 9000 in theme.js).
                Keeps the floating theme picker from sitting on top of the
                player on PWA / external mobile browsers. The Android
@@ -1058,7 +1331,7 @@
             display: none;
             align-items: center;
             justify-content: center;
-            padding: 16px;
+            padding: 24px;
         }
 
         /* Belt-and-suspenders: while the video modal is open, also fully
@@ -1077,15 +1350,23 @@
         }
 
         .video-container {
-            max-width: 1200px;
-            width: 100%;
-            max-height: calc(100vh - 32px);
-            max-height: calc(var(--vh, 1vh) * 100 - 32px);
-            background: var(--bg-surface);
-            border-radius: var(--radius-lg);
-            overflow: hidden;
+            position: relative;
             display: flex;
             flex-direction: column;
+            width: 100%;
+            max-width: 960px;
+            max-height: 100%;
+            /* Scrolls rather than squeezing the video when the panel cannot fit. */
+            overflow-x: hidden;
+            overflow-y: auto;
+            /* Shows as bands beside a video narrower than the panel. */
+            background: #000;
+            border-radius: var(--radius-2xl);
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+            animation: popIn 0.2s ease;
+        }
+        @media (min-width: 1600px) {
+            .video-container { max-width: 1200px; }
         }
 
         /* ====================================================================
@@ -1114,15 +1395,20 @@
         .video-container:-webkit-full-screen,
         .video-container.is-fullscreen {
             position: fixed;
-            inset: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
             width: 100vw;
             height: 100vh;
             height: calc(var(--vh, 1vh) * 100);
             max-width: 100vw;
             max-height: 100vh;
             max-height: calc(var(--vh, 1vh) * 100);
+            overflow: hidden;
             border-radius: 0;
             background: #000;
+            box-shadow: none;
             z-index: 2000;
             /* Push the video player block to fill the remaining space
                between header and transport row, and center its contents
@@ -1215,6 +1501,7 @@
             -webkit-backdrop-filter: blur(6px);
             border: 1px solid rgba(255, 255, 255, 0.18);
             flex-shrink: 0;
+            margin: 0;
             z-index: 21;
         }
         /* Title sits to the right of the close FAB and ellipsizes if
@@ -1281,8 +1568,25 @@
         }
         .video-container:fullscreen .video-ctrl-btn,
         .video-container:-webkit-full-screen .video-ctrl-btn,
-        .video-container.is-fullscreen .video-ctrl-btn {
+        .video-container.is-fullscreen .video-ctrl-btn,
+        .video-container:fullscreen .video-time,
+        .video-container:-webkit-full-screen .video-time,
+        .video-container.is-fullscreen .video-time,
+        .video-container:fullscreen .legend-item,
+        .video-container:-webkit-full-screen .legend-item,
+        .video-container.is-fullscreen .legend-item {
             color: #fff;
+        }
+        .video-container:fullscreen .timeline-track,
+        .video-container:-webkit-full-screen .timeline-track,
+        .video-container.is-fullscreen .timeline-track {
+            background: rgba(255, 255, 255, 0.28);
+        }
+        /* The sheet grab handle is for the panel only; fullscreen has its own. */
+        .video-container:fullscreen .video-header::before,
+        .video-container:-webkit-full-screen .video-header::before,
+        .video-container.is-fullscreen .video-header::before {
+            display: none;
         }
 
         /* Swipe-down-to-dismiss visual: the container is translated by
@@ -1322,51 +1626,89 @@
             opacity: 1;
         }
 
-        @media (min-width: 768px) {
-            .video-modal {
-                padding: 20px;
-            }
-
-            .video-container {
-                max-height: calc(100vh - 40px);
-                max-height: calc(var(--vh, 1vh) * 100 - 40px);
-            }
-        }
-        
+        /* Header: title and close. Also the swipe-down-to-close zone (events.js), so touch drags belong to it. */
         .video-header {
+            position: relative;
             display: flex;
-            justify-content: space-between;
+            flex: 0 0 auto;
             align-items: center;
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border-subtle);
+            min-width: 0;
+            padding: 12px 12px 12px 20px;
+            background: var(--tile);
+            touch-action: none;
         }
-        
+        [dir="rtl"] .video-header { padding: 12px 20px 12px 12px; }
+
         .video-title {
-            font-size: 16px;
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            font-size: var(--fs-title);
             font-weight: 600;
+            line-height: 1.3;
+            color: var(--on-surface);
+            white-space: nowrap;
+            text-overflow: ellipsis;
         }
-        
+
         .video-close {
-            width: 36px;
-            height: 36px;
-            border-radius: var(--radius-sm);
-            background: var(--bg-elevated);
-            color: var(--text-secondary);
+            flex: 0 0 auto;
+            width: 44px;
+            height: 44px;
+            margin-left: 12px;
+            border-radius: 50%;
+            background: var(--well);
+            color: var(--on-surface-variant);
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
             border: none;
             cursor: pointer;
         }
+        [dir="rtl"] .video-close { margin-left: 0; margin-right: 12px; }
 
-        .video-close:hover {
-            background: var(--danger);
-            color: white;
+        @media (hover: hover) {
+            .video-close:hover {
+                background: var(--well-2);
+                color: var(--on-surface);
+            }
         }
+
+        /* Phones: a bottom sheet (mock player on phones) with a grab handle on the header, which is also the swipe-down zone. */
+        @media (max-width: 768px) {
+            .video-modal {
+                align-items: flex-end;
+                padding: 24px 0 0;
+            }
+
+            .video-container {
+                max-width: 100%;
+                border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+                box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.4);
+                animation: slideUp 0.3s ease;
+            }
+
+            .video-modal .video-header { padding-top: 22px; }
+            .video-header::before {
+                content: "";
+                position: absolute;
+                top: 8px;
+                left: 50%;
+                width: 36px;
+                height: 4px;
+                margin-left: -18px;
+                border-radius: 2px;
+                background: var(--outline-variant);
+                pointer-events: none;
+            }
+        }
+
         
         .video-player {
+            flex: 0 0 auto;
             width: 100%;
+            margin: 0 auto;
             /* Chrome 58 has no aspect-ratio support. This percentage-height
                fallback is disabled below on modern engines. */
             height: 0;
@@ -1380,14 +1722,6 @@
                in a 16:9 frame pillarboxes, and zooming 2x into a corner
                surfaces half-a-pillarbox of black space. */
             aspect-ratio: 16/9;
-            /* Cap height so portrait modal layouts (head unit rotated)
-               don't make the video taller than the visible viewport; the
-               4:3 mosaic + 320px modal width otherwise yields ~427px of
-               video which can clip the chrome under it. Uses the live --vh
-               (fresh across rotation via theme.js) with a static-vh
-               fallback for the pre-script frame. */
-            max-height: calc(100vh - 32px - 64px - 80px);
-            max-height: calc(var(--vh, 1vh) * 100 - 32px - 64px - 80px);
             background: black;
             /* Quadrant zoom is implemented as a CSS transform on the
                <video> element (scale + transform-origin). overflow:hidden
@@ -1407,10 +1741,31 @@
         }
 
         @supports (aspect-ratio: 1 / 1) {
+            /* Fit the frame to the screen height: as wide as the panel allows,
+               but no wider than the height left over by the player chrome times
+               the clip's aspect (--video-ar, set by events.js on loadedmetadata),
+               so the source aspect never gets stretched. Black shows beside it. */
             .video-player {
                 height: auto;
                 padding-bottom: 0;
+                max-width: calc((100vh - 304px) * 1.7778);
+                max-width: calc((var(--vh, 1vh) * 100 - 304px) * var(--video-ar, 1.7778));
             }
+            @media (max-width: 768px) {
+                .video-player {
+                    max-width: calc((100vh - 336px) * 1.7778);
+                    max-width: calc((var(--vh, 1vh) * 100 - 336px) * var(--video-ar, 1.7778));
+                }
+            }
+            /* Short screens (phone landscape): keep the header and transport in view; the details scroll. */
+            @media (max-height: 560px) {
+                .video-player {
+                    max-width: calc((100vh - 222px) * 1.7778);
+                    max-width: calc((var(--vh, 1vh) * 100 - 222px) * var(--video-ar, 1.7778));
+                }
+            }
+            /* Square calendar days (the date picker); Chrome 58 keeps min-height: 40px. */
+            .calendar-day { aspect-ratio: 1; }
         }
 
         .video-container:fullscreen .video-player,
@@ -1482,7 +1837,6 @@
             top: 12px;
             right: 12px;
             display: flex;
-            gap: 4px;
             padding: 4px;
             border-radius: 999px;
             background: rgba(0, 0, 0, 0.65);
@@ -1545,6 +1899,8 @@
                .active state styling that does the job legibly. */
             -webkit-tap-highlight-color: transparent;
         }
+        .quadrant-bar button + button { margin-left: 4px; }
+        [dir="rtl"] .quadrant-bar button + button { margin-left: 0; margin-right: 4px; }
         .quadrant-bar button:hover { background: rgba(255, 255, 255, 0.1); }
         .quadrant-bar button.active { opacity: 1; background: rgba(255, 255, 255, 0.18); }
         .quadrant-bar svg { width: 18px; height: 18px; }
@@ -1561,72 +1917,65 @@
         .video-player.dashcam .quadrant-bar .q2x2 { display: none; }
         .video-player.dashcam .quadrant-bar .qdash { display: inline; }
         
+        /* Details (mock .player-info): date, time and size, then Download; wraps on narrow screens. */
         .video-details {
-            padding: 12px 16px;
-            padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
             display: flex;
-            flex-direction: column;
-            gap: 12px;
-            border-top: 1px solid var(--border-subtle);
+            flex: 0 0 auto;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px 14px;
+            padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+            background: var(--tile);
         }
-        
+
         .video-meta {
             display: flex;
-            gap: 12px;
             flex-wrap: wrap;
-            font-size: 12px;
-            color: var(--text-muted);
+            align-items: center;
+            min-width: 0;
+            margin-right: 12px;
+            font-size: var(--fs-label);
+            font-variant-numeric: tabular-nums;
+            color: var(--on-surface-variant);
         }
-        
-        @media (min-width: 480px) {
-            .video-details {
-                flex-direction: row;
-                justify-content: space-between;
-                align-items: center;
-                padding: 16px 20px;
-            }
-            
-            .video-meta {
-                gap: 20px;
-                font-size: 13px;
-            }
-        }
-        
+        [dir="rtl"] .video-meta { margin-right: 0; margin-left: 12px; }
+
         .video-meta span {
             display: flex;
             align-items: center;
-            gap: 6px;
+            margin: 4px 16px 4px 0;
+            white-space: nowrap;
         }
-        
+        [dir="rtl"] .video-meta span { margin: 4px 0 4px 16px; }
+        .video-meta svg { flex-shrink: 0; margin-right: 6px; }
+        [dir="rtl"] .video-meta svg { margin-right: 0; margin-left: 6px; }
+
+        /* Download: the mock's tonal button. */
         .download-btn {
-            display: flex;
+            display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            padding: 10px 20px;
-            background: var(--brand-gradient);
-            color: white;
-            border-radius: var(--radius-md);
-            font-size: 14px;
+            min-height: 44px;
+            margin: 4px 0;
+            padding: 0 20px;
+            border-radius: var(--radius-full);
+            background: var(--well-2);
+            color: var(--on-surface);
+            font-size: var(--fs-label);
             font-weight: 600;
-            transition: all 0.2s;
-            width: 100%;
+            white-space: nowrap;
+            transition: background-color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
             -webkit-tap-highlight-color: transparent;
         }
-        
-        @media (min-width: 480px) {
-            .download-btn {
-                width: auto;
-            }
+        .download-btn svg { flex-shrink: 0; margin-right: 8px; }
+        [dir="rtl"] .download-btn svg { margin-right: 0; margin-left: 8px; }
+        @media (hover: hover) {
+            .download-btn:hover { background-image: linear-gradient(var(--state-hover), var(--state-hover)); }
         }
-        
-        .download-btn:hover {
-            transform: translateY(-1px);
-            box-shadow: var(--shadow-glow);
-        }
-        
+
         .download-btn:active {
-            transform: scale(0.98);
+            transform: scale(0.97);
         }
         
         /* Loading Spinner */
@@ -1663,10 +2012,11 @@
            here because it scales with the video element).
            ==================================================================== */
         .video-transport {
-            background: var(--bg-elevated);
+            flex: 0 0 auto;
             display: flex;
             flex-direction: column;
-            gap: 0;
+            padding: 4px 12px 0;
+            background: var(--tile);
             user-select: none;
             -webkit-user-select: none;
         }
@@ -1694,7 +2044,7 @@
             top: 50%;
             transform: translateY(-50%);
             height: 6px;
-            background: rgba(148, 163, 184, 0.18);
+            background: var(--well-2);
             border-radius: 3px;
             overflow: visible;
         }
@@ -1707,7 +2057,7 @@
             bottom: 0;
             left: 0;
             width: 0;
-            background: var(--brand-primary);
+            background: var(--primary);
             border-radius: 3px;
             pointer-events: none;
             transition: width 0.08s linear;
@@ -1754,10 +2104,10 @@
             margin-left: -7px;
             margin-top: -7px;
             border-radius: 50%;
-            background: white;
+            background: var(--primary);
             pointer-events: none;
             z-index: 3;
-            box-shadow: 0 1px 6px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.18);
+            box-shadow: 0 0 0 4px var(--primary-soft), 0 1px 4px rgba(0, 0, 0, 0.3);
             /* No transition during scrub — feels laggy. Re-enabled while
                playing via .smooth so timeupdate's 4 Hz cadence interpolates
                into a smooth crawl instead of stepping. */
@@ -1767,10 +2117,9 @@
 
         .timeline-legend {
             display: flex;
-            gap: 12px;
-            padding: 6px 12px;
+            flex-wrap: wrap;
             justify-content: center;
-            border-top: 1px solid var(--border-subtle);
+            padding: 4px 0 0;
         }
 
         /* Transport row — play/pause + time + mute. Lives below the scrubber
@@ -1778,18 +2127,19 @@
         .video-controls {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 6px 10px;
-            border-top: 1px solid var(--border-subtle);
+            margin: 0 -6px;
+            padding: 2px 0 6px;
         }
+        .video-controls > * + * { margin-left: 4px; }
+        [dir="rtl"] .video-controls > * + * { margin-left: 0; margin-right: 4px; }
 
         .video-ctrl-btn {
-            width: 40px;
-            height: 40px;
+            width: 44px;
+            height: 44px;
             border-radius: 50%;
             border: none;
             background: transparent;
-            color: var(--text-primary);
+            color: var(--on-surface);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1798,20 +2148,22 @@
             touch-action: manipulation;
             transition: background 150ms ease;
         }
-        .video-ctrl-btn:hover { background: var(--bg-hover); }
-        .video-ctrl-btn:active { background: var(--bg-elevated); }
+        @media (hover: hover) {
+            .video-ctrl-btn:hover { background: var(--state-hover); }
+        }
+        .video-ctrl-btn:active { background: var(--well); }
         .video-ctrl-btn svg { width: 22px; height: 22px; }
 
         .video-time {
-            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-            font-size: 12px;
-            color: var(--text-secondary);
+            font-size: var(--fs-label);
+            font-weight: 500;
+            color: var(--on-surface-variant);
             white-space: nowrap;
             padding: 0 4px;
             font-variant-numeric: tabular-nums;
         }
-        .video-time .sep { color: var(--text-muted); margin: 0 2px; }
-        .video-time .dur { color: var(--text-muted); }
+        .video-time .sep { margin: 0 2px; opacity: 0.7; }
+        .video-time .dur { opacity: 0.7; }
 
         /* Spacer pushes the mute button to the right edge of the row. */
         .video-controls .spacer { flex: 1; }
@@ -1819,16 +2171,20 @@
         .legend-item {
             display: flex;
             align-items: center;
-            gap: 4px;
-            font-size: 10px;
-            color: var(--text-muted);
+            font-size: 11px;
+            color: var(--on-surface-variant);
         }
-        
+        .legend-item + .legend-item { margin-left: 12px; }
+        [dir="rtl"] .legend-item + .legend-item { margin-left: 0; margin-right: 12px; }
+
         .legend-dot {
+            flex-shrink: 0;
             width: 8px;
             height: 8px;
+            margin-right: 4px;
             border-radius: 2px;
         }
+        [dir="rtl"] .legend-dot { margin-right: 0; margin-left: 4px; }
         
         .legend-motion { background: rgba(148, 163, 184, 0.6); }
         .legend-person { background: rgba(239, 68, 68, 0.85); }
@@ -1836,115 +2192,229 @@
         .legend-bike { background: rgba(251, 146, 60, 0.85); }
         .legend-animal { background: rgba(168, 85, 247, 0.85); }
         
-        /* Multi-Select Mode */
+        /* Select mode toggle (mock "Select"): round tonal button at the end of the toolbar. */
         .select-mode-btn {
-            width: 32px;
-            height: 32px;
-            border-radius: var(--radius-sm);
-            background: var(--bg-elevated);
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.2s;
-            cursor: pointer;
-            border: none;
-        }
-        
-        .select-mode-btn:hover {
-            background: var(--bg-hover);
-            color: var(--text-primary);
-        }
-        
-        .select-mode-btn.active {
-            background: var(--brand-primary);
-            color: var(--bg-base);
-        }
-        
-        .select-toolbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 20px;
-            background: var(--bg-elevated);
-            border-bottom: 1px solid var(--border-subtle);
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        
-        .selected-count {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--brand-primary);
-            white-space: nowrap;
-        }
-        
-        .select-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        
-        .select-action-btn {
-            padding: 6px 12px;
-            border-radius: var(--radius-sm);
-            font-size: 12px;
-            font-weight: 500;
-            background: var(--bg-surface);
-            color: var(--text-secondary);
-            border: 1px solid var(--border-subtle);
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        
-        .select-action-btn:hover {
-            background: var(--bg-hover);
-            color: var(--text-primary);
-        }
-        
-        .select-action-btn.danger {
-            color: var(--danger);
-            border-color: var(--danger);
-        }
-        
-        .select-action-btn.danger:hover {
-            background: var(--danger);
-            color: white;
-        }
-        
-        .select-action-btn.cancel {
-            color: var(--text-muted);
-        }
-        
-        /* Checkbox in recording cards */
-        .select-checkbox-wrap {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: var(--well);
+            color: var(--on-surface-variant);
             display: flex;
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
-            padding: 4px;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
+            cursor: pointer;
+            border: none;
         }
-        
-        .select-checkbox {
-            width: 20px;
-            height: 20px;
-            accent-color: var(--brand-primary);
+        .select-mode-btn svg { width: 20px; height: 20px; }
+
+        .select-mode-btn.active {
+            background: var(--secondary-container);
+            color: var(--on-secondary-container);
+        }
+
+        /* Selection bar (mock .select-bar): inverse surface after the list, held at the
+           bottom of the screen while the grid scrolls. events.js toggles its display inline. */
+        .select-toolbar {
+            position: -webkit-sticky;
+            position: sticky;
+            bottom: 16px;
+            bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+            z-index: 25;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            margin-top: 12px;
+            padding: 8px 8px 0 18px;
+            background: var(--inverse-surface);
+            color: var(--inverse-on-surface);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+        }
+        [dir="rtl"] .select-toolbar { padding: 8px 18px 0 8px; }
+
+        .selected-count {
+            margin: 0 12px 8px 0;
+            font-size: var(--fs-label);
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        [dir="rtl"] .selected-count { margin: 0 0 8px 12px; }
+
+        .select-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .select-action-btn {
+            display: flex;
+            align-items: center;
+            min-height: 40px;
+            margin: 0 0 8px 6px;
+            padding: 0 16px;
+            border: 0;
+            border-radius: var(--radius-full);
+            background: transparent;
+            color: inherit;
+            font-size: var(--fs-label);
+            font-weight: 600;
             cursor: pointer;
         }
-        
-        .recording-card.selected {
-            border-color: var(--brand-primary);
-            background: rgba(14, 165, 233, 0.08);
+        [dir="rtl"] .select-action-btn { margin: 0 6px 8px 0; }
+        .select-action-btn svg { flex-shrink: 0; margin-right: 6px; }
+        [dir="rtl"] .select-action-btn svg { margin-right: 0; margin-left: 6px; }
+
+        .select-action-btn.danger {
+            background: var(--error);
+            color: var(--on-error);
         }
+
+        .select-action-btn.cancel {
+            background: transparent;
+            color: inherit;
+        }
+        @media (hover: hover) {
+            .select-action-btn:hover { background-image: linear-gradient(rgba(127, 127, 127, 0.16), rgba(127, 127, 127, 0.16)); }
+            .select-mode-btn:hover { background-color: var(--well-2); color: var(--on-surface); }
+            .select-mode-btn.active:hover { background-color: var(--secondary-container); color: var(--on-secondary-container); }
+            .recording-card-inflight:hover { box-shadow: var(--tile-shadow), 0 0 0 2px var(--primary); }
+        }
+
+        /* Checkbox in recording cards: overlays the thumbnail corner (mock .clip-sel). */
+        .select-checkbox-wrap {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 44px;
+            padding: 0;
+            border-radius: 50%;
+            background: var(--modal-backdrop);
+            cursor: pointer;
+        }
+        [dir="rtl"] .select-checkbox-wrap { right: auto; left: 8px; }
+
+        .select-checkbox {
+            width: 22px;
+            height: 22px;
+            margin: 0;
+            accent-color: var(--primary);
+            cursor: pointer;
+        }
+
+        .recording-card.selected {
+            background-image: linear-gradient(var(--primary-soft), var(--primary-soft));
+            box-shadow: 0 0 0 3px var(--primary);
+        }
+
+        /* Phones: the selection bar sits above the bottom navigation; the type segments take their own line. */
+        @media (max-width: 768px) {
+            html.has-bottom-nav .select-toolbar {
+                bottom: 88px;
+                bottom: calc(var(--bottom-nav-h) + 12px + env(safe-area-inset-bottom, 0px));
+            }
+            .events-top-bar > .filter-tabs { order: 2; flex: 1 1 100%; }
+            .filter-tab { flex: 1 0 auto; padding: 0 10px; }
+        }
+        @media (max-width: 599px) {
+            .select-action-btn { padding: 0 12px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .recording-card,
+            .recording-thumbnail .play-icon { transition: none; }
+            .recording-card:active { transform: none; }
+            .recording-card-inflight .inflight-dot,
+            .recording-card-just-finalized,
+            .video-container { animation: none; }
+        }
+
+        /* Touch: 44px targets. */
+        @media (pointer: coarse) {
+            .calendar-toggle,
+            .storage-stats { min-height: 48px; }
+            .events-top-bar > .filter-tabs { padding: 2px; }
+            .filter-tab,
+            .filter-chip,
+            .place-search { min-height: 44px; }
+            .place-search input { height: 42px; font-size: 16px; }
+            .place-search-clear { width: 40px; height: 40px; }
+            .action-btn,
+            .calendar-nav button { width: 44px; height: 44px; }
+            .select-mode-btn { width: 48px; height: 48px; }
+            .pagination-btn,
+            .select-action-btn { min-height: 44px; }
+            .calendar-close { min-height: 48px; }
+        }
+
+        /* Car: 56px targets, 15px body text. */
+        :root[data-android-embed="1"] .events-container { padding: 16px 20px 24px; }
+        :root[data-android-embed="1"] .calendar-toggle { min-height: 64px; padding: 0 22px 0 18px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"][dir="rtl"] .calendar-toggle { padding: 0 18px 0 22px; }
+        :root[data-android-embed="1"] .calendar-toggle svg { width: 22px; height: 22px; }
+        :root[data-android-embed="1"] .events-top-bar > .filter-tabs { padding: 4px; }
+        :root[data-android-embed="1"] .filter-tab { min-height: 56px; padding: 0 20px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .storage-stats { min-height: 64px; padding: 8px 22px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .storage-bar-mini { width: 96px; height: 8px; border-radius: 4px; }
+        :root[data-android-embed="1"] .storage-dot { width: 10px; height: 10px; }
+        :root[data-android-embed="1"] .filter-row-label { min-width: 80px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .filter-chip { min-height: 56px; padding: 0 18px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .place-search { min-height: 56px; }
+        :root[data-android-embed="1"] .place-search input { height: 54px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .place-search-clear { width: 48px; height: 48px; }
+        :root[data-android-embed="1"] .place-search-hits { min-height: 40px; font-size: var(--fs-label); }
+        :root[data-android-embed="1"] .recordings-header,
+        :root[data-android-embed="1"] .day-head { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .select-mode-btn { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .select-mode-btn svg { width: 22px; height: 22px; }
+        :root[data-android-embed="1"] .recordings-list { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+        :root[data-android-embed="1"] .clip-time { font-size: var(--fs-title); }
+        :root[data-android-embed="1"] .recording-badge { height: 28px; padding: 0 11px; font-size: var(--fs-label); line-height: 28px; }
+        :root[data-android-embed="1"] .recording-meta,
+        :root[data-android-embed="1"] .recording-place,
+        :root[data-android-embed="1"] .recording-name,
+        :root[data-android-embed="1"] .storage-chip { font-size: var(--fs-label); }
+        :root[data-android-embed="1"] .storage-chip { height: 26px; }
+        :root[data-android-embed="1"] .actor-summary .pill,
+        :root[data-android-embed="1"] .actor-summary .recording-badge { height: 32px; padding: 0 12px; font-size: var(--fs-label); }
+        /* 56px actions take their own line under the file name when the card is narrow. */
+        :root[data-android-embed="1"] .recording-foot { flex-wrap: wrap; }
+        :root[data-android-embed="1"] .recording-actions { margin-top: 8px; margin-left: auto; }
+        :root[data-android-embed="1"][dir="rtl"] .recording-actions { margin-left: 0; margin-right: auto; }
+        :root[data-android-embed="1"] .action-btn { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .action-btn svg { width: 22px; height: 22px; }
+        :root[data-android-embed="1"] .recording-thumbnail .play-icon { width: 60px; height: 60px; margin: -30px 0 0 -30px; }
+        :root[data-android-embed="1"] .recording-thumbnail .play-icon svg { width: 24px; height: 24px; }
+        :root[data-android-embed="1"] .recording-thumbnail .thumb-meta,
+        :root[data-android-embed="1"] .recording-thumbnail .sk-badge { font-size: var(--fs-label); }
+        :root[data-android-embed="1"] .recording-thumbnail .clip-type { height: 28px; padding: 0 11px; font-size: var(--fs-label); line-height: 28px; }
+        :root[data-android-embed="1"] .select-checkbox-wrap { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .select-checkbox { width: 28px; height: 28px; }
+        :root[data-android-embed="1"] .selected-count { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .select-action-btn,
+        :root[data-android-embed="1"] .pagination-btn { min-height: 56px; padding: 0 24px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .pagination-info { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .calendar-panel { max-width: 480px; }
+        :root[data-android-embed="1"] .calendar-title { font-size: var(--fs-headline); }
+        :root[data-android-embed="1"] .calendar-nav button { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .calendar-weekday { font-size: var(--fs-label); }
+        :root[data-android-embed="1"] .calendar-day { min-height: 56px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .calendar-close { min-height: 56px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .empty-title { font-size: var(--fs-headline); }
+        :root[data-android-embed="1"] .empty-text { font-size: var(--fs-body); }
     </style>
 </head>
 <body>
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content">
@@ -1954,11 +2424,15 @@
                         <line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>
                     </svg>
                 </button>
-                <span style="font-weight:600;" data-i18n="nav.events">Events</span>
+                <span style="font-weight:600;" data-i18n="nav.recordings">Recordings</span>
                 <div style="width:40px;"></div>
             </div>
+            <!-- Page title, named like the nav entry. theme.js docks the theme picker here. -->
+            <header class="page-header">
+                <h1 class="page-title" data-i18n="nav.recordings">Recordings</h1>
+            </header>
             <div class="events-container">
-                <!-- Top Bar: Calendar Toggle + Filters + Storage -->
+                <!-- Toolbar: date chip + type segments, then storage meter + Select at the end -->
                 <div class="events-top-bar">
                     <button class="calendar-toggle" id="calendarToggle" onclick="BYD.events.toggleCalendar()">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1978,31 +2452,39 @@
                         <button class="filter-tab" data-filter="replay" onclick="BYD.events.setFilter('replay')" data-i18n="events.tab_replays">Replays</button>
                     </div>
 
-                    <div class="storage-stats" id="storageStats">
-                        <div class="storage-info">
-                            <span class="storage-value" id="storageUsed">--</span>
-                            <div class="storage-bar-mini">
-                                <div class="storage-fill" id="storageFill" style="width: 0%"></div>
+                    <div class="toolbar-end">
+                        <div class="storage-stats" id="storageStats">
+                            <div class="storage-info">
+                                <span class="storage-value" id="storageUsed">--</span>
+                                <div class="storage-bar-mini">
+                                    <div class="storage-fill" id="storageFill" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="storage-breakdown">
+                                <div class="storage-item">
+                                    <span class="storage-dot normal"></span>
+                                    <span id="normalCount">0</span>
+                                </div>
+                                <div class="storage-item">
+                                    <span class="storage-dot sentry"></span>
+                                    <span id="sentryCount">0</span>
+                                </div>
+                                <div class="storage-item">
+                                    <span class="storage-dot proximity"></span>
+                                    <span id="proximityCount">0</span>
+                                </div>
+                                <div class="storage-item">
+                                    <span class="storage-dot replay"></span>
+                                    <span id="replayCount">0</span>
+                                </div>
                             </div>
                         </div>
-                        <div class="storage-breakdown">
-                            <div class="storage-item">
-                                <span class="storage-dot normal"></span>
-                                <span id="normalCount">0</span>
-                            </div>
-                            <div class="storage-item">
-                                <span class="storage-dot sentry"></span>
-                                <span id="sentryCount">0</span>
-                            </div>
-                            <div class="storage-item">
-                                <span class="storage-dot proximity"></span>
-                                <span id="proximityCount">0</span>
-                            </div>
-                            <div class="storage-item">
-                                <span class="storage-dot replay"></span>
-                                <span id="replayCount">0</span>
-                            </div>
-                        </div>
+                        <button class="select-mode-btn" id="selectModeBtn" onclick="BYD.events.toggleSelectMode()" title="Select multiple" data-i18n-attr="title:events.select_multiple">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="9 11 12 14 22 4"/>
+                                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
 
@@ -2096,35 +2578,11 @@
                     </div>
                 </div>
                 
-                <!-- Recordings List -->
+                <!-- Recordings: summary line, clips grouped by day, pagination, selection bar -->
                 <div class="recordings-panel">
                     <div class="recordings-header">
                         <span class="recordings-title" id="recordingsTitle" data-i18n="events.all_recordings">All Recordings</span>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <span class="recordings-count" id="recordingsCount" data-i18n="events.videos_count_initial">0 videos</span>
-                            <button class="select-mode-btn" id="selectModeBtn" onclick="BYD.events.toggleSelectMode()" title="Select multiple" data-i18n-attr="title:events.select_multiple">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <polyline points="9 11 12 14 22 4"/>
-                                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                    <!-- Multi-select toolbar -->
-                    <div class="select-toolbar" id="selectToolbar" style="display:none;">
-                        <span class="selected-count" id="selectedCount" data-i18n="events.selected_count_initial">0 selected</span>
-                        <div class="select-actions">
-                            <button class="select-action-btn" onclick="BYD.events.selectAll()" data-i18n="common.select_all">Select All</button>
-                            <button class="select-action-btn" onclick="BYD.events.deselectAll()" data-i18n="events.deselect">Deselect</button>
-                            <button class="select-action-btn danger" onclick="BYD.events.batchDelete()" data-i18n="common.delete">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <polyline points="3 6 5 6 21 6"/>
-                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                                </svg>
-                                Delete
-                            </button>
-                            <button class="select-action-btn cancel" onclick="BYD.events.exitSelectMode()" data-i18n="common.cancel">Cancel</button>
-                        </div>
+                        <span class="recordings-count" id="recordingsCount" data-i18n="events.videos_count_initial">0 videos</span>
                     </div>
                     <div class="recordings-list" id="recordingsList">
                         <div class="loading">
@@ -2145,6 +2603,22 @@
                                 <path d="M9 18l6-6-6-6"/>
                             </svg>
                         </button>
+                    </div>
+                    <!-- Multi-select toolbar: after the list so it can hold to the bottom of the screen -->
+                    <div class="select-toolbar" id="selectToolbar" style="display:none;">
+                        <span class="selected-count" id="selectedCount" data-i18n="events.selected_count_initial">0 selected</span>
+                        <div class="select-actions">
+                            <button class="select-action-btn" onclick="BYD.events.selectAll()" data-i18n="common.select_all">Select All</button>
+                            <button class="select-action-btn" onclick="BYD.events.deselectAll()" data-i18n="events.deselect">Deselect</button>
+                            <button class="select-action-btn cancel" onclick="BYD.events.exitSelectMode()" data-i18n="common.cancel">Cancel</button>
+                            <button class="select-action-btn danger" onclick="BYD.events.batchDelete()" data-i18n="common.delete">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                </svg>
+                                Delete
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2320,9 +2794,10 @@
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
-    <script src="../shared/events.js?v=incidentpack2"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/safekeep-badges.js?v=3"></script>
+    <script src="../shared/events.js?v=revamp2"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');

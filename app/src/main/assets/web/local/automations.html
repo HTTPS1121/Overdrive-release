@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title data-i18n="app.automations_title">Automations - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest for Automations — five task-based tabs:
         Automations — automation list (or empty-state with a CTA that switches to Add)
@@ -16,7 +16,7 @@
         Community   — shared automation browser
       No tab-bar action button: the form lives on its own tab so the Apply
       pill stays clean. List item Edit switches to Add tab with the form
-      prefilled (handled in shared/automations.js).
+      prefilled (handled in shared/automations.js?v=av74).
     -->
     <script>
         window.OT_TABS = [
@@ -36,15 +36,16 @@
             return false;
         };
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
-    <link rel="stylesheet" href="../shared/automations.css?v=av53">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
+    <link rel="stylesheet" href="../shared/automations.css?v=av55">
     <link rel="stylesheet" href="../shared/community-automations.css?v=4">
 </head>
 <body>
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content">
@@ -237,6 +238,19 @@
 
                         <div class="setting-row">
                             <div class="setting-info">
+                                <div class="setting-name" id="safetyHornLightsName" data-i18n="automation.safety_horn_lights">Horn and light flash</div>
+                                <div class="setting-desc" id="safetyHornLightsDesc" data-i18n="automation.safety_horn_lights_desc">Block sounding the horn or flashing the lights (Find car, Flash) unless the car is safely parked.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" role="switch" id="safetyHornLights" data-safety-key="hornLights" checked aria-labelledby="safetyHornLightsName" aria-describedby="safetyHornLightsDesc" onchange="AutomationSettings.saveSafetySetting(this)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="setting-row">
+                            <div class="setting-info">
                                 <div class="setting-name" id="safetyTrunkName" data-i18n="automation.safety_trunk">Trunk movement</div>
                                 <div class="setting-desc" id="safetyTrunkDesc" data-i18n="automation.safety_trunk_desc">Block opening or closing the tailgate. Stop remains available.</div>
                             </div>
@@ -313,7 +327,7 @@
                             </div>
                         </div>
 
-                        <div class="setting-row" style="border-bottom:none;">
+                        <div class="setting-row">
                             <div class="setting-info">
                                 <div class="setting-name" id="safetyScreenMediaName" data-i18n="automation.safety_screen_media">Full-screen media</div>
                                 <div class="setting-desc" id="safetyScreenMediaDesc" data-i18n="automation.safety_screen_media_desc">Block full-screen playback. Speaker-only audio remains available.</div>
@@ -325,6 +339,7 @@
                                 </label>
                             </div>
                         </div>
+                        <div class="setting-desc" style="padding-top:12px;" data-i18n="automation.safety_always_on">Vehicle power on/off and IVI reboot always require the car to be parked. These guards cannot be turned off.</div>
                         </div>
                     </div>
                 </div>
@@ -428,9 +443,9 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <script src="../shared/auth.js"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
-    <script src="../shared/automations.js?v=av70"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/automations.js?v=av74"></script>
     <script src="../shared/audio-library.js?v=2"></script>
     <script src="../shared/community-automations.js?v=7"></script>
     <script src="../shared/cluster-projection.js?v=1"></script>

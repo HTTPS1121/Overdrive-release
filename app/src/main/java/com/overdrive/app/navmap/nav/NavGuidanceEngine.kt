@@ -138,6 +138,8 @@ class NavGuidanceEngine {
      *  denominator for the traveled-route progress fraction (see [cumArcM]). */
     fun routeArcLengthMeters(): Double = routeArcLenM
 
+    fun activeRoute(): NavRoute? = route
+
     /** Whether a route is currently loaded (between [start] and [stop]). */
     fun isActive(): Boolean = route != null
 

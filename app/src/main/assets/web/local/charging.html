@@ -10,8 +10,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#007A62">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest for Charging. Tabs apply to the LIST VIEW only;
       the DETAIL VIEW (#chargingDetail) is a sequential drill-in and ignores
@@ -27,318 +27,240 @@
             { id: 'settings', label: 'Settings', i18n: 'charge.tab_settings', svg: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' }
         ];
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
-        /* ===== OLD WEBVIEW COMPAT (Chrome <88, Android 7.x) ===== */
-        /* Flexbox gap is Grid-only on old Chrome — fall back to margin via > * + *. */
-        .hero-row > * + * { margin-top: 20px; }
-        @media (min-width: 768px) { .hero-row > * + * { margin-top: 0; margin-left: 20px; } }
-        .filter-tabs > * + * { margin-left: 6px; }
+        /* Chrome 58 (head-unit WebView) has no flex gap: spacing uses sibling
+           margins, grids use grid-gap + gap. Colour, shape and type come from
+           design-tokens.css only. */
 
-        /* ===== HERO ROW ===== */
-        .hero-row {
-            display: flex;
-            flex-direction: column;
-            margin-bottom: 24px;
-        }
-        @media (min-width: 768px) { .hero-row { flex-direction: row; } }
-        .ch-hero-card {
-            flex: 1;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-lg);
-            padding: 24px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-        }
-        .ch-hero-card .card-title {
-            display: flex;
-            align-items: center;
-            align-self: flex-start;
-            margin-bottom: 16px;
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-secondary);
-        }
-        .ch-hero-card .card-title > svg + span { margin-left: 8px; }   /* gap ignored on Chrome-58 */
-        .ch-hero-gauge-wrap { position: relative; width: 120px; height: 120px; margin: 0 auto; }
-        /* Center the value over the gauge with the translate(-50%) pattern, NOT
-           `inset:0` (Chrome 87+; the head-unit WebView is Chrome 58 and would
-           ignore it, dropping the % text to the top-left). Mirrors Trips. */
-        .ch-hero-gauge-value {
-            position: absolute; top: 50%; left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 22px; font-weight: 700; color: var(--text-primary);
-            line-height: 1; white-space: nowrap;
-        }
-        .ch-hero-big { font-size: 34px; font-weight: 700; color: var(--text-primary); margin-top: 8px; }
-        .ch-hero-sub { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-        /* ===== FILTER TABS ===== */
+        /* ===== PERIOD SELECTORS (mock .seg) =====
+           .filter-tabs is the segmented well and .filter-tab a pill in it. The
+           selected option carries a check (as the shared .btn-toggle does), so
+           the state is not colour-only. */
         .filter-tabs {
-            display: flex;
+            display: -webkit-inline-flex; display: inline-flex;
+            max-width: 100%;
+            padding: 3px;
             overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
-            margin-bottom: 20px;
+            border-radius: var(--radius-full);
+            background: var(--well);
+            vertical-align: middle;
         }
         .filter-tabs::-webkit-scrollbar { display: none; }
+        .filter-tabs > * + * { margin-left: 2px; }
+        [dir="rtl"] .filter-tabs > * + * { margin-left: 0; margin-right: 2px; }
         .filter-tab {
-            padding: 8px 16px;
+            display: -webkit-inline-flex; display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            min-height: 38px;
+            padding: 0 14px;
+            border: 0;
             border-radius: var(--radius-full);
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-surface);
-            color: var(--text-secondary);
-            font-size: 13px;
+            background: transparent;
+            color: var(--on-surface-variant);
+            font-family: inherit;
+            font-size: var(--fs-label);
             font-weight: 600;
-            cursor: pointer;
+            line-height: 1.2;
             white-space: nowrap;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        @media (min-width: 480px) { .filter-tab { flex: 1; text-align: center; } }
-        .filter-tab.active { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-default); }
-        /* Custom date-range row (From → To + Apply). */
-        /* Custom From → To range picker. Stacks the date row over a full-width
-           Apply so nothing wraps awkwardly on a narrow phone. Collapsed by
-           default; revealed with a height+fade transition (display:none can't
-           animate). Apply reuses .btn .btn-primary for design-system styling. */
-        /* NOTE: flex `gap` is ignored on the Chrome-58 head-unit WebView, so all
-           spacing here uses margins (the dates ran together / collapsed without
-           it). No `gap` anywhere in this block. */
+        .filter-tab.active { background: var(--secondary-container); color: var(--on-secondary-container); }
+        .filter-tab[data-days].active::before,
+        .filter-tab[data-hours].active::before {
+            content: "";
+            display: inline-block;
+            flex: 0 0 auto;
+            width: 10px;
+            height: 5px;
+            margin: 0 8px 3px 0;
+            border-bottom: 2px solid currentColor;
+            border-left: 2px solid currentColor;
+            -webkit-transform: rotate(-45deg);
+            transform: rotate(-45deg);
+        }
+        [dir="rtl"] .filter-tab[data-days].active::before,
+        [dir="rtl"] .filter-tab[data-hours].active::before { margin: 0 0 3px 8px; }
+        @media (hover: hover) {
+            .filter-tab:hover { color: var(--on-surface); }
+            .filter-tab.active:hover { color: var(--on-secondary-container); }
+        }
+        /* Sessions period (mock toolbar): the day options sit in their own seg
+           (.charge-period-seg) and Custom is a separate date chip. The row wraps
+           (negative-margin toolbar, no flex gap) instead of clipping Custom. */
+        .filter-tabs.charge-segmented-control {
+            display: -webkit-flex; display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            max-width: none;
+            margin: 0 -8px 8px 0;
+            padding: 0;
+            overflow: visible;
+            border-radius: 0;
+            background: transparent;
+        }
+        .filter-tabs.charge-segmented-control > * { margin: 0 8px 8px 0; }
+        [dir="rtl"] .filter-tabs.charge-segmented-control { margin: 0 0 8px -8px; }
+        [dir="rtl"] .filter-tabs.charge-segmented-control > * { margin: 0 0 8px 8px; }
+        .charge-period-seg {
+            display: -webkit-inline-flex; display: inline-flex;
+            max-width: 100%;
+            padding: 3px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            border-radius: var(--radius-full);
+            background: var(--well);
+        }
+        .charge-period-seg::-webkit-scrollbar { display: none; }
+        .charge-period-seg > * + * { margin-left: 2px; }
+        [dir="rtl"] .charge-period-seg > * + * { margin-left: 0; margin-right: 2px; }
+        #chargeCustomTab { min-height: 44px; padding: 0 16px 0 12px; background: var(--well); color: var(--on-surface); }
+        #chargeCustomTab svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--primary); }
+        #chargeCustomTab svg + span { margin-left: 8px; }
+        [dir="rtl"] #chargeCustomTab { padding: 0 12px 0 16px; }
+        [dir="rtl"] #chargeCustomTab svg + span { margin-left: 0; margin-right: 8px; }
+        #chargeCustomTab.active { background: var(--secondary-container); color: var(--on-secondary-container); }
+        #chargeCustomTab.active svg { color: inherit; }
+        @media (hover: hover) {
+            #chargeCustomTab:hover { background: var(--well-2); }
+            #chargeCustomTab.active:hover { background: var(--secondary-container); }
+        }
+        /* Custom From → To range. Collapsed by default; .open reveals it with a
+           height + fade transition (display:none cannot animate). Phones stack
+           the dates over a full-width Apply; wider screens put them in one row. */
         .ch-range-row {
-            display: flex; flex-direction: column;
-            max-height: 0; opacity: 0; overflow: hidden; margin-top: 0;
-            transition: max-height 0.3s ease, opacity 0.2s ease, margin-top 0.3s ease;
+            display: -webkit-flex; display: flex;
+            flex-direction: column;
+            max-height: 0; opacity: 0; overflow: hidden; margin-bottom: 0;
+            transition: max-height var(--duration-long) var(--easing-standard), opacity var(--duration-med) var(--easing-standard), margin-bottom var(--duration-long) var(--easing-standard);
         }
-        .ch-range-row.open { max-height: 160px; opacity: 1; margin-top: 12px; }
-        /* From | → | To on ONE line; the two pills share the width equally. */
+        .ch-range-row.open { max-height: 160px; opacity: 1; margin-bottom: 16px; }
+        /* From | → | To on ONE line; the two chips share the width equally. */
         .ch-range-dates { display: flex; align-items: center; margin-bottom: 10px; }
         .ch-range-dates .calendar-toggle { flex: 1 1 0; min-width: 0; justify-content: center; }
         .ch-range-dates .calendar-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .ch-range-arrow { color: var(--text-muted); font-size: 14px; flex: 0 0 auto; margin: 0 8px; }
-        /* .btn-primary hardcodes color:#000 (only right for dark theme). Use the
-           M3 --on-primary token so the label is white on the dark-green light-
-           theme brand and dark on the mint dark-theme brand. */
-        .ch-range-apply { width: 100%; padding: 10px 18px; color: var(--on-primary, #000); }
-        /* Calendar toggle button + popup — mirrors the events page picker. */
+        .ch-range-arrow { flex: 0 0 auto; margin: 0 8px; color: var(--on-surface-variant); font-size: var(--fs-body); }
+        [dir="rtl"] .ch-range-arrow { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
+        .ch-range-apply { width: 100%; min-height: 44px; padding: 0 24px; }
+        @media (min-width: 600px) {
+            .ch-range-row { flex-direction: row; align-items: center; }
+            .ch-range-dates { flex: 0 1 520px; min-width: 0; margin: 0 12px 0 0; }
+            [dir="rtl"] .ch-range-dates { margin: 0 0 0 12px; }
+            .ch-range-apply { flex: 0 0 auto; width: auto; }
+        }
+        /* Calendar chips + popup (mirrors the events page picker). */
         .calendar-toggle {
-            display: inline-flex; align-items: center;
+            display: -webkit-inline-flex; display: inline-flex;
+            align-items: center;
             min-height: 48px;
-            padding: 9px 14px; border-radius: var(--radius-full);
-            background: var(--bg-surface); border: 1px solid var(--border-subtle);
-            color: var(--text-primary); font-size: 13px; font-weight: 600; cursor: pointer;
-            transition: all 0.2s;
+            padding: 0 16px 0 12px;
+            border: 0;
+            border-radius: var(--radius-full);
+            background: var(--well);
+            color: var(--on-surface);
+            font-family: inherit;
+            font-size: var(--fs-label);
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
         .calendar-toggle svg + span { margin-left: 8px; }   /* gap ignored on Chrome-58 */
-        .calendar-toggle:hover { background: var(--bg-elevated); border-color: var(--brand-primary); }
-        .calendar-toggle.has-date { background: var(--brand-primary); color: var(--bg-base); border-color: var(--brand-primary); }
-        .calendar-toggle svg { width: 18px; height: 18px; flex: 0 0 auto; }
+        [dir="rtl"] .calendar-toggle { padding: 0 12px 0 16px; }
+        [dir="rtl"] .calendar-toggle svg + span { margin-left: 0; margin-right: 8px; }
+        .calendar-toggle svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--primary); }
+        .calendar-toggle.has-date { background: var(--secondary-container); color: var(--on-secondary-container); }
+        .calendar-toggle.has-date svg { color: inherit; }
+        @media (hover: hover) {
+            .calendar-toggle:hover { background: var(--well-2); }
+            .calendar-toggle.has-date:hover { background: var(--secondary-container); }
+        }
         .calendar-popup {
             /* Explicit edges, NOT inset:0 — inset is Chrome-87+; the head-unit
                WebView is Chrome-58 and would drop the full-screen overlay. */
             position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--panel-overlay-bg-deep);
             z-index: 500; display: none; align-items: flex-end; justify-content: center;
-            -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+        }
+        @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+            .calendar-popup { -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
         }
         .calendar-popup.active { display: flex; }
         .calendar-panel {
-            background: var(--bg-surface); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+            background: var(--tile-raised); border-radius: var(--radius-xl) var(--radius-xl) 0 0;
             padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
             width: 100%; max-width: 100%; max-height: 85vh; overflow-y: auto;
             display: flex; flex-direction: column;
-            box-shadow: var(--shadow-lg); animation: chgSlideUp 0.3s ease;
+            box-shadow: var(--shadow-lg); animation: chgSlideUp var(--duration-long) var(--easing-emphasized);
         }
         .calendar-panel > * + * { margin-top: 16px; }   /* gap ignored on Chrome-58 */
         @keyframes chgSlideUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @media (min-width: 480px) {
             .calendar-popup { align-items: center; padding: 20px; }
-            .calendar-panel { border-radius: var(--radius-lg); max-width: 340px; max-height: none; padding-bottom: 20px; animation: chgPopIn 0.2s ease; }
+            .calendar-panel { border-radius: var(--radius-xl); max-width: 340px; max-height: none; padding-bottom: 20px; animation: chgPopIn var(--duration-med) var(--easing-standard); }
         }
         @keyframes chgPopIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .calendar-header { display: flex; justify-content: space-between; align-items: center; }
-        .calendar-title { font-size: 18px; font-weight: 600; }
+        .calendar-title { color: var(--on-surface); font-size: var(--fs-title); font-weight: 600; }
         .calendar-nav { display: flex; }
         .calendar-nav button + button { margin-left: 8px; }   /* gap ignored on Chrome-58 */
+        [dir="rtl"] .calendar-nav button + button { margin-left: 0; margin-right: 8px; }
         .calendar-nav button {
-            width: 48px; height: 48px; border-radius: var(--radius-sm);
-            background: var(--bg-elevated); color: var(--text-secondary);
-            display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+            width: 48px; height: 48px; border-radius: var(--radius-full);
+            background: var(--well); color: var(--on-surface-variant);
+            display: flex; align-items: center; justify-content: center;
+            transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
         }
-        .calendar-nav button:hover { background: var(--bg-hover); color: var(--text-primary); }
+        [dir="rtl"] .calendar-nav button svg { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
         .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-gap: 4px; gap: 4px; }
-        .calendar-weekday { text-align: center; font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 8px 0; text-transform: uppercase; }
+        .calendar-weekday { text-align: center; font-size: var(--fs-caption); font-weight: 600; color: var(--on-surface-variant); padding: 8px 0; text-transform: uppercase; }
         .calendar-day {
-            /* aspect-ratio is Chrome-88+ and is ignored on the Chrome-58
-               head-unit WebView, so without an explicit height the cell would
-               collapse to text height. The grid track (repeat(7,1fr)) sets the
-               width; pin the height to 40px as the fallback square so the
-               layout matches modern Chrome (where aspect-ratio takes over). */
-            aspect-ratio: 1; height: 48px; display: flex; align-items: center; justify-content: center;
-            border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;
-            color: var(--text-secondary); cursor: pointer; position: relative;
-            transition: all 0.2s; min-height: 48px;
+            /* Explicit height: the grid track (repeat(7,1fr)) sets the width and
+               the head-unit WebView (Chrome 58) has no aspect-ratio. */
+            height: 48px; display: flex; align-items: center; justify-content: center;
+            border-radius: var(--radius-sm); font-size: var(--fs-label); font-weight: 500;
+            color: var(--on-surface); cursor: pointer; position: relative;
+            transition: background-color var(--duration-fast) var(--easing-standard), -webkit-transform var(--duration-fast) var(--easing-standard);
+            transition: background-color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
+            min-height: 48px;
+            font-variant-numeric: tabular-nums;
             -webkit-tap-highlight-color: transparent; touch-action: manipulation;
         }
-        .calendar-day:hover { background: var(--bg-hover); }
-        .calendar-day:active { background: var(--bg-elevated); transform: scale(0.95); }
-        .calendar-day.other-month { color: var(--text-muted); opacity: 0.5; }
-        .calendar-day.today { background: var(--bg-elevated); color: var(--text-primary); font-weight: 600; }
-        .calendar-day.selected { background: var(--brand-primary); color: var(--bg-base); }
+        @media (hover: hover) {
+            .calendar-nav button:hover { background: var(--well-2); color: var(--on-surface); }
+            .calendar-day:hover { background: var(--well); }
+        }
+        .calendar-day:active { background: var(--well-2); transform: scale(0.95); }
+        .calendar-day.other-month { color: var(--on-surface-variant); opacity: 0.5; }
+        .calendar-day.today { background: var(--well); color: var(--on-surface); font-weight: 700; }
+        .calendar-day.selected { background: var(--primary); color: var(--on-primary); font-weight: 700; }
         /* In-range days between From and To get a subtle fill. */
-        .calendar-day.in-range { background: var(--status-info-container); color: var(--text-primary); }
-        .calendar-day.disabled { color: var(--text-muted); opacity: 0.3; cursor: not-allowed; pointer-events: none; }
+        .calendar-day.in-range { background: var(--primary-soft); color: var(--on-surface); }
+        .calendar-day.disabled { color: var(--on-surface-variant); opacity: 0.3; cursor: not-allowed; pointer-events: none; }
         .calendar-close {
-            margin-top: 8px; padding: 10px; background: var(--bg-elevated);
+            margin-top: 8px; padding: 10px; background: var(--well);
             min-height: 48px;
-            border-radius: var(--radius-md); color: var(--text-secondary);
-            font-size: 13px; font-weight: 500; text-align: center; cursor: pointer; transition: all 0.2s;
+            border-radius: var(--radius-full); color: var(--on-surface);
+            font-size: var(--fs-label); font-weight: 600; text-align: center; cursor: pointer;
         }
 
-        /* ===== SESSION CARDS ===== */
-        #sessionList {
-            display: grid;
-            /* Multi-column on wide screens; the 260px min keeps the pill + badge
-               on one row there. min(...) isn't supported on the Chrome-58
-               head-unit WebView, so the narrow case is handled by the media
-               query below (single column) to stop the cards overflowing right. */
-            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-            grid-gap: 12px;
-            gap: 12px;
-        }
-        @media (max-width: 560px) {
-            #sessionList { grid-template-columns: 1fr; }
-        }
-        .session-card {
-            position: relative;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-lg);
-            padding: 20px;
-            cursor: pointer;
-            /* Match the Trips card motion: lift + glow on the same easing curve. */
-            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-            overflow: hidden;
-        }
-        .session-card:hover {
-            background: var(--bg-elevated);
-            border-color: var(--primary);
-            transform: translateY(-4px);
-            box-shadow: 0 10px 30px var(--panel-overlay-bg-soft);
-        }
-        /* NOTE: flex `gap` is ignored on the Chrome-58 head-unit WebView, so every
-           intra-card spacing below uses sibling margins, not gap, or values run
-           together ("AC SLOW7.0 kW", pin touching the place name, etc.). */
-        /* Both children are single-line now (pill is nowrap), so centre-align is
-           safe and keeps the pill + date/badge on a shared vertical axis. */
-        .session-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-right: 30px; }
-        .session-card-top > * + * { margin-left: 10px; }
-        /* SOTA charge-type pill: tier icon + label + peak-kW chip, colour-coded
-           per tier (DC fast / AC fast / AC slow / unknown). */
-        .session-type {
-            display: inline-flex; align-items: center;
-            font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
-            padding: 5px 10px; border-radius: var(--radius-full);
-            border: 1px solid transparent;
-            /* Size to content and never wrap or shrink: a shrinking pill
-               collapsed the "AC slow" label to zero width (only the icon + kW
-               chip showed); a wrapping pill grew taller than the date and broke
-               row centring. Sit on one line at natural width. */
-            flex: 0 0 auto; white-space: nowrap;
-        }
-        .session-type svg { width: 14px; height: 14px; flex: 0 0 auto; }
-        .session-type > svg + span { margin-left: 6px; }   /* icon → label */
-        .session-type-peak {
-            font-weight: 600; letter-spacing: 0; text-transform: none;
-            opacity: .85; margin-left: 6px; padding-left: 6px; border-left: 1px solid currentColor;
-            flex: 0 0 auto;
-        }
-        /* DC fast — electric blue. */
-        .session-type-dc   { background: var(--status-info-container); color: var(--status-info); border-color: var(--status-info); }
-        /* AC fast (wallbox) — teal. */
-        .session-type-fast { background: var(--status-success-container); color: var(--status-success); border-color: var(--status-success); }
-        /* AC slow (trickle) — amber. */
-        .session-type-slow { background: var(--status-warning-container); color: var(--status-warning); border-color: var(--status-warning); }
-        .session-type-unk  { background: var(--bg-elevated);     color: var(--text-muted); }
-        .session-date { font-size: 12px; color: var(--text-muted); flex: 0 0 auto; white-space: nowrap; }
-        /* "Charging now" live badge for the open in-progress session. */
-        .session-live { display: inline-flex; align-items: center; flex: 0 0 auto; white-space: nowrap;
-            font-size: 12px; font-weight: 600; color: var(--status-success); }
-        .session-live > * + * { margin-left: 6px; }   /* dot → text (gap ignored on Chrome-58) */
-        .session-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-success);
-            box-shadow: 0 0 0 0 rgba(0,212,170,0.6); animation: chgLivePulse 1.6s ease-out infinite; }
-        @keyframes chgLivePulse {
-            0%   { box-shadow: 0 0 0 0 rgba(0,212,170,0.55); }
-            70%  { box-shadow: 0 0 0 7px rgba(0,212,170,0); }
-            100% { box-shadow: 0 0 0 0 rgba(0,212,170,0); }
-        }
-        /* Headline figures row: energy added (left) + cost (right), both prominent. */
-        .session-figures { display: flex; align-items: baseline; justify-content: space-between; }
-        .session-figures > * + * { margin-left: 12px; }   /* gap ignored on Chrome-58 */
-        .session-energy { font-size: 26px; font-weight: 700; color: var(--text-primary); }
-        .session-cost { font-size: 18px; font-weight: 700; color: var(--brand-primary, #0EA5E9); }
-        /* Location chip: pin + place name / coords. */
-        .session-loc {
-            display: flex; align-items: center;
-            margin-top: 10px; font-size: 12px; color: var(--text-secondary);
-            overflow: hidden;
-        }
-        .session-loc svg { width: 14px; height: 14px; flex: 0 0 auto; color: var(--text-muted); }
-        .session-loc svg + span { margin-left: 6px; }   /* pin → place (gap ignored on Chrome-58) */
-        .session-loc span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        /* gap: is ignored for flexbox on the Chrome-58 head-unit WebView, which
-           ran the meta values together ("20% → 99%4:07 PM…"). Use sibling
-           margins (no gap, so no double-spacing where gap DOES work). */
-        .session-meta { display: flex; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
-        .session-meta > span + span { margin-left: 14px; }
-        .session-estimate-badge {
-            display: inline-flex; align-items: center;
-            margin-top: 10px; padding: 4px 9px;
-            border: 1px solid var(--status-warning);
-            border-radius: var(--radius-full);
-            background: var(--status-warning-container);
-            color: var(--status-warning);
-            font-size: 10px; font-weight: 700; letter-spacing: .03em;
-            text-transform: uppercase;
-        }
-
-        /* Detail location row. gap is ignored on the Chrome-58 head-unit
-           WebView (flex gap is Chrome-84+), so the pin/text and the map button
-           collapsed together. Space them with a sibling margin on the main
-           block instead (there are exactly two children). */
-        .ch-loc-row { display: flex; align-items: center; justify-content: space-between; }
-        .ch-loc-main { display: flex; align-items: center; min-width: 0; margin-right: 16px; }
-        .ch-loc-main > svg { width: 22px; height: 22px; flex: 0 0 auto; color: var(--brand-primary, #0EA5E9); margin-right: 12px; }
-        .ch-map-link {
-            flex: 0 0 auto;
-            padding: 8px 14px; border-radius: var(--radius-full);
-            border: 1px solid var(--border-subtle); background: var(--bg-elevated);
-            color: var(--text-primary); font-size: 13px; font-weight: 600; text-decoration: none;
-        }
-
-        /* Per-card delete (hover-reveal trash, mirrors trip-delete-btn). */
-        .session-delete-btn {
-            position: absolute; top: 12px; right: 12px;
-            width: 48px; height: 48px; padding: 0;
-            display: flex; align-items: center; justify-content: center;
-            border: none; border-radius: var(--radius-sm);
-            background: transparent; color: var(--text-muted);
-            cursor: pointer; opacity: 0; transition: opacity .15s, background .15s, color .15s;
-        }
-        .session-card:hover .session-delete-btn { opacity: 1; }
-        .session-delete-btn:hover { background: var(--status-danger-container); color: var(--status-danger); }
-        .session-delete-btn svg { width: 15px; height: 15px; }
-        /* Touch devices have no hover — keep the trash faintly visible. */
-        @media (hover: none) { .session-delete-btn { opacity: .55; } }
-
+        /* ===== TILES ===== */
         .ch-card {
-            background: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-lg);
-            padding: 20px 24px;
             margin-bottom: 16px;
+            padding: 20px;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
         }
-        .ch-card h3 { font-size: 15px; font-weight: 600; margin: 0 0 14px; color: var(--text-primary); }
+        .ch-card h3 { margin: 0 0 14px; color: var(--on-surface); font-size: var(--fs-title); font-weight: 600; line-height: 1.25; }
         .ch-card canvas { width: 100%; display: block; }
         /* Card head with title + an inline period selector on the right.
            flex gap is ignored on the Chrome-58 head-unit WebView (Chrome-84+),
@@ -347,27 +269,66 @@
            bottom margins (h3 / .ch-period-tabs both have margin-bottom:14px). */
         .ch-card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; }
         .ch-card-head > * + * { margin-left: 12px; }
+        [dir="rtl"] .ch-card-head > * + * { margin-left: 0; margin-right: 12px; }
         .ch-card-head h3 { margin: 0 0 14px; }
-        .ch-card-sub { margin: -6px 0 12px; font-size: 12px; color: var(--text-muted); }
-        /* Compact period tabs (smaller than the full-width session filter tabs). */
-        .ch-period-tabs { margin-bottom: 14px; overflow: visible; }
-        .ch-period-tabs .filter-tab { flex: 0 0 auto; padding: 5px 12px; font-size: 12px; }
-        .ch-period-tabs .filter-tab + .filter-tab { margin-left: 6px; }
+        .ch-card-sub { margin: -6px 0 12px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        /* Compact period seg in a card head. */
+        .ch-period-tabs { margin-bottom: 14px; }
+        .ch-period-tabs .filter-tab { padding: 0 12px; }
+        /* Series legend (mock .legend-inline): swatches match the bar colours
+           CHARGING.renderEfficiency() draws. */
+        .ch-legend { display: -webkit-flex; display: flex; flex-wrap: wrap; margin: 0 -14px 8px 0; color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .ch-legend > span { display: -webkit-inline-flex; display: inline-flex; align-items: center; margin: 0 14px 4px 0; }
+        .ch-legend i { display: inline-block; flex: 0 0 auto; width: 10px; height: 10px; margin-right: 6px; border-radius: 3px; }
+        [dir="rtl"] .ch-legend { margin: 0 0 8px -14px; }
+        [dir="rtl"] .ch-legend > span { margin: 0 0 4px 14px; }
+        [dir="rtl"] .ch-legend i { margin-right: 0; margin-left: 6px; }
+        .ch-legend-ac { background: var(--primary); }
+        .ch-legend-dc { background: var(--tertiary); }
+
+        /* ===== LIVE CHARGE TILE (mock "Charging now") =====
+           .r-hero (revamp.css) lays out icon, text and readings; this adds the
+           kicker and the SoC bar. CHARGING._renderLiveTile() fills it and keeps
+           it hidden unless a charge is in progress. */
+        .ch-live { margin-bottom: 16px; }
+        .ch-live > .r-hero-icon { background: var(--primary-soft); color: var(--primary); }
+        .ch-live.is-dc > .r-hero-icon { background: var(--tertiary-soft); color: var(--tertiary); }
+        .ch-live-kicker { margin: 0 0 2px; color: var(--on-surface-variant); font-size: var(--fs-label); font-weight: 500; line-height: 1.35; overflow-wrap: break-word; }
+        .ch-live .r-hero-title { font-variant-numeric: tabular-nums; }
+        .ch-live-bar { max-width: 420px; height: 8px; margin-top: 12px; overflow: hidden; border-radius: 4px; background: var(--well-2); }
+        .ch-live-bar > span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--primary); transition: width var(--duration-long) var(--easing-standard); }
+        .ch-live.is-dc .ch-live-bar > span { background: var(--tertiary); }
+        .ch-live .r-hero-stat-value { font-variant-numeric: tabular-nums; }
+        @media (max-width: 480px) {
+            /* No master control here, so the readings take the second row. */
+            .ch-live > .r-hero-stats { grid-row: 2; }
+        }
 
         /* ===== LOCATION TARIFF ROWS =====
            Rows are built by CHARGING._tariffRow(); these are the only rules for
-           the classes it emits. WebView 58 has no flex `gap`, so use margins. */
+           the classes it emits. WebView 58 has no flex `gap`, so use margins.
+           Mock .tariff: hairline-separated rows; the tariff that would price a
+           charge here also gets a tonal fill next to its "auto here" pill. */
         .tariff-row {
+            position: relative;
             display: -webkit-flex; display: flex;
             -webkit-align-items: center; align-items: center;
             -webkit-justify-content: space-between; justify-content: space-between;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
+            min-height: 64px;
+            margin: 0 -12px;
+            padding: 10px 4px 10px 12px;
             border-radius: var(--radius-md);
-            padding: 12px 14px;
-            margin-top: 8px;
         }
-        .tariff-row.matched { border-color: var(--brand-primary); }
+        [dir="rtl"] .tariff-row { padding: 10px 12px 10px 4px; }
+        .tariff-row + .tariff-row::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 12px; right: 12px;
+            height: 1px;
+            background: var(--hairline);
+        }
+        .tariff-row.matched::before, .tariff-row.matched + .tariff-row::before { display: none; }
+        .tariff-row.matched { background: var(--primary-soft); }
         .tariff-row.disabled { opacity: 0.55; }
         .tariff-info { min-width: 0; -webkit-flex: 1 1 auto; flex: 1 1 auto; }
         .tariff-name-row {
@@ -376,68 +337,140 @@
             -webkit-flex-wrap: wrap; flex-wrap: wrap;
         }
         .tariff-name {
-            font-size: 14px; font-weight: 700; color: var(--text-primary);
-            margin-right: 8px;
+            min-width: 0; margin-right: 8px;
+            color: var(--on-surface); font-size: var(--fs-body); font-weight: 700;
+            overflow-wrap: break-word;
         }
-        .tariff-meta { font-size: 12px; color: var(--text-primary); margin-top: 4px; }
-        .tariff-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+        [dir="rtl"] .tariff-name { margin-right: 0; margin-left: 8px; }
+        .tariff-meta { margin-top: 4px; color: var(--on-surface); font-size: var(--fs-label); font-variant-numeric: tabular-nums; }
+        .tariff-sub { margin-top: 2px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
         .tariff-pill {
             display: inline-block;
-            padding: 2px 8px; margin-right: 6px;
-            border: 1px solid var(--border-subtle); border-radius: 999px;
-            font-size: 10px; font-weight: 700; text-transform: uppercase;
-            color: var(--text-muted);
+            margin: 2px 6px 2px 0; padding: 0 8px;
+            border-radius: var(--radius-full);
+            background: var(--well-2);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-weight: 700; line-height: 20px;
+            white-space: nowrap;
         }
-        .tariff-pill.here { border-color: var(--brand-primary); color: var(--brand-primary); }
-        .tariff-pill.default { border-color: var(--text-muted); color: var(--text-primary); }
+        [dir="rtl"] .tariff-pill { margin: 2px 0 2px 6px; }
+        .tariff-pill.here { background: var(--primary-soft); color: var(--primary); }
+        .tariff-pill.default { background: var(--secondary-container); color: var(--on-secondary-container); }
         .tariff-actions {
             display: -webkit-flex; display: flex;
             -webkit-align-items: center; align-items: center;
             -webkit-flex: 0 0 auto; flex: 0 0 auto;
-            margin-left: 10px;
+            margin-left: 4px;
         }
+        [dir="rtl"] .tariff-actions { margin-left: 0; margin-right: 4px; }
         .tariff-icon-btn {
             display: -webkit-inline-flex; display: inline-flex;
             -webkit-align-items: center; align-items: center;
             -webkit-justify-content: center; justify-content: center;
-            width: 36px; height: 36px; margin-left: 6px;
-            border: 1px solid var(--border-subtle); border-radius: 10px;
-            background: transparent; color: var(--text-muted); cursor: pointer;
+            width: 44px; height: 44px; margin-left: 8px; padding: 0;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent; color: var(--on-surface-variant); cursor: pointer;
         }
+        [dir="rtl"] .tariff-icon-btn { margin-left: 0; margin-right: 8px; }
         /* The JS emits bare <svg viewBox> with no width/height — size them here
            or they collapse to 0 (or balloon) in WebView 58. */
         .tariff-icon-btn svg { width: 18px; height: 18px; }
-        .tariff-icon-btn.on { border-color: var(--brand-primary); color: var(--brand-primary); }
-        .tariff-icon-btn.danger { color: var(--status-danger); }
-        .tariff-row .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+        .tariff-icon-btn.on { background: var(--primary-soft); color: var(--primary); }
+        .tariff-icon-btn.danger { color: var(--danger); }
+        @media (hover: hover) {
+            .tariff-icon-btn:hover { background: var(--well-2); }
+            .tariff-icon-btn.on:hover { background: var(--primary-soft); }
+            .tariff-icon-btn.danger:hover { background: var(--danger-soft); }
+        }
+        .tariff-row .mono { font-family: var(--family-mono); }
 
-        /* ===== SUMMARY / DETAIL STAT GRID ===== */
+        /* ===== PERIOD SUMMARY TILES (mock .kpis) =====
+           Mock density: a small label row (glyph + label), the big value, then
+           the description as a caption. 5 across from 1280px, 3 + 2 below that
+           (6-track grid so the second row fills), 2 + 2 + 1 on phones. */
         .ch-stat-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            grid-gap: 12px;
-            gap: 12px;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-gap: 10px;
+            gap: 10px;
         }
         .ch-stat {
-            background: var(--bg-elevated);
-            border-radius: var(--radius-md);
+            min-width: 0;
             padding: 14px 16px;
-        }
-        .ch-stat span { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
-        .ch-stat strong { font-size: 18px; font-weight: 700; color: var(--text-primary); }
-        .ch-estimate-disclosure {
-            margin-top: 12px;
-            overflow: hidden;
-            border: 1px solid var(--border-subtle);
             border-radius: var(--radius-md);
-            background: var(--bg-elevated);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
+        }
+        .ch-stat-head { display: block; }
+        .ch-stat-icon {
+            float: left;
+            display: -webkit-flex; display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            color: var(--on-surface-variant);
+        }
+        [dir="rtl"] .ch-stat-icon { float: right; margin-right: 0; margin-left: 6px; }
+        .ch-stat-icon svg { width: 16px; height: 16px; }
+        .ch-stat-copy { min-width: 0; }
+        /* The label flows beside the floated glyph; long translations wrap. */
+        .ch-stat-copy > span {
+            display: block;
+            min-height: 16px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 500;
+            line-height: 16px;
+            overflow-wrap: break-word;
+        }
+        .ch-stat-copy > strong {
+            display: block;
+            clear: both;
+            padding-top: 6px;
+            color: var(--on-surface);
+            font-size: var(--fs-headline);
+            font-weight: 700;
+            line-height: 1.1;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .ch-stat > small { display: block; margin-top: 4px; color: var(--on-surface-variant); font-size: var(--fs-caption); line-height: 1.35; overflow-wrap: break-word; }
+        @media (max-width: 1279px) {
+            .ch-stat-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+            .ch-stat-grid > .ch-stat { grid-column: span 2; }
+            .ch-stat-grid > .ch-stat--type, .ch-stat-grid > .ch-stat--range { grid-column: span 3; }
+        }
+        @media (max-width: 599px) {
+            .ch-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-gap: 10px; gap: 10px; }
+            .ch-stat-grid > .ch-stat, .ch-stat-grid > .ch-stat--type, .ch-stat-grid > .ch-stat--range { grid-column: auto; }
+            /* Five tiles in two columns: the lone last one spans the row.
+               :nth-child(odd) keeps the rule inert if the count turns even. */
+            .ch-stat-grid > .ch-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+            .ch-stat { padding: 12px 14px; }
+            .ch-stat-copy > strong { font-size: 20px; }
+        }
+        @media (max-width: 480px) {
+            .ch-stat { padding: 12px; }
+        }
+
+        /* "Estimated values" disclosure: a tile on the page, a well inside the
+           detail metrics tile. */
+        .ch-estimate-disclosure {
+            margin-top: 10px;
+            overflow: hidden;
+            border-radius: var(--radius-md);
+            background: var(--tile);
+            box-shadow: var(--tile-shadow);
         }
         .ch-estimate-disclosure[data-tab] { margin: 0 0 16px; }
         .ch-estimate-disclosure summary {
             display: flex; align-items: center;
-            min-height: 48px; padding: 0 14px;
-            color: var(--text-primary);
-            font-size: 13px; font-weight: 600;
+            min-height: 48px; padding: 0 16px;
+            color: var(--on-surface);
+            font-size: var(--fs-label); font-weight: 600;
             cursor: pointer; list-style: none;
             -webkit-tap-highlight-color: transparent;
             touch-action: manipulation;
@@ -446,34 +479,40 @@
         .ch-estimate-disclosure summary::after {
             content: "+";
             margin-left: auto;
-            color: var(--text-muted);
+            padding-left: 12px;
+            color: var(--on-surface-variant);
             font-size: 18px;
         }
+        [dir="rtl"] .ch-estimate-disclosure summary::after { margin-left: 0; margin-right: auto; padding-left: 0; padding-right: 12px; }
         .ch-estimate-disclosure[open] summary::after { content: "−"; }
         .ch-estimate-disclosure p {
             margin: 0;
-            padding: 0 14px 14px;
-            color: var(--text-secondary);
-            font-size: 12px;
+            padding: 0 16px 14px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
             line-height: 1.5;
         }
 
         .load-more-btn {
             display: block;
-            width: 100%;
-            margin-top: 16px;
-            padding: 12px;
-            border-radius: var(--radius-md);
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-surface);
-            color: var(--text-secondary);
+            min-width: 200px;
+            min-height: 48px;
+            margin: 16px auto 0;
+            padding: 0 24px;
+            border: 0;
+            border-radius: var(--radius-full);
+            background: var(--secondary-container);
+            color: var(--on-secondary-container);
+            font-family: inherit;
+            font-size: var(--fs-label);
             font-weight: 600;
             cursor: pointer;
         }
-        .empty-state { text-align: center; padding: 48px 16px; color: var(--text-muted); }
-        .empty-state svg { width: 56px; height: 56px; opacity: .4; margin-bottom: 12px; }
+        .empty-state { padding: 48px 16px; color: var(--on-surface-variant); text-align: center; }
+        .empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; color: var(--outline); }
+        .empty-state > div:first-of-type { color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; }
 
-        .ch-skeleton-card { height: 96px; border-radius: var(--radius-lg); background: var(--bg-surface); opacity: .5; animation: chPulse 1.3s ease-in-out infinite; }
+        .ch-skeleton-card { height: 112px; border-radius: var(--radius-tile); background: var(--tile); opacity: .5; animation: chPulse 1.3s ease-in-out infinite; }
         @keyframes chPulse { 0%,100% { opacity: .35; } 50% { opacity: .6; } }
 
         /* ===== DETAIL DRILL-IN ===== */
@@ -481,379 +520,668 @@
         #sessionListView.hidden { display: none; }
         .charging-detail-open .page-header { display: none; }
         .charging-detail-open .page-body { padding-top: 18px; }
-        .ch-detail-head { display: flex; align-items: center; margin-bottom: 18px; }
-        .ch-detail-head > * + * { margin-left: 12px; }   /* gap ignored on Chrome-58 */
-        .ch-back-btn {
-            display: inline-flex; align-items: center;   /* svg+span spacing via sibling margin (Chrome-58: flex gap unsupported) */
-            padding: 8px 14px; border-radius: var(--radius-full);
-            border: 1px solid var(--border-subtle); background: var(--bg-surface);
-            color: var(--text-secondary); font-weight: 600; cursor: pointer;
-        }
-        .ch-back-btn svg { width: 16px; height: 16px; }
-        .ch-back-btn svg + span, .ch-detail-delete-btn svg + span { margin-left: 6px; }  /* gap ignored on Chrome-58 */
-        .ch-detail-delete-btn {
-            margin-left: auto;
-            display: inline-flex; align-items: center;   /* svg+span spacing via sibling margin (Chrome-58: flex gap unsupported) */
-            padding: 8px 14px; border-radius: var(--radius-full);
-            border: 1px solid var(--status-danger); background: var(--status-danger-container);
-            color: var(--status-danger); font-weight: 600; cursor: pointer;
-        }
-        .ch-detail-delete-btn:hover { background: rgba(239,68,68,0.18); }
-        .ch-detail-delete-btn svg { width: 16px; height: 16px; }
 
-        /* ===== SETTINGS =====
-           .setting-row / .setting-name / .setting-desc are CANONICAL shared
-           classes (styles.css) — do NOT redefine here. Only the value-control
-           styling + charging-specific note/danger button live below, on tokens. */
-        /* Match the Trips settings controls exactly: compact mono number field
-           (digits line up), elevated surface, token radius. The currency select
-           keeps its own max-width (set inline, like Trips). */
-        /* Settings rate control + button row — flex `gap` is ignored on the
-           Chrome-58 head-unit WebView, so space children with sibling margins. */
+        /* ===== SETTINGS (shared settings kit) =====
+           Each section is a .card with a .card-header icon chip and the shared
+           .setting-row rows (styles.css, revamp.css); app-shell.js folds long
+           descriptions. Only the value controls live here. Flex `gap` is
+           ignored on the Chrome-58 head-unit WebView, so children are spaced
+           with sibling margins. */
+        .ch-settings-card .card-title { margin: 0; }
+        .ch-settings-card--data .card-title > svg:first-child { background-color: var(--warning-soft); color: var(--warning); }
+        @media (min-width: 1280px) {
+            html:not([data-android-embed="1"]) .ch-settings-card { max-width: none; }
+        }
+        .ch-group-desc { margin: 0 0 4px; color: var(--on-surface-variant); font-size: var(--fs-label); line-height: 1.45; overflow-wrap: break-word; }
+        /* Rate controls (mock .field): the currency select, then one filled
+           field holding the number and its unit. One line beside the label on
+           desktop; side by side across the row on phones. */
         .ch-rate-control { display: flex; align-items: center; }
         .ch-rate-control > * + * { margin-left: 8px; }
+        [dir="rtl"] .ch-rate-control > * + * { margin-left: 0; margin-right: 8px; }
+        .ch-rate-control > .ch-currency { flex: 0 1 auto; width: auto; min-width: 0; max-width: 170px; }
+        .ch-field {
+            display: -webkit-flex; display: flex;
+            align-items: center;
+            flex: 0 0 auto;
+            width: 168px;
+            min-height: 48px;
+            margin: 0;
+            padding: 0 14px;
+            border-radius: var(--radius-sm);
+            background: var(--well);
+            box-shadow: inset 0 0 0 1px var(--outline-variant);
+            cursor: text;
+        }
+        .ch-field:focus-within { box-shadow: inset 0 0 0 2px var(--primary); }
+        .ch-field:focus-within input:focus { outline: none; }
+        .ch-field input {
+            flex: 1 1 auto;
+            width: 100%;
+            min-width: 0;
+            height: 46px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            color: var(--on-surface);
+            font-family: inherit;
+            font-size: var(--fs-body);
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            -moz-appearance: textfield;
+        }
+        .ch-field input::-webkit-inner-spin-button,
+        .ch-field input::-webkit-outer-spin-button { margin: 0; -webkit-appearance: none; }
+        .ch-unit { flex: 0 0 auto; margin-left: 8px; color: var(--on-surface-variant); font-size: var(--fs-label); white-space: nowrap; }
+        [dir="rtl"] .ch-unit { margin-left: 0; margin-right: 8px; }
+        .ch-text-field {
+            width: 220px;
+            max-width: 100%;
+            min-height: 48px;
+            padding: 0 14px;
+            border: 0;
+            border-radius: var(--radius-sm);
+            background: var(--well);
+            box-shadow: inset 0 0 0 1px var(--outline-variant);
+            color: var(--on-surface);
+            font-family: inherit;
+            font-size: var(--fs-body);
+        }
+        .ch-text-field:focus { outline: none; box-shadow: inset 0 0 0 2px var(--primary); }
+        .ch-value-text { color: var(--on-surface-variant); font-size: var(--fs-label); font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+        @media (pointer: coarse) {
+            .ch-field input, .ch-text-field { font-size: 16px; }
+        }
+        @media (max-width: 768px) {
+            .ch-rate-control { width: 100%; }
+            .ch-rate-control > .ch-currency { max-width: 50%; }
+            .ch-field { flex: 1 1 auto; width: auto; }
+            .ch-text-field { width: 100%; }
+        }
         .settings-button-row { display: flex; }
         .settings-button-row > * + * { margin-left: 8px; }
-        .ch-card .setting-row input[type="number"], .ch-card .setting-row select {
-            padding: 8px 10px; border-radius: var(--radius-sm);
-            border: 1px solid var(--border-subtle); background: var(--bg-elevated);
-            color: var(--text-primary); font-size: 13px;
+        [dir="rtl"] .settings-button-row > * + * { margin-left: 0; margin-right: 8px; }
+        /* Apply closes its section at the end; phones give it the full width. */
+        .ch-apply-row { justify-content: flex-end; margin-top: 16px; }
+        .ch-tariff-add-row { margin-top: 12px; }
+        .ch-apply-row > .btn, .ch-tariff-add-row > .btn { min-width: 168px; }
+        @media (max-width: 768px) {
+            .ch-apply-row > .btn, .ch-tariff-add-row > .btn { flex: 1 1 auto; min-width: 0; }
         }
-        .ch-card .setting-row input[type="number"] {
-            width: 80px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-        .ch-note { font-size: 12px; color: var(--text-muted); margin-top: 12px; }
-        .ch-danger-btn {
-            padding: 10px 16px; border-radius: var(--radius-md);
-            border: 1px solid rgba(231,76,60,0.4); background: rgba(231,76,60,0.08);
-            color: #e74c3c; font-weight: 600; cursor: pointer;
-        }
+        #tariffEditor { margin-top: 12px; border-top: 1px solid var(--hairline); }
+        .ch-note { margin-top: 12px; color: var(--on-surface-variant); font-size: var(--fs-caption); line-height: 1.45; }
+        .ch-danger-btn { padding: 0 18px; font-size: var(--fs-label); }
 
-        /* Full charging presentation from PR #225. */
-        .charging-page-header { height: auto; min-height: 88px; padding-top: 14px; padding-bottom: 14px; }
+        /* ===== PAGE HEADER: title + subtitle (the shared header sizes itself) ===== */
         .charging-page-heading { min-width: 0; }
-        .charging-page-heading p { margin: 7px 0 0; color: var(--text-secondary); font-size: 14px; }
+        .charging-page-heading p { margin: 4px 0 0; color: var(--on-surface-variant); font-size: var(--fs-label); overflow-wrap: break-word; }
+
+        /* ===== STATS TAB ===== */
         .charging-stats-intro {
             display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 18px;
+            margin-bottom: 16px;
         }
-        .charging-stats-kicker { color: var(--text-secondary); font-size: 15px; }
-        .stats-range-tabs {
-            flex: 0 0 420px; padding: 4px; margin: 0;
-            border: 1px solid var(--border-subtle); border-radius: var(--radius-full);
-            background: var(--bg-surface);
-        }
-        .stats-range-tabs .filter-tab { flex: 1; border-color: transparent; background: transparent; text-align: center; }
-        .stats-range-tabs .filter-tab.active {
-            color: var(--brand-primary); border-color: rgba(0,212,170,.35);
-            background: rgba(0,212,170,.12);
-        }
+        .charging-stats-kicker { min-width: 0; margin-right: 16px; color: var(--on-surface-variant); font-size: var(--fs-body); }
+        [dir="rtl"] .charging-stats-kicker { margin-right: 0; margin-left: 16px; }
+        .stats-range-tabs { flex: 0 0 auto; margin: 0; }
+        /* Live summary cards (SoC ring, power, cost, time to full). */
         .hero-row {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            grid-gap: 16px; gap: 16px; margin-bottom: 18px;
+            grid-gap: 16px; gap: 16px; margin-bottom: 16px;
         }
-        .hero-row > * + * { margin-top: 0; margin-left: 0; }
         .ch-hero-card {
-            min-width: 0; min-height: 132px; padding: 20px 22px;
             display: flex; flex-direction: row; align-items: center;
+            min-width: 0; min-height: 132px; padding: 20px;
             overflow: hidden; text-align: left;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
         }
+        [dir="rtl"] .ch-hero-card { text-align: right; }
         .ch-hero-card > * + * { margin-left: 16px; }
+        [dir="rtl"] .ch-hero-card > * + * { margin-left: 0; margin-right: 16px; }
         .ch-metric-icon {
-            width: 48px; height: 48px; flex: 0 0 48px;
             display: flex; align-items: center; justify-content: center;
-            border-radius: 15px; color: var(--brand-primary);
-            background: rgba(0,212,170,.10);
+            width: 48px; height: 48px; flex: 0 0 48px;
+            border-radius: var(--radius-md);
+            background: var(--primary-soft); color: var(--primary);
         }
-        .ch-metric-icon svg { width: 26px; height: 26px; }
-        .ch-metric-icon--cost { color: #a46bff; background: rgba(164,107,255,.12); }
+        .ch-metric-icon svg { width: 24px; height: 24px; }
+        .ch-metric-icon--cost { background: var(--tertiary-soft); color: var(--tertiary); }
         .ch-metric-copy { flex: 1; min-width: 0; }
-        .ch-hero-card .card-title { margin-bottom: 7px; color: var(--text-secondary); font-size: 13px; }
+        .ch-hero-card .card-title { display: flex; align-items: center; margin-bottom: 6px; color: var(--on-surface-variant); font-size: var(--fs-label); font-weight: 600; }
         .ch-hero-card--soc {
-            min-height: 184px; padding: 12px 20px;
+            min-height: 184px; padding: 16px 20px;
             flex-direction: column; justify-content: center; text-align: center;
         }
-        .ch-hero-card--soc > * + * { margin-left: 0; }
+        [dir="rtl"] .ch-hero-card--soc { text-align: center; }
+        .ch-hero-card--soc > * + *, [dir="rtl"] .ch-hero-card--soc > * + * { margin-left: 0; margin-right: 0; }
         .dashboard-soc-gauge {
             position: relative; width: 120px; height: 120px; flex: 0 0 120px;
             border-radius: 50%;
         }
         .dashboard-soc-gauge canvas { position: absolute; top: 0; left: 0; width: 120px; height: 120px; }
+        /* Centred with translate(-50%), not inset:0 (Chrome 58). The label wraps
+           inside the ring instead of shrinking below 12px. */
         .dashboard-soc-gauge-copy {
-            position: absolute; top: 50%; left: 50%; width: 76px;
-            transform: translate(-50%, -50%); text-align: center; white-space: nowrap;
+            position: absolute; top: 50%; left: 50%; width: 88px;
+            -webkit-transform: translate(-50%, -50%); transform: translate(-50%, -50%); text-align: center;
         }
-        .dashboard-soc-gauge-value { display: block; color: var(--text-primary); font-size: 24px; line-height: 1; }
+        .dashboard-soc-gauge-value { display: block; color: var(--on-surface); font-size: 24px; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
         .dashboard-soc-gauge-label {
-            display: block; margin-top: 4px; color: var(--text-muted);
-            font-size: 7px; font-weight: 600; text-transform: uppercase;
+            display: block; margin-top: 4px; color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-weight: 600; line-height: 1.15; overflow-wrap: break-word;
         }
         .dashboard-soc-meta {
             display: flex; align-items: center; justify-content: center;
-            min-height: 20px; margin-top: 14px; color: var(--text-secondary);
-            font-size: 13px; font-weight: 500; white-space: nowrap;
+            min-height: 20px; margin-top: 12px; color: var(--on-surface-variant);
+            font-size: var(--fs-label); font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums;
         }
         .dashboard-soc-meta-item { display: flex; align-items: center; }
         .dashboard-soc-meta-item > * + * { margin-left: 6px; }
-        .dashboard-soc-meta svg { width: 17px; height: 17px; color: var(--brand-primary); }
-        .dashboard-soc-meta-divider { width: 1px; height: 17px; margin: 0 10px; background: var(--border-subtle); }
-        .ch-hero-big { color: var(--text-primary); font-size: 30px; font-weight: 700; line-height: 1.05; }
-        .ch-hero-unit { color: var(--text-muted); font-size: 15px; font-weight: 600; }
-        .ch-hero-sub { margin-top: 4px; color: var(--text-muted); font-size: 13px; }
+        [dir="rtl"] .dashboard-soc-meta-item > * + * { margin-left: 0; margin-right: 6px; }
+        .dashboard-soc-meta svg { width: 17px; height: 17px; flex: 0 0 auto; color: var(--primary); }
+        .dashboard-soc-meta-divider { width: 1px; height: 17px; margin: 0 10px; background: var(--outline-variant); }
+        .ch-hero-big { margin-top: 2px; color: var(--on-surface); font-size: var(--fs-display); font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+        .ch-hero-unit { color: var(--on-surface-variant); font-size: var(--fs-body); font-weight: 600; }
+        .ch-hero-sub { margin-top: 4px; color: var(--on-surface-variant); font-size: var(--fs-label); }
         .stats-soc-card #socChart { min-height: 230px; }
+        /* Card titles read as mock group heads: neutral 40px icon chip + title. */
         .stats-card-title { display: flex; align-items: center; }
-        .stats-card-title > * + * { margin-left: 10px; }
-        .stats-card-title svg { width: 22px; height: 22px; color: var(--brand-primary); }
+        .stats-card-title > * + * { margin-left: 12px; }
+        [dir="rtl"] .stats-card-title > * + * { margin-left: 0; margin-right: 12px; }
+        .stats-card-title svg {
+            flex: 0 0 auto; width: 40px; height: 40px; padding: 10px;
+            border-radius: 12px; background: var(--well); color: var(--on-surface-variant);
+        }
         .stats-lower-grid, .stats-trend-grid {
             display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
             grid-gap: 16px; gap: 16px; margin-bottom: 16px;
         }
         .stats-lower-grid .ch-card, .stats-trend-grid .ch-card { margin-bottom: 0; }
         .stats-lifetime-row {
-            display: flex; align-items: center; min-height: 48px;
-            border-top: 1px solid var(--border-subtle);
+            display: flex; align-items: center; min-height: 52px;
+            border-top: 1px solid var(--hairline);
         }
         .stats-lifetime-row:first-child { border-top: 0; }
         .stats-lifetime-row > * + * { margin-left: 12px; }
-        .stats-lifetime-icon { width: 20px; height: 20px; color: var(--brand-primary); }
-        .stats-lifetime-label { flex: 1; color: var(--text-secondary); font-size: 13px; }
-        .stats-lifetime-value { color: var(--text-primary); font-size: 18px; white-space: nowrap; }
-        .charge-segmented-control {
-            /* overflow-x auto, NOT the old overflow:hidden — that shorthand
-               overrode .filter-tabs' horizontal scrolling and CLIPPED the
-               nowrap tabs on narrow phones (<480px there is no flex:1 to
-               shrink them). Nothing here needs edge clipping: the active
-               pill sits inside the 6px padding, and .filter-tabs already
-               hides the scrollbar on both engines. */
-            padding: 6px; margin-bottom: 26px; overflow-x: auto; overflow-y: hidden;
-            border: 1px solid var(--border-default); border-radius: var(--radius-lg);
-            background: var(--bg-surface);
+        [dir="rtl"] .stats-lifetime-row > * + * { margin-left: 0; margin-right: 12px; }
+        .stats-lifetime-icon { flex: 0 0 auto; width: 20px; height: 20px; color: var(--on-surface-variant); }
+        .stats-lifetime-label { flex: 1; min-width: 0; color: var(--on-surface-variant); font-size: var(--fs-label); }
+        .stats-lifetime-value { color: var(--on-surface); font-size: var(--fs-title); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        /* ===== SESSION LIST (mock list rows, grouped by day) =====
+           CHARGING._renderSessionCards() emits one .session-item per session;
+           the first session of a day starts with .session-day-head. Chrome 58
+           has no flex gap: spacing uses margins (otherwise values run together,
+           e.g. "AC SLOW7.0 kW"). */
+        .charging-session-list { margin-top: 24px; }
+        .session-list-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+        .session-list-head h2 { min-width: 0; margin: 4px 12px 4px 0; color: var(--on-surface); font-size: var(--fs-title); font-weight: 700; }
+        [dir="rtl"] .session-list-head h2 { margin: 4px 0 4px 12px; }
+        .session-sort {
+            display: -webkit-inline-flex; display: inline-flex; align-items: center;
+            min-height: 44px; padding: 0 4px 0 14px;
+            border-radius: var(--radius-full);
+            background: var(--well); color: var(--on-surface);
         }
-        .charge-segmented-control .filter-tab {
-            min-height: 44px; border-color: transparent; border-radius: 12px; background: transparent;
+        [dir="rtl"] .session-sort { padding: 0 14px 0 4px; }
+        .session-sort svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--primary); }
+        .session-sort select {
+            min-height: 44px; margin-left: 4px; padding: 0 8px;
+            border: 0; background: transparent; color: var(--on-surface);
+            font-family: inherit; font-size: var(--fs-label); font-weight: 600; cursor: pointer;
         }
-        .charge-segmented-control .filter-tab.active {
-            color: var(--brand-primary); border-color: var(--brand-primary);
-            background: rgba(0,212,170,.12);
-        }
-        .charge-segmented-control svg { width: 17px; height: 17px; vertical-align: middle; }
-        .charge-segmented-control svg + span { margin-left: 8px; }
-        #chargeSummary { margin-bottom: 0; }
-        #chargeSummary .ch-stat-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-        #chargeSummary .ch-stat { min-width: 0; min-height: 126px; padding: 20px; }
-        .ch-stat-head { display: flex; align-items: center; }
-        .ch-stat-icon {
-            width: 52px; height: 52px; margin-right: 16px;
-            display: flex !important; align-items: center; justify-content: center;
-            flex: 0 0 auto; border-radius: 14px;
-        }
-        .ch-stat-icon svg { width: 27px; height: 27px; }
-        .ch-stat-copy { min-width: 0; }
-        #chargeSummary .ch-stat-copy span { margin: 0 0 7px; color: var(--text-secondary); font-size: 13px; }
-        #chargeSummary .ch-stat-copy strong {
-            display: block; font-size: 20px; line-height: 1.1;
-            white-space: normal; overflow-wrap: break-word; word-break: break-word;
-        }
-        #chargeSummary .ch-stat small { display: block; margin-top: 15px; color: var(--text-muted); font-size: 11px; }
-        .ch-stat--sessions .ch-stat-icon { color: #45e2bd; background: rgba(0,212,170,.15); }
-        .ch-stat--energy .ch-stat-icon { color: #70a1ff; background: rgba(77,124,254,.16); }
-        .ch-stat--cost .ch-stat-icon { color: #d778f3; background: rgba(183,77,220,.16); }
-        .ch-stat--type .ch-stat-icon { color: #f4c542; background: rgba(245,158,11,.16); }
-        .ch-stat--range .ch-stat-icon { color: #45e2bd; background: rgba(0,212,170,.12); }
-        .charging-session-list { margin-top: 26px; }
-        .session-list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-        .session-list-head h2 { margin: 0; color: var(--text-primary); font-size: 19px; }
-        .session-sort { display: flex; align-items: center; padding: 0 10px; }
-        .session-sort svg { width: 17px; height: 17px; color: var(--text-muted); }
-        .session-sort select { border: 0; background: transparent; color: var(--text-primary); }
+        [dir="rtl"] .session-sort select { margin-left: 0; margin-right: 4px; }
+        .session-sort select option { background: var(--tile-raised); color: var(--on-surface); }
         #sessionList { display: block; }
-        .session-card + .session-card { margin-top: 8px; }
+        .session-item + .session-item, .session-card + .session-card { margin-top: 10px; }
+        .session-day-head {
+            margin: 16px 4px 8px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            font-weight: 700;
+            line-height: 1.3;
+        }
+        .session-item:first-child > .session-day-head { margin-top: 2px; }
         .session-card {
+            position: relative;
             display: grid;
-            grid-template-columns: minmax(360px, 1.35fr) repeat(2, minmax(170px, .75fr)) 48px;
+            grid-template-columns: minmax(200px, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 44px;
             grid-template-areas:
                 "primary start duration actions"
                 "primary range context actions";
-            grid-column-gap: 22px; grid-row-gap: 12px;
-            column-gap: 22px; row-gap: 12px; align-items: center;
-            min-height: 128px; padding: 20px 18px 20px 28px;
-            border-radius: var(--radius-md); transform: none;
+            grid-column-gap: 20px; grid-row-gap: 10px;
+            column-gap: 20px; row-gap: 10px; align-items: center;
+            min-height: 96px; padding: 14px 8px 14px 18px;
+            overflow: hidden;
+            border-radius: var(--radius-lg);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            transition: -webkit-transform var(--duration-fast) var(--easing-standard);
+            transition: transform var(--duration-fast) var(--easing-standard);
         }
-        .session-card:before {
-            content: ""; position: absolute; top: 0; bottom: 0; left: 0;
-            width: 5px; background: var(--brand-primary);
+        [dir="rtl"] .session-card { padding: 14px 18px 14px 8px; }
+        .session-card:active { -webkit-transform: scale(0.99); transform: scale(0.99); }
+        @media (hover: hover) {
+            .session-card:hover { background-image: linear-gradient(var(--state-hover), var(--state-hover)), linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px); }
         }
         .session-primary { grid-area: primary; min-width: 0; }
         .session-kind-row, .session-energy-row, .session-soc-row, .session-metric, .session-actions {
             display: flex; align-items: center;
         }
-        .session-kind-row > * + *, .session-energy-row > * + *, .session-soc-row > * + * { margin-left: 8px; }
-        .session-power-chip { padding: 4px 8px; border-radius: var(--radius-full); background: var(--bg-elevated); font-size: 11px; }
-        .session-energy-row { margin-top: 8px; flex-wrap: wrap; }
-        .session-energy, .session-cost { white-space: nowrap; }
-        .session-energy { font-size: 25px; line-height: 1.05; }
-        .session-soc-row { margin-top: 9px; color: var(--text-secondary); font-size: 12px; }
-        .session-soc-row > svg { width: 16px; height: 16px; }
-        .session-soc-track { width: 112px; max-width: 42%; height: 6px; overflow: hidden; border-radius: 99px; background: var(--bg-hover); }
-        .session-soc-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #45e2bd, #29d9a6); }
-        .session-metric { min-width: 0; padding-left: 16px; }
-        .session-metric > svg { width: 21px; height: 21px; margin-right: 10px; color: var(--text-muted); }
+        .session-kind-row > * + *, .session-soc-row > * + * { margin-left: 8px; }
+        [dir="rtl"] .session-kind-row > * + *, [dir="rtl"] .session-soc-row > * + * { margin-left: 0; margin-right: 8px; }
+        /* Charge-type chip (mock .kind): DC tertiary, AC fast primary, AC slow
+           tonal, unknown neutral. The label always names the tier. */
+        .session-type {
+            display: inline-flex; align-items: center;
+            min-height: 24px; padding: 0 8px;
+            border-radius: var(--radius-xs);
+            font-size: var(--fs-caption); font-weight: 800; letter-spacing: .03em; line-height: 1.2; text-transform: uppercase;
+            /* Size to content and never wrap or shrink: a shrinking pill
+               collapsed the "AC slow" label to zero width (only the icon + kW
+               chip showed); a wrapping pill grew taller than the date and broke
+               row centring. Sit on one line at natural width. */
+            flex: 0 0 auto; white-space: nowrap;
+        }
+        .session-type svg { width: 14px; height: 14px; flex: 0 0 auto; }
+        .session-type > svg + span { margin-left: 6px; }   /* icon → label */
+        [dir="rtl"] .session-type > svg + span { margin-left: 0; margin-right: 6px; }
+        .session-type-dc   { background: var(--tertiary-soft); color: var(--tertiary); }
+        .session-type-fast { background: var(--primary-soft); color: var(--primary); }
+        .session-type-slow { background: var(--secondary-container); color: var(--on-secondary-container); }
+        .session-type-unk  { background: var(--well-2); color: var(--on-surface-variant); }
+        .session-power-chip {
+            display: inline-flex; align-items: center;
+            min-height: 24px; padding: 0 8px;
+            border-radius: var(--radius-full);
+            background: var(--well-2); color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-weight: 600; white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        /* Energy, cost and the live badge wrap as one group (negative-margin row). */
+        .session-energy-row { flex-wrap: wrap; align-items: baseline; margin: 8px -10px -4px 0; }
+        .session-energy-row > * { margin: 0 10px 4px 0; }
+        [dir="rtl"] .session-energy-row { margin: 8px 0 -4px -10px; }
+        [dir="rtl"] .session-energy-row > * { margin: 0 0 4px 10px; }
+        .session-energy { color: var(--on-surface); font-size: var(--fs-headline); font-weight: 700; line-height: 1.15; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .session-cost { color: var(--on-surface-variant); font-size: var(--fs-body); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        /* "Charging now" badge (mock .badge) on the open in-progress session. */
+        .session-live {
+            display: inline-flex; align-items: center; flex: 0 0 auto;
+            min-height: 24px; padding: 0 10px;
+            border-radius: var(--radius-full);
+            background: var(--primary-soft); color: var(--primary);
+            font-size: var(--fs-caption); font-weight: 700; white-space: nowrap;
+        }
+        .session-live-dot, .ch-detail-live-dot {
+            flex: 0 0 auto; width: 6px; height: 6px; margin-right: 6px;
+            border-radius: 50%; background: currentColor;
+            animation: chgLivePulse 1.6s ease-in-out infinite;
+        }
+        [dir="rtl"] .session-live-dot, [dir="rtl"] .ch-detail-live-dot { margin-right: 0; margin-left: 6px; }
+        @keyframes chgLivePulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+        .session-soc-row { margin-top: 8px; color: var(--on-surface-variant); font-size: var(--fs-caption); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .session-soc-row > svg { width: 16px; height: 16px; flex: 0 0 auto; }
+        /* Start → end SoC segment (mock socbar): the fill is offset by a
+           left margin, so the track stays LTR and is mirrored in RTL. */
+        .session-soc-track { display: block; flex: 1 1 auto; min-width: 40px; max-width: 200px; height: 8px; overflow: hidden; border-radius: 4px; background: var(--well-2); direction: ltr; }
+        [dir="rtl"] .session-soc-track { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
+        .session-soc-fill { display: block; height: 100%; border-radius: inherit; background: var(--primary); }
+        .session-card--dc .session-soc-fill { background: var(--tertiary); }
+        .session-estimate-badge {
+            display: inline-flex; align-items: center;
+            min-height: 22px; margin: 10px 6px 0 0; padding: 0 8px;
+            border-radius: var(--radius-full);
+            background: var(--well-2); color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-weight: 700;
+        }
+        [dir="rtl"] .session-estimate-badge { margin: 10px 0 0 6px; }
+        .session-metric { min-width: 0; }
+        .session-metric > svg { width: 16px; height: 16px; flex: 0 0 auto; margin-right: 10px; color: var(--on-surface-variant); }
+        [dir="rtl"] .session-metric > svg { margin-right: 0; margin-left: 10px; }
+        .session-metric-copy { flex: 1 1 auto; min-width: 0; }
         .session-metric--start { grid-area: start; }
         .session-metric--duration { grid-area: duration; }
         .session-metric--range { grid-area: range; }
         .session-metric--context { grid-area: context; }
-        .session-metric-value { overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-        .session-metric-label { margin-top: 6px; color: var(--text-muted); font-size: 11px; }
+        .session-metric-value { overflow: hidden; color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .session-metric-label { margin-top: 2px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
         .session-actions { grid-area: actions; align-self: stretch; flex-direction: column; justify-content: center; }
-        .session-chevron { width: 22px; height: 22px; color: var(--text-secondary); }
-        .session-delete-btn { position: static; width: 36px; height: 36px; margin-top: 4px; }
+        .session-chevron { flex: 0 0 auto; width: 20px; height: 20px; color: var(--on-surface-variant); }
+        [dir="rtl"] .session-chevron { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
+        /* Per-card delete: revealed on hover / focus where hover exists, always
+           shown on touch. */
+        .session-delete-btn {
+            display: flex; align-items: center; justify-content: center;
+            width: 40px; height: 40px; margin-top: 4px; padding: 0;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent; color: var(--on-surface-variant);
+            cursor: pointer; opacity: 0;
+            transition: opacity var(--duration-fast) var(--easing-standard), background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
+        }
+        .session-card:hover .session-delete-btn, .session-card:focus .session-delete-btn, .session-delete-btn:focus { opacity: 1; }
+        @media (hover: hover) {
+            .session-delete-btn:hover { background: var(--danger-soft); color: var(--danger); }
+        }
+        .session-delete-btn svg { width: 18px; height: 18px; }
+        @media (hover: none) { .session-delete-btn { opacity: .7; } }
+        @media (pointer: coarse) { .session-delete-btn { width: 44px; height: 44px; } }
         #chargingDetail { width: 100%; max-width: 1900px; margin-right: auto; margin-left: auto; }
-        .ch-detail-nav { min-height: 42px; display: flex; align-items: center; border-bottom: 1px solid var(--border-subtle); margin-bottom: 14px; }
-        .ch-detail-nav .ch-back-btn { padding: 8px 0; border: 0; border-radius: 0; background: transparent; }
+        /* Back link (mock .back-link). */
+        .ch-detail-nav { display: flex; align-items: center; min-height: 44px; margin: -6px 0 8px; }
+        .ch-back-btn {
+            display: inline-flex; align-items: center;   /* svg+span spacing via sibling margin (Chrome-58: flex gap unsupported) */
+            min-height: 44px; margin-left: -6px; padding: 0 12px 0 6px;
+            border: 0; border-radius: var(--radius-full);
+            background: transparent; color: var(--primary);
+            font-family: inherit; font-size: var(--fs-label); font-weight: 600;
+            cursor: pointer;
+        }
+        .ch-back-btn svg { width: 18px; height: 18px; flex: 0 0 auto; }
+        .ch-back-btn svg + span { margin-left: 6px; }
+        [dir="rtl"] .ch-back-btn { margin-left: 0; margin-right: -6px; padding: 0 6px 0 12px; }
+        [dir="rtl"] .ch-back-btn svg { -webkit-transform: scaleX(-1); transform: scaleX(-1); }
+        [dir="rtl"] .ch-back-btn svg + span { margin-left: 0; margin-right: 6px; }
+        @media (hover: hover) {
+            .ch-back-btn:hover { background: var(--primary-soft); }
+        }
+        /* Title, live badge, subtitle and the danger-tonal delete (mock .detail-head). */
         .ch-detail-title-row { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
-        .ch-detail-title-line { display: flex; align-items: center; flex-wrap: wrap; }
-        .ch-detail-title-line > * + * { margin-left: 12px; }
-        .ch-detail-title-line h2 { margin: 0; font-size: 22px; }
-        .ch-detail-subtitle { margin-top: 7px; color: var(--text-secondary); font-size: 13px; }
-        .ch-detail-live { display: none; align-items: center; min-height: 28px; padding: 0 12px; border-radius: var(--radius-full); background: rgba(0,212,170,.1); color: #45e2bd; }
-        .ch-detail-live-dot { width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: currentColor; }
-        .ch-detail-delete-btn { display: inline-flex; align-items: center; min-height: 38px; padding: 0 18px; border: 1px solid rgba(239,68,68,.75); border-radius: var(--radius-full); background: rgba(239,68,68,.04); color: #ef4444; }
-        .ch-detail-delete-btn svg { width: 17px; height: 17px; margin-right: 7px; }
-        .ch-detail-panel { margin-bottom: 14px; overflow: hidden; }
-        .ch-detail-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); min-height: 112px; padding: 0 24px; }
-        .ch-detail-overview-item { min-width: 0; display: flex; align-items: center; padding: 18px 24px; }
-        .ch-detail-overview-item + .ch-detail-overview-item { border-left: 1px solid var(--border-subtle); }
-        .ch-detail-overview-icon { width: 30px; height: 30px; margin-right: 16px; color: #63a9f8; }
-        .ch-detail-overview-item--soc .ch-detail-overview-icon, .ch-detail-overview-item--location .ch-detail-overview-icon { color: #32dcb4; }
+        .ch-detail-title-row > div { flex: 1 1 auto; min-width: 0; }
+        .ch-detail-title-line { display: flex; align-items: center; flex-wrap: wrap; margin: 0 -12px -6px 0; }
+        .ch-detail-title-line > * { margin: 0 12px 6px 0; }
+        [dir="rtl"] .ch-detail-title-line { margin: 0 0 -6px -12px; }
+        [dir="rtl"] .ch-detail-title-line > * { margin: 0 0 6px 12px; }
+        .ch-detail-title-line h2 { min-width: 0; color: var(--on-surface); font-size: var(--fs-headline); font-weight: 700; line-height: 1.2; overflow-wrap: break-word; }
+        .ch-detail-subtitle { margin-top: 4px; color: var(--on-surface-variant); font-size: var(--fs-label); }
+        .ch-detail-live {
+            display: none; align-items: center;
+            min-height: 28px; padding: 0 10px;
+            border-radius: var(--radius-full);
+            background: var(--primary-soft); color: var(--primary);
+            font-size: var(--fs-caption); font-weight: 700; white-space: nowrap;
+        }
+        .ch-detail-delete-btn {
+            display: inline-flex; align-items: center; flex: 0 0 auto;
+            min-height: 40px; margin-left: 12px; padding: 0 16px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--danger-soft); color: var(--danger);
+            font-family: inherit; font-size: var(--fs-label); font-weight: 600;
+            cursor: pointer;
+        }
+        [dir="rtl"] .ch-detail-delete-btn { margin-left: 0; margin-right: 12px; }
+        .ch-detail-delete-btn svg { width: 18px; height: 18px; flex: 0 0 auto; margin-right: 8px; }
+        [dir="rtl"] .ch-detail-delete-btn svg { margin-right: 0; margin-left: 8px; }
+        @media (pointer: coarse) {
+            .ch-detail-delete-btn { min-height: 44px; }
+        }
+        /* Panels are tiles; the overview reads as stat cells split by hairlines. */
+        .ch-detail-panel {
+            margin-bottom: 16px; overflow: hidden;
+            border-radius: var(--radius-tile);
+            background-color: var(--tile);
+            background-image: linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+            box-shadow: var(--tile-shadow);
+        }
+        .ch-detail-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+        .ch-detail-overview-item { display: flex; align-items: center; min-width: 0; padding: 18px 20px; }
+        .ch-detail-overview-item + .ch-detail-overview-item { border-left: 1px solid var(--hairline); }
+        [dir="rtl"] .ch-detail-overview-item + .ch-detail-overview-item { border-left: 0; border-right: 1px solid var(--hairline); }
+        .ch-detail-overview-icon {
+            flex: 0 0 auto; width: 40px; height: 40px; margin-right: 14px; padding: 10px;
+            border-radius: 12px; background: var(--well); color: var(--on-surface-variant);
+        }
+        [dir="rtl"] .ch-detail-overview-icon { margin-right: 0; margin-left: 14px; }
         .ch-detail-overview-copy { min-width: 0; flex: 1; }
-        .ch-detail-kicker, .ch-detail-caption { color: var(--text-secondary); font-size: 12px; }
-        .ch-detail-value { margin-top: 4px; color: var(--text-primary); font-size: 21px; font-weight: 700; }
+        .ch-detail-kicker, .ch-detail-caption { color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .ch-detail-value { margin-top: 2px; color: var(--on-surface); font-size: var(--fs-headline); font-weight: 700; line-height: 1.2; overflow-wrap: break-word; font-variant-numeric: tabular-nums; }
         .ch-detail-soc-top, .ch-detail-location-line { display: flex; align-items: center; justify-content: space-between; }
-        .ch-detail-soc-track { height: 7px; margin-top: 12px; overflow: hidden; border-radius: 99px; background: var(--bg-hover); }
-        .ch-detail-soc-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #45e2bd, #29d9a6); }
+        .ch-detail-soc-top > * + *, .ch-detail-location-line > * + * { margin-left: 12px; }
+        [dir="rtl"] .ch-detail-soc-top > * + *, [dir="rtl"] .ch-detail-location-line > * + * { margin-left: 0; margin-right: 12px; }
+        .ch-detail-location-line .ch-detail-value { flex: 1 1 auto; min-width: 0; font-size: var(--fs-title); }
+        .ch-detail-soc-track { height: 8px; margin-top: 10px; overflow: hidden; border-radius: 4px; background: var(--well-2); }
+        .ch-detail-soc-fill { display: block; height: 100%; border-radius: inherit; background: var(--primary); }
+        .ch-map-link {
+            display: inline-flex; align-items: center; flex: 0 0 auto;
+            min-height: 36px; padding: 0 14px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--secondary-container); color: var(--on-secondary-container);
+            font-family: inherit; font-size: var(--fs-label); font-weight: 600;
+            text-decoration: none; white-space: nowrap; cursor: pointer;
+        }
+        @media (pointer: coarse) {
+            .ch-map-link { min-height: 44px; }
+        }
+        /* Metric | Value table: two columns of hairline rows. */
         .ch-detail-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .ch-detail-metrics > .ch-estimate-disclosure { grid-column: 1 / -1; margin: 12px; }
-        .ch-detail-metric-column + .ch-detail-metric-column { border-left: 1px solid var(--border-subtle); }
+        .ch-detail-metrics > .ch-estimate-disclosure { grid-column: 1 / -1; margin: 8px 16px 16px; background: var(--well); box-shadow: none; }
+        .ch-detail-metric-column { min-width: 0; }
+        .ch-detail-metric-column + .ch-detail-metric-column { border-left: 1px solid var(--hairline); }
+        [dir="rtl"] .ch-detail-metric-column + .ch-detail-metric-column { border-left: 0; border-right: 1px solid var(--hairline); }
         .ch-detail-metric-head, .ch-detail-metric-row { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
-        .ch-detail-metric-head { min-height: 42px; color: var(--text-muted); font-size: 11px; text-transform: uppercase; }
-        .ch-detail-metric-row { min-height: 56px; border-top: 1px solid var(--border-subtle); }
-        .ch-detail-metric-name { display: flex; align-items: center; color: var(--text-secondary); font-size: 13px; }
-        .ch-detail-metric-name svg { width: 20px; height: 20px; margin-right: 10px; }
-        .ch-detail-metric-value { color: var(--text-primary); font-size: 15px; }
+        .ch-detail-metric-head { min-height: 44px; color: var(--on-surface-variant); font-size: var(--fs-caption); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+        .ch-detail-metric-row { min-height: 52px; border-top: 1px solid var(--hairline); }
+        .ch-detail-metric-name { display: flex; align-items: center; min-width: 0; color: var(--on-surface-variant); font-size: var(--fs-label); }
+        .ch-detail-metric-name svg { width: 18px; height: 18px; flex: 0 0 auto; margin-right: 10px; }
+        [dir="rtl"] .ch-detail-metric-name svg { margin-right: 0; margin-left: 10px; }
+        .ch-detail-metric-value { margin-left: 12px; color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+        [dir="rtl"] .ch-detail-metric-value { margin-left: 0; margin-right: 12px; text-align: left; }
         .ch-detail-cost-edit {
             width: 100%; box-sizing: border-box;
-            border: 0; border-top: 1px solid var(--border-subtle);
+            border: 0; border-top: 1px solid var(--hairline);
             background: transparent; color: inherit; font: inherit;
             text-align: left; cursor: pointer;
         }
-        .ch-detail-cost-edit:hover { background: var(--bg-hover); }
+        [dir="rtl"] .ch-detail-cost-edit { text-align: right; }
+        @media (hover: hover) {
+            .ch-detail-cost-edit:hover { background: var(--state-hover); }
+        }
         .ch-detail-cost-edit:focus {
-            outline: 2px solid var(--brand-primary);
+            outline: 2px solid var(--primary);
             outline-offset: -2px;
         }
-        .ch-detail-cost-value { display: flex; align-items: center; margin-left: auto; }
+        .ch-detail-cost-value { display: flex; align-items: center; margin-left: auto; padding-left: 12px; }
+        [dir="rtl"] .ch-detail-cost-value { margin-left: 0; margin-right: auto; padding-left: 0; padding-right: 12px; }
         .ch-detail-cost-value > * + * { margin-left: 8px; }
-        .ch-detail-cost-rate { color: var(--text-muted); font-size: 11px; font-weight: 400; }
-        .ch-detail-cost-edit-icon { width: 15px; height: 15px; color: var(--text-muted); }
-        .ch-detail-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-gap: 14px; gap: 14px; }
+        [dir="rtl"] .ch-detail-cost-value > * + * { margin-left: 0; margin-right: 8px; }
+        .ch-detail-cost-value > .ch-detail-metric-value { margin-left: 0; margin-right: 0; }
+        .ch-detail-cost-rate { color: var(--on-surface-variant); font-size: var(--fs-caption); font-weight: 400; }
+        .ch-detail-cost-edit-icon { width: 16px; height: 16px; color: var(--on-surface-variant); }
+        /* Chart tiles with well stat cells under each chart. */
+        .ch-detail-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-gap: 16px; gap: 16px; }
+        .ch-detail-chart-grid > .ch-detail-panel { margin-bottom: 0; }
         .ch-detail-chart-card { padding: 20px; }
         .ch-detail-chart-card canvas { width: 100%; display: block; }
-        .ch-detail-chart-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-        .ch-detail-chart-head h3 { margin: 0; }
-        .ch-detail-info { width: 18px; height: 18px; color: var(--text-muted); }
-        .ch-detail-chart-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 12px; gap: 12px; margin-top: 12px; }
+        .ch-detail-chart-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .ch-detail-chart-head h3 { min-width: 0; margin: 0; color: var(--on-surface); font-size: var(--fs-title); font-weight: 600; line-height: 1.25; }
+        .ch-detail-info { flex: 0 0 auto; width: 18px; height: 18px; margin-left: 12px; color: var(--on-surface-variant); }
+        [dir="rtl"] .ch-detail-info { margin-left: 0; margin-right: 12px; }
+        .ch-detail-chart-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 8px; gap: 8px; margin-top: 12px; }
         .ch-detail-chart-stat {
-            min-width: 0; min-height: 74px; display: flex; align-items: center;
-            padding: 10px 14px; border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-md); background: rgba(255,255,255,.025);
+            display: flex; align-items: center;
+            min-width: 0; min-height: 64px; padding: 10px 12px;
+            border-radius: var(--radius-md); background: var(--well);
         }
-        .ch-detail-chart-stat > svg { width: 29px; height: 29px; margin-right: 13px; flex: 0 0 auto; }
+        .ch-detail-chart-stat > svg { width: 22px; height: 22px; margin-right: 10px; flex: 0 0 auto; color: var(--on-surface-variant); }
+        [dir="rtl"] .ch-detail-chart-stat > svg { margin-right: 0; margin-left: 10px; }
         .ch-detail-chart-stat > div { min-width: 0; flex: 1; }
         .ch-detail-chart-stat strong, .ch-detail-chart-stat span { display: block; }
         .ch-detail-chart-stat strong {
-            color: var(--text-primary); font-size: 15px; line-height: 1.15;
-            white-space: normal; overflow-wrap: break-word; word-break: break-word;
+            color: var(--on-surface); font-size: var(--fs-body); font-weight: 700; line-height: 1.2;
+            white-space: normal; overflow-wrap: break-word; font-variant-numeric: tabular-nums;
         }
-        .ch-detail-stat--soc strong { font-size: 14px; }
-        .ch-detail-chart-stat span { margin-top: 4px; color: var(--text-muted); font-size: 11px; white-space: normal; }
-        .ch-detail-stat--peak svg, .ch-detail-stat--avg svg { color: #ad63f4; }
-        .ch-detail-stat--duration svg, .ch-detail-stat--soc svg { color: #32dcb4; }
-        .ch-detail-stat--high svg { color: #ff4b4b; }
-        .ch-detail-stat--low svg { color: #32aeeb; }
-        @media (max-width: 1000px) {
-            #chargeSummary .ch-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            /* Five cards in two columns leave the last one orphaned in a
-               half-width cell; a lone last card spans the full row instead.
-               :nth-child(odd) keeps the rule inert if the count turns even. */
-            #chargeSummary .ch-stat-grid > .ch-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
-            .session-card { grid-template-columns: minmax(220px, 1fr) repeat(2, minmax(105px, .6fr)) 44px; grid-template-areas: "primary start duration actions" "primary range context actions"; }
-            .ch-detail-overview { grid-template-columns: 1fr; padding: 0; }
-            .ch-detail-overview-item + .ch-detail-overview-item { border-left: 0; border-top: 1px solid var(--border-subtle); }
+        .ch-detail-chart-stat span { margin-top: 2px; color: var(--on-surface-variant); font-size: var(--fs-caption); white-space: normal; }
+
+        /* ===== BADGES AND WARNINGS (cards and detail) ===== */
+        .calibration-badge {
+            display: inline-flex; align-items: center; min-height: 22px; margin-top: 10px; padding: 0 8px;
+            border-radius: var(--radius-full); background: var(--primary-soft); color: var(--primary);
+            font-size: var(--fs-caption); font-weight: 700;
         }
-        @media (max-width: 760px) {
-            .charging-stats-intro { display: block; }
-            .stats-range-tabs { width: 100%; margin-top: 14px; }
-            .stats-lower-grid, .stats-trend-grid, .ch-detail-chart-grid, .ch-detail-metrics { grid-template-columns: 1fr; }
-            .ch-detail-chart-stats { grid-template-columns: 1fr; }
-            .ch-detail-metric-column + .ch-detail-metric-column { border-left: 0; border-top: 1px solid var(--border-subtle); }
+        .quality-warning {
+            display: flex; align-items: center; margin: 10px 0 14px;
+            padding: 10px 12px; border-radius: var(--radius-md);
+            background: var(--warning-soft); color: var(--on-surface);
+            font-size: var(--fs-caption); line-height: 1.45;
         }
-        @media (max-width: 700px) {
+        .quality-warning-text { flex: 1; min-width: 0; }
+        .quality-info-button {
+            display: inline-flex; align-items: center; justify-content: center;
+            flex: 0 0 auto; width: 32px; height: 32px; margin-left: 10px;
+            padding: 0; border: 1px solid var(--warning); border-radius: var(--radius-full);
+            background: transparent; color: var(--warning); cursor: pointer;
+        }
+        [dir="rtl"] .quality-info-button { margin-left: 0; margin-right: 10px; }
+        @media (hover: hover) {
+            .quality-info-button:hover { background: var(--warning-soft); }
+        }
+        @media (pointer: coarse) {
+            .quality-info-button { width: 40px; height: 40px; }
+        }
+        .quality-info-button svg { width: 16px; height: 16px; }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 1023px) {
+            .ch-detail-overview { grid-template-columns: minmax(0, 1fr); }
+            .ch-detail-overview-item + .ch-detail-overview-item,
+            [dir="rtl"] .ch-detail-overview-item + .ch-detail-overview-item { border-left: 0; border-right: 0; border-top: 1px solid var(--hairline); }
+        }
+        @media (max-width: 768px) {
             .charging-detail-open .page-body { padding-top: 12px; }
-            /* Compact summary cards: shrink the icon and padding and drop the
-               desktop 126px min-height so five cards fit a phone screen. */
-            #chargeSummary .ch-stat { min-height: 0; padding: 12px 14px; }
-            #chargeSummary .ch-stat-icon { width: 38px; height: 38px; margin-right: 10px; border-radius: 10px; }
-            #chargeSummary .ch-stat-icon svg { width: 20px; height: 20px; }
-            #chargeSummary .ch-stat-copy strong { font-size: 17px; }
-            #chargeSummary .ch-stat small { margin-top: 8px; }
-            /* Keep the session card on the same grid system as desktop, just
-               narrower: the metrics form an explicit 2x2 (the old inline-flex
-               width:48% pairs relied on inter-element whitespace for their
-               layout), and the chevron/delete stack keeps its own reserved
-               36px column instead of being absolutely positioned OVER the
-               kind/energy rows. Chrome 58 uses the legacy grid-column-gap
-               alias below; modern engines use column-gap. */
+            .charging-stats-intro { display: block; }
+            .charging-stats-kicker, [dir="rtl"] .charging-stats-kicker { margin: 0; }
+            .stats-range-tabs { display: flex; width: 100%; margin-top: 12px; }
+            .stats-range-tabs .filter-tab { flex: 1 1 0; min-width: 0; padding: 0 6px; white-space: normal; text-align: center; }
+            .stats-lower-grid, .stats-trend-grid, .ch-detail-chart-grid, .ch-detail-metrics { grid-template-columns: minmax(0, 1fr); }
+            .ch-detail-metric-column + .ch-detail-metric-column,
+            [dir="rtl"] .ch-detail-metric-column + .ch-detail-metric-column { border-left: 0; border-right: 0; border-top: 1px solid var(--hairline); }
+            .charging-session-list { margin-top: 20px; }
+            /* Phone card: the primary block on top, the metrics as a 2x2 below
+               and the chevron/delete stack in its own reserved column. Chrome 58
+               uses the legacy grid-column-gap alias; modern engines column-gap. */
             .session-card {
-                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
                 grid-template-areas:
                     "primary primary  actions"
                     "start   duration actions"
                     "range   context  actions";
                 grid-column-gap: 12px;
                 column-gap: 12px;
-                min-height: 0; padding: 18px;
+                min-height: 0; padding: 16px 8px 16px 16px;
             }
-            .session-metric { padding: 0; }
+            [dir="rtl"] .session-card { padding: 16px 16px 16px 8px; }
         }
-        .calibration-badge {
-            display: inline-flex; align-items: center; margin-top: 10px; padding: 4px 9px;
-            border-radius: var(--radius-full); border: 1px solid rgba(0,212,170,.4);
-            background: rgba(0,212,170,.12); color: #00D4AA; font-size: 11px; font-weight: 700;
+        @media (max-width: 599px) {
+            .hero-row { grid-template-columns: minmax(0, 1fr); grid-gap: 12px; gap: 12px; }
+            .ch-detail-title-row { flex-wrap: wrap; }
+            .ch-detail-title-row > div { flex-basis: 100%; }
+            .ch-detail-delete-btn, [dir="rtl"] .ch-detail-delete-btn { margin: 12px 0 0; }
+            .ch-detail-overview-item { padding: 14px 16px; }
+            .ch-detail-metric-head, .ch-detail-metric-row { padding: 0 16px; }
+            .ch-detail-chart-card { padding: 16px; }
+            /* Three compact cells: icon above the value. */
+            .ch-detail-chart-stat { flex-direction: column; align-items: flex-start; padding: 10px; }
+            .ch-detail-chart-stat > svg, [dir="rtl"] .ch-detail-chart-stat > svg { width: 20px; height: 20px; margin: 0 0 6px; }
+            .ch-detail-chart-stat > div { width: 100%; }
         }
-        .quality-warning {
-            display: flex; align-items: center; margin: 10px 0 14px;
-            padding: 10px 12px; border-radius: var(--radius-md);
-            border: 1px solid rgba(245,158,11,.35); background: rgba(245,158,11,.10);
-            color: #F59E0B; font-size: 12px; line-height: 1.45;
+        @media (max-width: 480px) {
+            /* Seg + Custom chip share one row on a 390px phone; narrower screens wrap. */
+            .charge-period-seg .filter-tab { padding: 0 12px; }
+            .filter-tab[data-days].active::before { margin-right: 6px; }
+            [dir="rtl"] .filter-tab[data-days].active::before { margin-right: 0; margin-left: 6px; }
+            #chargeCustomTab { padding: 0 14px 0 10px; }
+            [dir="rtl"] #chargeCustomTab { padding: 0 10px 0 14px; }
+            .session-card { grid-column-gap: 10px; column-gap: 10px; padding: 14px 6px 14px 14px; }
+            [dir="rtl"] .session-card { padding: 14px 14px 14px 6px; }
+            .session-metric > svg { width: 16px; height: 16px; margin-right: 8px; }
+            [dir="rtl"] .session-metric > svg { margin-right: 0; margin-left: 8px; }
+            /* Narrow 2x2: values may take two lines instead of clipping. */
+            .session-metric-value {
+                display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+                font-size: var(--fs-label); white-space: normal; overflow-wrap: break-word;
+            }
+            .tariff-row { flex-wrap: wrap; }
+            .tariff-info { flex-basis: 100%; }
+            .tariff-actions { margin: 6px 0 0 auto; }
+            [dir="rtl"] .tariff-actions { margin: 6px auto 0 0; }
         }
-        .quality-warning-text { flex: 1; min-width: 0; }
-        .quality-info-button {
-            display: inline-flex; align-items: center; justify-content: center;
-            flex: 0 0 auto; width: 28px; height: 28px; margin-left: 10px;
-            padding: 0; border-radius: var(--radius-full);
-            border: 1px solid rgba(245,158,11,.45);
-            background: rgba(245,158,11,.10); color: #F59E0B; cursor: pointer;
+
+        /* ===== CAR (head unit): 56px targets, 15px body text ===== */
+        :root[data-android-embed="1"] .filter-tab { min-height: 50px; padding: 0 20px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] #chargeCustomTab,
+        :root[data-android-embed="1"] .calendar-toggle,
+        :root[data-android-embed="1"] .ch-range-apply,
+        :root[data-android-embed="1"] .session-sort,
+        :root[data-android-embed="1"] .session-sort select,
+        :root[data-android-embed="1"] .load-more-btn,
+        :root[data-android-embed="1"] .ch-back-btn,
+        :root[data-android-embed="1"] .ch-detail-delete-btn,
+        :root[data-android-embed="1"] .ch-map-link,
+        :root[data-android-embed="1"] .ch-danger-btn,
+        :root[data-android-embed="1"] .calendar-close,
+        :root[data-android-embed="1"] .ch-estimate-disclosure summary,
+        :root[data-android-embed="1"] .ch-settings-card .btn,
+        :root[data-android-embed="1"] .ch-rate-control > .ch-currency,
+        :root[data-android-embed="1"] .ch-field,
+        :root[data-android-embed="1"] .ch-text-field { min-height: 56px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .ch-field input { height: 54px; font-size: var(--fs-body); }
+        @media (min-width: 769px) {
+            :root[data-android-embed="1"] .ch-field { width: 184px; }
+            :root[data-android-embed="1"] .ch-text-field { width: 260px; }
         }
-        .quality-info-button:hover, .quality-info-button:focus-visible {
-            background: rgba(245,158,11,.20); outline: none;
+        :root[data-android-embed="1"] .session-delete-btn,
+        :root[data-android-embed="1"] .tariff-icon-btn,
+        :root[data-android-embed="1"] .quality-info-button,
+        :root[data-android-embed="1"] .calendar-nav button { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .calendar-day { height: 56px; min-height: 56px; }
+        :root[data-android-embed="1"] .session-card { grid-template-columns: minmax(200px, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 56px; min-height: 112px; }
+        :root[data-android-embed="1"] .session-metric-label,
+        :root[data-android-embed="1"] .session-soc-row,
+        :root[data-android-embed="1"] .session-type,
+        :root[data-android-embed="1"] .session-power-chip,
+        :root[data-android-embed="1"] .session-live,
+        :root[data-android-embed="1"] .session-estimate-badge,
+        :root[data-android-embed="1"] .ch-stat > small,
+        :root[data-android-embed="1"] .ch-detail-kicker,
+        :root[data-android-embed="1"] .ch-detail-caption,
+        :root[data-android-embed="1"] .ch-legend,
+        :root[data-android-embed="1"] .ch-live .r-hero-stat-label,
+        :root[data-android-embed="1"] .ch-note { font-size: var(--fs-label); }
+        :root[data-android-embed="1"] .ch-stat-copy > span,
+        :root[data-android-embed="1"] .ch-detail-metric-name,
+        :root[data-android-embed="1"] .session-day-head,
+        :root[data-android-embed="1"] .ch-live-kicker,
+        :root[data-android-embed="1"] .ch-unit,
+        :root[data-android-embed="1"] .ch-value-text,
+        :root[data-android-embed="1"] .quality-warning { font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .ch-stat-copy > span { min-height: 20px; line-height: 20px; }
+        :root[data-android-embed="1"] .ch-stat-icon { width: 18px; height: 20px; }
+        :root[data-android-embed="1"] .ch-stat-icon svg { width: 18px; height: 18px; }
+        :root[data-android-embed="1"] .ch-live .r-hero-stat-value { font-size: var(--fs-title); }
+        @media (min-width: 1024px) {
+            :root[data-android-embed="1"] .ch-stat-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+            :root[data-android-embed="1"] .ch-stat-grid > .ch-stat { grid-column: auto; }
         }
-        .quality-info-button svg { width: 16px; height: 16px; }
+        @media (max-width: 768px) {
+            :root[data-android-embed="1"] .session-card { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 56px; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .session-live-dot, .ch-detail-live-dot, .ch-skeleton-card { animation: none; }
+            .session-card, .ch-range-row, .filter-tab, .calendar-toggle, .calendar-day, .session-delete-btn { transition: none; }
+            .session-card:active { -webkit-transform: none; transform: none; }
+        }
     </style>
 </head>
 <body class="charging-page">
     <div class="app-layout">
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <main class="main-content">
             <div class="mobile-header">
@@ -975,6 +1303,7 @@
                                 <span data-i18n="charge.chart_energy_title">Energy per charge</span>
                             </h3>
                             <div class="ch-card-sub" data-i18n="charge.chart_energy_sub">kWh added each session — DC blue, AC teal</div>
+                            <div class="ch-legend"><span><i class="ch-legend-ac"></i><span data-i18n="charge.tariff_ac_short">AC</span></span><span><i class="ch-legend-dc"></i><span data-i18n="charge.tariff_dc_short">DC</span></span></div>
                             <canvas id="efficiencyChart"></canvas>
                         </div>
                         <div class="ch-card app-surface-card" id="lifetimeCard" style="display:none;">
@@ -1008,12 +1337,34 @@
                         <div style="font-size:13px;margin-top:6px;" data-i18n="charge.no_data_hint">Trends and totals appear after your first recorded charge</div>
                     </div>
 
+                    <!-- Charge in progress (Sessions tab, mock "Charging now" tile).
+                         Stays hidden until CHARGING._renderLiveTile() sees a live charge. -->
+                    <section class="r-hero ch-live" data-tab="sessions" id="chargeLiveTile" style="display:none;" aria-labelledby="chargeLiveKicker chargeLiveTitle">
+                        <span class="r-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L4 14 h7 l-1 8 9-12 h-7 z"/></svg></span>
+                        <div class="r-hero-text">
+                            <p class="ch-live-kicker" id="chargeLiveKicker"></p>
+                            <h2 class="r-hero-title" id="chargeLiveTitle">--</h2>
+                            <div class="ch-live-bar" aria-hidden="true"><span id="chargeLiveFill"></span></div>
+                        </div>
+                        <div class="r-hero-stats" id="chargeLiveStats">
+                            <div class="r-hero-stat" id="chargeLivePowerStat"><span class="r-hero-stat-label" data-i18n="charge.metric_power">Power</span><span class="r-hero-stat-value" id="chargeLivePower">--</span></div>
+                            <div class="r-hero-stat" id="chargeLiveAddedStat"><span class="r-hero-stat-label" data-i18n="charge.metric_session">Added</span><span class="r-hero-stat-value" id="chargeLiveAdded">--</span></div>
+                            <div class="r-hero-stat" id="chargeLiveCostStat"><span class="r-hero-stat-label" data-i18n="charge.hero_cost_session">Cost this session</span><span class="r-hero-stat-value" id="chargeLiveCost">--</span></div>
+                            <div class="r-hero-stat" id="chargeLiveTempStat"><span class="r-hero-stat-label" data-i18n="charge.detail_temp">Battery temp</span><span class="r-hero-stat-value" id="chargeLiveTemp">--</span></div>
+                            <div class="r-hero-stat" id="chargeLiveTtfStat"><span class="r-hero-stat-label" data-i18n="charge.metric_ttf">Time to full</span><span class="r-hero-stat-value" id="chargeLiveTtf">--</span></div>
+                        </div>
+                    </section>
+
                     <!-- Filters (Sessions tab) -->
                     <div data-tab="sessions" id="sessionFilters">
                         <div class="filter-tabs charge-segmented-control charge-period-control">
-                            <button class="filter-tab active" data-days="7" onclick="CHARGING.quickFilter(7, this)" data-i18n="charge.filter_7d">7 days</button>
-                            <button class="filter-tab" data-days="30" onclick="CHARGING.quickFilter(30, this)" data-i18n="charge.filter_30d">30 days</button>
-                            <button class="filter-tab" data-days="0" onclick="CHARGING.quickFilter(0, this)" data-i18n="charge.filter_all">All time</button>
+                            <!-- Seg wrapper is presentational: charging.js finds the
+                                 buttons with descendant selectors (.charge-period-control .filter-tab). -->
+                            <div class="charge-period-seg">
+                                <button class="filter-tab active" data-days="7" onclick="CHARGING.quickFilter(7, this)" data-i18n="charge.filter_7d">7 days</button>
+                                <button class="filter-tab" data-days="30" onclick="CHARGING.quickFilter(30, this)" data-i18n="charge.filter_30d">30 days</button>
+                                <button class="filter-tab" data-days="0" onclick="CHARGING.quickFilter(0, this)" data-i18n="charge.filter_all">All time</button>
+                            </div>
                             <button class="filter-tab" id="chargeCustomTab" onclick="CHARGING.toggleCustomRange(this)">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="3"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/><path d="M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01"/></svg>
                                 <span data-i18n="charge.filter_custom">Custom</span>
@@ -1079,9 +1430,13 @@
                         <button class="load-more-btn" id="loadMoreBtn" style="display:none;" onclick="CHARGING.loadMore()" data-i18n="charge.load_more">Load More</button>
                     </div>
 
-                    <!-- Settings tab -->
-                    <div class="ch-card" data-tab="settings">
-                        <h3 data-i18n="charge.settings_title">Charging Analytics</h3>
+                    <!-- Settings tab: shared settings-kit sections (card head with
+                         icon chip, .setting-row rows). -->
+                    <div class="card ch-settings-card" data-tab="settings">
+                        <div class="card-header">
+                            <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L4 14 h7 l-1 8 9-12 h-7 z"/></svg><span data-i18n="charge.settings_title">Charging Analytics</span></h3>
+                        </div>
+                        <div class="card-body">
                         <div class="setting-row">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="charge.settings_auto_record">Automatically record charging sessions</div>
@@ -1100,7 +1455,7 @@
                                 <div class="setting-desc" data-i18n="charge.settings_rate_desc">Cost per kWh, shared with Trips</div>
                             </div>
                             <div class="setting-control ch-rate-control">
-                                <select id="currencySelect" onchange="CHARGING.showApplyNeeded()" style="max-width:150px;">
+                                <select id="currencySelect" class="select-input ch-currency" onchange="CHARGING.showApplyNeeded()">
                                     <optgroup label="Common">
                                         <option value="$">$ USD</option>
                                         <option value="€">€ EUR</option>
@@ -1152,8 +1507,7 @@
                                         <option value="COL$">COL$ COP</option>
                                     </optgroup>
                                 </select>
-                                <input type="number" id="rateInput" placeholder="0.00" step="0.01" min="0" onchange="CHARGING.showApplyNeeded()">
-                                <span style="font-size:11px;color:var(--text-muted);">/kWh</span>
+                                <label class="ch-field"><input type="number" id="rateInput" placeholder="0.00" step="0.01" min="0" onchange="CHARGING.showApplyNeeded()" aria-label="Electricity Rate" data-i18n-attr="aria-label:charge.settings_rate"><span class="ch-unit">/kWh</span></label>
                             </div>
                         </div>
                         <!-- DC rate is charging-specific (no Trips equivalent); kept
@@ -1164,22 +1518,25 @@
                                 <div class="setting-desc" data-i18n="charge.settings_dc_rate_desc">Separate tariff for DC fast charging; leave 0 to use the base rate</div>
                             </div>
                             <div class="setting-control ch-rate-control">
-                                <input type="number" id="dcRateInput" placeholder="0.00" step="0.01" min="0" onchange="CHARGING.showApplyNeeded()">
-                                <span style="font-size:11px;color:var(--text-muted);">/kWh</span>
+                                <label class="ch-field"><input type="number" id="dcRateInput" placeholder="0.00" step="0.01" min="0" onchange="CHARGING.showApplyNeeded()" aria-label="DC Fast Rate (optional)" data-i18n-attr="aria-label:charge.settings_dc_rate"><span class="ch-unit">/kWh</span></label>
                             </div>
                         </div>
-                        <div class="settings-button-row" style="margin-top:12px;">
-                            <button class="btn btn-primary" id="chargingApplyBtn" onclick="CHARGING.saveSettings()" style="flex:1;" disabled data-i18n="common.apply_changes">Apply Changes</button>
+                        <div class="settings-button-row ch-apply-row">
+                            <button class="btn btn-primary" id="chargingApplyBtn" onclick="CHARGING.saveSettings()" disabled data-i18n="common.apply_changes">Apply Changes</button>
                         </div>
                         <div class="ch-note" data-i18n="charge.baking_note">Detailed metrics fill in as you complete new charges</div>
+                        </div>
                     </div>
 
                     <!-- Location tariffs. Rows are built by CHARGING._tariffRow(), which
                          also attaches its own edit/delete/default handlers — only the
                          add/save/cancel buttons are wired inline here. -->
-                    <div class="ch-card" data-tab="settings">
-                        <h3 data-i18n="charge.tariffs_title">Tariffs by Location</h3>
-                        <div class="ch-note" data-i18n="charge.tariffs_desc" style="margin-top:0;">Save a rate for a place; charges near it are priced with it automatically.</div>
+                    <div class="card ch-settings-card" data-tab="settings">
+                        <div class="card-header">
+                            <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg><span data-i18n="charge.tariffs_title">Tariffs by Location</span></h3>
+                        </div>
+                        <div class="card-body">
+                        <div class="ch-group-desc" data-i18n="charge.tariffs_desc">Save a rate for a place; charges near it are priced with it automatically.</div>
 
                         <div id="tariffList"></div>
 
@@ -1190,8 +1547,8 @@
 
                         <div id="tariffFallbackNote" class="ch-note" style="display:none;"></div>
 
-                        <div class="settings-button-row" style="margin-top:12px;">
-                            <button class="btn btn-secondary" id="tariffAddBtn" onclick="CHARGING.openTariffEditor()" style="flex:1;" data-i18n="charge.tariff_add_here">Add tariff for this location</button>
+                        <div class="settings-button-row ch-tariff-add-row">
+                            <button class="btn btn-secondary" id="tariffAddBtn" onclick="CHARGING.openTariffEditor()" data-i18n="charge.tariff_add_here">Add tariff for this location</button>
                         </div>
 
                         <!-- Editor. display:none is load-bearing: renderTariffs() reads
@@ -1202,7 +1559,7 @@
                                     <div class="setting-name" data-i18n="charge.tariff_label">Label</div>
                                 </div>
                                 <div class="setting-control">
-                                    <input type="text" id="tariffLabelInput" maxlength="48" data-i18n-attr="placeholder:charge.tariff_label_placeholder" placeholder="Home">
+                                    <input type="text" id="tariffLabelInput" class="ch-text-field" maxlength="48" data-i18n-attr="placeholder:charge.tariff_label_placeholder;aria-label:charge.tariff_label" placeholder="Home" aria-label="Label">
                                 </div>
                             </div>
                             <div class="setting-row">
@@ -1210,8 +1567,7 @@
                                     <div class="setting-name" data-i18n="charge.tariff_ac_rate">AC rate</div>
                                 </div>
                                 <div class="setting-control ch-rate-control">
-                                    <input type="number" id="tariffAcRateInput" placeholder="0.00" step="0.01" min="0">
-                                    <span style="font-size:11px;color:var(--text-muted);">/kWh</span>
+                                    <label class="ch-field"><input type="number" id="tariffAcRateInput" placeholder="0.00" step="0.01" min="0" aria-label="AC rate" data-i18n-attr="aria-label:charge.tariff_ac_rate"><span class="ch-unit">/kWh</span></label>
                                 </div>
                             </div>
                             <div class="setting-row">
@@ -1220,8 +1576,7 @@
                                     <div class="setting-desc" data-i18n="charge.tariff_dc_rate_hint">Leave blank to use the AC rate for DC charges.</div>
                                 </div>
                                 <div class="setting-control ch-rate-control">
-                                    <input type="number" id="tariffDcRateInput" placeholder="0.00" step="0.01" min="0">
-                                    <span style="font-size:11px;color:var(--text-muted);">/kWh</span>
+                                    <label class="ch-field"><input type="number" id="tariffDcRateInput" placeholder="0.00" step="0.01" min="0" aria-label="DC rate (optional)" data-i18n-attr="aria-label:charge.tariff_dc_rate"><span class="ch-unit">/kWh</span></label>
                                 </div>
                             </div>
                             <div class="setting-row">
@@ -1230,8 +1585,7 @@
                                     <div class="setting-desc" data-i18n="charge.tariff_radius_hint">How close a charge must be to use this tariff.</div>
                                 </div>
                                 <div class="setting-control ch-rate-control">
-                                    <input type="number" id="tariffRadiusInput" step="5" min="25" max="2000">
-                                    <span style="font-size:11px;color:var(--text-muted);">m</span>
+                                    <label class="ch-field"><input type="number" id="tariffRadiusInput" step="5" min="25" max="2000" aria-label="Match radius" data-i18n-attr="aria-label:charge.tariff_radius"><span class="ch-unit">m</span></label>
                                 </div>
                             </div>
                             <div class="setting-row">
@@ -1239,27 +1593,32 @@
                                     <div class="setting-name" data-i18n="charge.tariff_location">Location</div>
                                 </div>
                                 <div class="setting-control">
-                                    <span id="tariffLocText" style="font-size:12px;color:var(--text-muted);">--</span>
+                                    <span id="tariffLocText" class="ch-value-text">--</span>
                                 </div>
                             </div>
                             <div id="tariffError" class="ch-note" style="display:none;color:var(--status-danger);"></div>
-                            <div class="settings-button-row" style="margin-top:12px;">
-                                <button class="btn btn-primary" id="tariffSaveBtn" onclick="CHARGING.saveTariff()" style="flex:1;" data-i18n="common.save">Save</button>
-                                <button class="btn btn-secondary" onclick="CHARGING.closeTariffEditor()" style="flex:1;" data-i18n="common.cancel">Cancel</button>
+                            <div class="settings-button-row ch-apply-row">
+                                <button class="btn btn-primary" id="tariffSaveBtn" onclick="CHARGING.saveTariff()" data-i18n="common.save">Save</button>
+                                <button class="btn btn-secondary" onclick="CHARGING.closeTariffEditor()" data-i18n="common.cancel">Cancel</button>
                             </div>
+                        </div>
                         </div>
                     </div>
 
-                    <div class="ch-card" data-tab="settings">
-                        <h3 data-i18n="charge.settings_data_title">Data</h3>
+                    <div class="card ch-settings-card ch-settings-card--data" data-tab="settings">
+                        <div class="card-header">
+                            <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg><span data-i18n="charge.settings_data_title">Data</span></h3>
+                        </div>
+                        <div class="card-body">
                         <div class="setting-row">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="charge.settings_clear">Clear charging history</div>
                                 <div class="setting-desc" data-i18n="charge.settings_clear_desc">Permanently delete all recorded charging sessions and curves</div>
                             </div>
                             <div class="setting-control">
-                                <button class="ch-danger-btn" onclick="CHARGING.clearHistory()" data-i18n="charge.settings_clear">Clear charging history</button>
+                                <button class="btn btn-danger ch-danger-btn" onclick="CHARGING.clearHistory()" data-i18n="charge.settings_clear">Clear charging history</button>
                             </div>
+                        </div>
                         </div>
                     </div>
 
@@ -1366,8 +1725,8 @@
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <script src="../shared/charging.js?v=46"></script>
     <script>
         function toggleSidebar() {

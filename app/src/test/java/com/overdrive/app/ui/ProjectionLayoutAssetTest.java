@@ -23,7 +23,11 @@ public class ProjectionLayoutAssetTest {
             "projectionScaleFill", "projectionScaleZoom", "projectionPresetGroup",
             "projectionPresetFull", "projectionPresetLeft", "projectionPresetRight",
             "projectionPresetCenter", "projectionAdjustButton", "projectionAspectLockSwitch",
-            "projectionAutoStartSwitch",
+            "projectionAutoStartSwitch", "projectionTransportGroup", "projectionTransportAuto",
+            "projectionTransportLegacy", "projectionTransportDilink5",
+            "projectionTransportStatus", "projectionFullscreenButton", "projectionScroll",
+            "projectionContent", "projectionMirrorCard", "projectionDock", "projectionSettings",
+            "projectionHud", "projectionEmptyState",
     };
 
     /** ProjectionFragment does not branch on orientation, so both files must carry every ID. */
@@ -49,14 +53,14 @@ public class ProjectionLayoutAssetTest {
         }
     }
 
-    /** The live mirror leads the page; the cast controls follow it. */
+    /** The live mirror leads the page with its status pill over it; the cast controls follow. */
     @Test
     public void portraitPutsTheStageAheadOfTheCastControls() throws IOException {
         String xml = readRepositoryFile(PORTRAIT);
+        int stage = xml.indexOf("@+id/projectionStage\"");
         int dot = xml.indexOf("@+id/projectionStatusDot");
-        int stage = xml.indexOf("@+id/projectionStage");
         int cast = xml.indexOf("@+id/projectionCastButton");
-        assertTrue(dot >= 0 && stage > dot && cast > stage);
+        assertTrue(stage >= 0 && dot > stage && cast > dot);
     }
 
     /**
@@ -76,17 +80,40 @@ public class ProjectionLayoutAssetTest {
         }
     }
 
-    /** Resize belongs to the cluster-window card, under the presets it shares. */
+    /**
+     * The cluster-transport selector is a settings row like auto-start: it
+     * belongs after the auto-start switch, behind its own divider, with the
+     * resolved-transport status line closing the card.
+     */
     @Test
-    public void resizeFollowsTheWindowPresets() throws IOException {
+    public void transportSelectorSitsBelowAutoStart() throws IOException {
         for (String path : new String[] {PORTRAIT, LAND}) {
             String xml = readRepositoryFile(path);
-            int presets = xml.indexOf("@+id/projectionPresetGroup");
-            int presetsEnd = xml.indexOf(
-                    "</com.google.android.material.button.MaterialButtonToggleGroup>", presets);
-            int adjust = xml.indexOf("@+id/projectionAdjustButton");
-            assertTrue(path, presets >= 0 && adjust > presetsEnd);
+            int autoStart = xml.indexOf("@+id/projectionAutoStartSwitch");
+            int group = xml.indexOf("@+id/projectionTransportGroup");
+            int status = xml.indexOf("@+id/projectionTransportStatus");
+            assertTrue(path, autoStart >= 0 && group > autoStart && status > group);
+            assertTrue(path, xml.contains("@string/projection_transport_desc"));
         }
+    }
+
+    /**
+     * Portrait keeps Resize under the presets it shares; landscape docks it beside Cast,
+     * where the stage it edits stays on screen above the settings.
+     */
+    @Test
+    public void resizeSitsWhereTheStageStaysInView() throws IOException {
+        String portrait = readRepositoryFile(PORTRAIT);
+        int presets = portrait.indexOf("@+id/projectionPresetGroup");
+        int presetsEnd = portrait.indexOf(
+                "</com.google.android.material.button.MaterialButtonToggleGroup>", presets);
+        assertTrue(presets >= 0 && portrait.indexOf("@+id/projectionAdjustButton") > presetsEnd);
+
+        String land = readRepositoryFile(LAND);
+        int cast = land.indexOf("@+id/projectionCastButton");
+        int adjust = land.indexOf("@+id/projectionAdjustButton");
+        int settings = land.indexOf("@+id/projectionSettings");
+        assertTrue(cast >= 0 && adjust > cast && settings > adjust);
     }
 
     @Test
@@ -194,15 +221,16 @@ public class ProjectionLayoutAssetTest {
         assertFalse(helper.contains("text.text = message"));
     }
 
-    /** Landscape splits the page: the stage column, then the controls column. */
+    /** Landscape stacks the full-width stage over the dock; the settings cards share a row. */
     @Test
-    public void landscapeSplitsStageFromControls() throws IOException {
+    public void landscapeStacksTheStageOverTheDock() throws IOException {
         String land = readRepositoryFile(LAND);
-        assertTrue(land.contains("android:orientation=\"horizontal\""));
-        assertTrue(land.contains("android:layout_weight=\"1.4\""));
-        int stage = land.indexOf("@+id/projectionStage");
-        int cast = land.indexOf("@+id/projectionAppSpinner");
-        assertTrue(stage >= 0 && cast > stage);
+        int stage = land.indexOf("@+id/projectionStage\"");
+        int spinner = land.indexOf("@+id/projectionAppSpinner");
+        int settings = land.indexOf("@+id/projectionSettings");
+        assertTrue(stage >= 0 && spinner > stage && settings > spinner);
+        int settingsEnd = land.indexOf(">", settings);
+        assertTrue(land.substring(settings, settingsEnd).contains("android:orientation=\"horizontal\""));
     }
 
     private static String readRepositoryFile(String relativePath) throws IOException {

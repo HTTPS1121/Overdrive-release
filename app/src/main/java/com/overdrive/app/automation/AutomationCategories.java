@@ -59,23 +59,25 @@ public final class AutomationCategories {
     private static final Set<String> HYBRID_ONLY = new HashSet<>();
     static {
         // ── Vehicle composite (remote-ish) ──
-        put(VEHICLE, "lock", "unlock", "flash", "findCar", "find_car");
+        put(VEHICLE, "lock", "unlock", "flash", "findCar", "find_car", "powerOn", "powerOff",
+                "unlockSource");
         // ── Climate ──
         put(CLIMATE, "setAc", "setAcTemp", "stepAcTemp", "setAcFan", "ac", "temperature", "outsideTemp",
                 "seat", "seatClimate", "seat_heat_driver", "seat_heat_passenger",
                 "seat_vent_driver", "seat_vent_passenger",
                 "acAuto", "acSync", "acAutoOff", "fanOnly", "steeringHeat", "recirculation",
-                "frontDefrost", "rearDefrost");
+                "frontDefrost", "rearDefrost", "maxCool", "airPurify", "acFanLevel");
         // ── Windows / body / openings ──
         put(WINDOWS_BODY, "windows", "windowsAll", "windowsPreset", "windowState",
                 "windowOpenPercent", "sunroof", "sunshade", "tailgate", "mirror_fold",
-                "mirror_auto_follow_up", "child_lock", "doorState", "wireless_charging",
+                "mirror_auto_follow_up", "child_lock", "doorState", "wireless_charging", "rainCloseWindows",
                 "wireless_charging_state", "wireless_charging_left", "wireless_charging_right",
                 // Seat/mirror GEOMETRY — physically moving the body, unlike the seat
                 // heating/venting ids above, which are climate.
-                "seatPosition", "seatSave", "applySeatPosition");
+                "seatPosition", "seatSave", "applySeatPosition", "easyEntry");
         // ── Lighting ──
         put(LIGHTING, "drl", "headlight_mode", "hazard", "setAmbient", "ambient_colour", "ambientBrightness",
+                "turnSignalLeft", "turnSignalRight", "turn_signal_left", "turn_signal_right",
                 // "ambientPower" = the on/off ACTION's id, "ambient" = the on/off CONDITION's id.
                 // Only action/condition ids belong in this map — the MQTT telemetry field name
                 // (ambient_enabled) is never looked up here and would be dead weight.
@@ -119,7 +121,8 @@ public final class AutomationCategories {
                 // Blind-spot CARD actions (OverDrive's own rear+side view). The OEM ADAS
                 // blind-spot WARNING condition keeps the "blindSpot" id under ADAS above —
                 // different feature, hence the distinct blindSpotEnable id here.
-                "blindSpotEnable", "blindSpotDismiss");
+                "blindSpotEnable", "blindSpotDismiss",
+                "safeKeep", "safeKeepState", "safeKeepBacklog", "safeKeepLastError", "safeKeepClipSaved");
         // ── Advanced calibration / legacy detail controls ──
         // Existing action ids remain supported exactly as before; this only keeps
         // calibration knobs out of the intent-based Surveillance picker.
@@ -131,6 +134,7 @@ public final class AutomationCategories {
                 "automationControl");
         // ── Sensor-only signals (triggers/conditions with no matching action) ──
         put(SENSORS, "batteryLevel", "targetSoc", "estimatedRange", "chargingState", "chargeGun",
+                "chargingPower", "chargeTimeToFull", "tyrePressureLowest",
                 "batterySoh", "keyBattery", "aux12vBattery", "fuelLevel", "pm25",
                 "autoWiper", "wiperActive", "rainProbability", "callState");
 

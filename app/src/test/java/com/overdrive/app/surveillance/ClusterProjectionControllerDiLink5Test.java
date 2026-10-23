@@ -16,7 +16,7 @@ public class ClusterProjectionControllerDiLink5Test {
                     ClusterProjectionController
                             .isAllowedDiLink5ContainerOpcode(op));
         }
-        for (int op : new int[] {-1, 1, 17, 29, 30, 31, 35}) {
+        for (int op : new int[] {-1, 1, 12, 13, 17, 29, 30, 31, 35, 53}) {
             assertFalse(
                     ClusterProjectionController
                             .isAllowedDiLink5ContainerOpcode(op));
@@ -31,6 +31,9 @@ public class ClusterProjectionControllerDiLink5Test {
                 .isAllowedDiLink5CleanupOpcode(18));
         assertFalse(ClusterProjectionController
                 .isAllowedDiLink5CleanupOpcode(16));
+        for (int op : new int[] {12, 13, 53}) {
+            assertFalse(ClusterProjectionController.isAllowedDiLink5CleanupOpcode(op));
+        }
     }
 
     @Test
@@ -294,5 +297,80 @@ public class ClusterProjectionControllerDiLink5Test {
                 ClusterProjectionController.LegacyBootRecoveryResult
                         .RETRYABLE_FAILURE
                         .isSameBootIndeterminate());
+    }
+
+    @Test
+    public void missingLegacyServiceClassifiesAsUnavailableNotRejected() {
+        // "Service X does not exist" means nothing was dispatched. Mapping it
+        // to REJECTED made AutoContainer-less firmware indistinguishable from
+        // a live service refusing the opcode, which permanently wedged boot
+        // recovery (2026-09-23 field log).
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.UNAVAILABLE,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        1, false, "Service AutoContainer does not exist"));
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.UNAVAILABLE,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        1, false, "Service AutoContainer: not found"));
+        // A live service that refuses stays REJECTED (Binder exception word /
+        // negative native verdict), and unexplained non-zero exits stay
+        // INDETERMINATE.
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.REJECTED,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        0, false,
+                        "Result: Parcel(fffffffe 00000001 '........')"));
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.REJECTED,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        0, false,
+                        "Result: Parcel(00000000 ffffffff '........')"));
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.INDETERMINATE,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        1, false, "binder transaction failed"));
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.INDETERMINATE,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        0, true, "Result: Parcel(00000000 '....')"));
+        assertEquals(
+                ClusterProjectionController.LegacyCommandResult.ACCEPTED,
+                ClusterProjectionController.classifyLegacyServiceCallResult(
+                        0, false, "Result: Parcel(00000000 '....')"));
+    }
+
+    @Test
+    public void terminalRecoveryVerdictsEndTheLadderAndReleaseAdmission() {
+        // Terminal = no retry can change the outcome.
+        assertTrue(ClusterProjectionController.LegacyBootRecoveryResult
+                .RECOVERED.isTerminal());
+        assertTrue(ClusterProjectionController.LegacyBootRecoveryResult
+                .UNSUPPORTED.isTerminal());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .RETRYABLE_FAILURE.isTerminal());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .SAME_BOOT_INDETERMINATE.isTerminal());
+
+        assertTrue(ClusterProjectionController.LegacyBootRecoveryResult
+                .UNSUPPORTED.isUnsupported());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .UNSUPPORTED.isRecovered());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .UNSUPPORTED.isSameBootIndeterminate());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .RECOVERED.isUnsupported());
+
+        // After a FINISHED restore pass, only an unresolved same-boot command
+        // keeps projection admission blocked; every other verdict releases it
+        // (the durable marker, when retained, re-arms recovery at next boot).
+        assertTrue(ClusterProjectionController.LegacyBootRecoveryResult
+                .SAME_BOOT_INDETERMINATE.blocksAdmissionAfterRestore());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .RECOVERED.blocksAdmissionAfterRestore());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .UNSUPPORTED.blocksAdmissionAfterRestore());
+        assertFalse(ClusterProjectionController.LegacyBootRecoveryResult
+                .RETRYABLE_FAILURE.blocksAdmissionAfterRestore());
     }
 }

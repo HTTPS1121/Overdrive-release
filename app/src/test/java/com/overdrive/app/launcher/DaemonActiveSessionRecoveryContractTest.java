@@ -21,7 +21,7 @@ public class DaemonActiveSessionRecoveryContractTest {
 
         int clear = viewModel.indexOf("private fun clearStartBlockers(");
         int next = viewModel.indexOf(
-                "private fun stopDaemonSilent(", clear);
+                "fun stopDaemon(type: DaemonType)", clear);
         assertTrue(clear >= 0 && next > clear);
         String helper = viewModel.substring(clear, next);
         assertTrue(helper.contains("ParkedShutdown.MARKER_PATH"));

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Tiếp tục đi</item>
+        <item>Khởi hành</item>
+        <item>Đến điểm đến</item>
+        <item>Điểm đến ở bên phải</item>
+        <item>Điểm đến ở bên trái</item>
+        <item>Chếch sang phải</item>
+        <item>Rẽ phải</item>
+        <item>Rẽ ngoặt sang phải</item>
+        <item>Quay đầu</item>
+        <item>Rẽ ngoặt sang trái</item>
+        <item>Rẽ trái</item>
+        <item>Chếch sang trái</item>
+        <item>Đi vào đường nhánh</item>
+        <item>Đi theo lối ra</item>
+        <item>Đi thẳng</item>
+        <item>Giữ bên phải</item>
+        <item>Giữ bên trái</item>
+        <item>Nhập làn</item>
+        <item>Nhập làn bên phải</item>
+        <item>Nhập làn bên trái</item>
+        <item>Vào vòng xuyến</item>
+        <item>Ra khỏi vòng xuyến</item>
+        <item>Đi phà</item>
+        <item>Rời phà</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Tiếp tục đi trên</item>
+        <item>Khởi hành trên</item>
+        <item>Đến điểm đến tại</item>
+        <item>Điểm đến bên phải, tại</item>
+        <item>Điểm đến bên trái, tại</item>
+        <item>Chếch sang phải vào</item>
+        <item>Rẽ phải vào</item>
+        <item>Rẽ ngoặt sang phải vào</item>
+        <item>Quay đầu vào</item>
+        <item>Rẽ ngoặt sang trái vào</item>
+        <item>Rẽ trái vào</item>
+        <item>Chếch sang trái vào</item>
+        <item>Đi vào đường nhánh đến</item>
+        <item>Đi theo lối ra đến</item>
+        <item>Đi thẳng vào</item>
+        <item>Giữ bên phải để vào</item>
+        <item>Giữ bên trái để vào</item>
+        <item>Nhập vào</item>
+        <item>Nhập làn bên phải vào</item>
+        <item>Nhập làn bên trái vào</item>
+        <item>Qua vòng xuyến vào</item>
+        <item>Ra khỏi vòng xuyến vào</item>
+        <item>Đi phà:</item>
+        <item>Rời phà vào</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>thứ 1</item>
+        <item>thứ 2</item>
+        <item>thứ 3</item>
+        <item>thứ 4</item>
+        <item>thứ 5</item>
+        <item>thứ 6</item>
+        <item>thứ 7</item>
+        <item>thứ 8</item>
+        <item>thứ 9</item>
+        <item>thứ 10</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Đi theo lối ra %1$s</string>
+    <string name="nav_hud_roundabout_exit_onto">Đi theo lối ra %1$s vào</string>
+    <string name="nav_hud_towards">Hướng</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Lối ra %1$s</string>
+    <string name="nav_hud_then">Sau đó</string>
+    <string name="nav_hud_arrive">Đến nơi</string>
+    <string name="nav_hud_recenter">Căn giữa</string>
+    <string name="nav_hud_end">Kết thúc</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Tắt tiếng chỉ đường bằng giọng nói</string>
+    <string name="nav_hud_cd_unmute">Bật tiếng chỉ đường bằng giọng nói</string>
+    <string name="nav_hud_cd_overview">Hiển thị toàn bộ tuyến đường</string>
+    <string name="nav_hud_cd_overview_exit">Quay lại chế độ xem lái xe</string>
+    <string name="nav_hud_cd_end">Kết thúc dẫn đường</string>
+    <string name="nav_hud_cd_recenter">Căn giữa vào xe</string>
+    <string name="nav_hud_cd_compass_heading_up">La bàn: hướng di chuyển ở trên. Nhấn để hướng bắc ở trên</string>
+    <string name="nav_hud_cd_compass_north_up">La bàn: hướng bắc ở trên. Nhấn để hướng di chuyển ở trên</string>
+    <string name="nav_hud_cd_back">Rời khỏi bản đồ</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Sau đó, sau %2$s nữa: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Đến nơi lúc %1$s, còn %2$s và %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">Chậm %1$s do giao thông</string>
+</resources>

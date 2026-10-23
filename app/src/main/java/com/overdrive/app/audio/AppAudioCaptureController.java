@@ -7,6 +7,8 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaRecorder;
+import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.NoiseSuppressor;
 import android.util.Log;
 
 import java.io.DataOutputStream;
@@ -72,12 +74,35 @@ public class AppAudioCaptureController {
     private static boolean recordingDemand;
     private static boolean listenerDemand;
     private static boolean listenerDiPlusCompatibility;
+    private static com.overdrive.app.voice.audio.PcmSink wakeSink;
+    // Microphone input wanted for the shared AudioRecord (voice assistant setting, experimental).
+    // Changing it restarts a wake-only capture at once; while recording or the remote listener
+    // own the capture it is applied on their next reopen instead, so neither is interrupted.
+    private static volatile int requestedAudioSource = MediaRecorder.AudioSource.MIC;
+    // Source of the capture currently open, or -1: read lock-free by the voice status report, so
+    // a capture restart (socket connect, AudioRecord init) never stalls the engine thread.
+    private static volatile int openAudioSource = -1;
+    // A non-MIC input the head unit refused (its AudioRecord would not initialise, start or
+    // deliver a first chunk while plain MIC opened fine), or -1. Captures open with MIC instead
+    // until the setting changes: the shared capture also feeds dashcam audio, the remote listener
+    // and the wake path, so a refused experimental input must never keep all of them down in a
+    // retry loop, and a wake-only capture must not flap between the two sources every tick.
+    private static volatile int failedAudioSource = -1;
+    /** Not a MediaRecorder source: the car's four-channel input, served to the wake path by {@link CarArrayCapture}. */
+    static final int CAR_ARRAY_SOURCE = -100;
+    // Written under OWNER_LOCK, read lock-free by the status reports.
+    private static volatile CarArrayCapture arrayCapture;
+    // Effect probe of the open capture, for /api/voice/status: null until a session asked, and
+    // null again once a capture without effects opens.
+    private static volatile Boolean aecAvailable;
+    private static volatile Boolean aecEnabled;
 
     // Capture parameters. Matched to the daemon's expected MediaFormat
     // in HardwareEventRecorderGpu.maybeAddAudioTrack — change here
     // means the daemon CSD-0 lookup needs the new value.
     private static final int SAMPLE_RATE = 48000;
     private static final int LISTENER_CAPTURE_RATE = 8000;
+    private static final int WAKE_CAPTURE_RATE = 16000;
     private static final int CHANNEL_COUNT = 1;
     private static final int CHANNEL_CONFIG_IN = AudioFormat.CHANNEL_IN_MONO;
     private static final int PCM_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
@@ -112,9 +137,24 @@ public class AppAudioCaptureController {
     private final Object lifecycleLock = new Object();
     private final boolean recordForMuxing;
     private final int captureSampleRate;
+    private final boolean hasIngest;
+    private final int audioSource;
+    private volatile com.overdrive.app.voice.audio.PcmSink pcmSink;
+    private boolean loggedSinkFailure = false;
+    private boolean loggedDeferredSource = false;
+    // True when this capture's AudioRecord itself failed: it would not initialise or record, or it
+    // died before delivering a first chunk. On a non-MIC source that is the "head unit refused
+    // this input" signal behind failedAudioSource; a socket or encoder failure, a back-off skip or
+    // a mic claimed mid-stream never counts.
+    private volatile boolean recordFailed;
+    // Capture thread only: set once the first chunk arrived, so a later read failure is a mic
+    // claim (today's 5 s back-off) rather than a refused input.
+    private boolean deliveredPcm;
 
     private ExecutorService executor;
     private AudioRecord audioRecord;
+    private AcousticEchoCanceler echoCanceler;
+    private NoiseSuppressor noiseSuppressor;
     private MediaCodec aacEncoder;
     private Socket socket;
     private DataOutputStream out;
@@ -175,10 +215,108 @@ public class AppAudioCaptureController {
     private AppAudioCaptureController(
             boolean recordForMuxing,
             boolean listenerEnabled,
-            int captureSampleRate) {
+            int captureSampleRate,
+            boolean hasIngest,
+            int audioSource) {
         this.recordForMuxing = recordForMuxing;
         this.listenerEnabled.set(listenerEnabled);
         this.captureSampleRate = captureSampleRate;
+        this.hasIngest = hasIngest;
+        this.audioSource = audioSource;
+    }
+
+    /**
+     * {@link MediaRecorder.AudioSource} for a {@code VoiceAssistantConfig.micSource} value;
+     * anything unknown is plain MIC, today's behaviour.
+     */
+    public static int audioSourceFor(String micSource) {
+        if ("voice_recognition".equals(micSource)) return MediaRecorder.AudioSource.VOICE_RECOGNITION;
+        if ("voice_communication".equals(micSource)) return MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+        if ("car_array".equals(micSource)) return CAR_ARRAY_SOURCE;
+        return MediaRecorder.AudioSource.MIC;
+    }
+
+    /** Inverse of {@link #audioSourceFor} for status reports. */
+    public static String micSourceName(int audioSource) {
+        if (audioSource == MediaRecorder.AudioSource.VOICE_RECOGNITION) return "voice_recognition";
+        if (audioSource == MediaRecorder.AudioSource.VOICE_COMMUNICATION) return "voice_communication";
+        if (audioSource == CAR_ARRAY_SOURCE) return "car_array";
+        return "mic";
+    }
+
+    /** Only VOICE_COMMUNICATION gets the platform echo canceller and noise suppressor attached. */
+    static boolean wantsVoiceEffects(int audioSource) {
+        return audioSource == MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+    }
+
+    /**
+     * The input a capture opens with: the requested one, or plain MIC once the head unit refused
+     * exactly that input. A different request is always tried.
+     */
+    static int effectiveAudioSource(int requested, int failed) {
+        return requested == failed ? MediaRecorder.AudioSource.MIC : requested;
+    }
+
+    private static int effectiveAudioSource() {
+        return effectiveAudioSource(requestedAudioSource, failedAudioSource);
+    }
+
+    /**
+     * Whether a capture that did not come up means the head unit refused its input: only when the
+     * AudioRecord itself failed on a non-MIC source. The owner then opens plain MIC for the same
+     * demands instead of retrying the refused input after every back-off. A failing MIC is the
+     * microphone itself being claimed or denied, which keeps today's back-off.
+     */
+    static boolean sourceRefused(int source, boolean recordFailed) {
+        return recordFailed && source != MediaRecorder.AudioSource.MIC;
+    }
+
+    /**
+     * Sets the microphone input every capture opens with and reconciles: a wake-only capture
+     * on another source is reopened now; a capture that recording or the remote listener own
+     * keeps running and takes the new source on its next reopen (logged once).
+     */
+    public static boolean setCaptureSource(String micSource) {
+        synchronized (OWNER_LOCK) {
+            int source = audioSourceFor(micSource);
+            if (source == requestedAudioSource) return true;
+            requestedAudioSource = source;
+            // A new request gets a fresh try, even of an input that was refused earlier.
+            failedAudioSource = -1;
+            return reconcileOwnerLocked();
+        }
+    }
+
+    /**
+     * The source the open capture uses (what the wake path hears), or the one the next capture
+     * opens with when none is open: the requested source, or plain MIC after the head unit
+     * refused it ({@link #micSourceFailed}). Lock-free: the voice engine reports it from its
+     * audio thread.
+     */
+    public static String activeMicSource() {
+        CarArrayCapture array = arrayCapture;
+        if (array != null && array.isRunning()) return micSourceName(CAR_ARRAY_SOURCE);
+        int open = openAudioSource;
+        return micSourceName(open >= 0 ? open : effectiveAudioSource());
+    }
+
+    /**
+     * True while the requested microphone input was refused by the head unit, so captures open
+     * with plain MIC instead; false again as soon as the setting changes. Lock-free.
+     */
+    public static boolean micSourceFailed() {
+        int failed = failedAudioSource;
+        // -1 is "none"; the car array is a negative pseudo-source, so test for the sentinel itself.
+        return failed != -1 && failed == requestedAudioSource;
+    }
+
+    /** Echo-canceller probe of the newest capture: null until a VOICE_COMMUNICATION capture asked. */
+    public static Boolean echoCancelerAvailable() {
+        return aecAvailable;
+    }
+
+    public static Boolean echoCancelerEnabled() {
+        return aecEnabled;
     }
 
     /**
@@ -217,31 +355,148 @@ public class AppAudioCaptureController {
         }
     }
 
+    /**
+     * Voice wake demand: a non-null sink receives every captured chunk at the capture
+     * rate. Wake-only capture runs at 16 kHz with no ingest socket; null removes the demand.
+     */
+    public static boolean setWakeSink(com.overdrive.app.voice.audio.PcmSink sink) {
+        synchronized (OWNER_LOCK) {
+            wakeSink = sink;
+            return reconcileOwnerLocked();
+        }
+    }
+
+    public static boolean isWakeCaptureRunning() {
+        synchronized (OWNER_LOCK) {
+            if (wakeSink == null) return false;
+            if (arrayCapture != null && arrayCapture.isRunning()) return true;
+            return owner != null && owner.isRunning();
+        }
+    }
+
+    /** A debug field capture is recording the car's input (see CarArrayCapture). Lock-free. */
+    public static boolean fieldCaptureRunning() {
+        CarArrayCapture array = arrayCapture;
+        return array != null && array.capturing();
+    }
+
+    /** Per-channel levels of the car's four-channel input (mics, then references), or null. */
+    public static int[] carArrayChannelsDb() {
+        CarArrayCapture array = arrayCapture;
+        return array == null ? null : array.channelsDb();
+    }
+
+    /**
+     * Serves the wake sink from the car's four-channel input while it is requested and not
+     * refused; true while it does. A refusal or a capture that died falls back to the shared
+     * capture on plain MIC until the setting changes, as for any refused input.
+     */
+    private static boolean reconcileArrayLocked() {
+        boolean wanted = wakeSink != null && effectiveAudioSource() == CAR_ARRAY_SOURCE;
+        CarArrayCapture current = arrayCapture;
+        if (current != null && (!wanted || current.sink() != wakeSink || !current.isRunning())) {
+            boolean died = current.failed();
+            current.stop();
+            arrayCapture = null;
+            if (died && wanted) {
+                failedAudioSource = CAR_ARRAY_SOURCE;
+                Log.w(TAG, "Car microphones stopped delivering — capturing with mic until the setting changes");
+                return false;
+            }
+            current = null;
+        }
+        if (!wanted) return false;
+        if (current != null) return true;
+        CarArrayCapture next = new CarArrayCapture(wakeSink);
+        if (!next.start()) {
+            failedAudioSource = CAR_ARRAY_SOURCE;
+            Log.w(TAG, "Car microphones refused by the head unit — capturing with mic until the setting changes");
+            return false;
+        }
+        arrayCapture = next;
+        return true;
+    }
+
     private static boolean reconcileOwnerLocked() {
+        boolean array = reconcileArrayLocked();
+        // With the car's four-channel input the shared capture serves only recording and the
+        // remote listener, on plain MIC.
+        com.overdrive.app.voice.audio.PcmSink ownerSink = array ? null : wakeSink;
         if (!recordingDemand && !listenerDemand) {
-            stopOwnerLocked();
-            return true;
+            if (ownerSink == null) {
+                stopOwnerLocked();
+                return true;
+            }
         }
 
         AppAudioCaptureController current = owner;
+        boolean needsIngest = recordingDemand || listenerDemand;
         int desiredCaptureRate =
                 listenerDemand && listenerDiPlusCompatibility
-                        ? LISTENER_CAPTURE_RATE : SAMPLE_RATE;
+                        ? LISTENER_CAPTURE_RATE
+                        : (needsIngest ? SAMPLE_RATE : WAKE_CAPTURE_RATE);
+        // The requested input, or plain MIC once the head unit refused it (failedAudioSource):
+        // a capture that already fell back to MIC is therefore not stale and is kept.
+        int source = effectiveAudioSource();
+        if (source == CAR_ARRAY_SOURCE) source = MediaRecorder.AudioSource.MIC;
         if (current != null
                 && current.isRunning()
                 && current.recordForMuxing == recordingDemand
-                && current.captureSampleRate == desiredCaptureRate) {
-            current.listenerEnabled.set(listenerDemand);
-            return true;
+                && current.captureSampleRate == desiredCaptureRate
+                && current.hasIngest == needsIngest) {
+            // A changed mic source reopens only a wake-only capture; recording and the remote
+            // listener are never interrupted for it and pick it up on their next reopen.
+            boolean sourceStale = current.audioSource != source;
+            if (!sourceStale || needsIngest) {
+                if (sourceStale && !current.loggedDeferredSource) {
+                    current.loggedDeferredSource = true;
+                    Log.i(TAG, "Mic source " + micSourceName(source)
+                            + " deferred until the recording/listener capture reopens (now "
+                            + micSourceName(current.audioSource) + ")");
+                }
+                current.listenerEnabled.set(listenerDemand);
+                current.pcmSink = ownerSink;
+                return true;
+            }
         }
 
+        // A capture on this input that died before its first chunk already showed the head unit
+        // refuses it; otherwise the input gets its try here.
+        boolean refused = current != null && !current.isRunning()
+                && current.audioSource == source && sourceRefused(source, current.recordFailed);
         stopOwnerLocked();
-        AppAudioCaptureController replacement =
-                new AppAudioCaptureController(
-                        recordingDemand, listenerDemand, desiredCaptureRate);
-        if (!replacement.start()) return false;
-        owner = replacement;
+        if (!refused) {
+            AppAudioCaptureController replacement =
+                    newCaptureLocked(needsIngest, desiredCaptureRate, source, ownerSink);
+            if (replacement.start()) {
+                owner = replacement;
+                return true;
+            }
+            if (!sourceRefused(source, replacement.recordFailed)) return false;
+        }
+        // Fall back to plain MIC for the same demands right away: the back-off was armed by the
+        // refused input, not by the microphone. If MIC fails too, the microphone itself is
+        // unavailable (claimed or denied) — today's back-off stays armed and the next retry asks
+        // for the requested input again rather than blaming it. Once MIC is up the refused input
+        // is remembered (logged once per request) so the owner does not flap back to it.
+        lastFailureNanos = 0L;
+        AppAudioCaptureController fallback =
+                newCaptureLocked(needsIngest, desiredCaptureRate, MediaRecorder.AudioSource.MIC, ownerSink);
+        if (!fallback.start()) return false;
+        failedAudioSource = source;
+        Log.w(TAG, "Mic source " + micSourceName(source)
+                + " refused by the head unit — capturing with mic until the setting changes");
+        owner = fallback;
         return true;
+    }
+
+    private static AppAudioCaptureController newCaptureLocked(boolean needsIngest, int desiredCaptureRate,
+            int source, com.overdrive.app.voice.audio.PcmSink sink) {
+        AppAudioCaptureController capture =
+                new AppAudioCaptureController(
+                        recordingDemand, listenerDemand, desiredCaptureRate, needsIngest, source);
+        capture.pcmSink = sink;
+        return capture;
     }
 
     private static void stopOwnerLocked() {
@@ -278,8 +533,10 @@ public class AppAudioCaptureController {
             // Long blocking I/O (socket connect, AudioRecord init,
             // encoder configure) happens OUTSIDE the lifecycleLock so
             // a concurrent stop() isn't blocked by the 2 s connect.
-            currentStep = "ingest-socket";
-            initIngestSocket();      // opens TCP, declares recording/listener mode
+            if (hasIngest) {
+                currentStep = "ingest-socket";
+                initIngestSocket();      // opens TCP, declares recording/listener mode
+            }
             currentStep = "audio-record";
             initAudioRecord();       // opens AudioRecord (may throw on perm denial)
             if (recordForMuxing) {
@@ -314,9 +571,18 @@ public class AppAudioCaptureController {
                 }
             }
 
+            openAudioSource = audioSource;
+            if (!wantsVoiceEffects(audioSource)) {
+                // The probe describes the open capture; this one has no effects attached, so a
+                // stale "aecEnabled" from an earlier VOICE_COMMUNICATION capture must not linger.
+                aecAvailable = null;
+                aecEnabled = null;
+            }
             Log.i(TAG, "Audio capture started (recording=" + recordForMuxing
                     + ", listener=" + listenerEnabled.get()
-                    + ", captureRate=" + captureSampleRate + ")");
+                    + ", captureRate=" + captureSampleRate
+                    + ", source=" + micSourceName(audioSource)
+                    + (pcmSink != null ? ", wake=true" : "") + ")");
             return true;
         } catch (Throwable t) {
             // Log the FULL stack — getMessage() is null for many of the
@@ -326,6 +592,8 @@ public class AppAudioCaptureController {
             Log.e(TAG, "Audio capture start failed at step=" + currentStep
                 + " cls=" + t.getClass().getSimpleName()
                 + " msg=" + t.getMessage(), t);
+            // Only the AudioRecord step can mean the input itself was refused (see sourceRefused).
+            recordFailed = "audio-record".equals(currentStep);
             lastFailureNanos = System.nanoTime();
             running.set(false);
             cleanup();
@@ -337,6 +605,7 @@ public class AppAudioCaptureController {
     private void stop() {
         if (!started.compareAndSet(true, false)) return;
         running.set(false);
+        openAudioSource = -1;
         Log.i(TAG, "Audio capture stopping");
         cleanup();
         Log.i(TAG, "Audio capture stopped");
@@ -409,7 +678,9 @@ public class AppAudioCaptureController {
         // much that a transient pause shows up as audible latency on
         // subsequent recordings.
         int bufSize = Math.max(minBuf * 4, captureSampleRate / 5);
-        audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC,
+        // audioSource is MediaRecorder.AudioSource.MIC unless the voice assistant asked for
+        // VOICE_RECOGNITION or VOICE_COMMUNICATION (see audioSourceFor).
+        audioRecord = new AudioRecord(audioSource,
             captureSampleRate, CHANNEL_CONFIG_IN, PCM_FORMAT, bufSize);
         if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
             int state = audioRecord.getState();
@@ -418,6 +689,7 @@ public class AppAudioCaptureController {
             throw new IllegalStateException(
                 "AudioRecord state=" + state + " (mic claimed or denied)");
         }
+        if (wantsVoiceEffects(audioSource)) attachVoiceEffects(audioRecord.getAudioSessionId());
         audioRecord.startRecording();
         // Poll for RECORDING state up to 200ms — some BYD AOSP builds return
         // from startRecording() before AudioFlinger has actually flipped the
@@ -436,6 +708,59 @@ public class AppAudioCaptureController {
             audioRecord = null;
             throw new IllegalStateException(
                 "AudioRecord recordingState=" + rs + " — mic likely claimed by another client");
+        }
+    }
+
+    /**
+     * Attaches the platform echo canceller and noise suppressor to a VOICE_COMMUNICATION
+     * session when the head unit offers them; the only path to hearing the wake word over music
+     * without a playback reference. Availability and the enable result are logged once per
+     * capture and kept for /api/voice/status. A failing effect never fails the capture.
+     */
+    private void attachVoiceEffects(int sessionId) {
+        boolean available = false;
+        boolean enabled = false;
+        try {
+            available = AcousticEchoCanceler.isAvailable();
+            if (available) {
+                echoCanceler = AcousticEchoCanceler.create(sessionId);
+                if (echoCanceler != null) {
+                    int result = echoCanceler.setEnabled(true);
+                    enabled = result == AcousticEchoCanceler.SUCCESS && echoCanceler.getEnabled();
+                    Log.i(TAG, "AcousticEchoCanceler available, setEnabled=" + result
+                            + " enabled=" + enabled);
+                } else {
+                    Log.i(TAG, "AcousticEchoCanceler available but create() returned null");
+                }
+            } else {
+                Log.i(TAG, "AcousticEchoCanceler not available on this head unit");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "AcousticEchoCanceler failed: " + t.getMessage());
+        }
+        aecAvailable = available;
+        aecEnabled = enabled;
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(sessionId);
+                int result = noiseSuppressor == null ? -1 : noiseSuppressor.setEnabled(true);
+                Log.i(TAG, "NoiseSuppressor available, setEnabled=" + result);
+            } else {
+                Log.i(TAG, "NoiseSuppressor not available on this head unit");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "NoiseSuppressor failed: " + t.getMessage());
+        }
+    }
+
+    private void releaseVoiceEffects() {
+        if (echoCanceler != null) {
+            try { echoCanceler.release(); } catch (Throwable ignored) {}
+            echoCanceler = null;
+        }
+        if (noiseSuppressor != null) {
+            try { noiseSuppressor.release(); } catch (Throwable ignored) {}
+            noiseSuppressor = null;
         }
     }
 
@@ -467,7 +792,7 @@ public class AppAudioCaptureController {
             } catch (Throwable t) {
                 Log.w(TAG, "AudioRecord.read threw: " + t.getMessage());
                 lastFailureNanos = System.nanoTime();
-                running.set(false);
+                noteReadFailure();
                 break;
             }
             if (n <= 0) {
@@ -478,11 +803,25 @@ public class AppAudioCaptureController {
                 if (n < 0) {
                     Log.w(TAG, "AudioRecord.read=" + n + " — releasing mic for retry");
                     lastFailureNanos = System.nanoTime();
-                    running.set(false);
+                    noteReadFailure();
                     break;
                 }
                 continue;
             }
+            deliveredPcm = true;
+
+            com.overdrive.app.voice.audio.PcmSink sink = pcmSink;
+            if (sink != null) {
+                try {
+                    sink.onPcm(pcmBuf, n, captureSampleRate);
+                } catch (Throwable t) {
+                    if (!loggedSinkFailure) {
+                        loggedSinkFailure = true;
+                        Log.w(TAG, "Wake sink failed: " + t.getMessage());
+                    }
+                }
+            }
+            if (!hasIngest) continue;
 
             byte[] consumerPcm = pcmBuf;
             int consumerLength = n;
@@ -539,6 +878,17 @@ public class AppAudioCaptureController {
         // not here — queueing EOS while the encoder may already be
         // in mid-shutdown races with stop()/release() and throws
         // IllegalStateException intermittently.
+    }
+
+    /**
+     * A read that failed before the first chunk arrived means the input never delivered audio
+     * (refused by the head unit on a non-MIC source, see {@link #sourceRefused}); a stop() in
+     * progress has already cleared {@code running} and never counts. Flagged before
+     * {@code running} flips so the owner sees both together.
+     */
+    private void noteReadFailure() {
+        if (!deliveredPcm && running.get()) recordFailed = true;
+        running.set(false);
     }
 
     private int normalizePcmRate(byte[] pcm, int length) {
@@ -808,6 +1158,8 @@ public class AppAudioCaptureController {
         // 5. AudioRecord.release() AFTER capture thread has joined.
         //    Releasing while a thread is still inside read() is the
         //    Adreno-deadlock case the ordering above is built to avoid.
+        //    The session effects go first: they belong to the record's session.
+        releaseVoiceEffects();
         if (audioRecord != null) {
             try { audioRecord.release(); } catch (Throwable ignored) {}
             audioRecord = null;

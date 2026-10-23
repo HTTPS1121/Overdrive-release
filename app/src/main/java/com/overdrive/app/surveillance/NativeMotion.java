@@ -536,12 +536,15 @@ public class NativeMotion {
      * Total result buffer size = getQuadrantResultSize() * 4.
      */
     public static native int getQuadrantResultSize();
+
+    /** Geometry/version descriptor; absent on legacy seven-row native libraries. */
+    public static native int[] getPipelineGeometryV2();
     
     /**
      * Set per-quadrant ROI block mask.
      * 
      * @param quadrant Quadrant index (0-3: Front, Right, Rear, Left)
-     * @param blockMask byte[70] array where 1=enabled, 0=disabled.
+     * @param blockMask current grid mask, or a legacy 70-cell mask, where 1=enabled, 0=disabled.
      *                  Pass null to clear ROI (all blocks enabled).
      */
     public static native void setQuadrantRoi(int quadrant, byte[] blockMask);

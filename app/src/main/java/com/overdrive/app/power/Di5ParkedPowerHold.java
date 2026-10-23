@@ -12,25 +12,28 @@ import java.util.function.Supplier;
 import org.json.JSONObject;
 
 /**
- * DiLink 5 parked keep-alive lease (Experimental).
+ * DiLink 5 parked keep-alive lease.
  *
- * <p>Holds the MCU/sentry rails, optionally the panorama producer, and — only
- * after a recorded on-car pre-flight — a vendor shutdown-critical token, while
- * the vehicle is parked and the user has opted in. Runs inside
+ * <p>Holds the local parked transport state, MCU/sentry rails, optionally the
+ * panorama producer, and — only after a recorded on-car pre-flight — a vendor
+ * shutdown-critical token, while the vehicle is parked and the user has opted in. Runs inside
  * {@code acc_sentry_daemon} and is driven by two callers only:
  * <ul>
  *   <li>{@link #requestForTransition(long, boolean)} from a generation-fenced
  *       {@code LatestBooleanReconciler} on every sentry transition (ACC OFF →
- *       desired, ACC ON / shutdown → released);</li>
+ *       desired, ACC ON → locally detached without parked link STOP);</li>
  *   <li>{@link #tick(long)} from the daemon's 10 s keep-alive loop, which
- *       re-reads the configuration, samples the 12 V battery and re-asserts or
- *       releases the levers.</li>
+ *       re-reads the configuration, samples the 12 V battery when available and
+ *       re-asserts or releases the levers.</li>
  * </ul>
  *
  * <p>Invariants:
  * <ul>
- *   <li>Nothing is written while the master switch is off, the kill switch is
- *       set, or no fresh 12 V sample above the cutoff exists (fail closed).</li>
+ *   <li>Nothing is written while the master switch is off or the kill switch is
+ *       set. Because the DiLink 5 OTA voltage API is unavailable from the shell
+ *       daemon on some vehicles, a missing/stale sample is diagnostic-only once
+ *       the user explicitly enables this feature. A fresh,
+ *       confirmed low-voltage sequence still releases and latches every lever.</li>
  *   <li>Deliberately NOT gated on the camera-mode selection: DiLink 5 head units
  *       exist with and without the QCarCam camera stack, so the user's opt-in
  *       toggle is the platform declaration. The lease is installed on every
@@ -38,6 +41,10 @@ import org.json.JSONObject;
  *   <li>The {@link Di5KeepAliveOwnershipMarker} is written BEFORE the first HAL
  *       write and removed AFTER the last release; start-up hygiene releases only
  *       what the marker records.</li>
+ *   <li>parked link START is callback-confirmed and periodically re-asserted.
+ *       ACC ON cancels local ownership and unbinds without sending global STOP;
+ *       STOP is reserved for a deliberate parked-session end (toggle/kill switch,
+ *       voltage cutoff, or daemon exit while still parked).</li>
  *   <li>The 12 V cutoff latches until ACC ON or confirmed external charging.</li>
  *   <li>Sentry flags are written only when {@code getMcuStatus()} reports the MCU
  *       awake ({@code 1} or {@code 10}); otherwise {@code wakeUpMcu()} is polled,
@@ -57,7 +64,7 @@ public final class Di5ParkedPowerHold {
 
     /** Cross-process status snapshot consumed by {@code /api/vehicle/di5-keepalive}. */
     public static final String DEFAULT_STATUS_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_di5_keepalive.status");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_di5_keepalive.status");
 
     /**
      * Token registered in {@code vendor.peripheral.shutdown_critical_list}.
@@ -71,6 +78,12 @@ public final class Di5ParkedPowerHold {
     /** MCU status values that mean "awake" (reference: getMcuStatus() ∈ {1, 10}). */
     static final int MCU_STATUS_ACTIVE = 1;
     static final int MCU_STATUS_ACTIVE_ALT = 10;
+    /** No status at all: SL7 firmware's getMcuStatus()/wakeUpMcu() are hard-coded -1 stubs. */
+    static final int MCU_STATUS_UNAVAILABLE = -1;
+    /** Status/wake polling stops for the park after the MCU has answered nothing for this long... */
+    static final long MCU_UNAVAILABLE_GIVE_UP_MS = 10L * 60_000L;
+    /** ...and for at least this many attempts, so a wall-clock step cannot shorten it. */
+    static final int MCU_UNAVAILABLE_MIN_ATTEMPTS = 15;
 
     /** Bounded per-attempt wait for the MCU to come up after wakeUpMcu(). */
     static final long WAKE_POLL_INTERVAL_MS = 1_000L;
@@ -83,6 +96,10 @@ public final class Di5ParkedPowerHold {
 
     /** After an AP-hold permission denial, re-probe only every N ticks. */
     static final int AP_DENIED_RECHECK_TICKS = 10;
+
+    static final int PARKED_LINK_RESULT_CONFIRMED = ParkedLinkContract.RESULT_CONFIRMED;
+    static final int PARKED_LINK_RESULT_DISPATCHED_UNCONFIRMED =
+            ParkedLinkContract.RESULT_DISPATCHED_UNCONFIRMED;
 
     /** Hardware / I/O seam. Production glue lives in AccSentryDaemon. */
     public interface Hardware {
@@ -108,6 +125,20 @@ public final class Di5ParkedPowerHold {
          *         {@code Integer.MIN_VALUE} when unavailable.
          */
         int writeMcuPowerHold(long generation, boolean hold);
+        /**
+         * Local parked hold through the permission-protected app-process receiver.
+         * {@code start=true} acquires/reasserts; {@code false} releases.
+         *
+         * @return 1 when asynchronously confirmed, 2 when dispatched but the
+         *         callback timed out, 0 on an asynchronous parked link rejection, or a
+         *         negative local transport/binding error.
+         */
+        int writeParkedLink(long generation, boolean start);
+        /**
+         * ACC-ON logical release: detach the app-process transport without
+         * issuing a remote release.
+         */
+        int detachParkedLink(long generation);
         /** PANORAMA_WORK_MODE_SET write; raw rc, {@link PanoramaWorkModeOwner#RC_UNAVAILABLE} if none. */
         int writePanoramaWorkMode(int value);
         /** Optional PANORAMA_WORK_MODE read-back; null when unsupported. */
@@ -164,10 +195,22 @@ public final class Di5ParkedPowerHold {
      * Safe to call when nothing is installed or held.
      */
     public static void releaseForProcessExit(String reason) {
+        releaseForProcessExit(reason, true);
+    }
+
+    /**
+     * Process-exit release with an explicit ACC verdict. A parked exit sends the
+     * parked link STOP; an ACC-ON exit only detaches the app-process binding.
+     */
+    public static void releaseForProcessExit(String reason, boolean vehicleParked) {
         Di5ParkedPowerHold h = installed;
         if (h != null) {
             try {
-                h.release(reason);
+                if (vehicleParked) {
+                    h.release(reason);
+                } else {
+                    h.releaseForAccOn(reason);
+                }
             } catch (Throwable t) {
                 h.hardware.log("Di5 keep-alive release on exit failed: " + t.getMessage());
             }
@@ -188,6 +231,13 @@ public final class Di5ParkedPowerHold {
     private long requestedGeneration = -1L;
     private boolean desired;
     private long heldGeneration = -1L;
+    /** START was confirmed or at least dispatched and has not had a confirmed STOP. */
+    private boolean parkedLinkHeld;
+    private boolean parkedLinkConfirmed;
+    private String parkedLinkStatus = "idle";
+    private int parkedLinkLastResult = Integer.MIN_VALUE;
+    private long lastParkedLinkAssertAtMs = Long.MIN_VALUE;
+    private int parkedLinkReasserts;
     private boolean mcuHeld;
     private boolean cameraHeld;
     private boolean apHeld;
@@ -208,6 +258,13 @@ public final class Di5ParkedPowerHold {
     /** MCU power hold (-1442840502←1) asserted by THIS instance; release writes 0 only then. */
     private boolean mcuPowerHoldAsserted;
     private int mcuPowerHoldLastRc = Integer.MIN_VALUE;
+    /** Consecutive attempts where the MCU reported no status and refused the wake. */
+    private int mcuUnavailableStreak;
+    private long mcuUnavailableSinceMs;
+    /** The MCU answered this generation: a real status, an accepted wake, or confirmed flags. */
+    private boolean mcuHalAnswered;
+    /** Parked generation whose status/wake polling stopped because the MCU never answered. */
+    private long mcuUnavailableGeneration = -1L;
     private String mcuStatus = "idle";
     /**
      * Set by {@link #release(String)} before it waits for {@link #lock}, so a tick
@@ -215,6 +272,8 @@ public final class Di5ParkedPowerHold {
      * interval instead of finishing the full wait first.
      */
     private volatile boolean releaseRequested;
+    /** ACC-ON transition requested while an assertion is inside bounded I/O. */
+    private volatile boolean accOnRequested;
     private String voltageDecision = "unknown";
     private String lastStopReason = "";
     private long lastStopAtMs;
@@ -267,28 +326,35 @@ public final class Di5ParkedPowerHold {
      *         {@link #tick(long)}, not by the reconciler's backoff.
      */
     public boolean requestForTransition(long generation, boolean desired) {
-        synchronized (lock) {
-            if (generation < requestedGeneration) {
-                return true; // stale request
-            }
-            boolean newGeneration = generation != requestedGeneration;
-            requestedGeneration = generation;
-            this.desired = desired;
-            if (!desired) {
-                // ACC ON (or exit): the only legitimate latch release besides
-                // confirmed charging.
-                voltageGuard.releaseLatch("ACC ON / lease end");
-                releaseLocked("transition:" + generation);
-                voltageGuard.resetSamples();
-                writeStatusLocked();
+        if (!desired) accOnRequested = true;
+        try {
+            synchronized (lock) {
+                if (generation < requestedGeneration) {
+                    return true; // stale request
+                }
+                boolean newGeneration = generation != requestedGeneration;
+                requestedGeneration = generation;
+                this.desired = desired;
+                if (!desired) {
+                    // ACC ON ends local scheduling and clears the voltage latch.
+                    // The parked link command is global and has no owner/source
+                    // correlation, so do NOT send STOP on the ignition edge.
+                    voltageGuard.releaseLatch("ACC ON / lease end");
+                    releaseLocked("transition:" + generation, false);
+                    voltageGuard.resetSamples();
+                    writeStatusLocked();
+                    return true;
+                }
+                if (newGeneration) {
+                    voltageGuard.resetSamples();
+                    mcuWakeAttempts = 0;
+                    resetMcuAvailabilityLocked(true);
+                }
+                evaluateLocked(generation, "transition");
                 return true;
             }
-            if (newGeneration) {
-                voltageGuard.resetSamples();
-                mcuWakeAttempts = 0;
-            }
-            evaluateLocked(generation, "transition");
-            return true;
+        } finally {
+            if (!desired) accOnRequested = false;
         }
     }
 
@@ -310,11 +376,30 @@ public final class Di5ParkedPowerHold {
         try {
             synchronized (lock) {
                 desired = false;
-                releaseLocked(reason);
+                releaseLocked(reason, true);
                 writeStatusLocked();
             }
         } finally {
             releaseRequested = false;
+        }
+    }
+
+    /**
+     * ACC-ON logical release. Every local hardware lever is released, but the
+     * app-process OTA binding is merely detached and parked link STOP is not sent.
+     */
+    public void releaseForAccOn(String reason) {
+        accOnRequested = true;
+        try {
+            synchronized (lock) {
+                desired = false;
+                voltageGuard.releaseLatch("ACC ON / lease end");
+                releaseLocked(reason, false);
+                voltageGuard.resetSamples();
+                writeStatusLocked();
+            }
+        } finally {
+            accOnRequested = false;
         }
     }
 
@@ -359,7 +444,11 @@ public final class Di5ParkedPowerHold {
             }
             hardware.log("Di5 keep-alive HYGIENE: previous process (pid=" + rec.pid
                     + ", gen=" + rec.generation + ") left levers " + rec.levers
-                    + " and ACC reads ON — releasing exactly those");
+                    + " and ACC reads ON — releasing local levers and detaching parked link"
+                    + " without STOP");
+            if (rec.has(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK)) {
+                detachParkedLinkLocked(rec.generation, "startup hygiene");
+            }
             releaseLeversLocked(rec.has(Di5KeepAliveOwnershipMarker.LEVER_CAMERA),
                     rec.has(Di5KeepAliveOwnershipMarker.LEVER_MCU),
                     rec.has(Di5KeepAliveOwnershipMarker.LEVER_MCU_POWER),
@@ -399,7 +488,9 @@ public final class Di5ParkedPowerHold {
     private void evaluateLocked(long generation, String source) {
         if (!generationCheck.isCurrentParkedGeneration(generation)) {
             if (heldGeneration == generation || isActiveLocked()) {
-                releaseLocked("generation " + generation + " no longer parked (" + source + ")");
+                releaseLocked(
+                        "generation " + generation + " no longer parked (" + source + ")",
+                        false);
             }
             writeStatusLocked();
             return;
@@ -411,8 +502,10 @@ public final class Di5ParkedPowerHold {
         voltageGuard.reconfigure(s.cutoffVoltage, s.cutoffSamples, s.voltageMaxAgeMillis());
 
         if (!s.isEnabled() || !s.hasAnyEffectiveLever()) {
-            if (isActiveLocked()) {
-                releaseLocked(s.killSwitchActive ? "kill switch" : "disabled in config");
+            if (isActiveLocked() || marker.exists()) {
+                releaseLocked(
+                        s.killSwitchActive ? "kill switch" : "disabled in config",
+                        true);
             }
             voltageDecision = "n/a";
             writeStatusLocked();
@@ -442,59 +535,66 @@ public final class Di5ParkedPowerHold {
         if (tripped) {
             hardware.log("Di5 keep-alive: 12V CUTOFF — " + voltageGuard.latchReason()
                     + "; releasing every lever and latching off until ACC ON or charging");
-            releaseLocked("voltage cutoff");
+            releaseLocked("voltage cutoff", true);
             writeStatusLocked();
             return;
         }
         switch (decision) {
             case CUTOFF_LATCHED:
                 if (isActiveLocked()) {
-                    releaseLocked("voltage cutoff latched");
+                    releaseLocked("voltage cutoff latched", true);
                 }
                 writeStatusLocked();
                 return;
             case NO_SAMPLE:
-                if (!isActiveLocked()) {
-                    if (ticks % 6 == 1 || "transition".equals(source)) {
-                        hardware.log("Di5 keep-alive: waiting for a valid 12V sample before holding");
-                    }
-                    writeStatusLocked();
-                    return;
+                if (ticks % 6 == 1 || "transition".equals(source)) {
+                    hardware.log("Di5 keep-alive: 12V sample unavailable — continuing because "
+                            + "Parked keep-alive is explicitly enabled");
                 }
-                // Holding with no sample cannot happen (we never assert without
-                // one) — fall through defensively to a release.
-                releaseLocked("voltage sample lost");
-                writeStatusLocked();
-                return;
+                break;
             case STALE:
-                // Keep what is held, but do not re-assert or add levers until a
-                // fresh sample arrives.
                 if (ticks % 6 == 0) {
                     hardware.log("Di5 keep-alive: 12V sample stale ("
-                            + voltageGuard.sampleAgeMs(now) + " ms) — not re-asserting");
+                            + voltageGuard.sampleAgeMs(now) + " ms) — continuing because "
+                            + "Parked keep-alive is explicitly enabled");
                 }
-                writeStatusLocked();
-                return;
+                break;
             case ALLOW:
             default:
                 break;
         }
 
-        // Ownership marker BEFORE the first HAL write.
+        // Ownership marker BEFORE the first HAL write. A parked link START that was
+        // definitively rejected is omitted during its retry cooldown; otherwise
+        // a crash between ticks could later authorize a global STOP for a START
+        // that never reached parked link.
+        Di5KeepAliveOwnershipMarker.Record existing = marker.read();
+        boolean existingLink = existing != null
+                && existing.has(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK);
         List<String> wanted = new ArrayList<>();
+        if (s.isParkedLinkEffective()
+                && (parkedLinkHeld
+                        || existingLink
+                        || isParkedLinkAssertDue(now, s))) {
+            wanted.add(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK);
+        }
         if (s.isMcuHoldEffective()) wanted.add(Di5KeepAliveOwnershipMarker.LEVER_MCU);
         if (s.isMcuPowerHoldEffective()) wanted.add(Di5KeepAliveOwnershipMarker.LEVER_MCU_POWER);
         if (s.isCameraHeartbeatEffective()) wanted.add(Di5KeepAliveOwnershipMarker.LEVER_CAMERA);
         if (s.isApHoldEffective()) wanted.add(Di5KeepAliveOwnershipMarker.LEVER_AP);
-        Di5KeepAliveOwnershipMarker.Record existing = marker.read();
-        boolean markerCurrent = existing != null
-                && existing.generation == generation
-                && existing.levers.containsAll(wanted)
-                && wanted.containsAll(existing.levers);
+        boolean markerCurrent = existing == null
+                ? wanted.isEmpty()
+                : existing.generation == generation
+                        && existing.levers.containsAll(wanted)
+                        && wanted.containsAll(existing.levers);
         if (!markerCurrent) {
             // Union with anything already held so a lever that is being turned
             // off stays recorded until it is actually released below.
             List<String> toRecord = new ArrayList<>(wanted);
+            if ((parkedLinkHeld || existingLink)
+                    && !toRecord.contains(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK)) {
+                toRecord.add(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK);
+            }
             if (mcuHeld && !toRecord.contains(Di5KeepAliveOwnershipMarker.LEVER_MCU)) {
                 toRecord.add(Di5KeepAliveOwnershipMarker.LEVER_MCU);
             }
@@ -525,9 +625,21 @@ public final class Di5ParkedPowerHold {
             hardware.log("Di5 keep-alive: settings changed while parked → " + s);
         }
 
-        // Levers that are no longer wanted come off first. Same order as
-        // releaseLeversLocked: sentry pair before the power-hold 0, so the
-        // pair release is written while the MCU is still being held awake.
+        // Levers that are no longer wanted come off first. parked link STOP is sent
+        // while the AP/MCU are still available; the sentry pair then comes off
+        // before the power-hold 0.
+        if (!s.isParkedLinkEffective()
+                && (parkedLinkHeld || existingLink)) {
+            if (releaseParkedLinkLocked(generation, "lever disabled")) {
+                if (wanted.isEmpty()) {
+                    marker.clear();
+                } else if (!marker.record(
+                        generation, wanted, now, hardware.pid())) {
+                    hardware.log("Di5 keep-alive: parked link STOP landed but ownership "
+                            + "marker could not be narrowed to remaining levers");
+                }
+            }
+        }
         if (!s.isCameraHeartbeatEffective() && cameraHeld) releaseCameraLocked("lever disabled");
         if (!s.isMcuHoldEffective() && mcuHeld) releaseMcuLocked("lever disabled");
         if (!s.isMcuPowerHoldEffective() && mcuPowerHoldAsserted) {
@@ -535,10 +647,19 @@ public final class Di5ParkedPowerHold {
         }
         if (!s.isApHoldEffective() && apHeld) releaseApLocked("lever disabled");
 
-        // Then assert / re-assert the wanted ones. A concurrent release() wins:
+        // Then assert / re-assert the wanted ones. parked link first, before a bounded
+        // MCU wake poll can consume the remaining ACC-OFF transition window.
+        // A concurrent release/ACC-ON request wins:
         // stop adding levers and let it take the lock.
+        if (s.isParkedLinkEffective()) {
+            assertParkedLinkLocked(generation, now, s, existingLink);
+        }
+        if (isReleaseRequested()) {
+            writeStatusLocked();
+            return;
+        }
         if (s.isMcuHoldEffective()) assertMcuLocked(generation, now, s);
-        if (releaseRequested) {
+        if (isReleaseRequested()) {
             writeStatusLocked();
             return;
         }
@@ -551,13 +672,149 @@ public final class Di5ParkedPowerHold {
         writeStatusLocked();
     }
 
+    // ── parked transport network hold ───────────────────────────────────────
+
+    private void assertParkedLinkLocked(
+            long generation, long now, Di5ParkedKeepAliveSettings s,
+            boolean previouslyRecorded) {
+        if (!isParkedLinkAssertDue(now, s)) return;
+        if (!generationCheck.isCurrentParkedGeneration(generation)
+                || isReleaseRequested()) {
+            return;
+        }
+
+        boolean alreadyHeld = parkedLinkHeld;
+        lastParkedLinkAssertAtMs = now;
+        int result = safeWriteParkedLink(generation, true);
+        parkedLinkLastResult = result;
+        if (result == PARKED_LINK_RESULT_CONFIRMED
+                || result == PARKED_LINK_RESULT_DISPATCHED_UNCONFIRMED) {
+            parkedLinkHeld = true;
+            parkedLinkConfirmed =
+                    result == PARKED_LINK_RESULT_CONFIRMED;
+            if (alreadyHeld) parkedLinkReasserts++;
+            parkedLinkStatus = parkedLinkConfirmed
+                    ? "held"
+                    : "start dispatched; callback unconfirmed";
+            hardware.log("Di5 keep-alive: parked link START "
+                    + (parkedLinkConfirmed
+                            ? "confirmed" : "dispatched without callback")
+                    + " for generation " + generation);
+        } else if (alreadyHeld) {
+            parkedLinkStatus =
+                    "held; reassert failed (result=" + result + ")";
+            hardware.log("Di5 keep-alive: parked link START reassert failed result="
+                    + result + " — retaining prior hold state");
+        } else {
+            boolean unavailable = result == ParkedLinkContract.RESULT_SERVICE_UNAVAILABLE
+                    || result == ParkedLinkContract.RESULT_UNAUTHORIZED
+                    || result == ParkedLinkContract.RESULT_LIBRARY_UNAVAILABLE
+                    || result == ParkedLinkContract.RESULT_LIBRARY_INCOMPATIBLE;
+            parkedLinkStatus = (unavailable ? "unavailable" : "start failed")
+                    + " (result=" + result + ")";
+            hardware.log("Di5 keep-alive: parked link START failed result="
+                    + result + " — retrying on cadence");
+            // A failed new assertion proves nothing about ownership recorded
+            // before this attempt (including an earlier app/daemon process).
+            if (!previouslyRecorded && linkStartDefinitelyNotApplied(result)) {
+                dropDefiniteLinkOwnershipLocked(generation, result);
+            }
+        }
+    }
+
+    private boolean isParkedLinkAssertDue(
+            long now, Di5ParkedKeepAliveSettings s) {
+        return lastParkedLinkAssertAtMs == Long.MIN_VALUE
+                || now - lastParkedLinkAssertAtMs >= s.reassertMillis();
+    }
+
+    /**
+     * Remove the pre-write marker only when the transport contract proves that
+     * START did not land. Transaction failures and missing broadcast results
+     * stay recorded because the remote side may have accepted the command.
+     */
+    private void dropDefiniteLinkOwnershipLocked(
+            long generation, int result) {
+        Di5KeepAliveOwnershipMarker.Record rec = marker.read();
+        if (rec == null
+                || rec.generation != generation
+                || !rec.has(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK)) {
+            return;
+        }
+        List<String> remaining = new ArrayList<>(rec.levers);
+        remaining.remove(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK);
+        boolean updated = remaining.isEmpty()
+                ? marker.clear()
+                : marker.record(
+                        generation, remaining,
+                        hardware.nowMs(), hardware.pid());
+        if (!updated) {
+            hardware.log("Di5 keep-alive: could not remove definite non-dispatched "
+                    + "parked link START from ownership marker (result=" + result + ")");
+        }
+    }
+
+    private static boolean linkStartDefinitelyNotApplied(int result) {
+        return ParkedLinkContract.definitelyNotApplied(result);
+    }
+
+    /**
+     * Sends the global parked link STOP only for an intentional parked-session release.
+     * A failed/unconfirmed STOP keeps ownership live so the marker and next tick
+     * retry it rather than silently leaving a battery-consuming hold behind.
+     */
+    private boolean releaseParkedLinkLocked(
+            long generation, String reason) {
+        int result = safeWriteParkedLink(generation, false);
+        parkedLinkLastResult = result;
+        if (result == PARKED_LINK_RESULT_CONFIRMED) {
+            parkedLinkHeld = false;
+            parkedLinkConfirmed = false;
+            parkedLinkStatus = "released";
+            lastParkedLinkAssertAtMs = Long.MIN_VALUE;
+            hardware.log("Di5 keep-alive: parked link STOP confirmed — "
+                    + reason);
+            return true;
+        }
+
+        // A dispatched-but-unconfirmed STOP may already have landed, but
+        // retrying the idempotent STOP is safer than dropping ownership.
+        parkedLinkHeld = true;
+        parkedLinkConfirmed = false;
+        parkedLinkStatus =
+                result == PARKED_LINK_RESULT_DISPATCHED_UNCONFIRMED
+                        ? "stop dispatched; callback unconfirmed"
+                        : "stop failed (result=" + result + ")";
+        hardware.log("Di5 keep-alive: parked link STOP not confirmed result="
+                + result + " — retaining marker for retry (" + reason + ")");
+        return false;
+    }
+
+    /** ACC-ON path: detach the app-side Binder without sending global parked link STOP. */
+    private void detachParkedLinkLocked(
+            long generation, String reason) {
+        int result = safeDetachParkedLink(generation);
+        parkedLinkLastResult = result;
+        parkedLinkHeld = false;
+        parkedLinkConfirmed = false;
+        parkedLinkStatus = result == PARKED_LINK_RESULT_CONFIRMED
+                ? "detached on ACC ON; STOP skipped"
+                : "detach failed (result=" + result + "); STOP skipped";
+        lastParkedLinkAssertAtMs = Long.MIN_VALUE;
+        hardware.log("Di5 keep-alive: parked link binding detached; "
+                + "STOP intentionally skipped — " + reason
+                + " result=" + result);
+    }
+
     // ── MCU hold ───────────────────────────────────────────────────
 
     private void assertMcuLocked(long generation, long now, Di5ParkedKeepAliveSettings s) {
+        boolean statusGivenUp = mcuUnavailableGeneration == generation;
         boolean due = !mcuHeld
                 || lastMcuAssertAtMs == Long.MIN_VALUE
                 || now - lastMcuAssertAtMs >= s.reassertMillis();
         if (!due) {
+            if (statusGivenUp) return;
             // Cheap liveness check between cadences: a sleeping MCU means the
             // flags need re-asserting now, not at the next cadence.
             int status = safeMcuStatus(generation);
@@ -586,14 +843,17 @@ public final class Di5ParkedPowerHold {
                             + " (OEM-parity hold)");
                 }
                 mcuPowerHoldAsserted = true;
-            } else if (!mcuPowerHoldAsserted) {
+            } else if (!mcuPowerHoldAsserted && !statusGivenUp) {
                 hardware.log("Di5 keep-alive: MCU power hold write rc=" + holdRc
                         + " — logged no-op, retry on cadence");
             }
         }
+        // The power hold keeps its cadence; status/wake polling has stopped for this park.
+        if (statusGivenUp) return;
         int status = safeMcuStatus(generation);
         mcuStatusBefore = status;
         if (!isMcuAwake(status)) {
+            boolean statusAnswered = status != MCU_STATUS_UNAVAILABLE;
             mcuWakeAttempts++;
             boolean requested = false;
             try {
@@ -601,7 +861,9 @@ public final class Di5ParkedPowerHold {
             } catch (Throwable t) {
                 hardware.log("Di5 keep-alive: wakeUpMcu threw: " + t.getMessage());
             }
-            hardware.log("Di5 keep-alive: MCU status " + status + " (asleep) — wakeUpMcu() "
+            hardware.log("Di5 keep-alive: MCU status " + status
+                    + (status == MCU_STATUS_UNAVAILABLE ? " (unavailable)" : " (asleep)")
+                    + " — wakeUpMcu() "
                     + (requested ? "accepted" : "not accepted") + ", attempt " + mcuWakeAttempts);
             long waited = 0L;
             while (waited < WAKE_POLL_MAX_MS) {
@@ -613,7 +875,7 @@ public final class Di5ParkedPowerHold {
                     return;
                 }
                 waited += WAKE_POLL_INTERVAL_MS;
-                if (releaseRequested) {
+                if (isReleaseRequested()) {
                     mcuStatus = "release requested during wake";
                     return;
                 }
@@ -622,6 +884,7 @@ public final class Di5ParkedPowerHold {
                     return;
                 }
                 status = safeMcuStatus(generation);
+                if (status != MCU_STATUS_UNAVAILABLE) statusAnswered = true;
                 if (isMcuAwake(status)) break;
             }
             if (!isMcuAwake(status)) {
@@ -629,9 +892,12 @@ public final class Di5ParkedPowerHold {
                 mcuStatusAfter = status;
                 hardware.log("Di5 keep-alive: MCU still asleep after " + waited
                         + " ms — flags NOT written; will retry");
+                noteMcuUnavailableAttempt(generation, now, statusAnswered || requested);
                 return;
             }
         }
+        mcuHalAnswered = true;
+        mcuUnavailableStreak = 0;
         mcuStatusAfter = status;
         int[] rcs = safeWriteSentryFlags(generation, true);
         mcuLastRcEnter = rcs[0];
@@ -656,6 +922,37 @@ public final class Di5ParkedPowerHold {
             // A partially landed pair is still "ours" to clean up.
             if (rcs[0] == 0 || rcs[1] == 0) mcuHeld = true;
         }
+    }
+
+    /**
+     * Stops status/wake polling for this park once the MCU has answered nothing at all (every
+     * status read -1, wake refused) for {@link #MCU_UNAVAILABLE_GIVE_UP_MS} and
+     * {@link #MCU_UNAVAILABLE_MIN_ATTEMPTS}; any real answer in this parked generation prevents it.
+     */
+    private void noteMcuUnavailableAttempt(long generation, long now, boolean answered) {
+        if (answered) {
+            mcuHalAnswered = true;
+            mcuUnavailableStreak = 0;
+            return;
+        }
+        if (mcuUnavailableStreak++ == 0) mcuUnavailableSinceMs = now;
+        if (mcuHalAnswered
+                || mcuUnavailableStreak < MCU_UNAVAILABLE_MIN_ATTEMPTS
+                || now - mcuUnavailableSinceMs < MCU_UNAVAILABLE_GIVE_UP_MS) {
+            return;
+        }
+        mcuUnavailableGeneration = generation;
+        mcuStatus = "unavailable (status -1, wakeUpMcu refused " + mcuUnavailableStreak + "x)";
+        hardware.log("Di5 keep-alive: MCU HAL unavailable (getMcuStatus -1, wakeUpMcu refused "
+                + mcuUnavailableStreak + "x over " + ((now - mcuUnavailableSinceMs) / 60_000L)
+                + " min) — no more status/wake polling this park; power hold and parked link hold continue");
+    }
+
+    /** Answers seen earlier in the same parked generation are kept across an in-park release. */
+    private void resetMcuAvailabilityLocked(boolean newGeneration) {
+        mcuUnavailableStreak = 0;
+        mcuUnavailableGeneration = -1L;
+        if (newGeneration) mcuHalAnswered = false;
     }
 
     private void releaseMcuLocked(String reason) {
@@ -836,30 +1133,65 @@ public final class Di5ParkedPowerHold {
 
     // ── Release ────────────────────────────────────────────────────
 
-    private void releaseLocked(String reason) {
+    private void releaseLocked(String reason, boolean sendLinkStop) {
         boolean anything = isActiveLocked();
         Di5KeepAliveOwnershipMarker.Record rec = marker.read();
+        boolean recLink = rec != null
+                && rec.has(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK);
         boolean recCamera = rec != null && rec.has(Di5KeepAliveOwnershipMarker.LEVER_CAMERA);
         boolean recMcu = rec != null && rec.has(Di5KeepAliveOwnershipMarker.LEVER_MCU);
         boolean recMcuPower = rec != null
                 && rec.has(Di5KeepAliveOwnershipMarker.LEVER_MCU_POWER);
         boolean recAp = rec != null && rec.has(Di5KeepAliveOwnershipMarker.LEVER_AP);
+        boolean releaseLink = parkedLinkHeld || recLink;
+        long releaseGeneration = heldGeneration >= 0L
+                ? heldGeneration
+                : rec != null ? rec.generation : requestedGeneration;
         if (anything || rec != null) {
-            hardware.log("Di5 keep-alive RELEASE (" + reason + ") held={mcu=" + mcuHeld
+            hardware.log("Di5 keep-alive RELEASE (" + reason + ") held={parkedLink="
+                    + parkedLinkHeld + ", mcu=" + mcuHeld
                     + ", mcuPower=" + mcuPowerHoldAsserted
                     + ", camera=" + cameraHeld + ", ap=" + apHeld + "} recorded="
-                    + (rec == null ? "none" : rec.levers));
+                    + (rec == null ? "none" : rec.levers)
+                    + " linkAction=" + (sendLinkStop ? "STOP" : "DETACH"));
+        }
+
+        boolean linkReleaseConfirmed = true;
+        if (releaseLink) {
+            if (sendLinkStop) {
+                linkReleaseConfirmed =
+                        releaseParkedLinkLocked(releaseGeneration, reason);
+            } else {
+                detachParkedLinkLocked(releaseGeneration, reason);
+            }
         }
         releaseLeversLocked(cameraHeld || recCamera, mcuHeld || recMcu,
                 mcuPowerHoldAsserted || recMcuPower, apHeld || recAp);
-        if (rec != null && !marker.clear()) {
-            hardware.log("Di5 keep-alive: ownership marker could not be removed after release");
+
+        if (sendLinkStop && releaseLink && !linkReleaseConfirmed) {
+            List<String> pending =
+                    new ArrayList<>();
+            pending.add(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK);
+            if (!marker.record(
+                    releaseGeneration, pending,
+                    hardware.nowMs(), hardware.pid())) {
+                hardware.log("Di5 keep-alive: could not narrow ownership marker "
+                        + "to pending parked link STOP; retaining prior marker");
+            }
+        } else if (rec != null || marker.exists()) {
+            if (!marker.clear()) {
+                hardware.log("Di5 keep-alive: ownership marker could not be removed after release");
+            }
         }
-        if (anything) {
+        if (anything || rec != null) {
             lastStopReason = reason;
             lastStopAtMs = hardware.nowMs();
         }
-        heldGeneration = -1L;
+        heldGeneration =
+                sendLinkStop && releaseLink && !linkReleaseConfirmed
+                        ? releaseGeneration : -1L;
+        // A lease re-activated later in the same park polls the MCU afresh.
+        resetMcuAvailabilityLocked(false);
     }
 
     private void releaseLeversLocked(boolean camera, boolean mcu, boolean mcuPower, boolean ap) {
@@ -873,7 +1205,8 @@ public final class Di5ParkedPowerHold {
     }
 
     private boolean isActiveLocked() {
-        return mcuHeld || mcuPowerHoldAsserted || cameraHeld || apHeld;
+        return parkedLinkHeld || mcuHeld || mcuPowerHoldAsserted
+                || cameraHeld || apHeld;
     }
 
     // ── Status ─────────────────────────────────────────────────────
@@ -893,6 +1226,19 @@ public final class Di5ParkedPowerHold {
             o.put("updatedAt", now);
             o.put("pid", hardware.pid());
 
+            JSONObject link = new JSONObject();
+            link.put("held", parkedLinkHeld);
+            link.put("confirmed", parkedLinkConfirmed);
+            link.put("status", parkedLinkStatus);
+            link.put("lastResult", parkedLinkLastResult);
+            link.put("reasserts", parkedLinkReasserts);
+            link.put("lastAssertAt",
+                    lastParkedLinkAssertAtMs == Long.MIN_VALUE
+                            ? 0L : lastParkedLinkAssertAtMs);
+            o.put("parkedLink", link);
+            // Preserve the diagnostic alias used by earlier clients.
+            o.put(ParkedLinkContract.LEGACY_STATUS_KEY, link);
+
             JSONObject mcu = new JSONObject();
             mcu.put("held", mcuHeld);
             mcu.put("status", mcuStatus);
@@ -904,6 +1250,8 @@ public final class Di5ParkedPowerHold {
             mcu.put("lastRcState", mcuLastRcState);
             mcu.put("powerHoldAsserted", mcuPowerHoldAsserted);
             mcu.put("powerHoldLastRc", mcuPowerHoldLastRc);
+            mcu.put("halUnavailable", mcuUnavailableGeneration >= 0L
+                    && mcuUnavailableGeneration == heldGeneration);
             mcu.put("lastAssertAt", lastMcuAssertAtMs == Long.MIN_VALUE ? 0L : lastMcuAssertAtMs);
             o.put("mcu", mcu);
 
@@ -964,7 +1312,9 @@ public final class Di5ParkedPowerHold {
      */
     private String statusSignatureLocked() {
         return settings.toString() + '|' + desired + '|' + requestedGeneration + '|'
-                + heldGeneration + '|' + mcuHeld + '|' + mcuStatus + '|'
+                + heldGeneration + '|' + parkedLinkHeld + '|'
+                + parkedLinkConfirmed + '|' + parkedLinkStatus + '|'
+                + parkedLinkLastResult + '|' + mcuHeld + '|' + mcuStatus + '|'
                 + mcuPowerHoldAsserted + '|' + cameraHeld + '|'
                 + heartbeatRunning + '|' + apHeld + '|' + apStatus + '|' + voltageDecision
                 + '|' + voltageGuard.isLatched() + '|' + lastStopReason;
@@ -1043,6 +1393,28 @@ public final class Di5ParkedPowerHold {
         }
     }
 
+    private int safeWriteParkedLink(
+            long generation, boolean start) {
+        try {
+            return hardware.writeParkedLink(generation, start);
+        } catch (Throwable t) {
+            hardware.log("Di5 keep-alive: parked link "
+                    + (start ? "START" : "STOP")
+                    + " threw: " + t.getMessage());
+            return Integer.MIN_VALUE;
+        }
+    }
+
+    private int safeDetachParkedLink(long generation) {
+        try {
+            return hardware.detachParkedLink(generation);
+        } catch (Throwable t) {
+            hardware.log("Di5 keep-alive: parked link detach threw: "
+                    + t.getMessage());
+            return Integer.MIN_VALUE;
+        }
+    }
+
     private int safeWritePanorama(int value) {
         try {
             return hardware.writePanoramaWorkMode(value);
@@ -1071,6 +1443,10 @@ public final class Di5ParkedPowerHold {
 
     static boolean isMcuAwake(int status) {
         return status == MCU_STATUS_ACTIVE || status == MCU_STATUS_ACTIVE_ALT;
+    }
+
+    private boolean isReleaseRequested() {
+        return releaseRequested || accOnRequested;
     }
 
     private static String extract(String output, String prefix) {

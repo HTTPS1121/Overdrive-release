@@ -61,9 +61,9 @@ public class AccSentryDaemon {
     /** settings get global mobile_data */
     private static String CMD_DATA_GET() { return Safe.s("4/qqmGNE2vhiGGggG70n0sRfHtz6gZempQZl+6FiiZk="); }
     /** /data/local/tmp */
-    private static String PATH_DATA_LOCAL_TMP() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("vuaMjrmBGBFh07qqnUuL8w==")); }
+    private static String PATH_DATA_LOCAL_TMP() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("vuaMjrmBGBFh07qqnUuL8w==")); }
     /** /data/local/tmp/telegram_config.properties */
-    private static String PATH_TELEGRAM_CONFIG() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("ZHx6IP38aGV/Q7iMCCcxzwQSn0P1N0jxHygc8N+4Ft+9mlR8XQ+WvEw0ktanrtNx")); }
+    private static String PATH_TELEGRAM_CONFIG() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("ZHx6IP38aGV/Q7iMCCcxzwQSn0P1N0jxHygc8N+4Ft+9mlR8XQ+WvEw0ktanrtNx")); }
 
     // Power levels from BYDAutoBodyworkDevice
     private static final int POWER_LEVEL_OFF = 0;
@@ -168,6 +168,10 @@ public class AccSentryDaemon {
     private static final Object systemKeepAliveLock = new Object();
     // Interval from  (C0004a0)
     private static final long SYSTEM_KEEPALIVE_INTERVAL_MS = 10000;
+    // A successful bridge reconciliation may hold the app-owned Bluetooth lease.
+    // Remember only enough to request its release once when the shared setting or
+    // parked lifecycle turns off; there is no additional Bluetooth timer/worker.
+    private static volatile boolean bluetoothKeepAliveApplied = false;
     private static final long PANEL_REDARKEN_AWAIT_MS = 5_000L;
     private static final int SD_RECOVERY_FALSE_CONFIRM_SAMPLES = 3;
     private static final int ADB_TCP_PORT = 5555;
@@ -204,23 +208,23 @@ public class AccSentryDaemon {
     private static final String PROCESS_INSTANCE_NONCE =
             createProcessInstanceNonce();
     private static final String PARK_REAPER_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.sh");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.sh");
     private static final String PARK_REAPER_CONTROL_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.control");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.control");
     private static final String PARK_REAPER_STATE_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.state");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.state");
     private static final String PARK_REAPER_LEASE_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.lease");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.lease");
     private static final String PARK_REAPER_LEASE_OWNER_PATH =
             PARK_REAPER_LEASE_PATH + "/owner";
     private static final String PARK_REAPER_RUN_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.running");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.running");
     private static final String PARK_REAPER_RUN_OWNER_PATH =
             PARK_REAPER_RUN_PATH + "/owner";
     private static final String PARK_REAPER_ACK_PREFIX =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.ack.");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.ack.");
     private static final String PARK_REAPER_DONE_PREFIX =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_park_reaper.done.");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_park_reaper.done.");
 
     /** Process-local app context. Returns null before main() initialises it. */
     public static Context getAppContext() { return appContext; }
@@ -551,11 +555,18 @@ public class AccSentryDaemon {
         final boolean completed;
         final T value;
         final Throwable failure;
+        // Not attempted: another call held the lane.
+        final boolean busy;
 
         BoundedCallResult(boolean completed, T value, Throwable failure) {
+            this(completed, value, failure, false);
+        }
+
+        BoundedCallResult(boolean completed, T value, Throwable failure, boolean busy) {
             this.completed = completed;
             this.value = value;
             this.failure = failure;
+            this.busy = busy;
         }
     }
 
@@ -594,7 +605,7 @@ public class AccSentryDaemon {
                         && compensation == null) {
                     useCompensation = true;
                 } else {
-                    return new BoundedCallResult<>(false, null, null);
+                    return new BoundedCallResult<>(false, null, null, true);
                 }
 
                 long sequence = ++callSequence;
@@ -710,6 +721,8 @@ public class AccSentryDaemon {
     }
 
     private static final long HARDWARE_CALL_TIMEOUT_MS = 5000L;
+    private static final long PERIPHERAL_LANE_BUSY_WAIT_MS = 3000L;
+    private static final long PERIPHERAL_LANE_BUSY_POLL_MS = 25L;
     private static final BoundedLatestCallLane boundedHardwareLane =
             new BoundedLatestCallLane("SentryHardware");
     private static final BoundedLatestCallLane boundedDiagnosticHardwareLane =
@@ -1004,6 +1017,61 @@ public class AccSentryDaemon {
                 && Boolean.TRUE.equals(result.value);
     }
 
+    // Legacy/DiLink 4 (waitWhenBusy): the keep-alive tick's panel/wake calls and the rail
+    // batch share this lane, so a busy lane is waited out briefly instead of dropping the call.
+    private static <T> BoundedCallResult<T> invokeHardwareAwaitingLane(
+            String label,
+            ShellOwnership ownership,
+            BoundedCall<T> call,
+            Runnable staleCompensation,
+            boolean restoreInterrupt,
+            boolean waitWhenBusy) {
+        long deadline = android.os.SystemClock.elapsedRealtime()
+                + PERIPHERAL_LANE_BUSY_WAIT_MS;
+        while (true) {
+            BoundedCallResult<T> result = boundedHardwareLane.invoke(
+                    label,
+                    HARDWARE_CALL_TIMEOUT_MS,
+                    ownership,
+                    call,
+                    staleCompensation);
+            if (!result.busy || !waitWhenBusy || !isLaneBusyWaitMode()) {
+                return result;
+            }
+            if (android.os.SystemClock.elapsedRealtime() >= deadline) {
+                log("Hardware lane still busy after "
+                        + PERIPHERAL_LANE_BUSY_WAIT_MS + "ms — skipped " + label);
+                return result;
+            }
+            try {
+                Thread.sleep(PERIPHERAL_LANE_BUSY_POLL_MS);
+            } catch (InterruptedException interrupted) {
+                if (restoreInterrupt) {
+                    Thread.currentThread().interrupt();
+                }
+                return result;
+            }
+            if (!isShellOwnershipCurrent(ownership)) {
+                return result;
+            }
+        }
+    }
+
+    private static boolean runBoundedHardwareBooleanAwaitingLane(
+            String label,
+            ShellOwnership ownership,
+            BoundedCall<Boolean> call,
+            Runnable staleCompensation) {
+        BoundedCallResult<Boolean> result = invokeHardwareAwaitingLane(
+                label, ownership, call, staleCompensation, true, true);
+        if (result.failure != null) {
+            log(label + " failed: " + result.failure.getMessage());
+        }
+        return result.completed
+                && result.failure == null
+                && Boolean.TRUE.equals(result.value);
+    }
+
     private static final class PeripheralBatchContext {
         final long generation;
         final boolean enabled;
@@ -1035,12 +1103,9 @@ public class AccSentryDaemon {
             // Best-effort: a HAL rejection (unsupported key on this trim) is logged
             // and discarded, never fed back as batch failure. Continue the batch so
             // one absent key can't skip the writes after it.
-            runBoundedHardwareBoolean(
+            runBatchHardwareBoolean(
                     "SpecialDevice[" + configId + "]=" + value,
-                    () -> isPeripheralPowerRequestCurrent(
-                            generation, enabled),
-                    () -> setSpecialConfig(configId, value),
-                    AccSentryDaemon::requestPeripheralPowerCompensation);
+                    () -> setSpecialConfig(configId, value));
             return ensureCurrent(
                     "SpecialDevice[" + configId + "] post-write");
         }
@@ -1050,12 +1115,9 @@ public class AccSentryDaemon {
                 return false;
             }
             // Best-effort, same as writeSpecial above.
-            runBoundedHardwareBoolean(
+            runBatchHardwareBoolean(
                     "PowerDevice[" + configId + "]=" + value,
-                    () -> isPeripheralPowerRequestCurrent(
-                            generation, enabled),
-                    () -> setPowerConfig(configId, value),
-                    AccSentryDaemon::requestPeripheralPowerCompensation);
+                    () -> setPowerConfig(configId, value));
             return ensureCurrent(
                     "PowerDevice[" + configId + "] post-write");
         }
@@ -1064,13 +1126,8 @@ public class AccSentryDaemon {
             if (!ensureCurrent("MCU status pre-read")) {
                 return null;
             }
-            BoundedCallResult<Integer> result = boundedHardwareLane.invoke(
-                    "MCU status",
-                    HARDWARE_CALL_TIMEOUT_MS,
-                    () -> isPeripheralPowerRequestCurrent(
-                            generation, enabled),
-                    AccSentryDaemon::getMcuStatus,
-                    AccSentryDaemon::requestPeripheralPowerCompensation);
+            BoundedCallResult<Integer> result = invokeBatchHardware(
+                    "MCU status", AccSentryDaemon::getMcuStatus);
             if (!result.completed || result.failure != null) {
                 return null;
             }
@@ -1085,13 +1142,30 @@ public class AccSentryDaemon {
             // The wake result still drives control flow (the status re-read below),
             // but a failed wake does not fail the batch — the writes are attempted
             // regardless, matching the reference behaviour.
-            runBoundedHardwareBoolean(
-                    "MCU wake",
-                    () -> isPeripheralPowerRequestCurrent(
-                            generation, enabled),
-                    AccSentryDaemon::wakeUpMcu,
-                    AccSentryDaemon::requestPeripheralPowerCompensation);
+            runBatchHardwareBoolean("MCU wake", AccSentryDaemon::wakeUpMcu);
             return ensureCurrent("MCU wake post-call");
+        }
+
+        private boolean runBatchHardwareBoolean(String label, BoundedCall<Boolean> call) {
+            BoundedCallResult<Boolean> result = invokeBatchHardware(label, call);
+            if (result.failure != null) {
+                log(label + " failed: " + result.failure.getMessage());
+            }
+            return result.completed
+                    && result.failure == null
+                    && Boolean.TRUE.equals(result.value);
+        }
+
+        private <T> BoundedCallResult<T> invokeBatchHardware(
+                String label, BoundedCall<T> call) {
+            return invokeHardwareAwaitingLane(
+                    label,
+                    () -> isPeripheralPowerRequestCurrent(generation, enabled),
+                    call,
+                    AccSentryDaemon::requestPeripheralPowerCompensation,
+                    false,
+                    // DiLink 4's ACC-ON teardown keeps yielding so the panel relight is not delayed.
+                    enabled || !isDilink4CameraMode());
         }
 
         Boolean readDilink4Mode() {
@@ -1424,11 +1498,12 @@ public class AccSentryDaemon {
     }
     
     // Lock file for singleton enforcement
-    private static final String LOCK_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.lock");
+    private static final String LOCK_FILE = com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.lock");
     private static java.io.RandomAccessFile lockFileHandle;
     private static java.nio.channels.FileLock fileLock;
 
     public static void main(String[] args) {
+        com.overdrive.app.util.ScratchRoot.bootstrapFromEnv();
         int myUid = android.os.Process.myUid();
 
         // Configure DaemonLogger for daemon context (enable stdout for app_process)
@@ -2004,6 +2079,26 @@ public class AccSentryDaemon {
         return result.success;
     }
 
+    private static boolean binderServiceExists(String name) {
+        try {
+            Class<?> serviceManager = Class.forName("android.os.ServiceManager");
+            return serviceManager.getMethod("getService", String.class).invoke(null, name) != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean dataCacheServiceExists() {
+        if (appContext == null) return false;
+        Context permissiveContext = new PermissionBypassContext(appContext);
+        try {
+            return permissiveContext.getSystemService(SERVICE_BYD_DATACACHE()) != null
+                    || permissiveContext.getSystemService(SERVICE_BG_DATACACHE()) != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private static boolean applyStartupAppAccess(String packageName) {
         Object device = com.overdrive.app.byd.BydDeviceHelper.getDevice(
                 "android.hardware.bydauto.startup.BYDAutoStartupAppDevice",
@@ -2014,6 +2109,14 @@ public class AccSentryDaemon {
 
     /** Reapply DiLink 5 background-survival grants from the daemon's shell identity. */
     public static JSONObject applyBackgroundAccess() {
+        return applyBackgroundAccess(false);
+    }
+
+    /**
+     * {@code startupAppVerified}: the app process already enabled the DI5 app-boot entry, which
+     * this daemon cannot reach (its settings adapter binds only from an app process).
+     */
+    public static JSONObject applyBackgroundAccess(boolean startupAppVerified) {
         JSONObject result = new JSONObject();
         try {
             if (!isDilink5CameraMode()) {
@@ -2053,7 +2156,10 @@ public class AccSentryDaemon {
                     "content call --uri "
                             + "content://com.byd.appstartup/whitelist "
                             + "--method add --arg '" + pkg + "'");
-            boolean startupApp = applyStartupAppAccess(pkg);
+            boolean startupApp = startupAppVerified || applyStartupAppAccess(pkg);
+            // DiLink 3/4 services; DI5's framework registers neither, so absence is not a failure.
+            boolean accService = binderServiceExists(SERVICE_ACCMODEMANAGER());
+            boolean dataCacheService = dataCacheServiceExists();
             boolean startupManager =
                     applyBackgroundAccessCommand(
                             "AUTO_START",
@@ -2106,7 +2212,9 @@ public class AccSentryDaemon {
                             + " && [ \"$(getprop persist.sys.adb.status_memory_enable)\""
                             + " = true ]");
             result.put("accWhitelist", accWhitelist);
+            result.put("accService", accService);
             result.put("dataCache", dataCache);
+            result.put("dataCacheService", dataCacheService);
             result.put("backgroundAppOps", backgroundAppOps);
             result.put("deviceIdle", deviceIdle);
             result.put("startupProvider", startupProvider);
@@ -2116,8 +2224,8 @@ public class AccSentryDaemon {
             result.put("adbStatusMemory", adbStatusMemory);
             result.put(
                     "success",
-                    accWhitelist
-                            && dataCache
+                    (accWhitelist || !accService)
+                            && (dataCache || !dataCacheService)
                             && backgroundAppOps
                             && deviceIdle
                             && startupApp
@@ -2914,6 +3022,21 @@ public class AccSentryDaemon {
         }
     }
 
+    /** Only this judge ends a low-battery-cutoff park; see ParkedShutdown.SOC_CUTOFF_PATH. */
+    private static void clearSocCutoffLatch(String source) {
+        try {
+            java.io.File latch = new java.io.File(
+                    com.overdrive.app.ui.model.ParkedShutdown.SOC_CUTOFF_PATH);
+            if (!latch.isFile()) return;
+            log(source + " — "
+                    + (latch.delete()
+                            ? "cleared low-battery cutoff latch (park is over)"
+                            : "WARNING: could not clear low-battery cutoff latch"));
+        } catch (Throwable t) {
+            log("Low-battery cutoff latch clear failed: " + t.getMessage());
+        }
+    }
+
     /** A parked marker younger than this is a park in progress, never a stale one. */
     private static final long PARKED_MARKER_MIN_STALE_MS = 60_000L;
 
@@ -3428,6 +3551,8 @@ public class AccSentryDaemon {
         }
     }
 
+    private static volatile long lowBatteryNoticeGeneration = -1L;
+
     private static boolean applyLowBatteryStop(long generation) {
         if (!isLowBatteryStopCurrent(generation)) {
             return true;
@@ -3466,6 +3591,12 @@ public class AccSentryDaemon {
                     || !stopResponse.optBoolean("success", false)) {
                 log("LOW BATTERY: STOP was not acknowledged; retrying");
                 return false;
+            }
+            // Retries re-enter above; the generation keeps this to one notice per event.
+            if (lowBatteryNoticeGeneration != generation) {
+                lowBatteryNoticeGeneration = generation;
+                com.overdrive.app.power.PowerNotice.send(
+                        com.overdrive.app.power.PowerNotice.KIND_LOW_12V_STOP, null);
             }
 
             JSONObject confirmation =
@@ -4181,6 +4312,10 @@ public class AccSentryDaemon {
         }
 
         log("=== ENTERING SENTRY MODE ===");
+        if (vehicleOnOnly
+                && com.overdrive.app.ui.model.ParkedShutdown.isSocCutoffLatched()) {
+            log("Low-battery cutoff latched — this park runs as Vehicle ON only until ACC ON");
+        }
         SentryTransitionState transition = latestSentryTransition;
         requestTransitionReconciliation(transition);
 
@@ -4225,6 +4360,8 @@ public class AccSentryDaemon {
         try {
             com.overdrive.app.power.StealthPanel.noteAccOnObserved();
         } catch (Throwable ignored) {}
+        // Before the reconcilers below kick the app awake, so its start-up sees onAndOff.
+        clearSocCutoffLatch("ACC ON");
 
         // Duplicate ON reports and real transitions publish into the same bounded
         // reconcilers, so wake/cancel/IPC work cannot overlap another copy.
@@ -4278,12 +4415,13 @@ public class AccSentryDaemon {
                     && heartbeat != Thread.currentThread()) {
                 heartbeat.interrupt();
             }
+            com.overdrive.app.power.AccSentryHealthMarker.clearIfOwned();
 
             // DiLink 5 parked keep-alive lease: release synchronously while the
             // HAL binders are still healthy so no sentry flag, heartbeat or AP
             // token outlives this process. Idempotent; no-op when nothing is held.
             com.overdrive.app.power.Di5ParkedPowerHold
-                    .releaseForProcessExit("daemon shutdown");
+                    .releaseForProcessExit("daemon shutdown", inSentryMode);
 
             SentryTransitionState shutdownTransition =
                     beginShutdownAccOnTransition();
@@ -5500,10 +5638,6 @@ public class AccSentryDaemon {
                     // off the user's master toggle, never off the camera-mode
                     // selection. Inert (one config read) while the toggle is off.
                     di5KeepAliveTick(transitionGeneration);
-                    // DiLink 5 (Desay) QNX common-network keep-alive: asks the
-                    // firmware OTA service to keep the vehicle network awake.
-                    // Inert unless surveillance.di5QnxNetworkKeepAlive is on.
-                    di5QnxNetworkTick(transitionGeneration);
                     // 1. Maintain Network Interface Stability
                     if (!isKeepAliveCommitCurrent(transitionGeneration)) break;
                     ensureWifiEnabled(transitionGeneration);
@@ -5511,6 +5645,8 @@ public class AccSentryDaemon {
                         if (!isKeepAliveCommitCurrent(transitionGeneration)) break;
                         ensureMobileDataEnabled(transitionGeneration);
                     }
+                    if (!isKeepAliveCommitCurrent(transitionGeneration)) break;
+                    reconcileParkedBluetoothKeepAlive();
                     // Fake-activity injection resets the AP sleep timer using the
                     // 2-arg stealth userActivity(uptime, noChangeLights=true), which
                     // holds the AP awake (USB VBUS follows wakefulness) WITHOUT
@@ -5792,7 +5928,7 @@ public class AccSentryDaemon {
                             if (!isKeepAliveCommitCurrent(transitionGeneration)) {
                                 break;
                             }
-                            boolean wakeCommitted = runBoundedHardwareBoolean(
+                            boolean wakeCommitted = runBoundedHardwareBooleanAwaitingLane(
                                     "KeepAlive system wake",
                                     () -> isKeepAliveGenerationCurrent(
                                             transitionGeneration),
@@ -5865,7 +6001,6 @@ public class AccSentryDaemon {
             }
 
             log("System Persistence Service stopped");
-            di5QnxNetworkRelease("keep-alive loop stopped");
             boolean requestReplacement = false;
             synchronized (systemKeepAliveLock) {
                 if (systemKeepAliveThread == Thread.currentThread()) {
@@ -5976,7 +6111,14 @@ public class AccSentryDaemon {
                 < DILINK5_ADB_RECOVERY_RETRY_MS) {
             return;
         }
+        com.overdrive.app.power.AdbRecoveryLease.Parsed lease =
+                readAdbRecoveryLease(transitionGeneration, now);
+        if (lease.isFresh(com.overdrive.app.power.AdbRecoveryLease.Owner.APP)) {
+            logAdbRecoveryLeaseDeferralOnce(lease);
+            return;   // throttle stamp deliberately NOT advanced (re-check next tick)
+        }
         lastAdbRecoveryAttemptElapsedMs = now;
+        publishAdbRecoveryLease(transitionGeneration, now);
         log("DI5 ADB port 5555 is closed; applying scoped recovery settings");
         ShellResult result = execShellResult(
                 "settings put global adb_enabled 1"
@@ -5999,6 +6141,57 @@ public class AccSentryDaemon {
             log("DI5 ADB port 5555 recovered");
         } else {
             log("DI5 ADB recovery settings applied, but port 5555 remains closed");
+        }
+    }
+
+    private static String lastAdbRecoveryLeaseDeferral = null;
+
+    /**
+     * Read the cross-process recovery lease via {@code settings get}. A read
+     * failure is treated as no lease, so the daemon's own recovery is never
+     * blocked by this mechanism.
+     */
+    private static com.overdrive.app.power.AdbRecoveryLease.Parsed readAdbRecoveryLease(
+            long transitionGeneration, long nowElapsedMs) {
+        ShellResult result = execShellResult(
+                "settings get global "
+                        + com.overdrive.app.power.AdbRecoveryLease.SETTING_KEY,
+                DEFAULT_SHELL_TIMEOUT_MS,
+                () -> isKeepAliveCommitCurrent(transitionGeneration));
+        String raw = result.success ? result.output.trim() : null;
+        return com.overdrive.app.power.AdbRecoveryLease.parse(
+                raw,
+                nowElapsedMs,
+                com.overdrive.app.power.AdbRecoveryLease.currentBootId());
+    }
+
+    /** Publish a daemon-owned lease (best effort; a failure is logged and recovery proceeds). */
+    private static void publishAdbRecoveryLease(
+            long transitionGeneration, long nowElapsedMs) {
+        String value = com.overdrive.app.power.AdbRecoveryLease.format(
+                com.overdrive.app.power.AdbRecoveryLease.Owner.DAEMON,
+                com.overdrive.app.power.AdbRecoveryLease.currentBootId(),
+                nowElapsedMs);
+        ShellResult result = execShellResult(
+                "settings put global "
+                        + com.overdrive.app.power.AdbRecoveryLease.SETTING_KEY
+                        + " '" + value + "'",
+                DEFAULT_SHELL_TIMEOUT_MS,
+                () -> isKeepAliveCommitCurrent(transitionGeneration));
+        if (!result.success) {
+            log("DI5 ADB recovery lease publish failed: "
+                    + result.describeFailure());
+        }
+    }
+
+    /** Log a deferral to a fresh app lease at most once per distinct lease. */
+    private static void logAdbRecoveryLeaseDeferralOnce(
+            com.overdrive.app.power.AdbRecoveryLease.Parsed lease) {
+        String marker = lease.owner + ":" + lease.stampMs;
+        if (!marker.equals(lastAdbRecoveryLeaseDeferral)) {
+            lastAdbRecoveryLeaseDeferral = marker;
+            log("DI5 ADB recovery deferring to a fresh app lease (age "
+                    + lease.ageMs + " ms)");
         }
     }
 
@@ -6191,6 +6384,12 @@ public class AccSentryDaemon {
         return com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
     }
 
+    // Legacy and DiLink 4: both run the rail batch on the lane the keep-alive tick also uses.
+    private static boolean isLaneBusyWaitMode() {
+        return !isDilink5CameraMode()
+                && !com.overdrive.app.camera.camera2.Camera2Platform.isSelected();
+    }
+
     // ==================== DILINK 5 PARKED KEEP-ALIVE LEASE (EXPERIMENTAL) ====================
     //
     // Opt-in (Surveillance → General → "DiLink 5 parked keep-alive (Experimental)",
@@ -6241,124 +6440,6 @@ public class AccSentryDaemon {
     }
 
     /** 10 s keep-alive tick for the lease. No-op when not installed. */
-    // ==================== DI5 QNX COMMON-NETWORK KEEP-ALIVE ====================
-    // On the Desay SV DiLink 5 the head unit's sleep is decided on the QNX side;
-    // the one keep-awake lever open to the shell is the QNX common-network
-    // control relayed by the QnxMessage service (see QnxMessageBus). Driven
-    // from this daemon so it does not depend
-    // on the app process, which the OS may kill while parked.
-    private static final long DI5_QNX_REASSERT_MS = 30_000L;
-    private static final int DI5_QNX_DEFAULT_MAX_MINUTES = 60;
-    private static final int DI5_QNX_LOW_VOLTS = 11;
-    private static final int DI5_QNX_LOW_SAMPLES = 3;
-    /** VHAL BATTERY_VOLTAGE_SECOND: the 12 V battery, whole volts on this platform. */
-    private static final String VHAL_12V_PROPERTY = "0x2140461e";
-    private static final Object di5QnxLock = new Object();
-    private static int di5QnxLowSamples;
-    private static long di5QnxGeneration = -1L;
-    private static long di5QnxStartedAtMs;
-    private static long di5QnxLastSentMs;
-    private static boolean di5QnxStarted;
-    private static boolean di5QnxExpired;
-
-    private static void di5QnxNetworkTick(long transitionGeneration) {
-        org.json.JSONObject surveillance = null;
-        try {
-            surveillance = com.overdrive.app.config.UnifiedConfigManager.getSurveillance();
-        } catch (Throwable ignored) {
-        }
-        boolean enabled = surveillance != null
-                && surveillance.optBoolean("di5QnxNetworkKeepAlive", false);
-        // Safety cap: the platform's 12 V reading is whole volts only, so also
-        // hold the network for at most N minutes per park, then let the car sleep.
-        int maxMinutes = surveillance != null
-                ? surveillance.optInt("di5QnxNetworkKeepAliveMaxMinutes",
-                        DI5_QNX_DEFAULT_MAX_MINUTES)
-                : DI5_QNX_DEFAULT_MAX_MINUTES;
-        if (!enabled) {
-            di5QnxNetworkRelease("setting off");
-            return;
-        }
-        long now = System.currentTimeMillis();
-        synchronized (di5QnxLock) {
-            if (di5QnxGeneration != transitionGeneration) {
-                di5QnxGeneration = transitionGeneration;
-                di5QnxStartedAtMs = now;
-                di5QnxLastSentMs = 0L;
-                di5QnxExpired = false;
-                di5QnxLowSamples = 0;
-            }
-            if (di5QnxExpired) return;
-            if (maxMinutes > 0 && now - di5QnxStartedAtMs >= maxMinutes * 60_000L) {
-                di5QnxExpired = true;
-            } else if (now - di5QnxLastSentMs < DI5_QNX_REASSERT_MS) {
-                return;
-            } else {
-                di5QnxLastSentMs = now;
-            }
-        }
-        boolean expired;
-        synchronized (di5QnxLock) {
-            expired = di5QnxExpired;
-        }
-        if (expired) {
-            di5QnxNetworkRelease("max " + maxMinutes + " min reached");
-            return;
-        }
-        // Coarse 12 V guard: the VHAL only reports whole volts here, so <= 11
-        // means below ~12.0 V. Three consecutive low samples (one per re-assert)
-        // end the hold for this park.
-        int volts = readVhal12vWholeVolts();
-        boolean lowVoltage;
-        synchronized (di5QnxLock) {
-            di5QnxLowSamples = volts > 0 && volts <= DI5_QNX_LOW_VOLTS
-                    ? di5QnxLowSamples + 1 : 0;
-            lowVoltage = di5QnxLowSamples >= DI5_QNX_LOW_SAMPLES;
-            if (lowVoltage) di5QnxExpired = true;
-        }
-        if (lowVoltage) {
-            di5QnxNetworkRelease("12V reading " + volts + " V");
-            return;
-        }
-        int result = di5QnxNetworkSend(true);
-        synchronized (di5QnxLock) {
-            di5QnxStarted = true;
-        }
-        log("Di5 QNX network START result=" + result + " 12V=" + volts
-                + " (parked " + ((now - di5QnxStartedAtMs) / 1000) + "s, gen="
-                + transitionGeneration + ")");
-    }
-
-    private static void di5QnxNetworkRelease(String reason) {
-        synchronized (di5QnxLock) {
-            if (!di5QnxStarted) return;
-            di5QnxStarted = false;
-        }
-        int result = di5QnxNetworkSend(false);
-        log("Di5 QNX network STOP result=" + result + " (" + reason + ")");
-    }
-
-    /** Last VHAL 12 V value in whole volts, or -1 when unavailable. */
-    private static int readVhal12vWholeVolts() {
-        ShellResult r = execShellResult(
-                "dumpsys car_service --hal 2>/dev/null | grep -m1 'lastEvent:Property:"
-                        + VHAL_12V_PROPERTY + ",'", 8_000L, null);
-        String out = r.output == null ? "" : r.output;
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("int32Values: \\[(-?\\d+)").matcher(out);
-        if (!m.find()) return -1;
-        try {
-            return Integer.parseInt(m.group(1));
-        } catch (NumberFormatException e) {
-            return -1;
-        }
-    }
-
-    /** @return a {@code QnxMessageBus.RESULT_*} code. */
-    private static int di5QnxNetworkSend(boolean hold) {
-        return com.overdrive.app.byd.dilink5.QnxMessageBus.get().setVehicleNetworkHold(hold);
-    }
-
     private static void di5KeepAliveTick(long transitionGeneration) {
         com.overdrive.app.power.Di5ParkedPowerHold hold =
                 com.overdrive.app.power.Di5ParkedPowerHold.installedInstance();
@@ -6436,6 +6517,78 @@ public class AccSentryDaemon {
                     .writeMcuPowerHoldForLease(token(generation), hold);
         }
 
+        @Override
+        public int writeParkedLink(
+                long generation, boolean start) {
+            if (start
+                    && !isSentryTransitionCurrent(generation, true)) {
+                return com.overdrive.app.power
+                        .ParkedLinkContract
+                        .RESULT_STALE_GENERATION;
+            }
+            return sendParkedLinkBroadcast(
+                    generation, start ? "start" : "stop");
+        }
+
+        @Override
+        public int detachParkedLink(long generation) {
+            return sendParkedLinkBroadcast(
+                    generation, "detach");
+        }
+
+        /**
+         * The receiver is exported only behind android.permission.DUMP, which is
+         * held by this shell-UID daemon but not ordinary apps. Ordered broadcast
+         * result codes carry the asynchronous transport result back here.
+         */
+        private int sendParkedLinkBroadcast(
+                long generation, String command) {
+            String shellCommand =
+                    "am broadcast -W --receiver-foreground"
+                            // BYD's power service force-stops the app at ACC-off, and a
+                            // stopped package gets no broadcasts unless this is set.
+                            + " --include-stopped-packages"
+                            + " -a " + com.overdrive.app.power.ParkedLinkContract.ACTION
+                            + " -n com.overdrive.app/com.overdrive.app.power."
+                            + "ParkedLinkReceiver"
+                            + " --es command " + command
+                            + " --el generation " + generation;
+            ShellResult result =
+                    execShellResult(shellCommand, 10_000L, null);
+            String output = (result.output == null ? "" : result.output)
+                    + "\n"
+                    + (result.error == null ? "" : result.error);
+            int parsed = parseOrderedBroadcastResult(output);
+            if (parsed != Integer.MIN_VALUE) return parsed;
+            log("Di5 keep-alive: parked link " + command
+                    + " receiver returned no result (exit="
+                    + result.exitCode + ", output=" + output.trim() + ")");
+            return com.overdrive.app.power.ParkedLinkContract.RESULT_BROADCAST_UNKNOWN;
+        }
+
+        private int parseOrderedBroadcastResult(String output) {
+            if (output == null) return Integer.MIN_VALUE;
+            int start = output.lastIndexOf("result=");
+            if (start < 0) return Integer.MIN_VALUE;
+            start += "result=".length();
+            int end = start;
+            if (end < output.length() && output.charAt(end) == '-') end++;
+            while (end < output.length()
+                    && Character.isDigit(output.charAt(end))) {
+                end++;
+            }
+            if (end <= start
+                    || (end == start + 1
+                    && output.charAt(start) == '-')) {
+                return Integer.MIN_VALUE;
+            }
+            try {
+                return Integer.parseInt(output.substring(start, end));
+            } catch (NumberFormatException ignored) {
+                return Integer.MIN_VALUE;
+            }
+        }
+
         private com.overdrive.app.power.PanoramaWorkModeOwner panorama() {
             com.overdrive.app.power.PanoramaWorkModeOwner p = panorama;
             if (p == null) {
@@ -6462,14 +6615,24 @@ public class AccSentryDaemon {
                 Object ota = com.overdrive.app.byd.BydDeviceHelper.getDevice(
                         "android.hardware.bydauto.ota.BYDAutoOtaDevice", appContext);
                 if (ota == null) return null;
-                Object v = com.overdrive.app.byd.BydDeviceHelper
-                        .callGetter(ota, "getBatteryPowerVoltage");
-                if (!(v instanceof Number)) return null;
-                double volts = ((Number) v).doubleValue();
-                return volts > 0.0 && !Double.isNaN(volts) ? Double.valueOf(volts) : null;
+                // Two sources, and only a physically plausible 12V reading counts: a HAL
+                // sentinel such as 6553.5 or 65535 must read as "no sample", never as healthy.
+                Double volts = plausible12v(com.overdrive.app.byd.BydDeviceHelper
+                        .callGetter(ota, "getBatteryPowerVoltage"));
+                if (volts == null) {
+                    volts = plausible12v(com.overdrive.app.byd.BydDeviceHelper
+                            .callGetter(ota, "getBatteryVoltage", 0));
+                }
+                return volts;
             } catch (Throwable t) {
                 return null;
             }
+        }
+
+        private Double plausible12v(Object v) {
+            if (!(v instanceof Number)) return null;
+            double volts = ((Number) v).doubleValue();
+            return (volts >= 6.0 && volts <= 17.0) ? Double.valueOf(volts) : null;
         }
 
         @Override
@@ -6657,7 +6820,7 @@ public class AccSentryDaemon {
     }
 
     private static final String SD_MOUNTED_LEASE_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_sd_mounted_lease");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_sd_mounted_lease");
     private static final long SD_MOUNTED_LEASE_MAX_HORIZON_MS =
             5 * 60_000L;
 
@@ -6753,7 +6916,7 @@ public class AccSentryDaemon {
      * keep the existing power-save behaviour bit-exact.
      */
     private static final String CAMERA_ACTIVE_LEASE_PATH =
-        com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/camera_active_lease");
+        com.overdrive.app.util.ScratchRoot.path("camera_active_lease");
 
     // Upper bound on how far ahead of "now" a lease deadline may legitimately be.
     // CameraDaemon only ever writes now + 8s, so any live lease is <=8s out; we
@@ -6811,6 +6974,11 @@ public class AccSentryDaemon {
                 return true;
             }
         }
+
+        // The same app controller hands an owned radio back to normal driving
+        // or releases it in On-only mode. It reads the current configuration and
+        // vehicle state, so a stale daemon request cannot revive a disabled radio.
+        reconcileParkedBluetoothKeepAlive();
 
         if (target != null) {
             log("Stopping System Persistence Service...");
@@ -6909,6 +7077,27 @@ public class AccSentryDaemon {
                 () -> isKeepAliveCommitCurrent(transitionGeneration));
         if (!result.success && !result.canceled) {
             log("Mobile-data keepalive command failed: " + result.describeFailure());
+        }
+    }
+
+    /** Uses the existing parked maintenance cadence and authenticated app bridge. */
+    private static void reconcileParkedBluetoothKeepAlive() {
+        boolean enabled = com.overdrive.app.config.UnifiedConfigManager
+                .isBluetoothKeepAliveEnabled();
+        if (!enabled && !bluetoothKeepAliveApplied) return;
+        // Proximity needs this same consent, so the lane that reconciles the radio is
+        // also the right place to notice that the app-process collector went silent.
+        com.overdrive.app.server.RemoteAccessApiHandler.logCollectorLiveness();
+        try {
+            if (com.overdrive.app.server.RemoteAccessApiHandler
+                    .reconcileBluetoothKeepAlive()) {
+                bluetoothKeepAliveApplied = enabled
+                        && inSentryMode
+                        && !com.overdrive.app.config.UnifiedConfigManager
+                                .isVehicleOnOnlyMode();
+            }
+        } catch (Throwable t) {
+            log("Bluetooth keep-alive reconciliation failed: " + t.getMessage());
         }
     }
 
@@ -8027,6 +8216,10 @@ public class AccSentryDaemon {
             }
 
             lastPowerLevel = level;
+            // A steady ON with no edge (e.g. started with the car on) also ends the park.
+            if (!isAccOff) {
+                clearSocCutoffLatch("heartbeat ACC ON");
+            }
             boolean publish = false;
             boolean forced = false;
             synchronized (heartbeatPublishLock) {
@@ -8109,14 +8302,34 @@ public class AccSentryDaemon {
     }
 
     private static synchronized void startDiLink5AccStateHeartbeat() {
+        if (!com.overdrive.app.power.AccSentryHealthMarker.publish()) {
+            log("WARNING: DiLink 5 ACC health marker initial publish failed");
+        }
         if (accHeartbeatThread != null && accHeartbeatThread.isAlive()) {
             return;
         }
         accHeartbeatThread = new Thread(() -> {
             log("DiLink 5 ACC state heartbeat started (5s interval)");
             int undecidedTicks = 0;
+            int healthPublishFailures = 0;
             while (running
                     && !Thread.currentThread().isInterrupted()) {
+                boolean healthPublished =
+                        com.overdrive.app.power.AccSentryHealthMarker.publish();
+                if (!healthPublished) {
+                    healthPublishFailures++;
+                    if (healthPublishFailures == 1
+                            || healthPublishFailures
+                                    % DILINK5_UNDECIDED_LOG_EVERY_TICKS == 0) {
+                        log("WARNING: DiLink 5 ACC health marker publish failed"
+                                + " (consecutive="
+                                + healthPublishFailures + ")");
+                    }
+                } else if (healthPublishFailures > 0) {
+                    log("DiLink 5 ACC health marker publishing recovered after "
+                            + healthPublishFailures + " failures");
+                    healthPublishFailures = 0;
+                }
                 try {
                     pumpFallbackReconcilerRetries();
                     long observationSequence =
@@ -8150,7 +8363,12 @@ public class AccSentryDaemon {
                                     + "corroborated by app-process ignition "
                                     + "broadcast — admitting ACC ON: "
                                     + com.overdrive.app.monitor.AccMonitor
-                                            .describeLastDiLink5AccObservation());
+                                            .describeLastDiLink5AccObservation()
+                                    + ", ignitionHint="
+                                    + com.overdrive.app.power
+                                            .IgnitionBroadcastHint
+                                            .describeLatest(
+                                                    sentryEnteredAtElapsedMs));
                         }
                         undecidedTicks = 0;
                         applyHeartbeatPowerLevel(
@@ -8168,12 +8386,40 @@ public class AccSentryDaemon {
                         }
                     } else {
                         undecidedTicks++;
+                        // "Undecided" means this sample cannot create an ACC
+                        // transition; it does not erase a transition already
+                        // admitted by this daemon. CameraDaemon is a separate
+                        // process, so its restart loses the process-local copy
+                        // of that admitted state. Re-publish the immutable
+                        // transition snapshot on the same bounded cadence as a
+                        // definitive heartbeat so the replacement process
+                        // converges without treating IVI Display-on as an
+                        // ignition edge.
+                        //
+                        // The generation-zero gate is load-bearing: on a cold
+                        // AccSentry start there is no source of truth yet, so an
+                        // ambiguous sample must publish nothing (fail-drive-safe
+                        // for trip recording). requestHeldDiLink5AccStateRepublish
+                        // also re-checks generation/state immediately before
+                        // queueing; applyAccStateNotification checks them again
+                        // before the socket send. A newer ACC-ON therefore always
+                        // supersedes an older parked replay.
+                        boolean heldStateRepublished =
+                                requestHeldDiLink5AccStateRepublish(
+                                        current, undecidedTicks);
                         if (undecidedTicks == 1
                                 || undecidedTicks
                                         % DILINK5_UNDECIDED_LOG_EVERY_TICKS == 0) {
                             log("DiLink 5 ACC heartbeat: observation NOT admitted"
                                     + " (sentryMode=" + current.sentryMode
                                     + ", ignitionBroadcast=" + ignitionBroadcast
+                                    + ", heldStateRepublished="
+                                    + heldStateRepublished
+                                    + ", ignitionHint="
+                                    + com.overdrive.app.power
+                                            .IgnitionBroadcastHint
+                                            .describeLatest(
+                                                    sentryEnteredAtElapsedMs)
                                     + ", ticks=" + undecidedTicks + "): "
                                     + com.overdrive.app.monitor.AccMonitor
                                             .describeLastDiLink5AccObservation());
@@ -8192,6 +8438,48 @@ public class AccSentryDaemon {
         }, "AccSentryHeartbeat-DiLink5");
         accHeartbeatThread.setDaemon(true);
         accHeartbeatThread.start();
+    }
+
+    /**
+     * Re-deliver the last state admitted by AccSentry while the current DiLink
+     * 5 observation is ambiguous. This is state replication, not transition
+     * admission: it never calls enterSentryMode()/exitSentryMode() and never
+     * changes lastPowerLevel.
+     */
+    private static boolean requestHeldDiLink5AccStateRepublish(
+            SentryTransitionState observedState, int undecidedTicks) {
+        if (observedState == null
+                || !shouldRepublishHeldDiLink5AccState(
+                        observedState.generation, undecidedTicks)) {
+            return false;
+        }
+
+        SentryTransitionState latest = latestSentryTransition;
+        if (latest.generation != observedState.generation
+                || latest.sentryMode != observedState.sentryMode) {
+            return false;
+        }
+
+        notifyAccState(
+                observedState.generation,
+                observedState.sentryMode,
+                true);
+        log("DiLink 5 ACC heartbeat: re-publishing last admitted "
+                + (observedState.sentryMode ? "OFF" : "ON")
+                + " state during ambiguous observation (generation="
+                + observedState.generation + ")");
+        return true;
+    }
+
+    /**
+     * Pure cadence/admission rule. Generation zero is the uninitialized state
+     * and can never be replayed.
+     */
+    private static boolean shouldRepublishHeldDiLink5AccState(
+            long transitionGeneration, int undecidedTicks) {
+        return transitionGeneration > 0L
+                && undecidedTicks > 0
+                && undecidedTicks % DILINK5_FORCE_REPUBLISH_TICKS == 0;
     }
 
     /**
@@ -8431,10 +8719,6 @@ public class AccSentryDaemon {
             this.watchdogRunning = watchdogRunning;
         }
 
-        boolean fullySupervised() {
-            return daemonRunning && watchdogRunning;
-        }
-
         boolean fullyStopped() {
             return !daemonRunning && !watchdogRunning;
         }
@@ -8449,13 +8733,18 @@ public class AccSentryDaemon {
                 "SELF=$$; T=/data/local/tmp/telegram_probe.$$; "
                 + "trap 'rm -f \"$T\" 2>/dev/null' 0 HUP INT TERM; "
                 + "ps -A -o PID,ARGS > \"$T\" 2>/dev/null || exit 41; "
+                // index($0," -c ")==0: a concurrent `sh -c` writing the watchdog script carries
+                // the nice-name literal in its argv and is not a daemon.
+                // The name is split so this probe's argv never matches a starting bot's
+                // killOldInstances sweep, which would SIGKILL it and force a relaunch.
                 + "D=$(awk -v self=\"$SELF\" "
-                + "'$1 != self && ($2 == \"telegram_bot_daemon\" "
-                + "|| index($0,\"--nice-name=telegram_bot_daemon\") > 0) "
+                + "'$1 != self && index($0,\" -c \") == 0 "
+                + "&& ($2 == (\"telegram_bot_\" \"daemon\") "
+                + "|| index($0,\"--nice-name=telegram_bot_\" \"daemon\") > 0) "
                 + "{print 1; exit}' \"$T\") || exit 42; "
-                + "W=$(awk -v self=\"$SELF\" "
-                + "'$1 != self && index($0,\"/data/local/tmp/start_telegram.sh\") > 0 "
-                + "{print 1; exit}' \"$T\") || exit 43; "
+                // Only the lock owner is a supervisor: a leftover rotate subshell shares its argv.
+                + "W=0; if " + com.overdrive.app.launcher.DaemonLauncher.Companion
+                        .telegramWatchdogOwnerAlive() + "; then W=1; fi; "
                 + "printf 'daemon=%s watchdog=%s\\n' \"${D:-0}\" \"${W:-0}\" "
                 + "|| exit 44");
         if (!result.success) {
@@ -8556,27 +8845,29 @@ public class AccSentryDaemon {
         // a parked-only bot permanently unable to auto-start after any update,
         // since nothing clears the optional-daemon sentinels post-update.
         //
-        // A missing file falls through to auto-start; an unreadable one retries.
-        java.io.File telegramSentinel =
-            new java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegram_bot_daemon.disabled"));
-        if (telegramSentinel.exists()) {
-            String reason = readSentinelReason(telegramSentinel);
-            if (reason == null) {
-                log("Telegram disable sentinel could not be read; retrying reconciliation");
-                return false;
-            }
-            boolean machineStop = reason != null
-                    && (reason.contains("ACC-on") || reason.contains("stopAllDaemons"));
-            if (machineStop) {
-                log("Telegram disable sentinel is a machine stop (" + reason
-                    + "), not a user stop; proceeding to auto-start");
-            } else {
-                log("Telegram daemon disable sentinel present (user-stopped), not auto-starting");
-                return true;
-            }
+        // The classification lives in telegramMachineStopClearLine() below — one shell rule,
+        // shared with the app's gates, so an empty or unreadable file cannot mean three things.
+        // A Vehicle-ON-only park keeps the stack down; its watchdog would exit at once.
+        if (new java.io.File(com.overdrive.app.ui.model.ParkedShutdown.MARKER_PATH).exists()) {
+            log("Telegram auto-start skipped: parked-shutdown marker present");
+            return true;
         }
         if (shouldAbortTelegramReconciliation(
                 transitionGeneration, true, "process check")) {
+            return true;
+        }
+
+        // Clear a machine stop even when the bot is already up: its watchdog exits on any sentinel.
+        ShellResult sentinelClear = runTelegramShell(
+                transitionGeneration,
+                true,
+                com.overdrive.app.launcher.DaemonLauncher.Companion
+                        .telegramMachineStopClearLine());
+        if (!sentinelClear.success) {
+            return sentinelClear.canceled;
+        }
+        if (sentinelClear.output.contains("USER_STOP")) {
+            log("Telegram daemon disable sentinel present (user-stopped), not auto-starting");
             return true;
         }
 
@@ -8586,37 +8877,71 @@ public class AccSentryDaemon {
             return shouldAbortTelegramReconciliation(
                     transitionGeneration, true, "process query retry");
         }
-        if (runningNow.fullySupervised()) {
+        // A live watchdog owner respawns the daemon itself, also during its backoff.
+        if (runningNow.watchdogRunning && runningNow.daemonRunning) {
             log("Telegram daemon and watchdog already running");
             return true;
         }
-        if (runningNow.daemonRunning || runningNow.watchdogRunning) {
-            log("Telegram supervision is partial; rebuilding daemon and watchdog");
+        if (runningNow.watchdogRunning) {
+            // Owner alive with no daemon: either restart backoff, or a watchdog on its way out
+            // through its own sentinel/parked gate. Confirm before trusting it as supervision.
+            if (!sleepForTelegramReconciliation(
+                    transitionGeneration, true, 2000L, "supervision re-check")) {
+                return true;
+            }
+            TelegramProcessState recheck = queryTelegramProcessState(
+                    transitionGeneration, true);
+            if (recheck == null) {
+                return shouldAbortTelegramReconciliation(
+                        transitionGeneration, true, "supervision re-check retry");
+            }
+            if (recheck.watchdogRunning) {
+                log("Telegram watchdog already running (daemon restarting)");
+                return true;
+            }
+            log("Telegram watchdog exited during the check; rebuilding");
+            runningNow = recheck;
+        }
+        if (runningNow.daemonRunning) {
+            log("Telegram daemon has no live watchdog; rebuilding daemon and watchdog");
         }
 
         // Try up to 2 times (APK path detection can fail when system is still waking up)
         for (int attempt = 1; attempt <= 2; attempt++) {
             if (shouldAbortTelegramReconciliation(
                     transitionGeneration, true, "launch attempt " + attempt)) {
-                return true;
+                return attempt == 1;
             }
             log("Starting Telegram daemon (attempt " + attempt + "/2)...");
 
+            // Past the first attempt the old processes are already dead, so a newer transition
+            // must NOT report success — returning false re-applies the latest desired state
+            // instead of leaving the bot killed and unsupervised.
             if (attempt > 1) {
                 if (!sleepForTelegramReconciliation(
                         transitionGeneration, true, 3000L,
                         "launch retry " + attempt)) {
-                    return true;
+                    return false;
                 }
             }
 
             try {
-                if (!launchTelegramDaemon(transitionGeneration)) {
-                    if (shouldAbortTelegramReconciliation(
-                            transitionGeneration, true,
-                            "launch failure reconciliation")) {
-                        return true;
-                    }
+                boolean launched = launchTelegramDaemon(transitionGeneration);
+                // Same text rule as every other gate: a machine stop written meanwhile (e.g. an
+                // update sweep) is cleared and retried, only a user stop ends the start.
+                ShellResult stopCheck = runTelegramShellToCompletion(
+                        com.overdrive.app.launcher.DaemonLauncher.Companion
+                                .telegramMachineStopClearLine());
+                if (stopCheck.output.contains("USER_STOP")) {
+                    log("Telegram daemon disable sentinel present (user-stopped), not auto-starting");
+                    return true;
+                }
+                if (new java.io.File(
+                        com.overdrive.app.ui.model.ParkedShutdown.MARKER_PATH).exists()) {
+                    log("Parked-shutdown marker appeared during launch; leaving Telegram down");
+                    return true;
+                }
+                if (!launched) {
                     continue;
                 }
 
@@ -8624,22 +8949,17 @@ public class AccSentryDaemon {
                 if (!sleepForTelegramReconciliation(
                         transitionGeneration, true, 2000L,
                         "launch verification")) {
-                    return true;
+                    return false;
                 }
 
                 TelegramProcessState started = queryTelegramProcessState(
                         transitionGeneration, true);
                 if (started == null) {
-                    if (shouldAbortTelegramReconciliation(
-                            transitionGeneration, true,
-                            "launch verification retry")) {
-                        return true;
-                    }
                     continue;
                 }
-                if (started.fullySupervised()) {
-                    log("Telegram daemon and watchdog started successfully (attempt "
-                            + attempt + ")");
+                if (started.watchdogRunning) {
+                    log("Telegram watchdog started successfully (attempt "
+                            + attempt + ", daemon=" + started.daemonRunning + ")");
                     return true;
                 } else {
                     log("Telegram launch incomplete after attempt " + attempt
@@ -8662,20 +8982,6 @@ public class AccSentryDaemon {
 
         log("WARN: Telegram daemon failed to start after 2 attempts");
         return false;
-    }
-
-    /**
-     * Read the first line of a disable sentinel so callers can tell a real
-     * user stop ("disabled by ui"/"disabled by telegram") from an ACC-on
-     * arbitration pause ("disabled by ACC-on"). Returns null if unreadable.
-     */
-    private static String readSentinelReason(java.io.File sentinel) {
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new java.io.FileInputStream(sentinel)))) {
-            return reader.readLine();
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     /**
@@ -8736,20 +9042,73 @@ public class AccSentryDaemon {
             return true;
         }
 
-        // Clear the disable sentinel — ACC OFF path is explicitly starting
-        // the daemon. Without this, the watchdog we're about to deploy
-        // would gate-1 → exit 0 immediately because a previous ACC-on
-        // stop left the sentinel on disk.
+        // Clear a machine-written disable sentinel — ACC OFF path is
+        // explicitly starting the daemon, and the watchdog we're about to
+        // deploy would otherwise gate-exit on a previous ACC-on stop's file.
+        // A user stop that landed since the caller's check stays and wins.
         ShellResult shellResult = runTelegramShell(
                 transitionGeneration,
                 true,
-                "rm -f /data/local/tmp/telegram_bot_daemon.disabled "
-                        + "2>/dev/null");
+                com.overdrive.app.launcher.DaemonLauncher.Companion
+                        .telegramMachineStopClearLine());
         if (!shellResult.success) {
             return shellResult.canceled;
         }
+        if (shellResult.output.contains("USER_STOP")) {
+            log("Telegram daemon disable sentinel present (user-stopped), not launching");
+            return true;
+        }
+        if (shouldAbortTelegramReconciliation(
+                transitionGeneration, true, "watchdog write")) {
+            return true;
+        }
+
+        // Deploy the SAME shell watchdog script the UI uses
+        // (DaemonLauncher.Companion.buildTelegramWatchdogScript). Without
+        // a watchdog, a transient daemon crash leaves it dead until the
+        // next ACC cycle or the next 30s in-process health-check tick
+        // (only fires when MainActivity is alive). The watchdog respawns
+        // on any non-zero exit, sentinel-gated for legitimate stops.
+        // Written before the kill, atomically: a failed write leaves the
+        // running bot alone, and the UI launcher may deploy concurrently.
+        String scriptPath = com.overdrive.app.util.ScratchRoot.path("start_telegram.sh");
+        try {
+            // proxyArgs="" because AccSentry-launched daemon doesn't have
+            // visibility into Android global HTTP proxy from this context.
+            // Direct connection — Telegram bot's OkHttp proxies are
+            // configured via UnifiedTelegramConfig at runtime.
+            java.util.List<String> lines =
+                com.overdrive.app.launcher.DaemonLauncher.Companion
+                    .buildTelegramWatchdogScript(apkPath, "");
+            shellResult = runTelegramShell(
+                    transitionGeneration,
+                    true,
+                    com.overdrive.app.launcher.DaemonLauncher.Companion
+                            .buildWatchdogScriptWriteCommand(scriptPath, lines));
+            if (!shellResult.success) {
+                if (!shellResult.canceled) {
+                    log("Telegram watchdog write failed: " + shellResult.describeFailure());
+                }
+                return shellResult.canceled;
+            }
+        } catch (Throwable t) {
+            if (shouldAbortTelegramReconciliation(
+                    transitionGeneration, true, "watchdog deploy failure")) {
+                return true;
+            }
+            log("Failed to deploy Telegram watchdog: " + t.getMessage()
+                + " — supervised launch remains pending");
+            return false;
+        }
         if (shouldAbortTelegramReconciliation(
                 transitionGeneration, true, "old process cleanup")) {
+            return true;
+        }
+        // Last gate before the kill: a park that began since the caller's check would make the
+        // fresh watchdog exit at once, and killing first would just cost a restart per retry.
+        if (new java.io.File(
+                com.overdrive.app.ui.model.ParkedShutdown.MARKER_PATH).exists()) {
+            log("Parked-shutdown marker present at cleanup; not replacing Telegram processes");
             return true;
         }
 
@@ -8777,113 +9136,25 @@ public class AccSentryDaemon {
         // Use the ps+awk+kill pattern instead — it filters by PID list
         // and explicitly excludes the calling shell's own PID. This is
         // the same pattern TelegramBotDaemon.killOldInstances uses.
-        shellResult = runTelegramShell(
-            transitionGeneration,
-            true,
+        // From the kill on, the redeploy runs to completion in ONE shell: abandoning it for a
+        // newer transition, or failing between separate commands, would leave no bot. The newer
+        // transition's own stop path decides separately. nohup lets the watchdog outlive us.
+        String launchCmd = "nohup sh " + scriptPath + " > /dev/null 2>&1 &";
+        log("Telegram launch command (watchdog-supervised): " + launchCmd);
+        shellResult = runTelegramShellToCompletion(
             "MY_PID=$$; "
             + "ps -A -o PID,ARGS | grep -F start_telegram.sh | grep -v grep | awk '{print $1}' "
             + "| while read pid; do if [ \"$pid\" != \"$MY_PID\" ]; then kill -9 $pid 2>/dev/null; fi; done; "
             + "ps -A -o PID,ARGS | grep -F " + TELEGRAM_DAEMON_PROCESS + " | grep -v grep | awk '{print $1}' "
-            + "| while read pid; do if [ \"$pid\" != \"$MY_PID\" ]; then kill -9 $pid 2>/dev/null; fi; done"
-        );
-        if (!shellResult.success) {
-            return shellResult.canceled;
-        }
-        if (!sleepForTelegramReconciliation(
-                transitionGeneration, true, 500L, "lock cleanup")) {
-            return true;
-        }
-        shellResult = runTelegramShell(
-                transitionGeneration,
-                true,
-                "rm -f /data/local/tmp/telegram_bot_daemon.lock 2>/dev/null");
-        if (!shellResult.success) {
-            return shellResult.canceled;
-        }
-        if (shouldAbortTelegramReconciliation(
-                transitionGeneration, true, "watchdog deployment")) {
-            return true;
-        }
+            + "| while read pid; do if [ \"$pid\" != \"$MY_PID\" ]; then kill -9 $pid 2>/dev/null; fi; done; "
+            + "sleep 0.5; rm -f /data/local/tmp/telegram_bot_daemon.lock 2>/dev/null; "
+            + launchCmd);
+        return shellResult.success;
+    }
 
-        // Deploy the SAME shell watchdog script the UI uses
-        // (DaemonLauncher.Companion.buildTelegramWatchdogScript). Without
-        // a watchdog, a transient daemon crash leaves it dead until the
-        // next ACC cycle or the next 30s in-process health-check tick
-        // (only fires when MainActivity is alive). The watchdog respawns
-        // on any non-zero exit, sentinel-gated for legitimate stops.
-        String scriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_telegram.sh");
-        try {
-            // proxyArgs="" because AccSentry-launched daemon doesn't have
-            // visibility into Android global HTTP proxy from this context.
-            // Direct connection — Telegram bot's OkHttp proxies are
-            // configured via UnifiedTelegramConfig at runtime.
-            java.util.List<String> lines =
-                com.overdrive.app.launcher.DaemonLauncher.Companion
-                    .buildTelegramWatchdogScript(apkPath, "");
-            // Write line-by-line — heredoc through execShell isn't reliable
-            // across all toybox builds. Same pattern as
-            // DaemonCommandHandler.startCameraDaemonWithWatchdog.
-            shellResult = runTelegramShell(
-                    transitionGeneration,
-                    true,
-                    "rm -f " + scriptPath + " 2>/dev/null");
-            if (!shellResult.success) {
-                return shellResult.canceled;
-            }
-            boolean first = true;
-            for (String line : lines) {
-                if (shouldAbortTelegramReconciliation(
-                        transitionGeneration, true, "watchdog write")) {
-                    return true;
-                }
-                String escaped = line
-                    .replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("$", "\\$")
-                    .replace("`", "\\`");
-                String redirect = first ? " > " : " >> ";
-                shellResult = runTelegramShell(
-                        transitionGeneration,
-                        true,
-                        "echo \"" + escaped + "\""
-                                + redirect + scriptPath);
-                if (!shellResult.success) {
-                    return shellResult.canceled;
-                }
-                first = false;
-            }
-            if (shouldAbortTelegramReconciliation(
-                    transitionGeneration, true, "watchdog chmod")) {
-                return true;
-            }
-            shellResult = runTelegramShell(
-                    transitionGeneration,
-                    true,
-                    "chmod 755 " + scriptPath);
-            if (!shellResult.success) {
-                return shellResult.canceled;
-            }
-        } catch (Throwable t) {
-            if (shouldAbortTelegramReconciliation(
-                    transitionGeneration, true, "watchdog deploy failure")) {
-                return true;
-            }
-            log("Failed to deploy Telegram watchdog: " + t.getMessage()
-                + " — supervised launch remains pending");
-            return false;
-        }
-        if (shouldAbortTelegramReconciliation(
-                transitionGeneration, true, "watchdog launch")) {
-            return true;
-        }
-
-        // Run the watchdog. nohup so it survives the AccSentry shell's
-        // exit; it execs the daemon binary in a loop.
-        String launchCmd = "nohup sh " + scriptPath + " > /dev/null 2>&1 &";
-        log("Telegram launch command (watchdog-supervised): " + launchCmd);
-        shellResult = runTelegramShell(
-                transitionGeneration, true, launchCmd);
-        return shellResult.success || shellResult.canceled;
+    /** Telegram redeploy step that must not be abandoned once the old processes are gone. */
+    private static ShellResult runTelegramShellToCompletion(String command) {
+        return execShellResult(command, DEFAULT_SHELL_TIMEOUT_MS, null);
     }
 
     /**
@@ -8937,12 +9208,11 @@ public class AccSentryDaemon {
         ShellResult shellResult = runTelegramShell(
             transitionGeneration,
             false,
-            "S=/data/local/tmp/telegram_bot_daemon.disabled; T=\"$S.tmp.$$\"; "
-            + "R=$(head -1 \"$S\" 2>/dev/null); "
-            + "case \"$R\" in "
-            + "'disabled by ui'*|'disabled by telegram'*|'disabled by user'*) :;; "
-            + "*) printf 'disabled by ACC-on at %s\\n' \"$(date)\" > \"$T\" "
-            + "&& chmod 666 \"$T\" && mv -f \"$T\" \"$S\";; esac; "
+            // Create only if absent (O_EXCL under `set -C`): an existing sentinel, a user stop
+            // included, is never overwritten, whenever it lands. Created 0666 like the others.
+            "S=/data/local/tmp/telegram_bot_daemon.disabled; "
+            + "( umask 0; set -C; printf 'disabled by ACC-on at %s\\n' \"$(date)\" > \"$S\" ) "
+            + "2>/dev/null || [ -f \"$S\" ] || exit 1; "
             + "rm -f /data/local/tmp/start_telegram.sh"
         );
         if (!shellResult.success) {
@@ -8964,6 +9234,8 @@ public class AccSentryDaemon {
         // PID via $$ — the same pattern TelegramBotDaemon's
         // killOldInstances uses. Mirror of the launchTelegramDaemon
         // path (line 2620) that we already fixed.
+        // `; true`: a PID that exited between ps and kill is not a failed stop;
+        // survivors are caught by the verification below.
         shellResult = runTelegramShell(
             transitionGeneration,
             false,
@@ -8971,7 +9243,7 @@ public class AccSentryDaemon {
             + "ps -A -o PID,ARGS | grep -F start_telegram.sh | grep -v grep | awk '{print $1}' "
             + "| while read pid; do if [ \"$pid\" != \"$MY_PID\" ]; then kill -9 $pid 2>/dev/null; fi; done; "
             + "ps -A -o PID,ARGS | grep -F " + TELEGRAM_DAEMON_PROCESS + " | grep -v grep | awk '{print $1}' "
-            + "| while read pid; do if [ \"$pid\" != \"$MY_PID\" ]; then kill -9 $pid 2>/dev/null; fi; done"
+            + "| while read pid; do if [ \"$pid\" != \"$MY_PID\" ]; then kill -9 $pid 2>/dev/null; fi; done; true"
         );
         if (!shellResult.success) {
             return shellResult.canceled;
@@ -10114,8 +10386,10 @@ public class AccSentryDaemon {
             sb.append("  pid_start=\"$(proc_start \"$pid\")\"\n");
             sb.append("  [ -n \"$pid_start\" ] || { release_lease; failed_exit; }\n");
             sb.append("  CMDLINE=\"$WORK_PREFIX.cmd.$pid\"\n");
+            // Not `tr < cmdline`: toybox tr spins if the PID exits first; the capture
+            // timeout then fails the park and leaves the spinning tr orphaned.
             sb.append("  run_bounded_capture \"$CMDLINE\" 20 sh -c '")
-              .append("tr \"\\\\000\" \" \" < \"/proc/$1/cmdline\" 2>/dev/null; printf \"\\n\"")
+              .append("cat \"/proc/$1/cmdline\" 2>/dev/null | tr \"\\\\000\" \" \"; printf \"\\n\"")
               .append("' sh \"$pid\" || { release_lease; failed_exit; }\n");
             sb.append("  cmdline=\"$(file_value \"$CMDLINE\")\"\n");
             sb.append("  case \"$cmdline\" in *'")
@@ -10188,7 +10462,7 @@ public class AccSentryDaemon {
         // Also drop the previous park-END breadcrumb: a new park has begun, and the
         // app must not mistake the old stamp for this park's end.
         sb.append("run_bounded 20 rm -f /data/local/tmp/camera_daemon.lock ")
-          .append(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegram_bot_daemon.lock "))
+          .append(com.overdrive.app.util.ScratchRoot.path("telegram_bot_daemon.lock") + " ")
           .append(com.overdrive.app.ui.model.ParkedShutdown.ENDED_PATH)
           .append(" || true\n");
         sb.append("owns_state || { release_lease; stale_exit; }\n");
@@ -10456,7 +10730,7 @@ public class AccSentryDaemon {
                 new java.io.ByteArrayOutputStream();
         try {
             ProcessBuilder builder =
-                    new ProcessBuilder(new String[]{"sh", "-c", cmd});
+                    new ProcessBuilder(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
             builder.redirectErrorStream(true);
             process = builder.start();
             processOutput = process.getInputStream();
@@ -10693,11 +10967,15 @@ public class AccSentryDaemon {
      */
     private static int enablingHoldOffTicks = 0;
     private static final int MAX_ENABLING_HOLD_OFF_TICKS = 6;
+    /** DiLink 5: an AP seen up is trusted this long before the AP liveness probe runs again. */
+    private static final long DILINK5_SOFTAP_UP_RECHECK_MS = 60_000L;
+    private static long dilink5SoftApSeenUpAtElapsedMs = -1L;
 
     private static boolean reconcileStrandedHotspotSuppression() {
         try {
             if (!com.overdrive.app.config.UnifiedConfigManager
                     .didHotspotSuppressWifiKeepAlive()) {
+                dilink5SoftApSeenUpAtElapsedMs = -1L;
                 return false;
             }
             // The AP takes up to ~27s to come up (shell + tether latch) and does not
@@ -10708,8 +10986,9 @@ public class AccSentryDaemon {
             // keep-alive re-enable the station link and kill the AP being started.
             // Bounded by a tick count, not a clock: if the owner dies mid-enable the
             // ENABLING marker would otherwise persist and strand WiFi off forever.
-            int declared = com.overdrive.app.config.UnifiedConfigManager
-                    .getHotspotState().optInt("apState", 11);
+            org.json.JSONObject hotspotState = com.overdrive.app.config.UnifiedConfigManager
+                    .getHotspotState();
+            int declared = hotspotState.optInt("apState", 11);
             if (declared == 12) {
                 if (enablingHoldOffTicks < MAX_ENABLING_HOLD_OFF_TICKS) {
                     enablingHoldOffTicks++;
@@ -10719,44 +10998,37 @@ public class AccSentryDaemon {
                         + " ticks — no longer holding off the keep-alive");
             }
             enablingHoldOffTicks = 0;
-            // Otherwise ask the RADIO, not a stored snapshot. Earlier revisions
-            // inferred liveness from published timestamps, but every variant broke on
-            // some clock-step or short-reboot combination: an owner that looked dead
-            // got its AP torn down, or a dead one looked alive and stranded WiFi off.
-            // The framework's own AP state is ground truth and needs no clock.
-            // `; echo` keeps the exit status at 0: grep exits 1 when it counts zero
-            // matches, and execShell reports any non-zero exit as "ERROR", which the
-            // unusable-probe branch below would read as "can't tell" — stranding WiFi
-            // off on every ordinary AP-down case, the exact failure this method exists
-            // to prevent. The marker text is what we test, not the exit code.
-            String apDump = execShell(
-                    "dumpsys wifi 2>/dev/null | grep -c curState=SoftApState"
-                            + "; echo PROBE_OK");
-            boolean apUp = false;
-            boolean probeWorked = false;
-            if (apDump != null && apDump.contains("PROBE_OK")) {
-                for (String line : apDump.split("\\r?\\n")) {
-                    String t = line.trim();
-                    if (t.isEmpty() || t.equals("PROBE_OK")) continue;
-                    try {
-                        apUp = Integer.parseInt(t) > 0;
-                        probeWorked = true;
-                    } catch (NumberFormatException ignored) {
-                        // Not the count line; keep looking.
-                    }
-                }
+            if (isDilink5CameraMode() && declared == 13 && dilink5SoftApSeenUpAtElapsedMs >= 0L
+                    && android.os.SystemClock.elapsedRealtime() - dilink5SoftApSeenUpAtElapsedMs
+                            < DILINK5_SOFTAP_UP_RECHECK_MS) {
+                return false;
             }
+            // Liveness = the owner's published AP state AND the kernel's view of the
+            // published AP interface (up, carrying a 192.168.x address), read in-process
+            // via NetworkInterface. No framework dump: on this firmware each one forks
+            // log-capture children inside system_server that never exit.
+            String apIface = hotspotState.optString("iface", "wlan0");
+            if (apIface.isEmpty()) apIface = "wlan0";
+            com.overdrive.app.network.HotspotApLiveness.Probe apProbe =
+                    com.overdrive.app.network.HotspotApLiveness.probe(declared, apIface);
+            boolean apUp = apProbe.apUp;
+            boolean probeWorked = apProbe.probeWorked;
             if (!probeWorked) {
                 // Can't see the radio, so we can't prove the owner is gone. Leaving
                 // the suppression costs connectivity until the next tick; clearing it
                 // could kill a live AP. Prefer the recoverable option.
-                log("Hotspot suppression reconcile skipped — AP state probe failed");
+                log("Hotspot suppression reconcile skipped — AP state probe failed ("
+                        + apProbe.detail + ")");
                 return false;
             }
             if (apUp) {
+                if (isDilink5CameraMode()) {
+                    dilink5SoftApSeenUpAtElapsedMs = android.os.SystemClock.elapsedRealtime();
+                }
                 return false;
             }
-            log("Hotspot WiFi suppression is stale (AP is not up)"
+            dilink5SoftApSeenUpAtElapsedMs = -1L;
+            log("Hotspot WiFi suppression is stale (AP is not up: " + apProbe.detail + ")"
                     + " — clearing so WiFi keep-alive can resume");
             java.util.Map<String, Object> clear = new java.util.HashMap<>();
             clear.put("suppressedByHotspot", false);

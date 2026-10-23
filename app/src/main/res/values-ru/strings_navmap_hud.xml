@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Продолжайте движение</item>
+        <item>Начните движение</item>
+        <item>Прибытие</item>
+        <item>Пункт назначения справа</item>
+        <item>Пункт назначения слева</item>
+        <item>Плавно направо</item>
+        <item>Поверните направо</item>
+        <item>Резко направо</item>
+        <item>Развернитесь</item>
+        <item>Резко налево</item>
+        <item>Поверните налево</item>
+        <item>Плавно налево</item>
+        <item>Сверните на съезд</item>
+        <item>Съезжайте</item>
+        <item>Двигайтесь прямо</item>
+        <item>Держитесь правее</item>
+        <item>Держитесь левее</item>
+        <item>Влейтесь в поток</item>
+        <item>Перестройтесь вправо</item>
+        <item>Перестройтесь влево</item>
+        <item>Въезжайте на круг</item>
+        <item>Съезжайте с круга</item>
+        <item>Въезжайте на паром</item>
+        <item>Съезжайте с парома</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Продолжайте движение по</item>
+        <item>Начните движение по</item>
+        <item>Прибытие:</item>
+        <item>Пункт назначения справа:</item>
+        <item>Пункт назначения слева:</item>
+        <item>Плавно направо на</item>
+        <item>Поверните направо на</item>
+        <item>Резко направо на</item>
+        <item>Развернитесь на</item>
+        <item>Резко налево на</item>
+        <item>Поверните налево на</item>
+        <item>Плавно налево на</item>
+        <item>По съезду на</item>
+        <item>Съезжайте на</item>
+        <item>Двигайтесь прямо по</item>
+        <item>Держитесь правее на</item>
+        <item>Держитесь левее на</item>
+        <item>Выезжайте на</item>
+        <item>Перестройтесь вправо на</item>
+        <item>Перестройтесь влево на</item>
+        <item>Через круг на</item>
+        <item>Съезжайте с круга на</item>
+        <item>Въезжайте на паром:</item>
+        <item>Съезжайте с парома на</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1-й</item>
+        <item>2-й</item>
+        <item>3-й</item>
+        <item>4-й</item>
+        <item>5-й</item>
+        <item>6-й</item>
+        <item>7-й</item>
+        <item>8-й</item>
+        <item>9-й</item>
+        <item>10-й</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Сверните на %1$s съезд</string>
+    <string name="nav_hud_roundabout_exit_onto">Сверните на %1$s съезд на</string>
+    <string name="nav_hud_towards">Направление:</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Съезд %1$s</string>
+    <string name="nav_hud_then">Затем</string>
+    <string name="nav_hud_arrive">Прибытие</string>
+    <string name="nav_hud_recenter">Центрировать</string>
+    <string name="nav_hud_end">Завершить</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">м</string>
+    <string name="nav_hud_unit_km">км</string>
+    <string name="nav_hud_unit_ft">фт</string>
+    <string name="nav_hud_unit_mi">мили</string>
+    <string name="nav_hud_unit_kmh">км/ч</string>
+    <string name="nav_hud_unit_mph">миль/ч</string>
+    <string name="nav_hud_cd_mute">Отключить голосовые подсказки</string>
+    <string name="nav_hud_cd_unmute">Включить голосовые подсказки</string>
+    <string name="nav_hud_cd_overview">Показать весь маршрут</string>
+    <string name="nav_hud_cd_overview_exit">Вернуться к режиму вождения</string>
+    <string name="nav_hud_cd_end">Завершить навигацию</string>
+    <string name="nav_hud_cd_recenter">Центрировать на автомобиле</string>
+    <string name="nav_hud_cd_compass_heading_up">Компас: направление движения вверху. Нажмите, чтобы север был вверху</string>
+    <string name="nav_hud_cd_compass_north_up">Компас: север вверху. Нажмите, чтобы направление движения было вверху</string>
+    <string name="nav_hud_cd_back">Выйти из карты</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Затем через %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Прибытие в %1$s, осталось %2$s и %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">Задержка из-за пробок: %1$s</string>
+</resources>

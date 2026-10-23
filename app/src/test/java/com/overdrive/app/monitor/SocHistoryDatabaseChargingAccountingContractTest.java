@@ -2258,12 +2258,11 @@ public class SocHistoryDatabaseChargingAccountingContractTest {
                     new Class<?>[0]);
             Object persisted = invoke(database,
                     "persistChargingLifecycleJournal", new Class<?>[0]);
-            assertEquals(Boolean.FALSE, persisted);
+            assertEquals(Boolean.TRUE, persisted);
             assertTrue(java.util.Arrays.equals(
-                    malformed, Files.readAllBytes(journal)));
+                    malformed, Files.readAllBytes(setAsideJournal(journal))));
         } finally {
-            Files.deleteIfExists(journal);
-            Files.deleteIfExists(Paths.get(journal.toString() + ".tmp"));
+            deleteJournalFiles(journal);
         }
     }
 
@@ -2815,22 +2814,43 @@ public class SocHistoryDatabaseChargingAccountingContractTest {
                     new SocHistoryDatabase(journal.toFile());
             invoke(database, "loadChargingLifecycleJournal",
                     new Class<?>[0]);
-            assertEquals(Boolean.TRUE,
+            assertEquals(Boolean.FALSE,
                     getField(database, "chargingLifecycleJournalReadFailed"));
             assertEquals(Boolean.FALSE, getField(database, "wasCharging"));
             assertEquals(0L,
                     ((Number) getField(
                             database, "lastAllocatedChargingStartMs"))
                             .longValue());
+            assertTrue(java.util.Arrays.equals(
+                    original, Files.readAllBytes(setAsideJournal(journal))));
             Object persisted = invoke(database,
                     "persistChargingLifecycleJournal", new Class<?>[0]);
-            assertEquals(Boolean.FALSE, persisted);
-            assertTrue(java.util.Arrays.equals(
-                    original, Files.readAllBytes(journal)));
+            assertEquals(Boolean.TRUE, persisted);
         } finally {
-            Files.deleteIfExists(journal);
-            Files.deleteIfExists(Paths.get(journal.toString() + ".tmp"));
+            deleteJournalFiles(journal);
         }
+    }
+
+    private static Path setAsideJournal(Path journal) throws IOException {
+        String prefix = journal.getFileName() + ".unreadable-";
+        try (java.util.stream.Stream<Path> siblings = Files.list(journal.getParent())) {
+            return siblings.filter(p -> p.getFileName().toString().startsWith(prefix))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("journal was not set aside"));
+        }
+    }
+
+    private static void deleteJournalFiles(Path journal) throws IOException {
+        String prefix = journal.getFileName() + ".unreadable-";
+        try (java.util.stream.Stream<Path> siblings = Files.list(journal.getParent())) {
+            for (Path sibling : (Iterable<Path>) siblings::iterator) {
+                if (sibling.getFileName().toString().startsWith(prefix)) {
+                    Files.deleteIfExists(sibling);
+                }
+            }
+        }
+        Files.deleteIfExists(journal);
+        Files.deleteIfExists(Paths.get(journal.toString() + ".tmp"));
     }
 
     private static String databaseSource() throws IOException {

@@ -26,14 +26,34 @@ public class OverlayPermissionDecisionTest {
         assertFalse(OverlayPermissionDecision.resolve(null, false));
     }
 
+    /**
+     * MODE_DEFAULT is "never toggled", not "denied": the platform resolves it from the static
+     * grant, which is exactly what the framework check reads — so it must defer on EVERY
+     * platform. Treating it as a denial on non-DiLink5 cars refused overlay windows the OS
+     * would have accepted and silenced every Show-toast automation on pm-grant installs
+     * (2026-09-23 field log).
+     */
+    @Test
+    public void untoggledDefaultModeDefersToFrameworkOnEveryPlatform() {
+        assertNull(OverlayPermissionChecker.appOpsDecision(
+                AppOpsManager.MODE_DEFAULT, false, 25));
+        assertNull(OverlayPermissionChecker.appOpsDecision(
+                AppOpsManager.MODE_DEFAULT, true, 25));
+        // …and the framework then decides on its own.
+        assertTrue(OverlayPermissionDecision.resolve(
+                OverlayPermissionChecker.appOpsDecision(AppOpsManager.MODE_DEFAULT, false, 25),
+                true));
+        assertFalse(OverlayPermissionDecision.resolve(
+                OverlayPermissionChecker.appOpsDecision(AppOpsManager.MODE_DEFAULT, false, 25),
+                false));
+    }
+
     @Test
     public void ambiguousAppOpsModesDeferOnlyOnDiLink5() {
         assertNull(OverlayPermissionChecker.appOpsDecision(
                 AppOpsManager.MODE_DEFAULT, true, 25));
         assertNull(OverlayPermissionChecker.appOpsDecision(
                 AppOpsManager.MODE_FOREGROUND, true, 25));
-        assertFalse(OverlayPermissionChecker.appOpsDecision(
-                AppOpsManager.MODE_DEFAULT, false, 25));
         assertTrue(OverlayPermissionChecker.appOpsDecision(
                 AppOpsManager.MODE_FOREGROUND, false, 25));
         assertTrue(OverlayPermissionChecker.appOpsDecision(

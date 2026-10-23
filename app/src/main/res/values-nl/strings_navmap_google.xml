@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="navmap_google_layers_cd">Kaartlagen</string>
+    <string name="navmap_google_type_default">Google-kaart</string>
+    <string name="navmap_google_type_satellite">Satelliet</string>
+    <string name="navmap_google_type_hybrid">Hybride</string>
+    <string name="navmap_google_type_terrain">Terrein</string>
+    <string name="navmap_google_type_overdrive">OverDrive-kaart</string>
+    <string name="navmap_google_traffic">Live verkeer</string>
+    <string name="navmap_google_traffic_on">Live verkeer aan</string>
+    <string name="navmap_google_traffic_off">Live verkeer uit</string>
+    <string name="navmap_google_traffic_paused">Live verkeer gepauzeerd tot %1$s (gratis daglimiet)</string>
+    <string name="navmap_google_map_paused">Google-kaart gepauzeerd tot %1$s (gratis daglimiet)</string>
+    <string name="navmap_google_map_unavailable">Google-kaart niet beschikbaar, OverDrive-kaart wordt getoond</string>
+    <string name="navmap_google_key_problem">Probleem met de Google Maps-sleutel. Controleer de RoadSense-instellingen.</string>
+    <string name="navmap_google_route_key_problem">Google-routering heeft de sleutel geweigerd. Controleer de RoadSense-instellingen.</string>
+    <string name="navmap_google_route_limit">Limiet voor Google-routering voor vandaag bereikt</string>
+    <string name="navmap_google_arrived">Je hebt je bestemming bereikt</string>
+    <string name="navmap_google_traffic_delay">+%1$s door verkeer</string>
+    <string name="navmap_google_no_delays">Geen vertraging door verkeer</string>
+    <string name="navmap_google_faster_route">Snellere route gevonden, bespaart %1$s</string>
+    <string name="navmap_google_faster_route_switch">Wisselen</string>
+    <string name="navmap_google_routes_by_google">Routes van Google</string>
+    <string name="navmap_google_routing_provided_by">Routering geleverd door %1$s</string>
+    <string name="navmap_google_place_failed">Kan deze plaats niet openen</string>
+    <string name="navmap_google_finding_place">Plaats zoeken…</string>
+</resources>

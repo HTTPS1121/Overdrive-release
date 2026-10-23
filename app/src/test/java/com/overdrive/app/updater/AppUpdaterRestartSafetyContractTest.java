@@ -73,7 +73,11 @@ public class AppUpdaterRestartSafetyContractTest {
         assertTrue(detachedFailure > detachedCall);
         assertTrue(detachedRollback > detachedFailure);
         assertTrue(detachedReturn > detachedRollback);
-        assertFalse(install.contains("abortPreparedCameraRestart();"));
+        // Abort only resumes a DI5 camera release whose install handoff failed.
+        assertFalse(install
+                .replace("if (abortCameraOnException) abortPreparedCameraRestart();", "")
+                .replace("if (cameraPrepareAttempted) abortPreparedCameraRestart();", "")
+                .contains("abortPreparedCameraRestart();"));
         assertTrue(install.contains(
                 "if (rollbackMetadataOnException && preparedChannel != null)"));
 
@@ -270,7 +274,8 @@ public class AppUpdaterRestartSafetyContractTest {
         assertTrue(backend.contains("executable.endsWith(\" (deleted)\")"));
         assertTrue(backend.contains(
                 "LEGACY_QCARCAM_PATH =\n"
-                        + "            \"/data/local/tmp/qcarcam_test\""));
+                        + "            com.overdrive.app.util.ScratchRoot"
+                        + ".path(\"qcarcam_test\")"));
         assertTrue(backend.contains(
                 "cameraIds.equals(sHardwareCameraIds)"));
         assertTrue(backend.contains(

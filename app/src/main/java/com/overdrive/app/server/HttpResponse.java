@@ -503,10 +503,27 @@ public class HttpResponse {
     }
     
     /**
-     * Send an image file with default 24h cache headers.
+     * Default Cache-Control for images served to an authenticated client.
+     *
+     * <p>{@code private} keeps the browser cache (the reason for the 24 h)
+     * while forbidding shared caches. Every image sent through here sits
+     * behind the session cookie / JWT, and a Cloudflare-proxied hostname
+     * caches {@code .jpg}/{@code .mp4} by extension and, with Origin Cache
+     * Control on, honours {@code public} even on Authorization-bearing
+     * requests — which would have let the CDN hand a recording thumbnail to
+     * an unauthenticated visitor. Precedent: ParkingApiHandler already uses
+     * {@code private}.
+     */
+    static final String IMAGE_CACHE_CONTROL = "private, max-age=86400";
+
+    /** Cache-Control for images rendered from a file that is still changing. */
+    static final String NO_STORE = "no-store";
+
+    /**
+     * Send an image file with default 24h private cache headers.
      */
     public static void sendImage(OutputStream out, java.io.File file, String contentType) throws Exception {
-        sendImage(out, file, contentType, "public, max-age=86400");
+        sendImage(out, file, contentType, IMAGE_CACHE_CONTROL);
     }
 
     /**
@@ -540,13 +557,13 @@ public class HttpResponse {
     }
     
     /**
-     * Send image bytes directly with caching headers.
+     * Send image bytes directly with private 24h caching headers.
      */
     public static void sendImageBytes(OutputStream out, byte[] data, String contentType) throws Exception {
         String headers = "HTTP/1.1 200 OK\r\n" +
                         "Content-Type: " + contentType + "\r\n" +
                         "Content-Length: " + data.length + "\r\n" +
-                        "Cache-Control: public, max-age=86400\r\n" +
+                        "Cache-Control: " + IMAGE_CACHE_CONTROL + "\r\n" +
                         "Connection: close\r\n\r\n";
         out.write(headers.getBytes());
         out.write(data);

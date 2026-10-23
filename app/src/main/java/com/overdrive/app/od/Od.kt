@@ -27,7 +27,7 @@ object Od {
         loaded = try {
             System.load("$nativeLibDir/libod.so"); true
         } catch (_: Throwable) {
-            try { System.load(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/libod.so")); true } catch (_: Throwable) { false }
+            try { System.load(com.overdrive.app.util.ScratchRoot.path("libod.so")); true } catch (_: Throwable) { false }
         }
         return loaded
     }

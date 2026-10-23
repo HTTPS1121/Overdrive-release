@@ -103,6 +103,15 @@ window.KM = (function () {
         { id: 'recirculation',   i18n: 'keymap.act_recirculation',    kind: 'api',
           method: 'POST', path: '/api/vehicle/climate', body: '{"action":"recirculate_${v}"}',
           payloads: [ { v: 'on', i18n: 'keymap.recirculate' }, { v: 'off', i18n: 'keymap.fresh_air' } ] },
+        { id: 'max_cool',        i18n: 'keymap.act_max_cool',         kind: 'api',
+          method: 'POST', path: '/api/vehicle/climate', body: '{"action":"max_cool_${v}"}',
+          payloads: [ { v: 'on', i18n: 'keymap.on' }, { v: 'off', i18n: 'keymap.off' } ] },
+        { id: 'air_purify',      i18n: 'keymap.act_air_purify',       kind: 'api',
+          method: 'POST', path: '/api/vehicle/climate', body: '{"action":"purify_${v}"}',
+          payloads: [ { v: 'on', i18n: 'keymap.on' }, { v: 'off', i18n: 'keymap.off' } ] },
+        { id: 'rain_close_windows', i18n: 'keymap.act_rain_close_windows', kind: 'api',
+          method: 'POST', path: '/api/vehicle/window', body: '{"action":"rain_close_${v}"}',
+          payloads: [ { v: 'on', i18n: 'keymap.on' }, { v: 'off', i18n: 'keymap.off' } ] },
         { id: 'drl',             i18n: 'keymap.act_drl',             kind: 'catalog', key: 'drl',
           payloads: [ { v: 'on', i18n: 'keymap.on' }, { v: 'off', i18n: 'keymap.off' }, { v: 'toggle', i18n: 'keymap.toggle' } ] },
         { id: 'headlight_mode',  i18n: 'keymap.act_headlight_mode',  kind: 'catalog', key: 'headlight_mode',
@@ -111,6 +120,12 @@ window.KM = (function () {
         // the /api/vehicle/lights enable field (target fixed per action).
         { id: 'welcome_light',   i18n: 'keymap.act_welcome_light',    kind: 'api',
           method: 'POST', path: '/api/vehicle/lights', body: '{"target":"welcomeLight","enable":${v}}',
+          payloads: [ { v: 'true', i18n: 'keymap.on' }, { v: 'false', i18n: 'keymap.off' } ] },
+        { id: 'turn_signal_left', i18n: 'keymap.act_turn_signal_left', kind: 'api',
+          method: 'POST', path: '/api/vehicle/lights', body: '{"target":"turnSignalLeft","enable":${v}}',
+          payloads: [ { v: 'true', i18n: 'keymap.on' }, { v: 'false', i18n: 'keymap.off' } ] },
+        { id: 'turn_signal_right', i18n: 'keymap.act_turn_signal_right', kind: 'api',
+          method: 'POST', path: '/api/vehicle/lights', body: '{"target":"turnSignalRight","enable":${v}}',
           payloads: [ { v: 'true', i18n: 'keymap.on' }, { v: 'false', i18n: 'keymap.off' } ] },
         { id: 'reading_light',   i18n: 'keymap.act_reading_light',    kind: 'api',
           method: 'POST', path: '/api/vehicle/lights', body: '{"target":"readingLight","enable":${v}}',
@@ -415,6 +430,9 @@ window.KM = (function () {
         // instead of the automation-shared API path; the two window values are
         // edited by the clip controls below and persisted directly in the binding.
         { id: 'manual_clip',     i18n: 'keymap.act_manual_clip',       kind: 'manualClip' },
+        // Push-to-talk. The app's key dispatcher starts the voice turn, so it is stored as
+        // { kind:'voice_assistant' } and, like manual_clip, must be a direct key binding.
+        { id: 'voice_assistant', i18n: 'keymap.act_voice_assistant',   kind: 'voice_assistant' },
         // Run a saved automation on a keypress — the physical-key equivalent of the
         // automation's trigger. The target is chosen from a LIVE dropdown of the
         // user's automations (dynamicPayloads:'automation' → GET /api/automations/picker);
@@ -526,11 +544,13 @@ window.KM = (function () {
         climate: 'climate', ac_fan: 'climate', ac_temp_step: 'climate',
         ac_temp_step_driver: 'climate', ac_temp_step_passenger: 'climate',
         ac_auto: 'climate', fan_only: 'climate', steering_heat: 'climate', recirculation: 'climate',
+        max_cool: 'climate', air_purify: 'climate', rain_close_windows: 'windows_body',
         defrost_front: 'climate', defrost_rear: 'climate',
         seat_heat_driver: 'climate', seat_heat_passenger: 'climate',
         drl: 'lighting', headlight_mode: 'lighting', hazard: 'lighting',
         welcome_light: 'lighting', reading_light: 'lighting',
         ambient_music: 'lighting', headlight_level: 'lighting',
+        turn_signal_left: 'lighting', turn_signal_right: 'lighting',
         esp_control: 'adas_safety', itac: 'adas_safety', adas_slw: 'adas_safety',
         adas_cpd: 'adas_safety', lane_assist: 'adas_safety',
         adas_bsd: 'adas_safety', adas_tsr: 'adas_safety', adas_rcta: 'adas_safety',
@@ -559,6 +579,7 @@ window.KM = (function () {
         ui_nav: 'system', screenshot: 'system', ivi_reboot: 'system', show_toast: 'system',
         cast_app_cluster: 'system', cluster_cast_stop: 'system',
         radio_wifi: 'system', radio_bluetooth: 'system', radio_data: 'system',
+        voice_assistant: 'system',
         run_automation: 'flow'
     };
     // Same display order as the Automations page (BYD.AUTOMATION_CATEGORY_ORDER); kept
@@ -963,6 +984,7 @@ window.KM = (function () {
     function describeAction(a) {
         if (!a) return '';
         if (a.kind === 'vehicle') return tr('keymap.act_' + a.action);
+        if (a.kind === 'voice_assistant') return tr('keymap.act_voice_assistant');
         if (a.kind === 'manualClip') {
             var clipBefore = parseInt(a.beforeSeconds, 10);
             var clipAfter = parseInt(a.afterSeconds, 10);
@@ -1071,8 +1093,42 @@ window.KM = (function () {
     function saveConfig() {
         state.enabled = $('kmEnable').checked;
         state.allowAdvanced = $('kmAllowAdvanced').checked;
-        persist(function (ok) {
-            if (ok) { paint(); } else { toast(tr('keymap.save_failed'), 'error'); }
+        persist(function (ok, d) {
+            if (ok) {
+                // The daemon echoes the EFFECTIVE allowAdvanced. It drops the flag rather
+                // than failing the save when the caller may not arm shell, so adopt what
+                // was actually stored before painting, or the checkbox would keep showing
+                // a setting the daemon refused and every later save would re-send it.
+                if (d && typeof d.allowAdvanced === 'boolean') {
+                    state.allowAdvanced = d.allowAdvanced;
+                }
+                if (d && d.warning) toast(d.warning, 'error');
+                paint();
+                return;
+            }
+            // Surface the server's reason when it sent one — enabling Advanced is
+            // refused over a tunnel, and a bare "save failed" reads like a bug.
+            toast((d && d.error) ? d.error : tr('keymap.save_failed'), 'error');
+            // A REFUSAL (403) reports the stored truth AND will keep refusing this value,
+            // so adopt it — otherwise the checkbox stays checked and every later save
+            // re-sends a value the daemon always rejects.
+            //
+            // Only the two checkboxes are touched, NOT paint(): paint() runs
+            // onKindChange(), which sets formDirty on a blank form (so "Add binding"
+            // would fold in a stray default step) and snaps the action picker from
+            // 'shell' back to 'curated' — mutating a form the user may be midway
+            // through. And NOT load(), which would clobber state.bindings and drop a
+            // binding an in-flight persist() hasn't committed (see recheckA11y above).
+            if (d && typeof d.allowAdvanced === 'boolean') {
+                if (typeof d.enabled === 'boolean') state.enabled = d.enabled;
+                state.allowAdvanced = d.allowAdvanced;
+                $('kmEnable').checked = state.enabled;
+                $('kmAllowAdvanced').checked = state.allowAdvanced;
+            }
+            // Transport failure (no parsed body): we cannot know whether the write
+            // landed, so we leave state at the user's intent and only toast — the
+            // pre-existing behaviour. Re-reading asynchronously would race a newer save
+            // and could repaint a stale value, which persist() would then write back.
         });
     }
 
@@ -1121,9 +1177,9 @@ window.KM = (function () {
               updateA11yCard();
               a11yRechecksLeft = A11Y_RECHECK_BUDGET;
               scheduleA11yRecheck();
-              if (cb) cb(!!(d && d.success));
+              if (cb) cb(!!(d && d.success), d);
           })
-          .catch(function () { if (cb) cb(false); });
+          .catch(function () { if (cb) cb(false, null); });
     }
 
     // ───────────────────────── Capture ─────────────────────────
@@ -1220,6 +1276,8 @@ window.KM = (function () {
         var clipWrap = $('kmClipWindowWrap');
         var isManualClip = !!(c && c.kind === 'manualClip');
         if (clipWrap) clipWrap.style.display = isManualClip ? '' : 'none';
+        var voiceHint = $('kmVoiceAssistantHint');
+        if (voiceHint) voiceHint.style.display = (c && c.kind === 'voice_assistant') ? '' : 'none';
         sel.innerHTML = '';
         if (isManualClip) {
             // Manual replay has two numeric dimensions instead of the regular
@@ -1689,6 +1747,7 @@ window.KM = (function () {
             var c = curatedById($('kmCuratedAction').value);
             if (!c) { toast(tr('keymap.need_action'), 'error'); return null; }
             if (c.kind === 'vehicle') return { kind: 'vehicle', action: c.key };
+            if (c.kind === 'voice_assistant') return { kind: 'voice_assistant' };
             if (c.kind === 'manualClip') {
                 var clipWindow = readClipWindow();
                 if (!clipWindow) return null;
@@ -1775,6 +1834,10 @@ window.KM = (function () {
             toast(tr('keymap.clip_sequence_unsupported'), 'warning');
             return;
         }
+        if (a.kind === 'voice_assistant') {
+            toast(tr('keymap.voice_assistant_direct_only'), 'warning');
+            return;
+        }
         seqSteps.push(a);
         clearActionForm();
         renderSteps();
@@ -1858,6 +1921,12 @@ window.KM = (function () {
             toast(tr('keymap.clip_sequence_unsupported'), 'warning');
             return;
         }
+        // Quick controls fire daemon-side, where push-to-talk cannot start.
+        if (action.kind === 'voice_assistant'
+                || (action.kind === 'sequence' && hasVoiceAssistant(action.steps))) {
+            toast(tr('keymap.voice_assistant_direct_only'), 'warning');
+            return;
+        }
         // id is generated, never user-supplied — it is what the fire endpoint resolves.
         var id = 'qc' + Date.now() + Math.floor(Math.random() * 1000);
         qcButtons.push({ id: id, label: label, action: action });
@@ -1870,6 +1939,14 @@ window.KM = (function () {
             resetForm();
             clearActionForm();
         });
+    }
+
+    function hasVoiceAssistant(steps) {
+        if (!steps || !steps.length) return false;
+        for (var i = 0; i < steps.length; i++) {
+            if (steps[i] && steps[i].kind === 'voice_assistant') return true;
+        }
+        return false;
     }
 
     function hasManualClip(steps) {
@@ -2028,6 +2105,10 @@ window.KM = (function () {
                 var pending = buildActionFromForm();
                 if (pending && pending.kind === 'manualClip') {
                     toast(tr('keymap.clip_sequence_unsupported'), 'warning');
+                    return;
+                }
+                if (pending && pending.kind === 'voice_assistant') {
+                    toast(tr('keymap.voice_assistant_direct_only'), 'warning');
                     return;
                 }
                 if (pending) steps.push(pending);
@@ -2235,6 +2316,14 @@ window.KM = (function () {
             if (clipSel) clipSel.value = 'manual_clip';
             onCuratedChange();
             applyClipWindowToForm(a.beforeSeconds, a.afterSeconds);
+            return;
+        }
+        if (a.kind === 'voice_assistant') {
+            if (kindSel) kindSel.value = 'curated';
+            onKindChange();
+            var voiceSel = $('kmCuratedAction');
+            if (voiceSel) voiceSel.value = 'voice_assistant';
+            onCuratedChange();
             return;
         }
         // Run-automation: a curated action whose live payload is the target automation

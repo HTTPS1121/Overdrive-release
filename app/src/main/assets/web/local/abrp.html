@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title data-i18n="app.abrp_title">ABRP - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest for ABRP. Three task-based tabs:
         Status    — Vehicle telemetry summary + service on/off + connection state
@@ -23,8 +23,9 @@
             { id: 'telemetry', label: 'Telemetry', i18n: 'abrp.tab_telemetry', svg: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>', readOnly: true }
         ];
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
         .telemetry-table { width: 100%; border-collapse: collapse; }
         .telemetry-table td { padding: 10px 12px; border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
@@ -59,10 +60,10 @@
         }
     </style>
 </head>
-<body>
+<body class="r-settings">
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content" aria-busy="true" inert style="pointer-events:none">
@@ -296,9 +297,9 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <script src="../shared/auth.js"></script>
-    <script src="../shared/core.js?v=23"></script>
+    <script src="../shared/core.js?v=24"></script>
     <script src="../shared/settings-hydration.js?v=1"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <script src="../shared/abrp.js?v=toggle3"></script>
     <script>
         function toggleSidebar() {

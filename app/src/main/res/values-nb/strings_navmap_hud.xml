@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Fortsett</item>
+        <item>Kjør av sted</item>
+        <item>Ankomst</item>
+        <item>Målet er til høyre</item>
+        <item>Målet er til venstre</item>
+        <item>Svakt til høyre</item>
+        <item>Sving til høyre</item>
+        <item>Skarpt til høyre</item>
+        <item>Ta en U-sving</item>
+        <item>Skarpt til venstre</item>
+        <item>Sving til venstre</item>
+        <item>Svakt til venstre</item>
+        <item>Ta rampen</item>
+        <item>Ta avkjørselen</item>
+        <item>Fortsett rett frem</item>
+        <item>Hold til høyre</item>
+        <item>Hold til venstre</item>
+        <item>Flett inn</item>
+        <item>Flett inn til høyre</item>
+        <item>Flett inn til venstre</item>
+        <item>Kjør inn i rundkjøringen</item>
+        <item>Kjør ut av rundkjøringen</item>
+        <item>Ta ferjen</item>
+        <item>Kjør av ferjen</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Fortsett på</item>
+        <item>Kjør ut på</item>
+        <item>Ankomst i</item>
+        <item>Målet er til høyre i</item>
+        <item>Målet er til venstre i</item>
+        <item>Svakt til høyre inn på</item>
+        <item>Sving til høyre inn på</item>
+        <item>Skarpt til høyre inn på</item>
+        <item>Ta en U-sving inn på</item>
+        <item>Skarpt til venstre inn på</item>
+        <item>Sving til venstre inn på</item>
+        <item>Svakt til venstre inn på</item>
+        <item>Ta rampen inn på</item>
+        <item>Ta avkjørselen til</item>
+        <item>Fortsett rett frem på</item>
+        <item>Hold til høyre inn på</item>
+        <item>Hold til venstre inn på</item>
+        <item>Flett inn på</item>
+        <item>Flett inn til høyre på</item>
+        <item>Flett inn til venstre på</item>
+        <item>Via rundkjøringen til</item>
+        <item>Kjør ut av rundkjøringen til</item>
+        <item>Ta ferjen:</item>
+        <item>Kjør av ferjen inn på</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1.</item>
+        <item>2.</item>
+        <item>3.</item>
+        <item>4.</item>
+        <item>5.</item>
+        <item>6.</item>
+        <item>7.</item>
+        <item>8.</item>
+        <item>9.</item>
+        <item>10.</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">Ta %1$s avkjørsel</string>
+    <string name="nav_hud_roundabout_exit_onto">Ta %1$s avkjørsel til</string>
+    <string name="nav_hud_towards">Mot</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Avkjørsel %1$s</string>
+    <string name="nav_hud_then">Deretter</string>
+    <string name="nav_hud_arrive">Ankomst</string>
+    <string name="nav_hud_recenter">Sentrer</string>
+    <string name="nav_hud_end">Avslutt</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Slå av taleveiledning</string>
+    <string name="nav_hud_cd_unmute">Slå på taleveiledning</string>
+    <string name="nav_hud_cd_overview">Vis hele ruten</string>
+    <string name="nav_hud_cd_overview_exit">Tilbake til kjørevisning</string>
+    <string name="nav_hud_cd_end">Avslutt navigasjon</string>
+    <string name="nav_hud_cd_recenter">Sentrer på bilen</string>
+    <string name="nav_hud_cd_compass_heading_up">Kompass: kjøreretning opp. Trykk for nord opp</string>
+    <string name="nav_hud_cd_compass_north_up">Kompass: nord opp. Trykk for kjøreretning opp</string>
+    <string name="nav_hud_cd_back">Forlat kartet</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Deretter om %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Ankomst kl. %1$s, %2$s og %3$s igjen</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">%1$s forsinkelse på grunn av trafikk</string>
+</resources>

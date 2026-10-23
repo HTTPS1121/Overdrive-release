@@ -1,5 +1,6 @@
 package com.overdrive.app.server;
 
+import com.overdrive.app.automation.ActionGroups;
 import com.overdrive.app.automation.Automation;
 import com.overdrive.app.automation.Automations;
 import com.overdrive.app.daemon.CameraDaemon;
@@ -11,6 +12,8 @@ import com.overdrive.app.genai.GenAiInsights;
 import com.overdrive.app.genai.GenAiRoutineLearner;
 import com.overdrive.app.genai.GenAiRuntime;
 import com.overdrive.app.genai.GenAiVehicleHistory;
+import com.overdrive.app.genai.VoiceActionTokens;
+import com.overdrive.app.voice.daemon.VoiceExecutionPolicy;
 import com.overdrive.app.byd.routing.VehicleCommandRouter;
 import com.overdrive.app.byd.routing.VehicleCommandRouter.CommandResult;
 
@@ -454,7 +457,8 @@ public final class GenAiApiHandler {
                         messages, snapshot.context,
                         GenAiContext.withResponseLanguage(
                                 snapshot.instructions,
-                                input.optString("language", "")));
+                                input.optString("language", "")),
+                        true);
                 response.put("mode", snapshot.mode);
                 response.put("contextAttached", snapshot.hasContext());
                 copyFields(snapshot.clientData, response);
@@ -519,17 +523,52 @@ public final class GenAiApiHandler {
             return;
         }
 
+        // A token marks the hands-free path: the daemon minted it for exactly this action
+        // in the live far-field session. Token-less calls are the Assistant page and keep
+        // their existing semantics untouched.
+        String voiceToken = input.optString("token", "");
+        boolean voicePath = !voiceToken.isEmpty();
+        if (voicePath) {
+            VoiceActionTokens.Result verdict = VoiceActionTokens.consume(
+                    voiceToken, action,
+                    GenAiVoiceWebSocket.activeSessionId());
+            if (!verdict.ok()) {
+                sendError(out, 403,
+                        "voice_token_" + verdict.code.name().toLowerCase(),
+                        voiceTokenMessage(verdict.code));
+                return;
+            }
+        }
+
         String type = action.optString("type", "");
         if ("run_automation".equals(type)) {
             String id = action.optString("automationId", "");
+            if (voicePath) {
+                VoiceExecutionPolicy.Verdict policy = VoiceExecutionPolicy.check(
+                        Automations.primaryActionsOf(id),
+                        ActionGroups::getActions);
+                if (!policy.allowed) {
+                    HttpResponse.sendJsonNoCors(out, 403, new JSONObject()
+                            .put("success", false)
+                            .put("ok", false)
+                            .put("code", "voice_policy")
+                            .put("status", "refused")
+                            .put("error", policy.message)
+                            .put("message", policy.message)
+                            .put("offendingType", policy.offendingType)
+                            .toString());
+                    return;
+                }
+            }
             AutomationApiHandler.dispatchExplicitAutomation(id, false);
-            HttpResponse.sendJsonNoCors(out, new JSONObject()
+            JSONObject accepted = new JSONObject()
                     .put("success", true)
                     .put("accepted", true)
                     .put("action", type)
                     .put("automationId", id)
-                    .put("message", "Automation run accepted.")
-                    .toString());
+                    .put("message", "Automation run accepted.");
+            if (voicePath) accepted.put("status", "accepted");
+            HttpResponse.sendJsonNoCors(out, accepted.toString());
             return;
         }
 
@@ -565,7 +604,36 @@ public final class GenAiApiHandler {
         JSONObject response = VehicleControlApiHandler.routedResponse(
                 result, commandName);
         response.put("confirmed", true);
+        if (voicePath) response.put("status", voiceStatusOf(result.outcome));
         HttpResponse.sendJsonNoCors(out, response.toString());
+    }
+
+    /** Status the hands-free client speaks: completed / blocked / refused / failed. */
+    private static String voiceStatusOf(VehicleCommandRouter.Outcome outcome) {
+        if (outcome == VehicleCommandRouter.Outcome.SUCCESS) return "completed";
+        if (outcome == VehicleCommandRouter.Outcome.BLOCKED_DRIVING) return "blocked";
+        if (outcome == VehicleCommandRouter.Outcome.NOT_SUPPORTED
+                || outcome == VehicleCommandRouter.Outcome.AUTH_REQUIRED) {
+            return "refused";
+        }
+        return "failed";
+    }
+
+    private static String voiceTokenMessage(VoiceActionTokens.Code code) {
+        switch (code) {
+            case MISSING:
+                return "The voice action token is missing.";
+            case EXPIRED:
+                return "The voice action token has expired.";
+            case CONSUMED:
+                return "The voice action token was already used.";
+            case FOREIGN:
+                return "The voice action token belongs to another session.";
+            case MISMATCH:
+                return "The voice action token was issued for a different action.";
+            default:
+                return "The voice action token is not valid.";
+        }
     }
 
     private static void handleAutomationDraft(

@@ -41,7 +41,7 @@ public class DaemonLogger {
      * Log configuration.
      */
     public static class Config {
-        public String logDir = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp");
+        public String logDir = com.overdrive.app.util.ScratchRoot.dir();
         public int retentionHours = 24;
         public int maxFileSizeMB = 10;
         public int rotationCount = 3;
@@ -195,13 +195,43 @@ public class DaemonLogger {
     public static void logError(String tag, String message, Throwable throwable) {
         getInstance(tag).error(message, throwable);
     }
-    
+
+    private static final ThreadLocal<java.util.ArrayDeque<String>> THREAD_CAPTURE =
+            new ThreadLocal<>();
+    private static final int THREAD_CAPTURE_MAX_LINES = 8;
+    private static final int THREAD_CAPTURE_MAX_LINE_CHARS = 240;
+
+    /** Keep this thread's last lines (any level) until {@link #endThreadCapture}; returns the outer capture. */
+    public static java.util.ArrayDeque<String> beginThreadCapture() {
+        java.util.ArrayDeque<String> outer = THREAD_CAPTURE.get();
+        THREAD_CAPTURE.set(new java.util.ArrayDeque<>());
+        return outer;
+    }
+
+    /** Restores {@code outer} and returns the captured lines joined with " | ", or null. */
+    public static String endThreadCapture(java.util.ArrayDeque<String> outer) {
+        java.util.ArrayDeque<String> captured = THREAD_CAPTURE.get();
+        if (outer != null) {
+            THREAD_CAPTURE.set(outer);
+        } else {
+            THREAD_CAPTURE.remove();
+        }
+        return captured == null || captured.isEmpty() ? null : String.join(" | ", captured);
+    }
+
     // ==================== INSTANCE LOGGING METHODS ====================
     
     /**
      * Log a message with specified level.
      */
     public void log(Level level, String message) {
+        java.util.ArrayDeque<String> capture = THREAD_CAPTURE.get();
+        if (capture != null) {
+            if (capture.size() >= THREAD_CAPTURE_MAX_LINES) capture.pollFirst();
+            String line = tag + ": " + message;
+            capture.addLast(line.length() > THREAD_CAPTURE_MAX_LINE_CHARS
+                    ? line.substring(0, THREAD_CAPTURE_MAX_LINE_CHARS) : line);
+        }
         // Drop messages below the configured minimum level (default INFO) so
         // DEBUG diagnostics don't flood the daemon log / disk.
         if (level.ordinal() < globalConfig.minLevel.ordinal()) {
@@ -279,7 +309,7 @@ public class DaemonLogger {
     public void error(String message, Throwable throwable) {
         String fullMessage = message;
         if (throwable != null) {
-            fullMessage = message + ": " + throwable.getMessage();
+            fullMessage = message + ": " + describe(throwable);
         }
         log(Level.ERROR, fullMessage);
         
@@ -293,7 +323,17 @@ public class DaemonLogger {
             }
         }
     }
-    
+
+    /** Reflective invokes carry the real failure as the cause and have no message of their own. */
+    static String describe(Throwable throwable) {
+        Throwable shown = throwable instanceof java.lang.reflect.InvocationTargetException
+                && throwable.getCause() != null ? throwable.getCause() : throwable;
+        String detail = shown.getMessage();
+        return shown != throwable || detail == null
+                ? shown.getClass().getSimpleName() + (detail != null ? ": " + detail : "")
+                : detail;
+    }
+
     // ==================== FILE OPERATIONS ====================
     
     private void initWriter() {

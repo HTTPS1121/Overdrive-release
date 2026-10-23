@@ -15,8 +15,8 @@ import kotlin.math.roundToInt
  * source of truth is a rect in cluster space ({@code 0..clusterW}, {@code 0..clusterH}).
  *
  * The head-unit preview simply scales that rect by {@code viewW/clusterW} (a UNIFORM scale on
- * both axes because the preview stage is itself panel-shaped). This is exactly DashCast's
- * ResizeFrameView model, and it is why the preview box is ALWAYS panel-shaped by construction:
+ * both axes because the preview stage is itself panel-shaped). This is why the preview box is
+ * ALWAYS panel-shaped by construction:
  * there is no separately-resolved "panel aspect" that can disagree with the stage and collapse
  * the box to a square (the regression this replaces).
  *
@@ -34,7 +34,7 @@ object ProjectionBoundsGeometry {
         val height: Int get() = bottom - top
     }
 
-    /** Corner + side + move grab handles (matches ProjectionBoundsView / DashCast ResizeFrameView). */
+    /** Corner + side + move grab handles (matches ProjectionBoundsView). */
     const val HANDLE_NONE = 0
     const val HANDLE_TL = 1
     const val HANDLE_T = 2
@@ -53,7 +53,7 @@ object ProjectionBoundsGeometry {
     const val PRESET_CENTER = 3
 
     /** Snap grid step (cluster px) applied to every edge, plus the soft-snap tolerance to the
-     *  panel's half/quarter guide lines. Mirrors DashCast's GRID_STEP=10 / SNAP_TOL_PX=24. */
+     *  panel's half/quarter guide lines. */
     const val GRID_STEP = 10
     const val SNAP_TOLERANCE = 24
 
@@ -61,7 +61,7 @@ object ProjectionBoundsGeometry {
      *  smallest useful preview. Cluster px. */
     const val MIN_SIZE = 200
 
-    /** Center preset covers this fraction of each axis (matches DashCast's 0.6). */
+    /** Center preset covers this fraction of each axis. */
     private const val CENTER_FRAC = 0.6f
 
     /**

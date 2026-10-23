@@ -26,7 +26,7 @@ public final class TelegramDaemonLauncher {
     private static final String DAEMON_CLASS =
             "com.overdrive.app.daemon.TelegramBotDaemon";
     private static final String DAEMON_LOG =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegrambotdaemon.log");
+            com.overdrive.app.util.ScratchRoot.path("telegrambotdaemon.log");
 
     private TelegramDaemonLauncher() {}
 
@@ -82,7 +82,8 @@ public final class TelegramDaemonLauncher {
 
         logger.info("Launching telegram daemon: " + innerCmd);
         try {
-            ProcessBuilder pb = new ProcessBuilder("sh", "-c", detached);
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(detached));
+            com.overdrive.app.util.ScratchRoot.applyEnv(pb);
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.to(new java.io.File("/dev/null")));
             pb.redirectError(ProcessBuilder.Redirect.to(new java.io.File("/dev/null")));
@@ -125,7 +126,7 @@ public final class TelegramDaemonLauncher {
     private static String execShell(String command) {
         Process p = null;
         try {
-            p = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+            p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(command)});
             StringBuilder out = new StringBuilder();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;

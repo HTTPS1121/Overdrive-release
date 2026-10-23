@@ -1,6 +1,7 @@
 package com.overdrive.app.ui;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -39,6 +40,7 @@ public class NavigationRailLayoutParityTest {
                 "railDestRecordings",
                 "railDestParking",
                 "railDestVehicle",
+                "railDestProximity",
                 "railDestSeatPositions",
                 "railDestProjection",
                 "railDestTrips",
@@ -74,6 +76,46 @@ public class NavigationRailLayoutParityTest {
         ), new ArrayList<>(matches(SECTION_ID, portrait)));
     }
 
+    @Test
+    public void proximityOpensItsOwnCanonicalWebViewDestination() throws Exception {
+        String navigation = readProjectFile("src/main/res/navigation/nav_graph.xml");
+        String activity = readProjectFile(
+                "src/main/java/com/overdrive/app/ui/MainActivity.kt");
+        String catalog = readProjectFile(
+                "src/main/java/com/overdrive/app/ui/navigation/NavigationRailCatalog.kt");
+
+        Matcher fragment = Pattern.compile(
+                "<fragment\\s+android:id=\"@\\+id/remoteAccessFragment\"[\\s\\S]*?</fragment>")
+                .matcher(navigation);
+        assertTrue("Proximity has a destination", fragment.find());
+        assertTrue(fragment.group().contains(
+                "android:name=\"com.overdrive.app.ui.fragment.WebViewFragment\""));
+        assertTrue(fragment.group().contains("android:defaultValue=\"/remote-access\""));
+
+        String vehicle = railItem(activity, "VEHICLE");
+        String proximity = railItem(activity, "PROXIMITY");
+        assertFalse("Vehicle must not capture Proximity selection",
+                vehicle.contains("R.id.remoteAccessFragment"));
+        assertTrue(proximity.contains("R.id.railDestProximity"));
+        assertTrue(proximity.contains("R.id.remoteAccessFragment"));
+        assertTrue("Appearance offers the independent destination",
+                catalog.contains("NavigationRailOption(PROXIMITY,"));
+        String topLevel = activity.substring(
+                activity.indexOf("appBarConfiguration = AppBarConfiguration("),
+                activity.indexOf("setupActionBarWithNavController("));
+        assertTrue("Proximity is a top-level page, without a child-only back arrow",
+                topLevel.contains("R.id.remoteAccessFragment"));
+
+        for (String layout : Arrays.asList(
+                "src/main/res/layout/activity_main_new.xml",
+                "src/main/res/layout-land/activity_main_new.xml")) {
+            List<String> rows = railRowOrder(readProjectFile(layout));
+            int proximityIndex = rows.indexOf("railDestProximity");
+            assertTrue(layout, proximityIndex > rows.indexOf("railSectionControls"));
+            assertTrue(layout, proximityIndex < rows.indexOf("railSectionDriving"));
+        }
+    }
+
     /**
      * The wordmark and the collapse row frame the scroller rather than riding
      * inside it: a long destination list would otherwise scroll the collapse
@@ -102,6 +144,13 @@ public class NavigationRailLayoutParityTest {
 
     private static Set<String> destinationIds(String xml) {
         return matches(DESTINATION_ID, xml);
+    }
+
+    private static String railItem(String activity, String key) {
+        int start = activity.indexOf("RailItem(NavigationRailCatalog." + key + ",");
+        assertTrue("Rail binds " + key, start >= 0);
+        int end = activity.indexOf("RailItem(", start + 8);
+        return activity.substring(start, end < 0 ? activity.length() : end);
     }
 
     /** Destination and header ids in declaration order. */

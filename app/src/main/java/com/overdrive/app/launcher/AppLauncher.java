@@ -532,6 +532,12 @@ public final class AppLauncher {
      * dumpsys must never pass for proof.
      */
     static boolean taskConfirmedAbsent(String pkg) {
+        // Prefer the ActivityTaskManager running-task list: it only knows LIVE tasks,
+        // whereas the dumpsys parser can be fooled by a root task's stale
+        // mLastPausedActivity reference to an already-destroyed activity (Android 12
+        // shared cluster displays) and then never confirms absence.
+        int live = ClusterFreeformWindow.liveTaskIdForPackage(pkg);
+        if (live != TASK_LOOKUP_FAILED) return live == -1;
         return findTaskId(pkg) == -1;
     }
 
@@ -552,7 +558,13 @@ public final class AppLauncher {
             // A component line "<pkg>/<activity>" inside the current task block.
             // Literal "<pkg>/" (not a bare contains(pkg)) so a sibling package like
             // "com.foobar" can't be mistaken for "com.foo".
-            if (pendingTaskId >= 0 && lineContainsComponentToken(line, pkg + "/")) {
+            // Skip a task's bookkeeping references (mLastPausedActivity, mResumedActivity,
+            // mPausingActivity, ...): a root task keeps pointing at an activity record
+            // after that activity's child task was destroyed, which made a force-stopped
+            // app look permanently present (Android 12 shared cluster displays).
+            if (pendingTaskId >= 0
+                    && !isTaskStateReferenceLine(line)
+                    && lineContainsComponentToken(line, pkg + "/")) {
                 return pendingTaskId;
             }
         }
@@ -561,6 +573,20 @@ public final class AppLauncher {
         // not proof of absence. Only a parsed dump that contains other tasks but none for
         // this package confirms the task is gone.
         return sawTaskHeader ? -1 : TASK_LOOKUP_FAILED;
+    }
+
+    /** {@code mLastPausedActivity: ...}, {@code mResumedActivity: ...}, {@code topResumedActivity=...}
+     *  and similar fields describe a task's remembered state, not a live member activity. */
+    static boolean isTaskStateReferenceLine(String trimmedLine) {
+        if (trimmedLine == null) return false;
+        String low = trimmedLine.toLowerCase(java.util.Locale.US);
+        return low.startsWith("mlastpausedactivity")
+                || low.startsWith("mresumedactivity")
+                || low.startsWith("mpausingactivity")
+                || low.startsWith("mlastresumedactivity")
+                || low.startsWith("topresumedactivity")
+                || low.startsWith("mfocusedapp")
+                || low.startsWith("mlastnonfullscreenbounds");
     }
 
     private static boolean lineContainsComponentToken(String line, String token) {
@@ -657,7 +683,11 @@ public final class AppLauncher {
             return false;
         }
         pkg = pkg.trim();
-        int task = findTaskId(pkg);
+        // Live-task list first (see taskConfirmedAbsent): the dump parser can hand back a
+        // root task that merely REMEMBERS the package's destroyed activity, and moving a
+        // root task would drag the OEM's cluster container along with it.
+        int task = ClusterFreeformWindow.liveTaskIdForPackage(pkg);
+        if (task == TASK_LOOKUP_FAILED) task = findTaskId(pkg);
         if (task == TASK_LOOKUP_FAILED) {
             logger.warn("reparentToDisplay0: task lookup failed for " + pkg
                     + " — cannot verify the task is gone, keeping recovery pending");
@@ -670,6 +700,17 @@ public final class AppLauncher {
         }
         int stack = findFullscreenStackIdOnDisplay(0);
         if (stack < 0) {
+            // Android 12+ prints root Tasks instead of `Stack #` headers, so the dump
+            // parser has nothing to find on DiLink 5.0. Use the ActivityTaskManager
+            // root-task reparent (same single-task, background semantics) before
+            // giving up; the caller keeps its recovery marker on a false return.
+            boolean movedViaAtm =
+                    ClusterFreeformWindow.moveTaskToDefaultDisplayBackground(task);
+            if (movedViaAtm) {
+                logger.info("reparentToDisplay0: task " + task + " (" + pkg
+                        + ") re-homed to display 0 via ActivityTaskManager");
+                return true;
+            }
             logger.warn("reparentToDisplay0: no display-0 fullscreen stack found — skipping (no clobber)");
             return false;
         }
@@ -819,7 +860,7 @@ public final class AppLauncher {
     private static List<String> listPackagesViaShell() {
         List<String> pkgs = new ArrayList<>();
         try {
-            Process p = new ProcessBuilder("sh", "-c", "pm list packages -3")
+            Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap("pm list packages -3"))
                     .redirectErrorStream(true).start();
             StringBuilder sb = new StringBuilder();
             InputStream is = p.getInputStream();
@@ -844,7 +885,7 @@ public final class AppLauncher {
     /** Run a short shell command bounded at 5s; true if it exited 0. */
     private static boolean runShell(String cmd) {
         try {
-            final Process p = new ProcessBuilder("sh", "-c", cmd)
+            final Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd))
                     .redirectErrorStream(true).start();
             final InputStream is = p.getInputStream();
             Thread drain = new Thread(() -> {
@@ -875,7 +916,7 @@ public final class AppLauncher {
         Process p = null;
         InputStream is = null;
         try {
-            p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             is = p.getInputStream();
             final InputStream captureStream = is;
             final StringBuffer sb = new StringBuffer();

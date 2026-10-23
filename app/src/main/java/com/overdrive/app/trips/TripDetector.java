@@ -48,7 +48,7 @@ public class TripDetector {
     private double startOdometerKm = -1;
 
     // Time when gear first went to P (for accurate end time, excluding debounce)
-    private long parkStartTime = 0;
+    private volatile long parkStartTime = 0;
 
     // Debounce timer
     private final ScheduledExecutorService scheduler;
@@ -792,6 +792,11 @@ public class TripDetector {
      */
     public TripRecord getActiveTrip() {
         return activeTrip;
+    }
+
+    /** When the car stopped in P while the park debounce runs, else 0. */
+    public long getParkStartTime() {
+        return parkStartTime;
     }
 
     /**

@@ -304,7 +304,8 @@
     <string name="toast_soh_reset_failed_with_message">Tilbakestilling feilet: %1$s</string>
     <string name="toast_select_at_least_one_category">Velg minst én kategori</string>
     <string name="toast_reset_failed_with_error">Tilbakestilling feilet: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s trafikk monitor…</string>
+    <string name="toast_traffic_monitor_enabling">Aktiverer Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">Deaktiverer Traffic Monitor…</string>
     <string name="dialog_close">Lukk</string>
     <string name="dialog_reset">Tilbakestill</string>
     <string name="dialog_delete">Slett</string>
@@ -322,14 +323,15 @@
     <string name="dialog_reset_complete_title">Omstilling fullført</string>
     <string name="dialog_traffic_cannot_check_title">Kan ikke sjekke status</string>
     <string name="dialog_traffic_cannot_check_message">ADB-tilkoblingen er ikke klar ennå.\n\nAppen trenger ADB-tilgang for å administrere systempakker. Sørg for at:\n\n• USB Debugging er aktivert i utvikleralternativer\n• ADB-tillatelse forespørsel har blitt akseptert\n\nStatusen vil oppdateres automatisk når du er koblet.</string>
-    <string name="dialog_traffic_disable_title">Deaktiver BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_disable_message">BYD-trafikkovervåking (com.byd.trafficmonitor) er en innebygd systemapp som kontinuerlig overvåker trafikkforholdene i bakgrunnen.\n\nHvorfor deaktivere den?\n\n• Bruker mobildata (selv når de er parket)\n• Bruker CPU og batteri i bakgrunnen\n• Ikke nødvendig hvis du bruker en egen navigasjonsapp\n• Kan forstyrre dashcams nettverksbruk\n\nDette er trygt å deaktivere — det påvirker bare det innebygde trafikkoverlegget på kartet. Navigasjonsfunksjonen din, Bluetooth, og alle andre bilfunksjoner er upåvirket.\n\nEn hardomstart kreves etter deaktivering (hold i senterkonsollen 5 sekunder).</string>
-    <string name="dialog_traffic_enable_title">Reaktiver BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_enable_message">BYD-trafikken er nå deaktivert.\n\npå nytt vil den gjenopprette det innebygde trafikkloverlegget på navigasjonskartet. Merk at den vil kjøre i bakgrunnen og bruke mobildata.\n\nEn hard reboot er nødvendig etter at du har aktivert (hold i senterkonsollen 5 sekunder).</string>
-    <string name="dialog_traffic_status_title">Trafikkmonitor %1$s</string>
+    <string name="dialog_traffic_disable_title">Vil du deaktivere BYD Traffic Monitor?</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) er en innebygd systemapp som styrer hvilke apper som får bruke mobildata. Den hindrer tredjepartsapper, inkludert OverDrive, i å bruke bilens innebygde SIM-kort.\n\nHvorfor deaktivere den?\n\n• Lar OverDrive og andre apper du installerer, bruke internett via BYD-SIM-kortet\n• Kreves for å nå bilen din eksternt via BYD-SIM-kortet\n\nNavigasjonen din, Bluetooth og alle andre bilfunksjoner forblir upåvirket.\n\nEn hard omstart kreves etter deaktivering (hold inne knappen på midtkonsollen i 5 sekunder).</string>
+    <string name="dialog_traffic_enable_title">Vil du aktivere BYD Traffic Monitor igjen?</string>
+    <string name="dialog_traffic_enable_message">BYD Traffic Monitor er for øyeblikket deaktivert.\n\nHvis du aktiverer den igjen, hindrer den på nytt OverDrive og andre tredjepartsapper i å bruke bilens innebygde SIM-kort, slik at ekstern tilgang via BYD-SIM-kortet slutter å fungere.\n\nEn hard omstart kreves etter aktivering (hold inne knappen på midtkonsollen i 5 sekunder).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor aktivert</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor deaktivert</string>
     <string name="dialog_traffic_reboot_message">Endringen er anvendt.\n\nOmstart nå:\nTrykk og hold inne sentralkonsollknappen i 5 sekunder.</string>
-    <string name="traffic_monitor_loading">Trafikk monitor: kontrollerer…</string>
-    <string name="traffic_monitor_tap_to_check">Trafikk Monitor (trykk for å sjekke)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: kontrollerer…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (trykk for å sjekke)</string>
     <string name="reset_label_trips">Reiser</string>
     <string name="reset_label_soc_history">SoC + 12V historie</string>
     <string name="reset_label_soh">SoH kalibrering</string>
@@ -377,6 +379,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Denne rutene MQTT gjennom sjøskala, slik at du kan nå en privat megler på ditt halenett uten port videresending.\n\nMens aktivert:\n• MQTT til en skrednet-megler fungerer (f.eks. Mosquitto på en enhet på tailnet)\n• MQTT til offentlige meglere (HiveMQ, AWS IoT, osv. vil feile — Skinnende ruter til din tailnet\n• Tailscale daemon starter på nytt for å aktivere endringen\n• Annen apptrafikk og resten av enheten blir ikke påvirket av\n\nDu kan slå dette av når som helst.</string>
     <string name="dialog_zrok_reset_title">Tilbakestill Zrok miljø</string>
     <string name="dialog_zrok_reset_message">Dette vil:\n• Stopp zrok-tunnelen hvis du kjører\n• Fjern zrok-miljøet fra denne enheten\n• Slett det lagrede tokenet\n\nDu må skrive inn tokenet på nytt og aktivere igjen. Dette bruker en av dine 5 enhets plasser på zrok.io.\n\nEr du sikker?</string>
+    <string name="dialog_tunnel_conflict_title">En annen tunnel kjører</string>
+    <string name="dialog_tunnel_conflict_message">%1$s kjører allerede. Vil du bytte til %2$s (dette stopper %1$s), eller kjøre begge tunnelene samtidig?\n\nNår begge kjører:\n• Kontrollpanelet er tilgjengelig via to offentlige lenker\n• Bruken av mobildata i hvilemodus øker litt\n• Begge starter automatisk etter en omstart</string>
+    <string name="dialog_tunnel_conflict_switch">Bytt</string>
+    <string name="dialog_tunnel_conflict_run_both">Kjør begge</string>
     <string name="toast_resetting_zrok">Tilbakestiller zrok miljøet…</string>
     <string name="toast_zrok_reset_success">Zrok environment tilbakestilles. Angi et nytt token for å sette opp igjen.</string>
     <string name="toast_zrok_reset_partial">Miljø tilbakestilt token filen kan trenge manuell opprydding)</string>
@@ -417,8 +423,8 @@
     <string name="setup_overlay_already_granted">Allerede innvilget</string>
     <string name="setup_tips_header">Tips &amp; feilsøking</string>
     <string name="setup_traffic_title">Deaktiver BYD Traffic Monitor</string>
-    <string name="setup_traffic_body">BYD-trafikken blokkerer tredjepartsapper fra å nå Internett. Deaktivering av den lar OverDrive og andre apper som du installerer faktisk bruker nettverket. En hard-omstart er nødvendig etterpå.</string>
-    <string name="setup_traffic_button">Åpne trafikkmonitor</string>
+    <string name="setup_traffic_body">BYD Traffic Monitor hindrer tredjepartsapper i å nå internett. Når du deaktiverer den, kan OverDrive og alle andre apper du installerer, faktisk bruke nettverket. En hard omstart kreves etterpå.</string>
+    <string name="setup_traffic_button">Åpne Traffic Monitor</string>
     <string name="setup_camera_fix_title">Kamera feeds svart eller feil?</string>
     <string name="setup_camera_fix_body">Kamerasonen, sett Kamera-ID til 0, trykk på Lagre, og start deretter kameraet på nytt med meddelelse Hvis tilbakemeldingene fortsatt er feil, gjenta med kamera-ID 1. La kartleggingsdelen være uberørt.</string>
     <string name="camera_current_manual">Aktuell: Kamera %1$d (manuell)</string>
@@ -477,6 +483,8 @@
     <string name="settings_about_support_share_value">Hver delte lenke hjelper en annen BYD-eier å oppdage overdrive.</string>
     <string name="settings_about_support_share_message">Sjekk ut overdriv— åpen kildekode overvåkning &amp; dashcam for BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Del overdrive</string>
+    <string name="settings_about_youtube_title">Abonner på YouTube</string>
+    <string name="settings_about_youtube_value">Trykk liker, abonner og del – hver visning hjelper Overdrive å vokse.</string>
     <string name="settings_about_open_link_failed">Kunne ikke åpne lenken.</string>
     <string name="settings_about_open_link_copied">Ingen nettleser funnet. URL kopiert: %1$s</string>
     <string name="settings_about_support_kofi_title">Drivstoff den neste utgaven</string>
@@ -512,7 +520,7 @@
     <string name="recordings_preview_placeholder_title">Velg et opptak</string>
     <string name="recordings_preview_placeholder_body">Trykk på en hvilken som helst gjenstand til venstre for å spille den.</string>
     <string name="diagnostics_section_adb_console">ADB konsoll</string>
-    <string name="diagnostics_section_traffic">Trafikk monitor</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Kamera sonde</string>
     <string name="diagnostics_section_battery">Batteri helse</string>
     <string name="diagnostics_hero_title">System diagnostikk</string>
@@ -599,6 +607,7 @@
     <string name="settings_quick_language_label">Språk</string>
     <string name="settings_section_recording_subtitle">Pre/post buffere, kodek, lagringsgrenser.</string>
     <string name="settings_section_surveillance_subtitle">Deteksjonssoner, tidsplan, bevegelsesfølsomhet.</string>
+    <string name="settings_section_storage_subtitle">Hvor opptak lagres, plassgrenser, opprydding i BYD-dashbordkameraet.</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT runnere.</string>
     <string name="settings_about_row_title">Om OverDrive</string>
     <string name="settings_about_row_subtitle">Versjon, lisens, støtte utvikling.</string>
@@ -669,6 +678,10 @@
     <string name="settings_security_error_persist">Kunne ikke lagre PIN-koden. Prøv på nytt.</string>
     <string name="roadsense_sev_minor">Mindre</string>
     <string name="pin_lock_backspace_cd">Bakovertast</string>
+    <plurals name="pin_lock_dot_a11y">
+        <item quantity="one">%1$d tall angitt</item>
+        <item quantity="other">%1$d tall angitt</item>
+    </plurals>
     <string name="roadsense_cal_partial">Bedring av kalibrering</string>
     <string name="roadsense_type_breaker">Hastighet ødelegger</string>
     <string name="roadsense_toggle_audio">Lyd</string>
@@ -782,6 +795,10 @@
     <string name="projection_autostart_conflict_confirm">Bruk denne appen</string>
     <string name="projection_app_uninstalled">Den appen er ikke lenger installert.</string>
     <string name="projection_status_service_down">Speil tjenesten er ikke klar — start appen på nytt (eller kamera daemon) og prøv igjen.</string>
+    <string name="projection_status_connecting">Kobler til klyngen…</string>
+    <string name="projection_status_mirror_unavailable">Speil utilgjengelig</string>
+    <string name="projection_fullscreen_enter">Fullskjerm</string>
+    <string name="projection_fullscreen_exit">Avslutt fullskjerm</string>
     <string name="cd_replay_status">Øyeblikkelig omspillingsstatus</string>
     <string name="url_copied_no_browser">Ingen nettleser funnet. Lenke kopiert: %1$s</string>
     <string name="camera_concurrent_probe_label">Støtte for test-dual-kamera ved neste oppstart</string>
@@ -871,8 +888,8 @@
     <string name="onboarding_expert_surveillance_body">Finjuster deteksjon, kvalitet og lagring her. Disse åpne som konfigurasjonssidene på appen har sittet fra bilen din – en tom skjerm betyr at hjelperen fortsatt starter.</string>
     <string name="onboarding_expert_camprobe_title">Kamera sonde – forsiktig</string>
     <string name="onboarding_expert_camprobe_body">Dette kartlegger som fysisk kamera strømmer inn hver rolle, og starter kameraene på nytt. Endre dette kun hvis en feed ser feil ut - du setter dette opp tidligere i guiden.</string>
-    <string name="onboarding_expert_traffic_title">Trafikkmonitor - kreves for fjerntilgang</string>
-    <string name="onboarding_expert_traffic_body">BYDs innebygde TrafikkMonitor blokkerer andre apper fra å bruke bilens innebygde SIM. Hvis du vil nå bilen eksternt over BYD SIM, må du deaktivere den her. Hodeenheten starter opp igjen for å bruke endringen.</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — kreves for ekstern tilgang</string>
+    <string name="onboarding_expert_traffic_body">BYDs innebygde Traffic Monitor hindrer andre apper i å bruke bilens innebygde SIM-kort. Hvis du vil nå bilen din eksternt via BYD-SIM-kortet, må du deaktivere den her. Infotainmentsystemet starter på nytt for at endringen skal tre i kraft.</string>
     <string name="onboarding_expert_daemons_title">Tjenester — håndtak med forsiktighet</string>
     <string name="onboarding_expert_daemons_body">Disse bryterne starter og stopper bakenfortjenestene. Skrur av kamera, overvåking eller ACC stansing av opptaket og holder dem borte til du slår dem på - selv etter en omstart.</string>
     <string name="onboarding_expert_security_title">Lås med en PIN</string>
@@ -986,6 +1003,10 @@
     <string name="roadsense_map_status_local">På enhet</string>
     <string name="roadsense_map_status_cloud">Delt</string>
     <string name="roadsense_map_meta_format">%1$s · %2$d%% tillit · %3$s</string>
+    <plurals name="roadsense_map_reports">
+        <item quantity="one">%1$d rapport</item>
+        <item quantity="other">%1$d rapporter</item>
+    </plurals>
     <string name="roadsense_map_confirmed_toast">Fare bekreftet</string>
     <string name="roadsense_map_deleted_toast">Fare fjernet</string>
     <string name="roadsense_map_action_failed">Kunne ikke nå RoadSense. Prøv igjen.</string>
@@ -1093,4 +1114,17 @@
     <string name="rail_section_automation">Automatisering</string>
     <string name="rail_section_system">System</string>
     <string name="rail_collapse_label">Skjul</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Lytter…</string>
+    <string name="voice_overlay_thinking">Tenker…</string>
+    <string name="voice_overlay_speaking">Snakker…</string>
+    <string name="voice_overlay_done">Ferdig</string>
+    <string name="voice_overlay_cancelled">Avbrutt</string>
+    <string name="voice_overlay_not_understood">Beklager, det fikk jeg ikke med meg</string>
+    <string name="voice_overlay_offline">KI-assistenten er utilgjengelig</string>
+    <string name="voice_overlay_busy">Assistenten er allerede i bruk</string>
+    <string name="voice_overlay_blocked_moving">Ikke tilgjengelig under kjøring</string>
+    <string name="voice_overlay_refused">Det kan ikke gjøres med stemmen</string>
+    <string name="voice_overlay_failed">Kunne ikke fullføre det</string>
 </resources>

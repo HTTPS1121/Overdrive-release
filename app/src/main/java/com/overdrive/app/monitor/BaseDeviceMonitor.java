@@ -130,7 +130,7 @@ public abstract class BaseDeviceMonitor<T> {
         
         if (currentRetry >= MAX_RETRIES) {
             // Exhausted retries, switch to periodic reconnection
-            log("Max retries exhausted, will retry every " + (RECONNECT_INTERVAL_MS / 1000) + "s");
+            log("Max retries exhausted, will retry every " + (reconnectIntervalMs() / 1000) + "s");
             schedulePeriodicReconnect();
             return;
         }
@@ -172,10 +172,11 @@ public abstract class BaseDeviceMonitor<T> {
         retryThread = new Thread(() -> {
             while (!isAvailable.get() && !Thread.currentThread().isInterrupted()) {
                 try {
-                    Thread.sleep(RECONNECT_INTERVAL_MS);
+                    Thread.sleep(reconnectIntervalMs());
                     if (!isAvailable.get()) {
                         log("Attempting periodic reconnection...");
-                        retryCount.set(0);
+                        // retryCount stays exhausted so a failure re-arms this loop, not the
+                        // fast retry chain; markAvailable() resets it.
                         init(context);
                         if (isAvailable.get()) {
                             start();
@@ -193,6 +194,11 @@ public abstract class BaseDeviceMonitor<T> {
         retryThread.start();
     }
     
+    /** Delay between periodic reconnection attempts; subclasses may stretch it for known-hopeless failures. */
+    protected long reconnectIntervalMs() {
+        return RECONNECT_INTERVAL_MS;
+    }
+
     /**
      * Cancel any pending retries.
      */

@@ -59,7 +59,7 @@ public class TripScoreEngine {
 
     // ==================== Constants ====================
 
-    private static final int MIN_SAMPLES = 30;
+    static final int MIN_SAMPLES = 30;
     private static final double MAX_COAST_GAP_SECONDS = 30.0;
     private static final int MIN_DRIVING_SPEED = 3;
     private static final double MIN_EFFICIENCY_DISTANCE = 0.5;
@@ -138,6 +138,81 @@ public class TripScoreEngine {
 
     // ==================== Public API ====================
 
+    /** DI5: elevation gain/loss [m] over a trip's journal rows up to endMs, on the estimator recovery uses. */
+    static double[] journalElevation(List<TelemetrySample> rows, long endMs) {
+        ElevationEstimator elevation = new ElevationEstimator();
+        for (TelemetrySample s : rows) {
+            if (s.timestampMs > endMs) continue;
+            // DI5: a P read off the unchecked gear signal does not stop a moving car's climb counting, and
+            // a stale gear (outside 1-6) is unknown.
+            int gear = s.gearMode < 1 || s.gearMode > 6 ? 0
+                    : s.gearMode == 1 && s.isDiLink5Moving() ? 4 : s.gearMode;
+            elevation.addSample(s.timestampMs, s.altitude, s.verticalAccuracyM, s.altitudeIsMsl,
+                    ElevationEstimator.isElevationEligible(gear, s.speedKmh));
+        }
+        return new double[] {elevation.getGainM(), elevation.getLossM()};
+    }
+
+    /** Time the samples cover: each spans to the next, at most 1 s, so 5 Hz ticks and 1 Hz journal rows both count true. */
+    static double scoreableSeconds(List<TelemetrySample> samples) {
+        double ms = 0;
+        long lastStep = 0;
+        for (int i = 1; i < samples.size(); i++) {
+            long step = samples.get(i).timestampMs - samples.get(i - 1).timestampMs;
+            if (step > 0) {
+                lastStep = Math.min(step, 1_000L);
+                ms += lastStep;
+            }
+        }
+        return samples.isEmpty() ? 0 : (ms + lastStep) / 1000.0;
+    }
+
+    /**
+     * DI5: the engine's windows and per-sample jerk count 5 Hz samples, so a 1 Hz journal row (a
+     * resumed or recovered trip) stands in for each 200 ms of its second; 5 Hz samples pass through.
+     */
+    static List<TelemetrySample> diLink5At5Hz(List<TelemetrySample> samples) {
+        List<TelemetrySample> out = new ArrayList<>(samples.size() * 2);
+        for (int i = 0; i < samples.size(); i++) {
+            TelemetrySample s = samples.get(i);
+            out.add(s);
+            // The last row spans as long as the step before it.
+            long next = i + 1 < samples.size() ? samples.get(i + 1).timestampMs
+                    : i > 0 ? 2 * s.timestampMs - samples.get(i - 1).timestampMs : s.timestampMs + 1_000L;
+            for (long t = s.timestampMs + 200L; t <= s.timestampMs + 800L && t < next; t += 200L) {
+                out.add(s.atTimestamp(t));
+            }
+        }
+        return out;
+    }
+
+    /** DI5: scores need at least 30 s of scoreable data, covering at least a quarter of the trip. */
+    static boolean hasDiLink5ScoringCoverage(double scoreableSeconds, int tripSeconds) {
+        return scoreableSeconds >= 30.0 && (tripSeconds <= 0 || scoreableSeconds >= 0.25 * tripSeconds);
+    }
+
+    /** Stores elevation gain/loss and the gradient profile and average they imply for the trip's distance. */
+    static GradientProfile applyElevation(TripRecord trip, double elevationGain, double elevationLoss) {
+        double gainPerKm = trip.distanceKm > 0 ? elevationGain / trip.distanceKm : 0;
+        double lossPerKm = trip.distanceKm > 0 ? elevationLoss / trip.distanceKm : 0;
+        GradientProfile gradProfile;
+        if (gainPerKm > 15) {
+            gradProfile = GradientProfile.MOUNTAIN_CLIMB;
+        } else if (lossPerKm > 15) {
+            gradProfile = GradientProfile.MOUNTAIN_DESCENT;
+        } else if (gainPerKm > 5 || lossPerKm > 5) {
+            gradProfile = GradientProfile.HILLY;
+        } else {
+            gradProfile = GradientProfile.FLAT;
+        }
+        trip.gradientProfile = gradProfile.name();
+        trip.elevationGainM = elevationGain;
+        trip.elevationLossM = elevationLoss;
+        trip.avgGradientPercent = trip.distanceKm > 0
+                ? (elevationGain - elevationLoss) / (trip.distanceKm * 1000) * 100 : 0;
+        return gradProfile;
+    }
+
     /**
      * Compute all trip scores, micro-moments, and stats in a single pass.
      *
@@ -146,6 +221,16 @@ public class TripScoreEngine {
      * populated.
      */
     public TripRecord computeSummary(TripRecord trip, List<TelemetrySample> samples) {
+        return computeSummary(trip, samples, Double.NaN, Double.NaN);
+    }
+
+    /**
+     * As {@link #computeSummary(TripRecord, List)}, with the trip's elevation gain/loss measured
+     * elsewhere (NaN: from {@code samples}). DI5 passes the whole journal's, since its scoring
+     * stream leaves out ticks without a vehicle speed.
+     */
+    TripRecord computeSummary(TripRecord trip, List<TelemetrySample> samples,
+                              double presetGainM, double presetLossM) {
         if (samples == null || samples.size() < MIN_SAMPLES) {
             logger.warn("computeSummary: insufficient samples ("
                     + (samples != null ? samples.size() : 0) + "), using defaults");
@@ -494,25 +579,13 @@ public class TripScoreEngine {
         // Elevation gain/loss per km — standard metric for terrain difficulty.
         // Climb and descent are separate profiles because the physics and
         // optimal driving behavior are fundamentally different.
-        final double elevationGain = elevation.getGainM();
-        final double elevationLoss = elevation.getLossM();
+        GradientProfile gradProfile = Double.isNaN(presetGainM)
+                ? applyElevation(trip, elevation.getGainM(), elevation.getLossM())
+                : applyElevation(trip, presetGainM, presetLossM);
+        final double elevationGain = trip.elevationGainM;
+        final double elevationLoss = trip.elevationLossM;
         double gainPerKm = trip.distanceKm > 0 ? elevationGain / trip.distanceKm : 0;
         double lossPerKm = trip.distanceKm > 0 ? elevationLoss / trip.distanceKm : 0;
-        GradientProfile gradProfile;
-        if (gainPerKm > 15) {
-            gradProfile = GradientProfile.MOUNTAIN_CLIMB;
-        } else if (lossPerKm > 15) {
-            gradProfile = GradientProfile.MOUNTAIN_DESCENT;
-        } else if (gainPerKm > 5 || lossPerKm > 5) {
-            gradProfile = GradientProfile.HILLY;
-        } else {
-            gradProfile = GradientProfile.FLAT;
-        }
-        trip.gradientProfile = gradProfile.name();
-        trip.elevationGainM = elevationGain;
-        trip.elevationLossM = elevationLoss;
-        trip.avgGradientPercent = trip.distanceKm > 0
-                ? (elevationGain - elevationLoss) / (trip.distanceKm * 1000) * 100 : 0;
 
         // ── Gradient compensation factors ──
         // These adjust thresholds based on terrain so drivers aren't penalized

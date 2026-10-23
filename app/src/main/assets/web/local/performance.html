@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title data-i18n="app.performance_title">Performance - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest — performance dashboard splits into 4 tabs
       so the long single-scroll page stops being a wall of charts:
@@ -26,8 +26,9 @@
             { id: 'reset',   label: 'Reset',   i18n: 'performance.tab_reset',   svg: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>', readOnly: true }
         ];
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
         /* Performance Dashboard Specific Styles */
         .metrics-grid {
@@ -407,101 +408,110 @@
         }
         
         .gpu-status-badge.efficient {
-            background: rgba(34, 197, 94, 0.2);
-            color: #22c55e;
+            background: var(--status-success-container);
+            color: var(--success);
         }
         
         .gpu-status-badge.optimal {
-            background: rgba(0, 212, 170, 0.2);
-            color: #00D4AA;
+            background: var(--primary-soft);
+            color: var(--primary);
         }
         
         .gpu-status-badge.heavy {
-            background: rgba(251, 191, 36, 0.2);
-            color: #fbbf24;
+            background: var(--warning-soft);
+            color: var(--warning);
         }
         
         .gpu-status-badge.critical {
-            background: rgba(239, 68, 68, 0.2);
-            color: #ef4444;
+            background: var(--danger-soft);
+            color: var(--danger);
         }
         
         .gpu-health-hint {
-            margin-top: 12px;
-            padding: 10px 12px;
-            background: var(--bg-elevated);
-            border-radius: var(--radius-sm);
-            font-size: 12px;
             display: flex;
             align-items: flex-start;
-            gap: 8px;
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            background: var(--well);
+            font-size: var(--fs-caption);
             line-height: 1.5;
         }
-        
         .gpu-health-hint .hint-icon {
             flex-shrink: 0;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 10px;
-            margin-top: 1px;
+            width: 18px;
+            height: 18px;
+            margin: 0 8px 0 0;
+            border-radius: 50%;
+            background: var(--well-2);
+            color: var(--on-surface-variant);
         }
-        
-        .gpu-health-hint.efficient {
-            background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.2);
+        [dir="rtl"] .gpu-health-hint .hint-icon { margin: 0 0 0 8px; }
+        .gpu-health-hint .hint-icon::before {
+            content: '';
+            width: 11px;
+            height: 11px;
+            background-color: currentColor;
+            -webkit-mask-repeat: no-repeat;
+            mask-repeat: no-repeat;
+            -webkit-mask-position: center;
+            mask-position: center;
+            -webkit-mask-size: contain;
+            mask-size: contain;
         }
-        .gpu-health-hint.efficient .hint-icon {
-            background: rgba(34, 197, 94, 0.2);
+        .gpu-health-hint.efficient { background: var(--status-success-container); }
+        .gpu-health-hint.efficient .hint-icon { color: var(--status-success); }
+        .gpu-health-hint.efficient .hint-icon::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E"); }
+        .gpu-health-hint.optimal { background: var(--primary-soft); }
+        .gpu-health-hint.optimal .hint-icon { color: var(--primary); }
+        .gpu-health-hint.optimal .hint-icon::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='5' fill='black' stroke='none'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='5' fill='black' stroke='none'/%3E%3C/svg%3E"); }
+        .gpu-health-hint.heavy { background: var(--warning-soft); }
+        .gpu-health-hint.heavy .hint-icon { color: var(--warning); }
+        .gpu-health-hint.heavy .hint-icon::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 6v8M12 18h.01'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 6v8M12 18h.01'/%3E%3C/svg%3E"); }
+        .gpu-health-hint.critical { background: var(--danger-soft); }
+        .gpu-health-hint.critical .hint-icon { color: var(--danger); }
+        .gpu-health-hint.critical .hint-icon::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E"); }
+        .gpu-health-hint .hint-text { color: var(--on-surface-variant); }
+        .gpu-health-hint.efficient .hint-text,
+        .gpu-health-hint.critical .hint-text { color: var(--on-surface); }
+
+        #evChargingStatus.is-charging { display: inline-flex; align-items: center; color: var(--primary); }
+        #evChargingStatus.is-charging::before {
+            content: '';
+            width: 14px;
+            height: 14px;
+            margin-right: 4px;
+            background-color: currentColor;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M13 2L3 14h9l-1 8 10-12h-9l1-8z' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M13 2L3 14h9l-1 8 10-12h-9l1-8z' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
         }
-        .gpu-health-hint.efficient .hint-icon::before {
-            content: '✓';
-            color: #22c55e;
+        [dir="rtl"] #evChargingStatus.is-charging::before { margin-right: 0; margin-left: 4px; }
+        /* SOH detail hint: info glyph + message. */
+        .soh-detail-hint {
+            display: flex;
+            align-items: flex-start;
+            margin-top: 10px;
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            background: var(--well);
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            line-height: 1.5;
         }
-        
-        .gpu-health-hint.optimal .hint-icon {
-            background: rgba(0, 212, 170, 0.2);
+        .soh-detail-hint::before {
+            content: '';
+            flex-shrink: 0;
+            width: 14px;
+            height: 14px;
+            margin: 2px 8px 0 0;
+            background-color: var(--status-info);
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4M12 8h.01'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4M12 8h.01'/%3E%3C/svg%3E") center / contain no-repeat;
         }
-        .gpu-health-hint.optimal .hint-icon::before {
-            content: '●';
-            color: #00D4AA;
-        }
-        
-        .gpu-health-hint.heavy .hint-icon {
-            background: rgba(251, 191, 36, 0.2);
-        }
-        .gpu-health-hint.heavy .hint-icon::before {
-            content: '!';
-            color: #fbbf24;
-            font-weight: bold;
-        }
-        
-        .gpu-health-hint.critical {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-        }
-        .gpu-health-hint.critical .hint-icon {
-            background: rgba(239, 68, 68, 0.2);
-        }
-        .gpu-health-hint.critical .hint-icon::before {
-            content: '⚠';
-            color: #ef4444;
-        }
-        
-        .gpu-health-hint .hint-text {
-            color: var(--text-secondary);
-        }
-        
-        .gpu-health-hint.efficient .hint-text {
-            color: #86efac;
-        }
-        
-        .gpu-health-hint.critical .hint-text {
-            color: #fca5a5;
-        }
+        [dir="rtl"] .soh-detail-hint::before { margin: 2px 0 0 8px; }
 
         /* Request-scoped Android top snapshot */
         .process-monitor {
@@ -791,7 +801,7 @@
 <body>
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content">
@@ -929,7 +939,7 @@
                             </svg>
                             <span data-i18n="performance.soh_card_title">State of Health (SOH)</span>
                         </div>
-                        <button class="btn btn-danger" id="btnResetSoh" onclick="BYD.performance.resetSoh()" style="font-size:11px;padding:4px 10px;border-radius:6px;" data-i18n="performance.btn_reset">Reset</button>
+                        <button class="btn btn-danger-ghost" id="btnResetSoh" onclick="BYD.performance.resetSoh()" data-i18n="performance.btn_reset">Reset</button>
                     </div>
 
                     <!-- Live SOH headline -->
@@ -963,7 +973,7 @@
                         </div>
                     </div>
 
-                    <div id="sohDetailHint" style="padding:8px 12px;background:var(--bg-elevated);border-radius:6px;font-size:12px;color:var(--text-secondary);margin-top:10px;display:none;"></div>
+                    <div id="sohDetailHint" class="soh-detail-hint" style="display:none;"></div>
 
                     <!-- Frame-mismatch banner — surfaces when the daemon detects
                          peakObserved/nominal < 0.85 (PHEV, anchor stable). The
@@ -1414,9 +1424,9 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <script src="../shared/auth.js"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
-    <script src="../shared/performance.js?v=13"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/performance.js?v=14"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');

@@ -19,15 +19,15 @@ public final class DaemonLogPaths {
     // LinkedHashMap so the order is stable for "list available daemons" UIs.
     private static final Map<String, String> PATHS = new LinkedHashMap<>();
     static {
-        PATHS.put("camera",     com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cam_daemon.log"));
-        PATHS.put("accsentry",  com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.log"));
-        PATHS.put("sentry",     com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/sentry_daemon.log"));
-        PATHS.put("telegram",   com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegrambotdaemon.log"));
-        PATHS.put("cloudflared",com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cloudflared.log"));
-        PATHS.put("zrok",       com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok.log"));
-        PATHS.put("tailscale",  com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.tailscale/tailscale.log"));
+        PATHS.put("camera",     com.overdrive.app.util.ScratchRoot.path("cam_daemon.log"));
+        PATHS.put("accsentry",  com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.log"));
+        PATHS.put("sentry",     com.overdrive.app.util.ScratchRoot.path("sentry_daemon.log"));
+        PATHS.put("telegram",   com.overdrive.app.util.ScratchRoot.path("telegrambotdaemon.log"));
+        PATHS.put("cloudflared",com.overdrive.app.util.ScratchRoot.path("cloudflared.log"));
+        PATHS.put("zrok",       com.overdrive.app.util.ScratchRoot.path("zrok.log"));
+        PATHS.put("tailscale",  com.overdrive.app.util.ScratchRoot.path(".tailscale/tailscale.log"));
         PATHS.put("wireguard",  com.overdrive.app.wireguard.WireGuardPaths.LOG);
-        PATHS.put("singbox",    com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/singbox.log"));
+        PATHS.put("singbox",    com.overdrive.app.util.ScratchRoot.path("singbox.log"));
     }
 
     /** @return the log path for a daemon key, or null if unknown. */

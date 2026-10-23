@@ -42,7 +42,10 @@ public class SurveillanceIpcServer implements Runnable {
     // publication matters.
     private volatile ServerSocket serverSocket;
     private volatile boolean running = true;
-    
+
+    /** Consecutive bind failures, reset on a successful bind. */
+    private int bindFailures;
+
     // Cached thread pool (not fixed): persistent clients (IMU + GPS sidecars,
     // peer daemons) now hold a worker blocked in readLine() for the life of
     // their connection, so a fixed-8 pool could be saturated by a handful of
@@ -111,13 +114,19 @@ public class SurveillanceIpcServer implements Runnable {
             grants.setDaemon(true);
             grants.start();
         }
-        restartAccSentryForVehicleModeChange();
         try {
             new ProcessBuilder(
                     "am",
                     "start-foreground-service",
+                    "-a",
+                    com.overdrive.app.services.DaemonKeepaliveService
+                            .ACTION_VEHICLE_MODE_SYNC,
                     "-n",
-                    "com.overdrive.app/.services.DaemonKeepaliveService")
+                    "com.overdrive.app/.services.DaemonKeepaliveService",
+                    "--es",
+                    com.overdrive.app.services.DaemonKeepaliveService
+                            .EXTRA_ACTIVE_MODE,
+                    activeMode)
                     .start();
         } catch (Exception e) {
             logger.warn("Could not request app vehicle-mode sync: " + e.getMessage());
@@ -128,37 +137,6 @@ public class SurveillanceIpcServer implements Runnable {
         return "dilink5".equalsIgnoreCase(mode);
     }
 
-    private static void restartAccSentryForVehicleModeChange() {
-        Thread restart = new Thread(() -> {
-            String command =
-                    "if [ ! -x /data/local/tmp/start_acc_sentry.sh ] "
-                    + "|| [ -f /data/local/tmp/acc_sentry_daemon.disabled ] "
-                    + "|| [ -f /data/local/tmp/overdrive_parked_shutdown ]; then exit 0; fi; "
-                    + "PIDS=\"$(ps -A -o PID,NAME 2>/dev/null "
-                    + "| awk '$2==\"acc_sentry_daemon\" {print $1}')\"; "
-                    + "[ -z \"$PIDS\" ] && exit 0; "
-                    + "kill -9 $PIDS 2>/dev/null; sleep 3; "
-                    + "RUNNING=\"$(ps -A -o PID,NAME 2>/dev/null "
-                    + "| awk '$2==\"acc_sentry_daemon\" {print $1}')\"; "
-                    + "[ -n \"$RUNNING\" ] && exit 0; "
-                    + "nohup sh /data/local/tmp/start_acc_sentry.sh >/dev/null 2>&1 &";
-            try {
-                Process process = new ProcessBuilder("sh", "-c", command).start();
-                if (!process.waitFor(8, java.util.concurrent.TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                    logger.warn("ACC worker mode-sync restart timed out");
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            } catch (Exception failed) {
-                logger.warn("Could not restart ACC worker for vehicle-mode change: "
-                        + failed.getMessage());
-            }
-        }, "VehicleModeAccRestart");
-        restart.setDaemon(true);
-        restart.start();
-    }
-    
     public SurveillanceIpcServer(int port) {
         this.port = port;
     }
@@ -190,6 +168,7 @@ public class SurveillanceIpcServer implements Runnable {
                 ss.bind(new java.net.InetSocketAddress(
                         InetAddress.getByName("127.0.0.1"), port), 50);
                 serverSocket = ss;
+                bindFailures = 0;
                 logger.info("Surveillance IPC server listening on 127.0.0.1:" + port);
 
                 while (running && !serverSocket.isClosed()) {
@@ -237,6 +216,10 @@ public class SurveillanceIpcServer implements Runnable {
                 // plus this backoff comfortably exceeds localhost TIME_WAIT.
                 if (running) {
                     logger.warn("IPC port " + port + " in use — retrying in 3s: " + be.getMessage());
+                    // A second failure is not TIME_WAIT — name the holder once per episode.
+                    if (++bindFailures == 2) {
+                        logger.warn("IPC port " + port + " held by " + PortOwner.describe(port));
+                    }
                     sleepQuietly(3000);
                 }
             } catch (Exception e) {
@@ -417,16 +400,35 @@ public class SurveillanceIpcServer implements Runnable {
                     if (request.optInt("protocol", -1) == 1 && data != null) {
                         JSONArray encodedDoorStates = request.optJSONArray("doorStates");
                         int[] doorStates = null;
-                        if (encodedDoorStates != null) {
+                        if (encodedDoorStates != null && encodedDoorStates.length() == 7) {
                             doorStates = new int[encodedDoorStates.length()];
                             for (int i = 0; i < doorStates.length; i++) {
-                                doorStates[i] = encodedDoorStates.optInt(
-                                        i,
-                                        com.overdrive.app.byd.BydVehicleData.UNAVAILABLE);
+                                Object encoded = encodedDoorStates.opt(i);
+                                long value = exactDoorReadValue(encoded, -1L);
+                                doorStates[i] = value == 0L || value == 1L
+                                        ? (int) value
+                                        : com.overdrive.app.byd.BydVehicleData.UNAVAILABLE;
+                            }
+                        }
+                        JSONArray encodedDoorReadTimes =
+                                request.optJSONArray("doorStatesObservedElapsedMs");
+                        long[] doorReadTimes = null;
+                        if (encodedDoorReadTimes != null && encodedDoorReadTimes.length() == 7) {
+                            doorReadTimes = new long[7];
+                            for (int i = 0; i < doorReadTimes.length; i++) {
+                                doorReadTimes[i] = exactDoorReadValue(
+                                        encodedDoorReadTimes.opt(i), 0L);
                             }
                         }
                         com.overdrive.app.byd.BydVehicleData snapshot =
                                 com.overdrive.app.byd.BydVehicleData.fromJson(data);
+                        // Stage 0 diagnostic echo; never allowed to disturb the telemetry path.
+                        try {
+                            com.overdrive.app.byd.BydDataCollector.getInstance()
+                                    .noteDiLink5ProducerLockDiag(request.opt("lockDiag"));
+                        } catch (Throwable ignored) {
+                            // diagnostics only
+                        }
                         com.overdrive.app.byd.BydDataCollector.getInstance()
                                 .acceptDiLink5Telemetry(
                                         snapshot,
@@ -442,7 +444,17 @@ public class SurveillanceIpcServer implements Runnable {
                                                 "doorLockState",
                                                 com.overdrive.app.byd.BydDataCollector
                                                         .DOOR_STATE_INVALID),
-                                        doorStates);
+                                        request.optLong(
+                                                "doorLockObservedElapsedMs",
+                                                0L),
+                                        doorStates,
+                                        doorReadTimes,
+                                        // Per-rail lock readings (single ingress): a malformed
+                                        // entry is dropped by the decoder, a wholly unusable or
+                                        // absent array decodes to null -> legacy pair.
+                                        com.overdrive.app.byd.BydDataCollector
+                                                .decodeDiLink5LockReadings(
+                                                        request.optJSONArray("lockReadings")));
                     }
                     return null;
                 }
@@ -481,18 +493,27 @@ public class SurveillanceIpcServer implements Runnable {
                         break;
                     }
                     if (!accOn) {
-                        CameraDaemon.enableSurveillance();   // fires OEM recalc
-                        logger.info("Surveillance started via Telegram IPC");
+                        // Arm off this thread: a cold pipeline start can far outlast the
+                        // bot's 5 s reply wait, which it reports as a failed /start.
+                        new Thread(() -> {
+                            try {
+                                CameraDaemon.enableSurveillance();   // fires OEM recalc
+                            } catch (Throwable t) {
+                                logger.warn("Telegram surveillance arm failed: " + t.getMessage());
+                            }
+                        }, "TelegramSurveillanceArm").start();
+                        logger.info("Surveillance arm dispatched via Telegram IPC");
                     } else {
                         logger.info("Surveillance preference saved via Telegram — will activate on ACC OFF");
                         // OEM resolver reads isSurveillanceEnabled into survSuppressed
                         try { com.overdrive.app.server.OemDashcamApiHandler.scheduleLifecycleRecalc(); }
                         catch (Throwable ignored) {}
                     }
+                    boolean deferred = accOn || !CameraDaemon.isAccOffAdmitted();
                     response.put("success", true);
                     response.put("enabled", true);
-                    response.put("deferred", accOn);
-                    response.put("message", accOn
+                    response.put("deferred", deferred);
+                    response.put("message", deferred
                             ? "Surveillance will start when the vehicle is next turned off"
                             : "Surveillance enabled");
                     break;
@@ -523,6 +544,44 @@ public class SurveillanceIpcServer implements Runnable {
                     break;
                 }
                     
+                case "POWER_NOTICE": {
+                    // A battery protection acted in AccSentryDaemon; publish it here, where the
+                    // notification sinks live. Only the two known kinds are accepted.
+                    String kind = request.optString("kind", "");
+                    String detail = request.optString("detail", "");
+                    String title;
+                    String body;
+                    if (com.overdrive.app.power.PowerNotice.KIND_LOW_12V_STOP.equals(kind)) {
+                        title = "Sentry paused: 12V battery low";
+                        body = "Sentry stopped to protect the 12V battery. It resumes when the battery recovers.";
+                    } else if (com.overdrive.app.power.PowerNotice.KIND_SOC_CUTOFF.equals(kind)) {
+                        title = "Sentry stopped: low battery";
+                        body = "Overdrive stopped to protect the drive battery"
+                                + (detail.isEmpty() ? "." : " — " + detail + ".")
+                                + " It stays off until the car is next switched on.";
+                    } else {
+                        response.put("success", false);
+                        response.put("error", "unknown notice kind");
+                        break;
+                    }
+                    try {
+                        org.json.JSONObject data = new org.json.JSONObject();
+                        data.put("kind", kind);
+                        if (!detail.isEmpty()) data.put("detail", detail);
+                        com.overdrive.app.notifications.NotificationBus.get().publish(
+                                new com.overdrive.app.notifications.NotificationEvent(
+                                        "vehicle.health.battery",
+                                        com.overdrive.app.notifications.NotificationEvent.Severity.WARN,
+                                        title, body, "power-" + kind,
+                                        "/surveillance.html", data));
+                        response.put("success", true);
+                    } catch (Throwable t) {
+                        response.put("success", false);
+                        response.put("error", String.valueOf(t.getMessage()));
+                    }
+                    break;
+                }
+
                 case "STATUS": {
                     // Get surveillance status (from Telegram /status command)
                     // Read from persisted config (not in-memory flag which can get stale)
@@ -793,11 +852,7 @@ public class SurveillanceIpcServer implements Runnable {
                     JSONObject zoneData = request.optJSONObject("zone");
                     if (zoneData != null) {
                         com.overdrive.app.surveillance.SafeLocation zone =
-                            com.overdrive.app.surveillance.SafeLocationManager.getInstance().addZone(
-                                zoneData.optString("name", "Unnamed"),
-                                zoneData.optDouble("lat", 0),
-                                zoneData.optDouble("lng", 0),
-                                zoneData.optInt("radiusM", 150));
+                            com.overdrive.app.surveillance.SafeLocationManager.getInstance().addZone(zoneData);
                         response.put("success", zone != null);
                         if (zone != null) response.put("zone", zone.toJson());
                         else response.put("error", Messages.get("errors.zones_max_reached", 10));
@@ -2633,7 +2688,7 @@ public class SurveillanceIpcServer implements Runnable {
             r.put("ts", System.currentTimeMillis());
         } catch (Exception ignored) {}
         try (java.io.FileWriter fw = new java.io.FileWriter(
-                com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update_progress.json"))) {
+                com.overdrive.app.util.ScratchRoot.path("overdrive_update_progress.json"))) {
             fw.write(r.toString());
         } catch (Exception ignored) {}
     }
@@ -2693,7 +2748,7 @@ public class SurveillanceIpcServer implements Runnable {
      */
     private void handleGetUpdateProgress(JSONObject response) throws Exception {
         response.put("success", true);
-        java.io.File f = new java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update_progress.json"));
+        java.io.File f = new java.io.File(com.overdrive.app.util.ScratchRoot.path("overdrive_update_progress.json"));
         if (!f.exists()) {
             response.put("phase", "idle");
             response.put("percent", -1);
@@ -2768,6 +2823,15 @@ public class SurveillanceIpcServer implements Runnable {
             response.put("daemon", daemon);
         } else {
             response.put("error", res.error != null ? res.error : "upload failed");
+        }
+    }
+
+    private static long exactDoorReadValue(Object encoded, long unavailable) {
+        if (!(encoded instanceof Number)) return unavailable;
+        try {
+            return new java.math.BigDecimal(encoded.toString()).longValueExact();
+        } catch (NumberFormatException | ArithmeticException malformed) {
+            return unavailable;
         }
     }
 

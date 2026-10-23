@@ -137,7 +137,7 @@
     "area_rear_right": "右後",
     "area_hood": "子的子",
     "area_trunk": "箱子",
-    "area_fuel_cap": "燃料封鎖",
+    "area_fuel_cap": "油箱蓋",
     "area_door_n": "門 {0}",
     "soh_frame_mismatch_title": "檢視電池容量需求",
     "soh_frame_mismatch_body": "汽車報告 {0} kWh充電, 但包裝容量設定為 {1} kWh.",
@@ -180,8 +180,8 @@
     },
     "proximity": {
       "trigger": {
-        "red": "紅燈",
-        "yellow": "黃燈"
+        "red": "紅色",
+        "yellow": "黃色"
       }
     },
     "common": {
@@ -236,7 +236,9 @@
       "check_update": "⬆️ 檢查更新",
       "backup": "💾 備份",
       "stop": "⛔ 停止",
-      "start": "✅ 啟動"
+      "start": "✅ 啟動",
+      "tunnel_switch": "🔁 切換到 {0}",
+      "tunnel_run_both": "➕ 同時執行"
     },
     "daemons": {
       "title": "🤖 *守護程式*\n\n"
@@ -281,7 +283,8 @@
       "status_running": "{0}：✅ 執行中",
       "status_stopped": "{0}：⛔ 已停止",
       "action_usage": "用法：/daemon {0} start|stop|status",
-      "tunnel_url": "🌐 *隧道 URL*\n{0}"
+      "tunnel_url": "🌐 *隧道 URL*\n{0}",
+      "tunnel_conflict": "⚠️ {0} 已在執行。\n\n要切換到 {1}（這會停止 {0}），還是同時執行兩個隧道？"
     },
     "events": {
       "invalid_hours": "⚠️ 小時數無效。用法：`/events [hours] [page]`\n範例：`/events 12 2`",
@@ -680,7 +683,7 @@
     "set_front_defrost_description": "開啟或關閉前擋風玻璃除霜/除霧。車輛斷電時此控制無法運作。",
     "set_rear_defrost": "後擋除霧",
     "set_rear_defrost_description": "開啟或關閉後擋風玻璃除霜/除霧。車輛斷電時此控制無法運作。",
-    "set_recirculation": "空氣循環",
+    "set_recirculation": "內循環模式",
     "set_recirculation_description": "在車內空氣循環與引入車外新鮮空氣之間切換進氣方式。",
     "air_intake": "進氣",
     "recirculate": "內循環",
@@ -718,12 +721,12 @@
     "open_windows": "開啟車窗",
     "open_windows_description": "將車窗開啟至特定百分比。位置可能有最多 5% 的誤差。車輛熄火時此控制無法運作。",
     "window_preset": "設定車窗位置",
-    "window_preset_description": "將車窗移至預設位置（Closed、Vent、Half、Full）。位置可能有最多 5% 的誤差。車輛熄火時此控制無法運作。",
+    "window_preset_description": "將車窗移動至預設位置 (關閉、通風、半開、全開)。實際位置可能會有高達 5% 的誤差。當車輛電源關閉時，此控制功能將無法運作",
     "window_position": "位置",
     "window_closed": "已關閉",
     "window_vent": "通風",
-    "window_half": "一半",
-    "window_full": "滿",
+    "window_half": "半開",
+    "window_full": "全開",
     "set_surveillance": "控制監控",
     "set_surveillance_description": "開啟或關閉監控。若車輛目前已啟動，將在下次熄火時生效。",
     "set_recording": "控制錄製模式",
@@ -863,11 +866,12 @@
     "blind_spot_description": "雷達盲點警示是否正對某一側發出警告。涵蓋盲點、變換車道與橫向車流警示。警示相當短暫，因此訊號會在最後一次警告後再維持開啟數秒。",
     "side_left": "左側",
     "side_right": "右側",
+    "side_any": "任一側",
     "tyre_pressure_warn": "胎壓警告",
-    "tyre_pressure_warn_description": "四個輪胎中最嚴重的胎壓狀態：normal、under-pressure 或 over-pressure。當任一輪的胎壓警告變更時觸發。",
+    "tyre_pressure_warn_description": "所有輪胎中最壞的胎壓警告狀態：正常、胎壓過低或胎壓過高。當任何一個車輪的胎壓警告發生變更時觸發",
     "tyre_leak_warn": "輪胎漏氣警告",
-    "tyre_leak_warn_description": "四個輪胎中最嚴重的漏氣狀態：normal、slow leak 或 fast leak。當任一輪的漏氣警告變更時觸發。",
-    "tyre_normal": "一般",
+    "tyre_leak_warn_description": "所有輪胎中最壞的漏氣狀態：正常、慢速漏氣或快速漏氣。當任何一個車輪的漏氣警告發生變更時觸發",
+    "tyre_normal": "正常",
     "tyre_under": "胎壓過低",
     "tyre_over": "胎壓過高",
     "tyre_leak_slow": "緩慢漏氣",
@@ -885,7 +889,7 @@
     "aux_12v_battery": "12V 電池",
     "aux_12v_battery_description": "輔助 12V 電池狀態 — 當回報 low 或 normal 時觸發。",
     "battery_low_state": "低",
-    "battery_normal_state": "一般",
+    "battery_normal_state": "正常",
     "fuel_level": "燃油量",
     "fuel_level_description": "油箱油量百分比（僅 PHEV）。",
     "pm25": "空氣品質 (PM2.5)",

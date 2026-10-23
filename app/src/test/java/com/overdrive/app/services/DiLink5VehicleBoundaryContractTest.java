@@ -121,8 +121,13 @@ public class DiLink5VehicleBoundaryContractTest {
         String cast = readRepositoryFile(
                 "app/src/main/java/com/overdrive/app/launcher/"
                         + "DiLink5ClusterCast.kt");
+        // The DI5 backend is gated on the CLUSTER TRANSPORT (dilink5 camera
+        // mode, config override, or DiLink 5 firmware identity) — not on the
+        // camera mode alone, which left DiLink 5.0 units without the QCarCam
+        // library on the legacy AutoContainer protocol their firmware rejects.
         assertTrue(cast.contains(
-                "if (!DiLink5Platform.isSelected()) return false"));
+                "if (!ClusterTransport.isDiLink5()) return false"));
+        assertFalse(cast.contains("DiLink5Platform.isSelected()"));
         assertTrue(cast.contains(
                 "shared_fission_bg_XDJAScreenProjection_0"));
         assertTrue(cast.contains(
@@ -188,6 +193,32 @@ public class DiLink5VehicleBoundaryContractTest {
         assertTrue(cast.contains("scheduleBootRecoveryRetry("));
         assertTrue(cast.contains("recoveryRetryDelayMs("));
         assertTrue(cast.contains("AppLauncher.forceStopPackage("));
+        // OEM takeover handling (2026-09-23 DiLink 5.0 Atto 3: com.byd.sr re-fronts
+        // on shared _0): the reclaimed surface is remembered, the sibling shared
+        // surface is tried, the survivor is learned, and both the failed-start and
+        // stop paths fall back to a force-stop instead of stranding the state
+        // machine in "cleanup incomplete; restart required".
+        assertTrue(cast.contains("markDisplayReclaimed("));
+        assertTrue(cast.contains("resolveAlternativeSharedDisplay("));
+        assertTrue(cast.contains("rememberStableSharedDisplay("));
+        assertTrue(cast.contains("forceStopAndConfirmAbsent("));
+        assertTrue(cast.contains("recovering unresolved cleanup state before start"));
+        assertTrue(cast.contains("normalized == \"com.byd.sr\""));
+        // Flicker bound: a repeat OEM re-front after one correction ends the
+        // startup fight immediately (no second VERIFY attempt, no force-restart)
+        // and routes straight to the shared-display fallback.
+        assertTrue(cast.contains("oemReclaimedAfterCorrection"));
+        assertTrue(cast.contains("surface belongs to the OEM"));
+        String rehome = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/launcher/AppLauncher.java");
+        assertTrue(rehome.contains(
+                "ClusterFreeformWindow.moveTaskToDefaultDisplayBackground(task)"));
+        // Live-task truth beats the dump parser: a root task's stale
+        // mLastPausedActivity reference must neither block absence confirmation
+        // nor be offered as a move target.
+        assertTrue(rehome.contains(
+                "ClusterFreeformWindow.liveTaskIdForPackage(pkg)"));
+        assertTrue(rehome.contains("isTaskStateReferenceLine(line)"));
         assertFalse(cast.contains("getRealDisplay"));
         assertTrue(cast.contains(
                 "OEM shared projection display unavailable on trinket"));
@@ -224,7 +255,7 @@ public class DiLink5VehicleBoundaryContractTest {
                 "private static DiLink5EndpointResult "
                         + "sendDiLink5InfoShell", method);
         String gate = controller.substring(method, next);
-        assertTrue(gate.contains("DiLink5Platform.isSelected()"));
+        assertTrue(gate.contains("ClusterTransport.isDiLink5()"));
         assertTrue(gate.contains("isAllowedDiLink5ContainerOpcode(op)"));
         assertTrue(gate.contains("DiLink5CommandResult.REJECTED"));
         assertTrue(gate.contains("DiLink5CommandResult.INDETERMINATE"));
@@ -313,7 +344,7 @@ public class DiLink5VehicleBoundaryContractTest {
         assertTrue(legacyProjection.contains(
                 "BOOT_RESTORE_LOCK"));
         assertTrue(legacyProjection.contains(
-                ".isSelected()\n"
+                ".isDiLink5()\n"
                         + "                        && "
                         + "!allowDiLink5RecoveryFence"));
         assertTrue(legacyProjection.contains(
@@ -441,11 +472,24 @@ public class DiLink5VehicleBoundaryContractTest {
                 "static boolean moveTaskToDisplay("));
         assertTrue(freeform.contains(
                 "static boolean focusTask("));
+        // Android 12 head-unit re-home: single task, background, standard
+        // fullscreen root only (never a whole root task with siblings).
+        assertTrue(freeform.contains(
+                "static boolean moveTaskToDefaultDisplayBackground("));
+        assertTrue(freeform.contains("\"moveTaskToRootTask\", \"moveTaskToStack\""));
+        assertTrue(freeform.contains("method.invoke(svc, taskId, hostRoot, false);"));
+        // Live running-task lookup (no stale mLastPausedActivity references) and
+        // root-task-first display resolution (RunningTaskInfo.displayId reported 0
+        // for a task resumed on the shared display, causing spurious relaunches).
+        assertTrue(freeform.contains(
+                "static int liveTaskIdForPackage(String pkg)"));
+        assertTrue(freeform.contains(
+                "int viaRoots = displayIdViaRootTasks(svc, taskId);"));
 
         String daemon = readRepositoryFile(
                 "app/src/main/java/com/overdrive/app/daemon/CameraDaemon.java");
         assertTrue(daemon.contains(
-                "20260922-di5-mcupowerhold-frozenfeed-1"));
+                "20260925-di5-acc-authority-heartbeat-1"));
         assertOrdered(
                 daemon,
                 "DiLink5ClusterCast",

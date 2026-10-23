@@ -48,38 +48,15 @@ public final class BydFeatureIds {
         "Bodywork.BODYWORK_LUGGAGE_DOOR", 0x2940001A);
     public static final int BODYWORK_FUEL_CAP = resolveOrFallback(
         "Bodywork.BODYWORK_FUEL_TANK_CAP", 0x4FB00016);
-
-    /**
-     * Unlock SOURCE, not lock state. Fires value 1 when the car is unlocked with the
-     * physical key fob BUTTON, and stays silent for keyless/passive door-handle entry —
-     * verified on-car 2026-08-31 by diffing every HAL event across four real unlocks
-     *. Latches ~240ms then clears: event-only, polling misses it.
-     *
-     * <p>Values are platform-conditional in BYDAutoFeatureIds (isCanFD / isToyota),
-     * hence resolveOrFallback rather than a bare constant. Fallbacks are the isCanFD
-     * values observed live on this car.
-     */
+    /** Key-fob unlock button: generic event channel only, latches 1 for ~240 ms. */
     public static final int BODYWORK_REMOTE_CONTROL_UNLOCK = resolveOrFallback(
         "BODYWORK_REMOTE_CONTROL_UNLOCK", 402653192);
-    public static final int BODYWORK_REMOTE_CONTROL_LOCK = resolveOrFallback(
-        "BODYWORK_REMOTE_CONTROL_LOCK", 402653193);
-    /**
-     * NFC key-card presented/removed state. Also fires when LOCKING with the card, so
-     * a fresh event alone doesn't distinguish lock from unlock — only used as an
-     * unlock-source fallback when a genuine unlock edge has just been observed by
-     * some other means. From CarSetting's Body.java (decompiled).
-     */
-    public static final int BODYWORK_CARD_NFC_KEY_STATE = resolveOrFallback(
-        "BODYWORK_CARD_NFC_KEY_STATE", 0x40334013);
-    /**
-     * Driver seat horizontal position (double, 0..127.5). Polled at ~100ms while armed
-     * to detect easy-entry motion settling — measured on-car 2026-09-09: a
-     * real easy-entry retract sweep runs ~1.9s with no inter-sample gap above ~95ms.
-     * Same id {@link BodyworkSeatProbe} uses as the READ id for this axis; kept as its
-     * own named constant here since it is read on a tight poll loop, not the probe's
-     * one-shot multi-id JSON report.
-     */
-    public static final int BODYWORK_SEAT_HORIZONTAL = 988807176;
+    /** Central four-door write on the bodywork device (1001): 1 unlocks. */
+    public static final int BODYWORK_FOUR_DOOR_SET = resolveOrFallback(
+        "BODYWORK_FOUR_DOOR_SET", 1276141590);
+    /** Driver seat horizontal position (double, 0..127.5). */
+    public static final int BODYWORK_SEAT_HORIZONTAL = resolveOrFallback(
+        "BODY_DRIVER_SEAT_HORIZONTAL_POSITION", 988807176);
 
     // ==================== ENGINE ====================
     /** Engine power kW */
@@ -289,7 +266,7 @@ public final class BydFeatureIds {
     // set(int[], BYDAutoEventValue) — the per-id set(type,id,value) form is
     // accepted-then-dropped on Di 3.0. Numeric fallbacks captured live from a
     // Sealion 6 DM-i (0x2CF0A0xx / 0x2CF0B0xx families); name resolution keeps
-    // other trims correct. Names/values match the OD Charge companion technique.
+    // other trims correct.
     public static final int CHARGING_SCHEDULE_START_TIME_YEAR_SET =
             resolveOrFallback("Charging.CHARGING_SCHEDULE_START_TIME_YEAR_SET", 0x2CF0A010);
     public static final int CHARGING_SCHEDULE_START_TIME_MONTH_SET =
@@ -310,7 +287,7 @@ public final class BydFeatureIds {
             resolveOrFallback("Charging.CHARGING_SCHEDULE_END_TIME_HOUR_SET", 0x2CF0B028);
     public static final int CHARGING_SCHEDULE_END_TIME_MINUTE_SET =
             resolveOrFallback("Charging.CHARGING_SCHEDULE_END_TIME_MINUTE_SET", 0x2CF0B030);
-    // Appointment family — OD Charge writes this first, then the schedule family.
+    // Appointment family — written first; the schedule family is the fallback.
     public static final int CHARGING_APPOINTMENT_START_TIME_YEAR_SET =
             resolveOrFallback("Charging.CHARGING_APPOINTMENT_START_TIME_YEAR_SET", 0x4C210010);
     public static final int CHARGING_APPOINTMENT_START_TIME_MONTH_SET =
@@ -331,15 +308,13 @@ public final class BydFeatureIds {
             resolveOrFallback("Charging.CHARGING_APPOINTMENT_END_TIME_HOUR_SET", 0x4C211028);
     public static final int CHARGING_APPOINTMENT_END_TIME_MINUTE_SET =
             resolveOrFallback("Charging.CHARGING_APPOINTMENT_END_TIME_MINUTE_SET", 0x4C211030);
-    // Enable flag (written single) and read-back state ids for the short verify.
+    // Enable flag (written single) and the schedule-state id logged after each write.
     // No numeric literal captured for the enable flag; name resolution covers the
-    // trims that publish it, and an UNRESOLVED id is skipped by the write helper.
+    // trims that publish it, and an UNRESOLVED id makes the local arm refuse up front.
     public static final int CHARGING_TIMING_STATE_SET =
             resolveOrFallback("Charging.CHARGING_TIMING_STATE_SET", UNRESOLVED_ID);
     public static final int CHARGING_SCHEDULE_STATE =
             resolveOrFallback("Charging.CHARGING_SCHEDULE_STATE", 0x4C201010);
-    public static final int CHARGING_SCHEDULE_ENABLE_STATE =
-            resolveOrFallback("Charging.CHARGING_SCHEDULE_ENABLE_STATE", 0x0550000E);
 
     // ==================== ENGINE (EXTENDED) ====================
     public static final int ENGINE_SPEED = resolveOrFallback("Engine.ENGINE_SPEED", 339738642);
@@ -479,7 +454,8 @@ public final class BydFeatureIds {
 
     // ── Blind-spot / lane-change / cross-traffic WARNINGS ────────────────
     // These are the radar ALERT signals (is a vehicle in the blind spot right
-    // now), NOT the BSD on/off switch (ADAS_BSD_STATE below).
+    // now). ADAS_BSD_STATE (below) is the BSD state: 0 off, 1 on, and on DiLink 3.0
+    // it reads 2 while a vehicle is in a blind spot, without saying which side.
     //
     // Two DIFFERENT value encodings — mixing them up breaks the feature:
     //   • The dedicated FL/FR alarms are LEVELS: >= 1 means alerting.
@@ -498,6 +474,7 @@ public final class BydFeatureIds {
      *  on-device, so it is NOT used as a gate — a missing/odd value must never
      *  suppress a real alert. Declared for probing only. */
     public static final int ADAS_HAS_BSD = resolveOrFallback("Adas.ADAS_HAS_BSD", 1098907648);
+    public static final int ADAS_BSD_STATE = resolveOrFallback("Adas.ADAS_BSD_STATE", 1098907656);
 
     // ==================== SENSOR ====================
     public static final int SENSOR_AUTO_SLOPE = resolveOrFallback("Sensor.SENSOR_AUTO_SLOPE", 573571116);

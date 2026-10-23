@@ -574,7 +574,8 @@ public class SurveillanceEngineGpu {
 
     // MOTION THROTTLING: Process motion at 10 FPS max (saves 66% CPU vs 30 FPS)
     private static final long MOTION_PROCESS_INTERVAL_MS = 100;  // 10 FPS
-    private long lastMotionProcessTime = 0;
+    private final SyncFrameRateLimiter motionFrameLimiter = new SyncFrameRateLimiter(
+            android.os.SystemClock::elapsedRealtime, MOTION_PROCESS_INTERVAL_MS);
     
     // ROI mask (null = full frame, otherwise byte array with 0/1 values)
     private byte[] roiMask = null;
@@ -591,8 +592,8 @@ public class SurveillanceEngineGpu {
     //
     // The per-quadrant COLS/ROWS/TOTAL that used to live here (20×15=300, derived
     // from a 640×480 frame) were dead and wrong: the live pipeline grids a 320×240
-    // quadrant as 10×7=70 (MotionPipelineV2.GRID_COLS/GRID_ROWS/TOTAL_BLOCKS,
-    // matching native). Nothing indexed blockConfidence with them — every real
+    // quadrant using MotionPipelineV2.GRID_COLS/GRID_ROWS/TOTAL_BLOCKS,
+    // matching native geometry. Nothing indexed blockConfidence with them — every real
     // consumer already qualifies with MotionPipelineV2 — but getTotalBlocks()
     // returned the 300, publishing a wrong block count over /api/surveillance
     // config. Removed rather than corrected so a future reader cannot pick the
@@ -687,8 +688,8 @@ public class SurveillanceEngineGpu {
     // Monotonic twin used by recording continuation and event evidence carry.
     private volatile long lastPersonConfirmationElapsedMs = 0;
     
-    // Detection mode
-    private boolean useObjectDetection = false;
+    // Detection mode. volatile: a late YOLO load publishes it from a non-frame thread.
+    private volatile boolean useObjectDetection = false;
     // FIX (A8/B3): volatile so the AI executor sees writes from the UI thread
     // without a torn read. The lambda still snapshots into a local before use.
     private volatile YoloDetector yoloDetector = null;
@@ -696,6 +697,10 @@ public class SurveillanceEngineGpu {
     // when the user re-enables object detection after disabling all classes.
     private android.content.Context yoloContext = null;
     private android.content.res.AssetManager yoloAssetManager = null;
+    // Serializes late YOLO loads against release(); yoloReleased stops a load
+    // finishing after release() from leaking a native interpreter.
+    private final Object yoloLifecycleLock = new Object();
+    private boolean yoloReleased = false;
     
     // Object detection filters (SOTA: Quadrant-relative height filter in YoloDetector)
     private float minObjectSize = 0.12f;  // 12% of QUADRANT height (~8m for person in 2x2 grid)
@@ -754,6 +759,93 @@ public class SurveillanceEngineGpu {
     // is genuinely close doubles the classification chances in that short
     // window. Scoped to close-zone motion so steady-state CPU is unchanged.
     private static final long AI_COOLDOWN_CLOSE_MS = 250;
+
+    // LIGHT-CHANGE CHECK: a camera whose motion the >25% flash filter discarded
+    // gets an AI look anyway — a close car with headlights on reads as that burst,
+    // and early AI only looks at cameras with surviving motion. Frame thread only.
+    private static final long LIGHT_PROBE_PENDING_MS = 1500;   // kill stays probe-able this long
+    private static final long LIGHT_PROBE_MIN_GAP_MS = 3000;   // per camera
+    // Per camera, so a flickering light on one camera can't starve the others.
+    private static final int LIGHT_PROBE_BUDGET = 30;          // looks per window
+    private static final long LIGHT_PROBE_BUDGET_WINDOW_MS = 10 * 60 * 1000L;
+    // AI is the only evidence on this path — same bar as the baseline-refresh person trigger.
+    private static final float LIGHT_PROBE_TRIGGER_MIN_CONF = 0.50f;
+    // One look can't tell a passing car from a parked one the light just lit up
+    // (unlearned parkers are common), so a vehicle counts only when a later look
+    // shows the same-size box shifted sideways. YOLO's tall/short boxes of one parked
+    // car keep cx within ~0.01; a partly-lit one shrinks, which the size test rejects.
+    // Looks ~0.3-0.7 s apart would need a fast car to shift 0.08; spacing them gives a
+    // parking-speed car the time. Also leaves the lane to motion AI between looks.
+    private static final long LIGHT_PROBE_FOLLOWUP_GAP_MS = 1000;  // after the previous look
+    private static final long LIGHT_PROBE_FOLLOWUP_MS = 2000;  // a due look may wait this long
+    private static final long LIGHT_PROBE_CHAIN_MS = 4500;     // first look → last comparable look
+    // A person hit's spot doesn't record again this soon — a static "person" (glare on a
+    // parked car) would otherwise re-record on every sweep.
+    private static final long LIGHT_PROBE_PERSON_REPEAT_MS = 5 * 60 * 1000L;
+    private static final float LIGHT_PROBE_MIN_SHIFT = 0.08f;       // cx, fraction of camera width
+    private static final float LIGHT_PROBE_MAX_WIDTH_RATIO = 1.25f; // same car across looks
+    // A third look measured from the first gives a slow car (~1 m/s) enough shift.
+    private static final int LIGHT_PROBE_MAX_LOOKS = 3;
+    private final long[] lightKillSeenMs = new long[MotionPipelineV2.NUM_QUADRANTS];
+    private final int[] lightKillBlocks = new int[MotionPipelineV2.NUM_QUADRANTS];
+    private final long[] lastLightProbeMs = new long[MotionPipelineV2.NUM_QUADRANTS];
+    // Per-camera look timestamps (created on first use).
+    @SuppressWarnings("unchecked")
+    private final java.util.ArrayDeque<Long>[] lightProbeTimes =
+            new java.util.ArrayDeque[MotionPipelineV2.NUM_QUADRANTS];
+    private final long[] lightProbeBudgetLoggedMs = new long[MotionPipelineV2.NUM_QUADRANTS];
+    // Second-look request, written by the AI lambda, consumed by the frame thread.
+    private final java.util.concurrent.atomic.AtomicLongArray lightProbeFollowUpAt =
+            new java.util.concurrent.atomic.AtomicLongArray(MotionPipelineV2.NUM_QUADRANTS);
+    // Chain positions per camera, and recent person-hit spots (a small ring per camera).
+    // aiExecutor only; validated by epoch + age.
+    private final LightProbeSighting[] lightProbeSighting =
+            new LightProbeSighting[MotionPipelineV2.NUM_QUADRANTS];
+    private static final int LIGHT_PROBE_PERSON_SPOTS = 4;
+    private final LightProbeSpot[][] lightProbePersonSpots =
+            new LightProbeSpot[MotionPipelineV2.NUM_QUADRANTS][LIGHT_PROBE_PERSON_SPOTS];
+    private final int[] lightProbePersonSpotNext = new int[MotionPipelineV2.NUM_QUADRANTS];
+    // Frame thread: the last AI dispatch was a light-change look, so the next slot goes
+    // to motion AI when it has work (a chain must not starve another camera's subject).
+    private boolean lastAiDispatchWasProbe = false;
+
+    private static final class LightProbeSighting {
+        final float[] cx;
+        final float[] w;
+        final int[] group;
+        final boolean[] fromMover;  // position was a faint mover's — it doesn't mark "already seen"
+        final long atElapsedMs;     // chain start
+        final int epoch;
+        final int looks;            // looks taken in this chain so far
+
+        LightProbeSighting(float[] cx, float[] w, int[] group, boolean[] fromMover,
+                           long atElapsedMs, int epoch, int looks) {
+            this.cx = cx;
+            this.w = w;
+            this.group = group;
+            this.fromMover = fromMover;
+            this.atElapsedMs = atElapsedMs;
+            this.epoch = epoch;
+            this.looks = looks;
+        }
+    }
+
+    private static final class LightProbeSpot {
+        final float cx;
+        final long atElapsedMs;
+        final int epoch;
+
+        LightProbeSpot(float cx, long atElapsedMs, int epoch) {
+            this.cx = cx;
+            this.atElapsedMs = atElapsedMs;
+            this.epoch = epoch;
+        }
+    }
+
+    // Java mirror of the per-camera drawn detection area (80 blocks, null = whole
+    // view) — native enforces it on motion only, and a flash-killed camera has none.
+    private final java.util.concurrent.atomic.AtomicReferenceArray<byte[]> quadrantRoiMirror =
+            new java.util.concurrent.atomic.AtomicReferenceArray<>(MotionPipelineV2.NUM_QUADRANTS);
 
     // --- SOTA FIX: Persistent Resources (Eliminates GC Stutter) ---
     // 1. Reusable Buffer: Prevents ~900KB allocation per frame
@@ -1657,6 +1749,15 @@ public class SurveillanceEngineGpu {
     
     // Output directory
     private File eventOutputDir;
+
+    // A mounted card returning EIO on every open made each event start fail and retry
+    // every tick for hours (log_NPEYZRMQ). StorageManager.reportWriteFault latches such
+    // a card so clips resolve to internal; refused starts back off 1 s → 30 s.
+    private static final long EVENT_CLIP_RESERVE_BYTES = 100L * 1024 * 1024;
+    private static final long EVENT_START_RETRY_BASE_MS = 1000;
+    private static final long EVENT_START_RETRY_MAX_MS = 30_000;
+    private volatile int eventStartRefusals = 0;
+    private volatile long eventStartRetryAtMs = 0;          // elapsedRealtime
     // volatile: read by main render thread (publishMotionFinal,
     // sendFinalTelegramNotification) and written by the encoder drainer
     // thread (segment listener at rotation time). Without this, the main
@@ -2301,10 +2402,9 @@ public class SurveillanceEngineGpu {
             }
             
             // MOTION THROTTLING: Skip frames to achieve 10 FPS (saves 66% CPU)
-            if (now - lastMotionProcessTime < MOTION_PROCESS_INTERVAL_MS) {
+            if (!motionFrameLimiter.tryAcquire()) {
                 return;
             }
-            lastMotionProcessTime = now;
             
             if (pipelineV2 == null) {
                 logger.warn("V2 pipeline not initialized — skipping frame");
@@ -2509,7 +2609,9 @@ public class SurveillanceEngineGpu {
         // Runs YOLO on each quadrant to catalog what's already in the scene (parked cars,
         // trash cans, etc.) so future motion-triggered detections can filter them out.
         // Cost: 4 inferences, one-time. Runs on AI executor thread to avoid blocking motion pipeline.
-        if (!baselineSeeded && frameCount == 30 && useObjectDetection && yoloDetector != null) {
+        // >= not ==: frameCount counts throttled frames too, so frame 30 itself can
+        // be skipped here — which silently left the whole session unseeded.
+        if (!baselineSeeded && frameCount >= 30 && useObjectDetection && yoloDetector != null) {
             baselineSeeded = true;  // Set immediately to prevent re-entry
             final byte[] seedFrame = new byte[smallRgbFrame.length];
             System.arraycopy(smallRgbFrame, 0, seedFrame, 0, smallRgbFrame.length);
@@ -2905,6 +3007,9 @@ public class SurveillanceEngineGpu {
                 }
             }
         }
+
+        // Before the motion AI dispatch below, so a short burst gets the lane first.
+        maybeRunLightChangeCheck(results, smallRgbFrame, now, nowElapsed);
 
         // Check if any quadrant detected motion at MEDIUM or higher threat.
         int maxThreat = pipelineV2.getMaxThreatLevel();
@@ -3516,7 +3621,7 @@ public class SurveillanceEngineGpu {
             // tick so the TTL measures from the LAST adjacency evidence; a
             // non-qualifying tick simply lets it age out (I2: per-tick, no
             // frameCount%N nesting; I11: TTL'd, quadrant-scoped). Centroid is in
-            // block units (10×7 grid of 32px blocks) → normalize against the
+            // block-center units (32 px, with a clipped bottom cell) → normalize against the
             // 320×240 quadrant the baseline foot-points are normalized to.
             // Cheap: one O(entries) synchronized scan at ~8.7Hz, only while
             // MEDIUM+ motion is active.
@@ -4364,6 +4469,19 @@ public class SurveillanceEngineGpu {
                         // Don't reset firstMotionTime — let the timer keep running.
                         // When YOLO confirms a valid object, the trigger fires immediately.
                     }
+                    // A start was just refused (noteEventStartRefused): wait out the
+                    // backoff instead of re-opening the recorder on every motion tick,
+                    // but keep the deterrents firing as a normal trigger tick would.
+                    else if (android.os.SystemClock.elapsedRealtime() < eventStartRetryAtMs) {
+                        try {
+                            com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance()
+                                    .onMotionDetected(eventEverSawPerson, eventEverSawMovingObject);
+                            ScreenDeterrent.getInstance().onMotionDetected();
+                            deterrentFiredTime = now;
+                        } catch (Exception e) {
+                            logger.debug("Deterrent dispatch failed: " + e.getMessage());
+                        }
+                    }
                     // SOTA: Event stitching — if new motion appears shortly after the last
                     // recording stopped, start a new recording immediately. The previous
                     // recentlyStoppedRecording cooldown blocked new recordings for the entire
@@ -4502,7 +4620,7 @@ public class SurveillanceEngineGpu {
                             // (the shadow/leaf signature) are unaffected.
                             if (bestResult != null && (bestQ == 1 || bestQ == 3)
                                     && (bestResult.componentSize
-                                        / (float) MotionPipelineV2.TOTAL_BLOCKS) > 0.15f) {
+                                        / (float) MotionPipelineV2.POLICY_BLOCKS) > 0.15f) {
                                 eventTriggerWasLateralMass = true;
                             }
                             // Latch whether the recording fired WITHOUT any
@@ -4628,7 +4746,8 @@ public class SurveillanceEngineGpu {
                         // background threads and never block the surveillance pipeline.
                         // Each one independently honors its own enabled flag and cooldown.
                         try {
-                            com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance().onMotionDetected();
+                            com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance()
+                                    .onMotionDetected(eventEverSawPerson, eventEverSawMovingObject);
                             ScreenDeterrent.getInstance().onMotionDetected();
                             deterrentFiredTime = now;  // Track when deterrent was dispatched
                         } catch (Exception e) {
@@ -4646,7 +4765,8 @@ public class SurveillanceEngineGpu {
                     // SOTA: Recurring deterrent — re-trigger while motion continues.
                     // Per-deterrent cooldowns prevent spamming.
                     try {
-                        com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance().onMotionDetected();
+                        com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance()
+                                .onMotionDetected(eventEverSawPerson, eventEverSawMovingObject);
                         ScreenDeterrent.getInstance().onMotionDetected();
                         deterrentFiredTime = now;  // Track latest deterrent dispatch
                     } catch (Exception e) {
@@ -4744,7 +4864,8 @@ public class SurveillanceEngineGpu {
                 // briefly dipped below MEDIUM on the exact frame where duration crossed
                 // the threshold. Without this, the sequence dies at gap tolerance expiry
                 // even though all conditions were met.
-                if (firstMotionTime != 0 && !recording && aiConfirmedDuringSequence) {
+                if (firstMotionTime != 0 && !recording && aiConfirmedDuringSequence
+                        && android.os.SystemClock.elapsedRealtime() >= eventStartRetryAtMs) {
                     long motionDuration = lastMotionTime - firstMotionTime;
                     // Mirror the inline requiredDuration logic EXACTLY: only a
                     // TRUSTED HIGH (coherent/tracked loiter) gets the 500ms base —
@@ -4814,7 +4935,8 @@ public class SurveillanceEngineGpu {
                             }
                         }
                         try {
-                            com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance().onMotionDetected();
+                            com.overdrive.app.byd.cloud.BydCloudDeterrent.getInstance()
+                                    .onMotionDetected(eventEverSawPerson, eventEverSawMovingObject);
                             ScreenDeterrent.getInstance().onMotionDetected();
                             deterrentFiredTime = now;
                         } catch (Exception e) {
@@ -5278,6 +5400,16 @@ public class SurveillanceEngineGpu {
      * Run YOLO on a single quadrant (cropped from the mosaic).
      */
     private void runAiOnQuadrant(byte[] mosaicRgb, int quadrant) {
+        runAiOnQuadrant(mosaicRgb, quadrant, false, false);
+    }
+
+    /**
+     * @param lightProbe a light-change check (see maybeRunLightChangeCheck): whole-camera
+     *                   crop, never a tracker heartbeat.
+     * @param lightProbeFollowUp the follow-up look a previous check asked for.
+     */
+    private void runAiOnQuadrant(byte[] mosaicRgb, int quadrant, boolean lightProbe,
+                                 boolean lightProbeFollowUp) {
         // FIX (Bug B): respect user's class toggles. Empty classFilter = sentinel for
         // "all classes disabled" — skip YOLO entirely. Saves ~50-80ms per quadrant per
         // wake event and frees the TFLite interpreter.
@@ -5365,7 +5497,10 @@ public class SurveillanceEngineGpu {
         // active recording.
         boolean heartbeatRunEarly = false;
         try {
-            heartbeatRunEarly = NativeMotion.trackerNeedsYoloHeartbeat(quadrant)
+            // A light-change check filters by zone/area, not motion, so it must not
+            // stand in for a heartbeat (it could drop or re-anchor a held person track).
+            heartbeatRunEarly = !lightProbe
+                    && NativeMotion.trackerNeedsYoloHeartbeat(quadrant)
                     && NativeMotion.trackerHasActiveTrack(quadrant);
         } catch (Exception ignored) {}
 
@@ -5397,6 +5532,7 @@ public class SurveillanceEngineGpu {
 
         if (!heartbeatRunEarly
                 && !preferWideForClose
+                && !lightProbe
                 && foveatedCropper != null && foveatedCropper.isInitialized() && cameraTextureId >= 0
                 && ((motionResult != null && motionResult.componentSize > 0) || heartbeatHasTrackerPos)) {
             // Foveated path (Option B mailbox).
@@ -5456,9 +5592,10 @@ public class SurveillanceEngineGpu {
             }
         } else {
             // Mosaic 320×240 path. Reached when: no foveated cropper (legacy),
-            // a heartbeat run (stationary subject — mosaic detail suffices), OR
+            // a heartbeat run (stationary subject — mosaic detail suffices),
             // preferWideForClose (a NEAR subject whose full body must stay in
-            // frame — see the wide-crop gate above). Must copy: cropFromMosaic
+            // frame — see the wide-crop gate above), OR a light-change check
+            // (no motion centroid to aim at). Must copy: cropFromMosaic
             // returns a thread-local shared buffer.
             qW = THUMBNAIL_WIDTH / 2;
             qH = THUMBNAIL_HEIGHT / 2;
@@ -5487,6 +5624,7 @@ public class SurveillanceEngineGpu {
         if (cropData == null) { noteAiSkip("cropNull"); return; }
 
         isAiRunning.set(true);
+        lastAiDispatchWasProbe = lightProbe;  // frame thread, like every caller
         // Latch the MONOTONIC time at which this inference claimed the AI lane,
         // so the watchdog (see maybeRepairStuckAiLane) can tell a legitimately
         // long-running detect() from a permanently leaked flag. Deliberately
@@ -5541,6 +5679,8 @@ public class SurveillanceEngineGpu {
         // every frame, so reading it again here would race with the live state
         // and could disagree with the foveated-skip decision.
         final boolean isHeartbeatRun = heartbeatRunEarly;
+        final boolean isLightProbeRun = lightProbe;
+        final boolean isLightProbeFollowUp = lightProbe && lightProbeFollowUp;
 
         // FIX (B1/H-a): capture the recording generation NOW. The lambda below
         // will check it on completion and skip cross-recording writes if the
@@ -5699,6 +5839,12 @@ public class SurveillanceEngineGpu {
                     detections = FisheyeDewarp.mapDetectionsToSource(detections, qW, qH, qIdx);
                 }
 
+                // Light-change check outcome — acted on after the lock below,
+                // because startRecording() must not run under it.
+                com.overdrive.app.ai.Detection lightProbeHit = null;
+                String lightProbeNote = null;
+                boolean lightProbeJudged = false;
+
                 // Commit all post-inference state atomically with event
                 // start/stop. Inference remains outside this lock; only the
                 // comparatively short filtering/actor/tracker publication
@@ -5783,8 +5929,16 @@ public class SurveillanceEngineGpu {
                         // Vehicles during heartbeat still require motion blocks — a parked car
                         // is never a threat and will hold the recording open forever otherwise.
                         boolean passesFilter = false;
-                        
-                        if (isHeartbeatRun && classId == 0) {
+
+                        if (isLightProbeRun) {
+                            // A flash-killed camera has no motion mask, so the user's zone
+                            // and drawn area stand in for it; a weak "person" in a glare
+                            // frame must not reach the person-recency / tracker paths below.
+                            passesFilter = boxInLightProbeArea(qIdx, det.getX(), det.getY(),
+                                            det.getW(), det.getH())
+                                    && (classId != 0
+                                        || det.getConfidence() >= LIGHT_PROBE_TRIGGER_MIN_CONF);
+                        } else if (isHeartbeatRun && classId == 0) {
                             // Heartbeat + person: bypass spatial filter
                             passesFilter = true;
                         } else if (usedFoveated && !fovMapValid) {
@@ -5857,14 +6011,10 @@ public class SurveillanceEngineGpu {
                                 // Degenerate box after mapping (zero/negative area).
                                 // Nothing to test, so nothing is proven — keep it.
                                 passesFilter = true;
-                            } else if (detBottom > MotionPipelineV2.GRID_ROWS * blockPx) {
-                                // UNMAPPED BOTTOM BAND. The grid is GRID_ROWS(7) ×
-                                // BLOCK_SIZE(32) = 224 px tall but a quadrant is 240 px,
-                                // so the bottom 16 px — the strip CLOSEST to the car —
-                                // has no blocks and can NEVER report motion. Any bbox
-                                // reaching into that band therefore cannot be proven
-                                // still, and rejecting it deletes a detection for lack
-                                // of evidence that was never collectable.
+                            } else if (detBottom > MotionGridGeometry.LEGACY_COVERED_HEIGHT) {
+                                // Retain the conservative bottom-band detection policy
+                                // across old/new native libraries. Newly collected
+                                // motion must not tighten the existing final AI gate.
                                 //
                                 // This mirrors the identical guard in
                                 // ThumbnailBuffer.bboxOverlapsMotion. It matters MORE
@@ -5916,7 +6066,8 @@ public class SurveillanceEngineGpu {
                                     int bx = (bi % MotionPipelineV2.GRID_COLS) * blockPx;
                                     int by = (bi / MotionPipelineV2.GRID_COLS) * blockPx;
                                     int bRight = bx + blockPx;
-                                    int bBottom = by + blockPx;
+                                    int bBottom = MotionGridGeometry.rowBottom(
+                                            bi / MotionPipelineV2.GRID_COLS);
 
                                     if (dLeft < bRight && dRight > bx && dTop < bBottom && dBottom > by) {
                                         passesFilter = true;
@@ -6064,10 +6215,26 @@ public class SurveillanceEngineGpu {
                         }
                         
                         if (baselineSuppressed > 0) {
-                            logger.info("Baseline filter Q" + qIdx + ": " + baselineSuppressed + 
+                            logger.info("Baseline filter Q" + qIdx + ": " + baselineSuppressed +
                                     " static objects suppressed, " + baselineFiltered.size() + " new/moved pass");
                         }
-                        
+
+                        // Light-change check verdict (judgeLightProbe). Only its hit flows
+                        // on: an object it couldn't prove real/moving must not reach
+                        // proximity, the timeline or the tracker from a motionless camera.
+                        java.util.List<com.overdrive.app.ai.Detection> publishedTriggerDets = triggerSpaceDets;
+                        if (isLightProbeRun) {
+                            LightProbeVerdict verdict = judgeLightProbe(qIdx, triggerSpaceDets,
+                                    detectionObservationElapsedMs, taskEpoch, isLightProbeFollowUp);
+                            lightProbeJudged = true;
+                            lightProbeHit = verdict.hit;
+                            lightProbeNote = verdict.note;
+                            triggerEvidenceFound = lightProbeHit != null;
+                            baselineFiltered.clear();
+                            if (lightProbeHit != null) baselineFiltered.add(lightProbeHit);
+                            publishedTriggerDets = new java.util.ArrayList<>(baselineFiltered);
+                        }
+
                         // Store last detections + coord-space frame height for the
                         // event-end baseline update AND DistanceEstimator's bbox-height
                         // inference. Single atomic publication so the reader can't
@@ -6079,9 +6246,9 @@ public class SurveillanceEngineGpu {
                         // Only the rare foveated-without-affine race publishes
                         // native space (pair stays internally consistent).
                         lastYoloPublication.set(qIdx, new YoloPublication(
-                                new java.util.ArrayList<>(
-                                        baselineSpaceDets != null ? baselineSpaceDets : motionFiltered),
-                                triggerSpaceDets,
+                                new java.util.ArrayList<>(isLightProbeRun ? publishedTriggerDets
+                                        : baselineSpaceDets != null ? baselineSpaceDets : motionFiltered),
+                                publishedTriggerDets,
                                 baselineSpaceDets != null ? qHNorm : qH,
                                 usedFoveated));
                         lastEventQuadrant = qIdx;
@@ -6130,7 +6297,7 @@ public class SurveillanceEngineGpu {
                             motionFilteredCount = relevantCount;
                         }
                     }
-                    
+
                     if (relevantCount > 0) {
                         // YOLO confirmed a real object — update AI confirmation timestamp.
                         // This is used by the deterrent flash guard to allow recording
@@ -6711,6 +6878,17 @@ public class SurveillanceEngineGpu {
                         }
                     } catch (Exception ignored) {}
                 }
+                // A look that found nothing in the zone still ends / advances its chain.
+                if (isLightProbeRun && !lightProbeJudged) {
+                    LightProbeVerdict verdict = judgeLightProbe(qIdx,
+                            java.util.Collections.<com.overdrive.app.ai.Detection>emptyList(),
+                            detectionObservationElapsedMs, taskEpoch, isLightProbeFollowUp);
+                    lightProbeHit = verdict.hit;
+                    lightProbeNote = verdict.note;
+                }
+                }
+                if (isLightProbeRun) {
+                    finishLightChangeCheck(qIdx, detections, lightProbeHit, lightProbeNote, taskEpoch);
                 }
             } catch (Exception e) {
                 logger.error("V2 AI detection error (Q" + qIdx + ")", e);
@@ -6958,7 +7136,7 @@ public class SurveillanceEngineGpu {
     
     /**
      * Applies a polygon ROI to a specific quadrant.
-     * Converts the polygon (normalized 0-1 coords) to a 10×7 block mask
+     * Converts the polygon (normalized 0-1 coords) to a full-height block mask
      * and passes it to the C++ pipeline via JNI.
      *
      * @param quadrant Quadrant index (0-3)
@@ -6971,28 +7149,22 @@ public class SurveillanceEngineGpu {
             return;
         }
         
-        // Convert polygon to 10×7 block mask.
-        // For each block, check if its center is inside the polygon.
-        byte[] blockMask = new byte[MotionPipelineV2.TOTAL_BLOCKS];
-        int enabledCount = 0;
-        
-        for (int by = 0; by < MotionPipelineV2.GRID_ROWS; by++) {
-            for (int bx = 0; bx < MotionPipelineV2.GRID_COLS; bx++) {
-                int blockIdx = by * MotionPipelineV2.GRID_COLS + bx;
-                // Block center in normalized coordinates
-                float cx = (bx + 0.5f) / MotionPipelineV2.GRID_COLS;
-                float cy = (by + 0.5f) / MotionPipelineV2.GRID_ROWS;
-                
-                if (isPointInPolygon(cx, cy, polygon)) {
-                    blockMask[blockIdx] = 1;
-                    enabledCount++;
-                }
-            }
-        }
-        
+        boolean legacyCenters = true;
         try {
-            NativeMotion.setQuadrantRoi(quadrant, blockMask);
-            logger.info("ROI applied to Q" + quadrant + " [" + 
+            org.json.JSONObject survCfg = com.overdrive.app.config.UnifiedConfigManager.getSurveillance();
+            legacyCenters = survCfg.optInt("roiGridVersion_Q" + quadrant, 1)
+                    < MotionGridGeometry.NATIVE_ABI_VERSION;
+        } catch (Exception ignored) {
+            // Untagged polygons retain the original seven-row cell decisions.
+        }
+        byte[] blockMask = MotionGridGeometry.polygonMask(polygon, legacyCenters);
+        int enabledCount = 0;
+        for (byte enabled : blockMask) if (enabled != 0) enabledCount++;
+        
+        quadrantRoiMirror.set(quadrant, blockMask.clone());
+        try {
+            NativeMotion.setQuadrantRoi(quadrant, MotionPipelineV2.toNativeRoiMask(blockMask));
+            logger.info("ROI applied to Q" + quadrant + " [" +
                     MotionPipelineV2.QUADRANT_NAMES[quadrant] + "]: " + 
                     enabledCount + "/" + MotionPipelineV2.TOTAL_BLOCKS + " blocks enabled");
         } catch (Exception e) {
@@ -7005,6 +7177,7 @@ public class SurveillanceEngineGpu {
      */
     public void clearQuadrantRoi(int quadrant) {
         if (quadrant < 0 || quadrant >= MotionPipelineV2.NUM_QUADRANTS) return;
+        quadrantRoiMirror.set(quadrant, null);
         try {
             NativeMotion.setQuadrantRoi(quadrant, null);
             logger.info("ROI cleared for Q" + quadrant + " [" +
@@ -7048,12 +7221,10 @@ public class SurveillanceEngineGpu {
             String qKey = "Q" + quadrant;
             boolean roiEnabled = survCfg.optBoolean("roiEnabled_" + qKey, false);
             org.json.JSONArray blockArr = survCfg.optJSONArray("roiBlocks_" + qKey);
-            if (roiEnabled && blockArr != null && blockArr.length() == MotionPipelineV2.TOTAL_BLOCKS) {
-                byte[] blockMask = new byte[MotionPipelineV2.TOTAL_BLOCKS];
-                for (int i = 0; i < MotionPipelineV2.TOTAL_BLOCKS; i++) {
-                    blockMask[i] = (byte)(blockArr.optInt(i, 1) != 0 ? 1 : 0);
-                }
-                NativeMotion.setQuadrantRoi(quadrant, blockMask);
+            byte[] blockMask = MotionPipelineV2.roiMaskFromJson(blockArr);
+            if (roiEnabled && blockMask != null) {
+                quadrantRoiMirror.set(quadrant, blockMask.clone());
+                NativeMotion.setQuadrantRoi(quadrant, MotionPipelineV2.toNativeRoiMask(blockMask));
                 logger.info("ROI blocks applied to Q" + quadrant + " [" +
                         MotionPipelineV2.QUADRANT_NAMES[quadrant] + "] from unified config");
                 return;
@@ -7318,7 +7489,7 @@ public class SurveillanceEngineGpu {
      * camera calibration to estimate distance in meters.
      * 
      * @param quadrant Quadrant index (0=front, 1=right, 2=rear, 3=left)
-     * @param centroidBlockY Centroid Y in block coordinates (0-6)
+     * @param centroidBlockY Centroid Y in block-center coordinates (0-6.75)
      * @return Estimated distance in meters, or -1 if unavailable
      */
     private float estimateDistanceFromCentroid(int quadrant, float centroidBlockY) {
@@ -7739,16 +7910,18 @@ public class SurveillanceEngineGpu {
                         && isInTileEdgeBand(pub.triggerDetections, frameH)) {
                     // Fall through to Technique B below.
                 } else {
+                    // Quadrant-space boxes rate people by size + feet like the actor labels;
+                    // the rare native-foveated publication keeps the metric path.
                     DistanceEstimator.ProximityEstimate est =
                             DistanceEstimator.fromYoloDetections(
-                                    pub.triggerDetections, frameH, fovDeg, trend);
+                                    pub.triggerDetections, frameH, fovDeg, trend, !isFoveated);
                     if (est != null) return est;
                 }
             }
         }
 
         // Technique B: pre-YOLO tier + trend. Honest absence of meters.
-        // We re-scan the lowest active block here (cheap; just an O(70)
+        // We re-scan the lowest active block here (cheap; just an O(80)
         // pass over blockConfidence) rather than caching it, because
         // tierFromMotion needs the *current* result not what
         // updateProximityState saw — multiple log sites can be reading
@@ -7756,8 +7929,8 @@ public class SurveillanceEngineGpu {
         int lowestNow = lowestActiveBlockRow(result);
         DistanceEstimator.Tier tier = DistanceEstimator.tierFromMotion(
                 result != null ? result.activeBlocks : 0,
-                lowestNow,
-                MotionPipelineV2.GRID_ROWS);
+                MotionGridGeometry.policyRow(lowestNow),
+                MotionPipelineV2.POLICY_ROWS);
         return DistanceEstimator.ProximityEstimate.tierOnly(tier, trend);
     }
     
@@ -7862,12 +8035,16 @@ public class SurveillanceEngineGpu {
         // Unload YOLO when AI is now off; load lazily again on next call when re-enabled
         // (lazy re-init is handled where YoloDetector is constructed in init()).
         if (!aiEnabled && yoloDetector != null) {
-            try {
-                yoloDetector.close();
-            } catch (Exception e) {
-                logger.warn("YoloDetector close failed: " + e.getMessage());
+            synchronized (yoloLifecycleLock) {
+                if (yoloDetector != null) {
+                    try {
+                        yoloDetector.close();
+                    } catch (Exception e) {
+                        logger.warn("YoloDetector close failed: " + e.getMessage());
+                    }
+                    yoloDetector = null;
+                }
             }
-            yoloDetector = null;
             logger.info("YOLO detector closed: all object classes disabled by user");
         } else if (aiEnabled && !hadAi) {
             logger.info("Object detection re-enabled; YOLO will be reloaded on next inference");
@@ -7926,32 +8103,53 @@ public class SurveillanceEngineGpu {
      * regular runs both work. Idempotent and safe to call when AI is already loaded.
      */
     private void reloadYoloDetectorIfPossible() {
-        if (yoloDetector != null) return;
-        try {
-            // Audit fix: construct + init() into a LOCAL and publish to the
-            // field only after init() succeeds. Publishing first let a queued
-            // aiExecutor lambda snapshot a half-initialized instance (worst
-            // case a caught NPE inside interpLock — one lost inference per
-            // class-filter toggle — but the ordering was still wrong).
-            final YoloDetector candidate;
-            if (yoloContext != null) {
-                candidate = new YoloDetector(yoloContext);
-            } else if (yoloAssetManager != null) {
-                candidate = new YoloDetector(new com.overdrive.app.ai.AssetContext(yoloAssetManager));
-            } else {
-                logger.warn("Cannot reload YOLO: no context/assetManager retained");
-                return;
+        synchronized (yoloLifecycleLock) {
+            if (yoloDetector != null || yoloReleased) return;
+            try {
+                // Audit fix: construct + init() into a LOCAL and publish to the
+                // field only after init() succeeds. Publishing first let a queued
+                // aiExecutor lambda snapshot a half-initialized instance (worst
+                // case a caught NPE inside interpLock — one lost inference per
+                // class-filter toggle — but the ordering was still wrong).
+                final YoloDetector candidate;
+                if (yoloContext != null) {
+                    candidate = new YoloDetector(yoloContext);
+                } else if (yoloAssetManager != null) {
+                    candidate = new YoloDetector(new com.overdrive.app.ai.AssetContext(yoloAssetManager));
+                } else {
+                    logger.warn("Cannot reload YOLO: no context/assetManager retained");
+                    return;
+                }
+                boolean ok = candidate.init();
+                if (ok) {
+                    yoloDetector = candidate;
+                    useObjectDetection = true;
+                    logger.info("YOLO detector reloaded (object detection re-enabled)");
+                } else {
+                    logger.warn("YOLO reload failed");
+                }
+            } catch (Throwable t) {
+                // Throwable: this now runs on the daemon boot path — a failed
+                // optional model load must degrade to no-AI, never abort init.
+                logger.warn("YOLO reload threw: " + t.getMessage());
             }
-            boolean ok = candidate.init();
-            if (ok) {
-                yoloDetector = candidate;
-                useObjectDetection = true;
-                logger.info("YOLO detector reloaded (object detection re-enabled)");
-            } else {
-                logger.warn("YOLO reload failed");
-            }
-        } catch (Exception e) {
-            logger.warn("YOLO reload threw: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Late AI sources for an engine built without them — a boot cold start
+     * (blind-spot/camera-view arm) that won init() before the daemon's own
+     * init(assetManager, context). Loads YOLO now if detection is enabled.
+     */
+    public void supplyAiSources(android.content.res.AssetManager assetManager,
+                                android.content.Context context) {
+        synchronized (yoloLifecycleLock) {
+            if (yoloReleased) return;
+            if (yoloContext == null) yoloContext = context;
+            if (yoloAssetManager == null) yoloAssetManager = assetManager;
+        }
+        if (aiEnabled && yoloDetector == null) {
+            reloadYoloDetectorIfPossible();
         }
     }
     
@@ -8770,7 +8968,7 @@ public class SurveillanceEngineGpu {
             // task's finally-bump — double bump is harmless; the
             // final-segment path at stop has no other bump).
             try {
-                com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+                com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(outFile);
             } catch (Throwable ignored) {}
         } catch (Throwable t) {
             logger.debug("Fallback hero extraction failed for " + mp4File.getName()
@@ -9335,6 +9533,15 @@ public class SurveillanceEngineGpu {
      * Stop happens at {@link #disable()} (ACC ON or owner-unlock disarm).
      */
     private void startContinuousRecording() {
+        startContinuousRecording(false);
+    }
+
+    /**
+     * @param afterLoss restarting after the recorder was lost mid-session: skip the remount
+     *                  attempt and use internal when the configured card fails a quick
+     *                  liveness check, so recording resumes in seconds instead of after a remount.
+     */
+    private void startContinuousRecording(boolean afterLoss) {
         if (recorder == null) {
             logger.error("Cannot start continuous recording — recorder is null");
             return;
@@ -9355,11 +9562,12 @@ public class SurveillanceEngineGpu {
             storageManager = com.overdrive.app.storage.StorageManager.getInstance();
             com.overdrive.app.storage.StorageManager.StorageType type =
                     storageManager.getSurveillanceStorageType();
-            if (type == com.overdrive.app.storage.StorageManager.StorageType.SD_CARD
+            // Not after a loss: a just-dropped card would hold the restart for the whole remount.
+            if (!afterLoss && type == com.overdrive.app.storage.StorageManager.StorageType.SD_CARD
                     && !storageManager.isSdCardMounted()) {
                 logger.warn("SD card unmounted before continuous recording — attempting remount");
                 storageManager.ensureSdCardMounted(true);
-            } else if (type == com.overdrive.app.storage.StorageManager.StorageType.USB
+            } else if (!afterLoss && type == com.overdrive.app.storage.StorageManager.StorageType.USB
                     && !storageManager.isUsbMounted()) {
                 logger.warn("USB unmounted before continuous recording — attempting remount");
                 storageManager.ensureUsbMounted(true);
@@ -9389,7 +9597,9 @@ public class SurveillanceEngineGpu {
         // back to internal when the external is genuinely unavailable. Resolved
         // ONCE here (recording == false above), so the in-flight clip can't be
         // split across volumes; null-guard back to the snapshot.
-        File trigDir = (smRef != null) ? smRef.getLiveSurveillanceDir() : eventOutputDir;
+        File trigDir = (smRef != null)
+                ? (afterLoss ? smRef.getLiveSurveillanceDirIfMounted() : smRef.getLiveSurveillanceDir())
+                : eventOutputDir;
         if (trigDir == null) trigDir = eventOutputDir;
         // ENOSPC internal-spill: if the configured external is mounted-but-FULL,
         // redirect THIS clip to the INTERNAL SURVEILLANCE dir so it isn't
@@ -9482,13 +9692,19 @@ public class SurveillanceEngineGpu {
             return;
         }
         if (contTrig != GpuMosaicRecorder.TriggerResult.STARTED) {
+            // Non-blocking (callers may hold stateTransitionLock): frees a full FAT32 folder for the retry.
+            if (smRef != null) smRef.relieveFolderEntries(contTargetFile.getParentFile(), false);
             // NOTE (audit R3b Ext-6): "will retry on next event" was a
             // copy-paste fiction here — continuous mode has no events. The
             // retry is real now: enable()'s continuous branch (and each
             // retry tick) reschedules via scheduleContinuousStartRetry while
-            // the engine stays armed-but-not-recording.
-            logger.warn("Continuous-mode triggerEventRecording refused "
-                + "(encoder format not ready); bounded retry scheduled");
+            // the engine stays armed-but-not-recording. A card that refuses
+            // writes is latched here, so that retry resolves to internal.
+            boolean cardFault = smRef != null && trigDir != null && smRef.reportWriteFault(trigDir);
+            logger.warn("Continuous-mode triggerEventRecording refused ("
+                + (cardFault ? "the card refuses writes — the retry saves to internal storage"
+                             : "encoder not ready, or the clip file could not be opened")
+                + "); bounded retry scheduled");
             return;
         }
         // COMMIT under the lifecycle lock with a disarm/epoch re-check
@@ -9520,7 +9736,7 @@ public class SurveillanceEngineGpu {
                 logger.warn("Recorder died between trigger and commit (camera yield?) — "
                     + "abandoning continuous start; retry chain / reacquire will restart");
                 if (!recording) {
-                    scheduleContinuousStartRetry(entryEpoch, 1);
+                    scheduleContinuousStartRetry(entryEpoch, 1, afterLoss);
                 }
                 return;
             }
@@ -9571,6 +9787,12 @@ public class SurveillanceEngineGpu {
                     }
                     if (newSegment != null) {
                         currentEventFile = newSegment;
+                        // Non-blocking: only kicks a check when this segment opened on internal.
+                        if (smRef != null) {
+                            try {
+                                smRef.onContinuousSegmentStarted(newSegment);
+                            } catch (Throwable ignored) {}
+                        }
                     }
                 });
                 // Compensating check (audit R13-6 / ExtE-6): if a stop ran
@@ -9606,6 +9828,11 @@ public class SurveillanceEngineGpu {
      * chain.
      */
     private void scheduleContinuousStartRetry(final int epoch, final int attempt) {
+        scheduleContinuousStartRetry(epoch, attempt, false);
+    }
+
+    /** @param afterLoss retries of a lost-recorder restart keep its no-remount, reachable-folder start */
+    private void scheduleContinuousStartRetry(final int epoch, final int attempt, final boolean afterLoss) {
         if (attempt > CONTINUOUS_START_MAX_RETRIES) {
             logger.error("Continuous-mode start abandoned after "
                 + CONTINUOUS_START_MAX_RETRIES + " retries — engine is armed but NOT "
@@ -9620,17 +9847,123 @@ public class SurveillanceEngineGpu {
                 logger.info("Continuous-mode start retry " + attempt + "/"
                     + CONTINUOUS_START_MAX_RETRIES);
                 try {
-                    startContinuousRecording();
+                    startContinuousRecording(afterLoss);
                 } catch (Throwable t) {
                     logger.warn("Continuous-mode start retry failed: " + t.getMessage());
                 }
                 if (!recording) {
-                    scheduleContinuousStartRetry(epoch, attempt + 1);
+                    scheduleContinuousStartRetry(epoch, attempt + 1, afterLoss);
                 }
             }, CONTINUOUS_START_RETRY_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (java.util.concurrent.RejectedExecutionException ignored) {
             // Engine releasing — nothing to retry into.
         }
+    }
+
+    /**
+     * Moves a running continuous session's next segment from {@code fromDir} to {@code toDir}
+     * (the configured card is usable again). Lock order as disable(); null when nothing was armed.
+     */
+    public HardwareEventRecorderGpu.SegmentMove moveContinuousSegments(File fromDir, File toDir) {
+        synchronized (recordingLifecycleLock) {
+            if (!active || !continuousMode || !recording || recorder == null) return null;
+            HardwareEventRecorderGpu enc = recorder.getEncoder();
+            return (enc != null) ? enc.moveSegments(fromDir, toDir) : null;
+        }
+    }
+
+    // Writer-abort restarts at most once per minute per arm session, so a volume that fails every
+    // write can't spin.
+    private static final long CONTINUOUS_ABORT_RESTART_GAP_MS = 60_000L;
+    private volatile long continuousAbortRestartAtMs = 0;
+    private volatile int continuousAbortRestartEpoch = -1;
+
+    /**
+     * The recorder's disk writer gave up under a running continuous session (card dropped, full or
+     * refusing writes). Continuous mode has no tick to notice, so restart it; no-op otherwise.
+     */
+    public void onContinuousWriterAborted(final String reason) {
+        if (!isContinuousRecorderLost()) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        int epoch = armEpoch;
+        long last = (continuousAbortRestartEpoch == epoch) ? continuousAbortRestartAtMs : 0;
+        long delayMs = (last == 0) ? 0 : Math.max(0, CONTINUOUS_ABORT_RESTART_GAP_MS - (now - last));
+        continuousAbortRestartAtMs = now + delayMs;
+        continuousAbortRestartEpoch = epoch;
+        // The aborted segment was never finalized, so it gets no sidecar.
+        scheduleLostContinuousRestart("disk writer gave up: " + reason, delayMs, false);
+    }
+
+    /**
+     * A storage path (watchdog, storage-type change, wipe) stopped the shared recorder under a
+     * running continuous session. One-off events, so restart right away; no-op otherwise.
+     */
+    public void onContinuousRecorderStopped(final String why) {
+        if (isContinuousRecorderLost()) scheduleLostContinuousRestart(why, 0, true);
+    }
+
+    private boolean isContinuousRecorderLost() {
+        GpuMosaicRecorder rec = recorder;
+        return active && continuousMode && recording && rec != null && !rec.isRecording();
+    }
+
+    private void scheduleLostContinuousRestart(final String why, long delayMs,
+                                               final boolean finalSegmentClosed) {
+        try {
+            aiScheduler.schedule(() -> restartLostContinuousRecording(why, finalSegmentClosed),
+                    delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // Engine releasing — nothing to restart into.
+        }
+    }
+
+    /** @param finalSegmentClosed the stop finalized the last segment: give it the sidecar disarm would */
+    private void restartLostContinuousRecording(String why, boolean finalSegmentClosed) {
+        final int epoch;
+        File finalSegment = null;
+        com.overdrive.app.geo.GeoSnapshot finalStartGeo = null;
+        synchronized (recordingLifecycleLock) {
+            if (!active || !continuousMode || recorder == null
+                    || !recording || recorder.isRecording()) {
+                return;  // disarmed, already restarted, or the recorder is not actually stopped
+            }
+            HardwareEventRecorderGpu enc = recorder.getEncoder();
+            if (finalSegmentClosed) {
+                finalSegment = currentEventFile;
+                try {
+                    if (enc != null && enc.hasStartGeo()) {
+                        finalStartGeo = new com.overdrive.app.geo.GeoSnapshot(
+                                enc.getStartGeoLat(), enc.getStartGeoLng(),
+                                enc.getStartGeoAccuracy(), enc.getStartGeoAgeMs(),
+                                enc.getStartGeoCapturedAtMs(), 0L);
+                    }
+                } catch (Throwable t) {
+                    logger.warn("Continuous final-segment geo snapshot failed: " + t.getMessage());
+                }
+            }
+            recording = false;
+            currentEventFile = null;
+            // A disarm before the restart commits must not leave this session's listener attached.
+            if (enc != null) enc.setSegmentListener(null);
+            epoch = armEpoch;
+        }
+        logger.warn("Continuous recording stopped under the armed session (" + why + ") — restarting");
+        if (finalSegment != null) {
+            try {
+                com.overdrive.app.geo.LocationSidecarWriter.getInstance().submit(finalSegment,
+                        "recording", finalStartGeo != null
+                                ? finalStartGeo : com.overdrive.app.geo.GeoSnapshot.empty());
+            } catch (Throwable t) {
+                logger.warn("Continuous final-segment sidecar submit failed: " + t.getMessage());
+            }
+        }
+        if (!active || armEpoch != epoch) return;
+        try {
+            startContinuousRecording(true);
+        } catch (Throwable t) {
+            logger.warn("Continuous restart after recorder loss failed: " + t.getMessage());
+        }
+        if (!recording) scheduleContinuousStartRetry(epoch, 1, true);
     }
 
     /**
@@ -9826,6 +10159,388 @@ public class SurveillanceEngineGpu {
         return false;
     }
 
+    /**
+     * LIGHT-CHANGE CHECK dispatch (frame thread). The >25% flash filter discards a
+     * camera's whole burst as lighting, and early AI only looks at cameras whose
+     * motion survived — so a close car lighting up the front view was never looked
+     * at. Give that camera a whole-view look (and the second look judgeLightProbe
+     * asks for); finishLightChangeCheck acts on the result.
+     */
+    private void maybeRunLightChangeCheck(MotionPipelineV2.QuadrantResult[] results,
+                                          byte[] frame, long now, long nowElapsed) {
+        for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) {
+            if (isLightChangeKill(results[q])) {
+                lightKillSeenMs[q] = nowElapsed;
+                lightKillBlocks[q] = results[q].activeBlocks;
+            }
+            long due = lightProbeFollowUpAt.get(q);
+            if (due != 0 && nowElapsed - due > LIGHT_PROBE_FOLLOWUP_MS) {
+                lightProbeFollowUpAt.compareAndSet(q, due, 0);
+            }
+        }
+        if (recording || frame == null || !useObjectDetection || yoloDetector == null
+                || !aiEnabled || (classFilter != null && classFilter.length == 0)) return;
+        // Our own deterrent flash is a light change by construction.
+        if (deterrentFiredTime > 0 && (now - deterrentFiredTime) < DETERRENT_SUPPRESSION_MS) return;
+        if (isAiRunning.get() || (now - lastAiTimeMs) < AI_COOLDOWN_CLOSE_MS) return;
+        // Take turns with motion AI: after a look, the next slot is its if it has motion.
+        if (lastAiDispatchWasProbe && pipelineV2 != null
+                && pipelineV2.getMaxThreatLevel() >= MotionPipelineV2.THREAT_MEDIUM) return;
+
+        // A due follow-up goes first: the vehicle is only in view briefly.
+        int pick = -1;
+        boolean secondLook = false;
+        for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS && pick < 0; q++) {
+            long due = lightProbeFollowUpAt.get(q);
+            if (due != 0 && nowElapsed >= due && quadrantEnabledForAi(q)
+                    && lightProbeBudgetLeft(q, nowElapsed)) {
+                pick = q;
+                secondLook = true;
+            }
+        }
+        for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS && !secondLook; q++) {
+            if (lightKillSeenMs[q] == 0 || nowElapsed - lightKillSeenMs[q] > LIGHT_PROBE_PENDING_MS) continue;
+            if (lastLightProbeMs[q] != 0 && nowElapsed - lastLightProbeMs[q] < LIGHT_PROBE_MIN_GAP_MS) continue;
+            if (lightProbeFollowUpAt.get(q) != 0) continue;  // its chain is still running
+            if (!quadrantEnabledForAi(q) || !lightProbeBudgetLeft(q, nowElapsed)) continue;
+            if (pick < 0 || lightKillSeenMs[q] > lightKillSeenMs[pick]) pick = q;
+        }
+        if (pick < 0) return;
+
+        runAiOnQuadrant(frame, pick, true, secondLook);
+        if (!isAiRunning.get()) return;  // refused (counted by noteAiSkip) — retry next tick
+        if (secondLook) lightProbeFollowUpAt.set(pick, 0);
+        lastLightProbeMs[pick] = nowElapsed;
+        lightProbeTimes[pick].addLast(nowElapsed);
+        logger.info(secondLook
+                ? String.format("Light-change check: Q%d [%s] follow-up look — has the vehicle moved?",
+                        pick, MotionPipelineV2.QUADRANT_NAMES[pick])
+                : String.format("Light-change check: Q%d [%s] %d-block burst discarded as a light "
+                        + "change — asking AI",
+                        pick, MotionPipelineV2.QUADRANT_NAMES[pick], lightKillBlocks[pick]));
+    }
+
+    /** Rolling per-camera look budget (frame thread); logs once per window when spent. */
+    private boolean lightProbeBudgetLeft(int q, long nowElapsed) {
+        java.util.ArrayDeque<Long> times = lightProbeTimes[q];
+        if (times == null) {
+            times = new java.util.ArrayDeque<>();
+            lightProbeTimes[q] = times;
+        }
+        while (!times.isEmpty() && nowElapsed - times.peekFirst() > LIGHT_PROBE_BUDGET_WINDOW_MS) {
+            times.pollFirst();
+        }
+        if (times.size() < LIGHT_PROBE_BUDGET) return true;
+        if (lightProbeBudgetLoggedMs[q] == 0
+                || nowElapsed - lightProbeBudgetLoggedMs[q] > LIGHT_PROBE_BUDGET_WINDOW_MS) {
+            lightProbeBudgetLoggedMs[q] = nowElapsed;
+            logger.info("Light-change check: Q" + q + " [" + MotionPipelineV2.QUADRANT_NAMES[q]
+                    + "] used " + LIGHT_PROBE_BUDGET + " looks in "
+                    + (LIGHT_PROBE_BUDGET_WINDOW_MS / 60000) + " min — pausing this camera");
+        }
+        return false;
+    }
+
+    private boolean quadrantEnabledForAi(int q) {
+        return pipelineV2Config == null || pipelineV2Config.quadrantEnabled == null
+                || q >= pipelineV2Config.quadrantEnabled.length
+                || pipelineV2Config.quadrantEnabled[q];
+    }
+
+    /** The >25% flash filter discarded this camera's motion as a lighting event. */
+    private static boolean isLightChangeKill(MotionPipelineV2.QuadrantResult r) {
+        if (r == null || r.motionDetected || r.brightnessSuppressed) return false;
+        if (r.salienceState == 1) return true;
+        // Salience off (or an older .so): the filter returns early without a flag.
+        return r.salienceState == 0 && r.activeBlocks * 4 > MotionPipelineV2.POLICY_BLOCKS;
+    }
+
+    /** trackerInZone's rule for a quadrant-space box: its bottom edge must reach the zone rows. */
+    private boolean boxBottomInZone(int quadrant, int y, int h) {
+        if (config == null) return true;
+        int maxRow = MotionPipelineV2.Config.maxDistanceRowForZone(
+                config.getEffectiveDetectionZone(quadrant));
+        if (maxRow <= 0) return true;
+        return (y + h) / (float) GRID_BLOCK_SIZE >= maxRow;
+    }
+
+    /**
+     * Zone rows plus the drawn detection area for a 320×240 camera-space box. The
+     * area test uses the blocks along the box's bottom edge (where it meets the
+     * ground), including the clipped final row.
+     */
+    private boolean boxInLightProbeArea(int quadrant, int x, int y, int w, int h) {
+        if (!boxBottomInZone(quadrant, y, h)) return false;
+        byte[] roi = quadrantRoiMirror.get(quadrant);
+        if (roi == null) return true;
+        int row = Math.min(Math.max(y + h - 1, 0) / GRID_BLOCK_SIZE, MotionPipelineV2.GRID_ROWS - 1);
+        int c0 = Math.min(Math.max(x, 0) / GRID_BLOCK_SIZE, MotionPipelineV2.GRID_COLS - 1);
+        int c1 = Math.min(Math.max(x + w - 1, 0) / GRID_BLOCK_SIZE, MotionPipelineV2.GRID_COLS - 1);
+        for (int c = c0; c <= c1; c++) {
+            if (roi[row * MotionPipelineV2.GRID_COLS + c] != 0) return true;
+        }
+        return false;
+    }
+
+    private static final class LightProbeVerdict {
+        final com.overdrive.app.ai.Detection hit;  // null = nothing that may record
+        final String note;
+
+        LightProbeVerdict(com.overdrive.app.ai.Detection hit, String note) {
+            this.hit = hit;
+            this.note = note;
+        }
+    }
+
+    private static int lightProbeGroup(int cls) {
+        if (cls == 5 || cls == 7) return 2;  // bus, truck → car (DetectionBaseline canonical)
+        if (cls == 3) return 1;              // motorcycle → bicycle
+        return cls;
+    }
+
+    /** Same spot across looks: horizontal centre within the move threshold. Box size is
+     *  not part of it — it flickers with the light. */
+    private static boolean sameSpot(float cxA, float cxB) {
+        return Math.abs(cxA - cxB) < LIGHT_PROBE_MIN_SHIFT;
+    }
+
+    /** Similar box width — plausibly the same car in two looks. */
+    private static boolean sameSize(float wA, float wB) {
+        return wA > 0 && wB > 0 && Math.max(wA / wB, wB / wA) < LIGHT_PROBE_MAX_WIDTH_RATIO;
+    }
+
+    /** A person hit already recorded near this x recently (aiExecutor only). Position only:
+     *  a glare "person"'s box size flickers with the light. */
+    private boolean atRecordedPersonSpot(int q, float cx, long obsElapsedMs, int epoch) {
+        for (LightProbeSpot s : lightProbePersonSpots[q]) {
+            if (s != null && s.epoch == epoch
+                    && obsElapsedMs - s.atElapsedMs <= LIGHT_PROBE_PERSON_REPEAT_MS
+                    && sameSpot(cx, s.cx)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Light-change check verdict (aiExecutor, under recordingLifecycleLock). {@code dets}
+     * are this look's persons (already >= the trigger bar) and non-baseline objects inside
+     * the zone/drawn area, in 320×240 camera space — possibly empty. Nothing counts on one
+     * look: a first look (a fresh burst) starts a chain and asks for a follow-up at least
+     * LIGHT_PROBE_FOLLOWUP_GAP_MS later; only follow-ups continue it. A person is a hit
+     * when a follow-up sees one again (not at a spot that already recorded). A vehicle is
+     * a hit only as a MOVE: a same-group, same-size box not sitting on a still chain
+     * position, paired with a chain position now empty — a parked car the light re-lit
+     * stays put, a partly-lit one changes size, a car first seen now vacates nothing. A
+     * faint mover's positions don't count as "still", so a slow car keeps its baseline.
+     * A chain that ends still hands its still cars to the baseline.
+     */
+    private LightProbeVerdict judgeLightProbe(int q, java.util.List<com.overdrive.app.ai.Detection> dets,
+                                              long obsElapsedMs, int epoch, boolean followUp) {
+        final float qW = THUMBNAIL_WIDTH / 2f;
+        int n = dets.size();
+        float[] cx = new float[n];
+        float[] w = new float[n];
+        int[] group = new int[n];  // 0 = person
+        for (int i = 0; i < n; i++) {
+            com.overdrive.app.ai.Detection d = dets.get(i);
+            cx[i] = (d.getX() + d.getW() / 2f) / qW;
+            w[i] = d.getW() / qW;
+            group[i] = lightProbeGroup(d.getClassId());
+        }
+
+        if (!followUp) lightProbeSighting[q] = null;  // a fresh burst starts its own chain
+        LightProbeSighting prev = lightProbeSighting[q];
+        boolean prevValid = prev != null && prev.epoch == epoch
+                && obsElapsedMs - prev.atElapsedMs <= LIGHT_PROBE_CHAIN_MS;
+        int moved = -1;
+        int movedFrom = -1;
+        boolean newcomer = false;
+        boolean chainHadPerson = false;
+        boolean[] known = new boolean[n];  // at any chain position
+        boolean[] still = new boolean[n];  // at a chain position that wasn't a mover's
+        boolean[] canMove = new boolean[n];  // passed the pairing test
+        if (prevValid) {
+            boolean[] vacated = new boolean[prev.cx.length];
+            for (int p = 0; p < prev.cx.length; p++) {
+                if (prev.group[p] == 0) chainHadPerson = true;
+                vacated[p] = true;
+                for (int j = 0; j < n; j++) {
+                    if (group[j] == prev.group[p] && sameSpot(cx[j], prev.cx[p])) {
+                        vacated[p] = false;
+                        known[j] = true;
+                        if (!prev.fromMover[p]) still[j] = true;
+                    }
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                if (!known[i]) newcomer = true;
+                if (still[i] || group[i] == 0) continue;  // persons don't need to move
+                for (int p = 0; p < prev.cx.length; p++) {
+                    if (prev.group[p] != group[i] || !vacated[p] || !sameSize(w[i], prev.w[p])) continue;
+                    canMove[i] = true;
+                    if (moved < 0 || dets.get(i).getConfidence() > dets.get(moved).getConfidence()) {
+                        moved = i;
+                        movedFrom = p;
+                    }
+                }
+            }
+        }
+
+        com.overdrive.app.ai.Detection person = null;
+        boolean personRepeat = false;
+        if (prevValid && chainHadPerson) {
+            for (int i = 0; i < n; i++) {
+                if (group[i] != 0) continue;
+                if (atRecordedPersonSpot(q, cx[i], obsElapsedMs, epoch)) {
+                    personRepeat = true;
+                    continue;
+                }
+                if (person == null || dets.get(i).getConfidence() > person.getConfidence()) {
+                    person = dets.get(i);
+                }
+            }
+        }
+
+        com.overdrive.app.ai.Detection hit = person;
+        String note = null;
+        boolean clearMove = moved >= 0
+                && dets.get(moved).getConfidence() >= LIGHT_PROBE_TRIGGER_MIN_CONF;
+        String moveNote = moved < 0 ? null
+                : String.format(java.util.Locale.US, "vehicle moved (x %.2f→%.2f) @%.2f",
+                        prev.cx[movedFrom], cx[moved], dets.get(moved).getConfidence());
+        if (clearMove || person != null) {
+            if (hit == null) hit = dets.get(moved);
+            note = moveNote;
+            lightProbeSighting[q] = null;
+        } else if (followUp && !prevValid) {
+            // The chain expired before this look ran (slow AI lane): end it, don't restart.
+            lightProbeSighting[q] = null;
+            if (n > 0) note = "follow-up ran too late — dropped";
+        } else {
+            int chainLooks = prevValid ? prev.looks + 1 : 1;
+            long chainStart = prevValid ? prev.atElapsedMs : obsElapsedMs;
+            // Never before this verdict exists: a slow look (3-6 s on some units) would
+            // otherwise ask for a follow-up that the frame thread expires on arrival.
+            long due = Math.max(obsElapsedMs + LIGHT_PROBE_FOLLOWUP_GAP_MS,
+                    android.os.SystemClock.elapsedRealtime());
+            // Don't ask for a look that would land past the chain window anyway.
+            boolean fits = due + LIGHT_PROBE_FOLLOWUP_GAP_MS / 2 <= chainStart + LIGHT_PROBE_CHAIN_MS;
+            if (n > 0 && chainLooks < LIGHT_PROBE_MAX_LOOKS && fits) {
+                // Look again against the chain's FIRST positions (a slow car needs the
+                // long baseline) plus anything new this look.
+                int keep = prevValid ? prev.cx.length : 0;
+                int add = 0;
+                for (int i = 0; i < n; i++) if (!known[i]) add++;
+                float[] rcx = new float[keep + add];
+                float[] rw = new float[keep + add];
+                int[] rg = new int[keep + add];
+                boolean[] rm = new boolean[keep + add];
+                for (int p = 0; p < keep; p++) {
+                    rcx[p] = prev.cx[p];
+                    rw[p] = prev.w[p];
+                    rg[p] = prev.group[p];
+                    rm[p] = prev.fromMover[p];
+                }
+                for (int i = 0, k = keep; i < n; i++) {
+                    if (known[i]) continue;
+                    rcx[k] = cx[i];
+                    rw[k] = w[i];
+                    // Any would-be mover, plus YOLO's duplicate boxes on it (NMS is
+                    // per class: car + truck on one vehicle), must not read as still.
+                    rm[k] = canMove[i] || (moved >= 0 && group[i] == group[moved]
+                            && sameSpot(cx[i], cx[moved]));
+                    rg[k++] = group[i];
+                }
+                lightProbeSighting[q] = new LightProbeSighting(rcx, rw, rg, rm, chainStart, epoch,
+                        chainLooks);
+                lightProbeFollowUpAt.set(q, due);
+                com.overdrive.app.ai.Detection d0 = dets.get(0);
+                note = moveNote != null ? moveNote + " — too faint, looking again"
+                        : prevValid
+                        ? (newcomer ? "something new appeared — looking again"
+                                    : "no movement yet — one more look")
+                        : d0.getClassId() == 0
+                                ? String.format(java.util.Locale.US,
+                                        "person @%.2f — looking again to confirm", d0.getConfidence())
+                                : String.format(java.util.Locale.US,
+                                        "vehicle @%.2f at x=%.2f — looking again to see if it moves",
+                                        d0.getConfidence(), cx[0]);
+            } else if (prevValid) {
+                lightProbeSighting[q] = null;
+                boolean learned = false;
+                for (int i = 0; i < n; i++) {
+                    if (!still[i] || group[i] == 0) continue;
+                    // Seen still across the chain: feed the baseline (same path as a
+                    // static Actor); after 3 such hits later bursts suppress it.
+                    com.overdrive.app.ai.Detection v = dets.get(i);
+                    detectionBaseline.promoteStaticActor(q, v.getClassId(), v.getX(), v.getY(),
+                            v.getW(), v.getH(), THUMBNAIL_WIDTH / 2, THUMBNAIL_HEIGHT / 2);
+                    learned = true;
+                }
+                note = moveNote != null ? moveNote + " — too faint to record"
+                        : learned ? "vehicle didn't move — treated as parked"
+                        : n > 0 ? "nothing confirmed after " + chainLooks + " looks"
+                        : "gone on the next look — not confirmed";
+            }
+        }
+        if (person != null) {
+            String pn = String.format(java.util.Locale.US, "person @%.2f seen again in zone",
+                    person.getConfidence());
+            note = note == null ? pn : pn + "; " + note;
+        } else if (personRepeat && hit == null) {
+            String pn = "person at a spot that already recorded — skipped";
+            note = note == null ? pn : pn + "; " + note;
+        }
+        return new LightProbeVerdict(hit, note);
+    }
+
+    /**
+     * Light-change check result (aiExecutor, outside recordingLifecycleLock). A hit — a
+     * person, or a moved vehicle, at the trigger bar — records on its own: that camera's
+     * motion was discarded, so no sequence may exist to carry it.
+     */
+    private void finishLightChangeCheck(int quadrant,
+                                        java.util.List<com.overdrive.app.ai.Detection> dets,
+                                        com.overdrive.app.ai.Detection hit,
+                                        String note, int epoch) {
+        String qName = MotionPipelineV2.QUADRANT_NAMES[quadrant];
+        String outcome = note != null ? note
+                : (dets == null || dets.isEmpty()) ? "AI saw nothing"
+                : "AI saw " + dets.size() + " object(s), nothing new inside the zone";
+        if (hit == null) {
+            logger.info("Light-change check: Q" + quadrant + " [" + qName + "] result — " + outcome);
+            return;
+        }
+        if (!active || armEpoch != epoch || recording
+                || com.overdrive.app.monitor.AccMonitor.isAccOn()) return;
+        logger.info("Light-change check: Q" + quadrant + " [" + qName + "] result — " + outcome
+                + " — recording on AI evidence");
+        long gen = startRecording();
+        if (gen < 0) return;
+        if (hit.getClassId() == 0) {
+            int slot = lightProbePersonSpotNext[quadrant];
+            lightProbePersonSpots[quadrant][slot] = new LightProbeSpot(
+                    (hit.getX() + hit.getW() / 2f) / (THUMBNAIL_WIDTH / 2f),
+                    android.os.SystemClock.elapsedRealtime(), epoch);
+            lightProbePersonSpotNext[quadrant] = (slot + 1) % LIGHT_PROBE_PERSON_SPOTS;
+        }
+        synchronized (recordingLifecycleLock) {
+            // startRecording() reset the event latches; carry this run's actors in.
+            if (recording && recordingGeneration.get() == gen) {
+                updateEventPeakSeverity(lastActors, gen);
+            }
+        }
+    }
+
+    /** A refused event start: next retry 1 s later, doubling to 30 s. Returns the delay. */
+    private long noteEventStartRefused() {
+        int n = Math.min(eventStartRefusals + 1, 16);
+        eventStartRefusals = n;
+        long delay = Math.min(EVENT_START_RETRY_MAX_MS,
+                EVENT_START_RETRY_BASE_MS << Math.min(n - 1, 5));
+        eventStartRetryAtMs = android.os.SystemClock.elapsedRealtime() + delay;
+        return delay;
+    }
+
     /** @return recording generation started by this call, or -1 when no start occurred. */
     private long startRecording() {
         if (recorder == null) {
@@ -9925,7 +10640,7 @@ public class SurveillanceEngineGpu {
         // Defensive: a throw returns trigDir unchanged.
         if (smRef != null && trigDir != null) {
             try {
-                File spill = smRef.resolveSurveillanceTargetWithEnospcFallback(trigDir, 100L * 1024 * 1024);
+                File spill = smRef.resolveSurveillanceTargetWithEnospcFallback(trigDir, EVENT_CLIP_RESERVE_BYTES);
                 if (spill != null) trigDir = spill;
             } catch (Throwable t) {
                 logger.warn("ENOSPC-fallback resolve failed (event): " + t.getMessage());
@@ -10008,6 +10723,30 @@ public class SurveillanceEngineGpu {
         try {
             eventTrig = recorder.triggerEventRecordingExclusive(
                     currentEventFile.getAbsolutePath(), postRecordMs);
+            // A FAT32 folder out of directory entries refuses the clip although the card has space:
+            // relief frees entries on its own thread for the start retry. Non-blocking (frame thread).
+            if (eventTrig == GpuMosaicRecorder.TriggerResult.REFUSED && smRef != null) {
+                smRef.relieveFolderEntries(currentEventFile.getParentFile(), false);
+            }
+            // Refused on a card that also fails a write test: StorageManager latches it
+            // (EIO, not encoder warm-up) and it now resolves to internal — save THIS clip there.
+            if (eventTrig == GpuMosaicRecorder.TriggerResult.REFUSED && smRef != null
+                    && trigDir != null && smRef.reportWriteFault(trigDir)) {
+                File internal = smRef.resolveSurveillanceTargetWithEnospcFallback(
+                        trigDir, EVENT_CLIP_RESERVE_BYTES);
+                if (internal != null && !internal.equals(trigDir)) {
+                    eventOutputDir = internal;
+                    currentEventFile = new File(internal, currentEventFile.getName());
+                    if (currentEventFile.exists()) {
+                        currentEventFile = new File(internal, "event_" + timestamp + "_"
+                                + (System.currentTimeMillis() % 1000L) + ".mp4");
+                    }
+                    logger.warn("Card refused the event clip (write test failed in " + trigDir
+                            + ") — saving this event to internal storage: " + currentEventFile);
+                    eventTrig = recorder.triggerEventRecordingExclusive(
+                            currentEventFile.getAbsolutePath(), postRecordMs);
+                }
+            }
         } catch (RuntimeException | Error e) {
             synchronized (recordingLifecycleLock) { recordingStartInFlight = false; }
             throw e;
@@ -10024,12 +10763,15 @@ public class SurveillanceEngineGpu {
             return -1;
         }
         if (eventTrig != GpuMosaicRecorder.TriggerResult.STARTED) {
-            logger.warn("Event triggerEventRecording refused (encoder format "
-                + "not ready); event skipped, will fire on next motion");
+            long retryMs = noteEventStartRefused();
+            logger.warn("Event start refused by the recorder (encoder not ready, or the clip "
+                + "file could not be opened); retrying in " + (retryMs / 1000) + " s");
             currentEventFile = null;
             synchronized (recordingLifecycleLock) { recordingStartInFlight = false; }
             return -1;
         }
+        eventStartRefusals = 0;
+        eventStartRetryAtMs = 0;
         // COMMIT under the lifecycle lock, with a disarm re-check (audit R3b
         // Ext-3 leg A): the storage resolves above can take seconds, and a
         // disable() in that window saw recording==false and skipped its stop.
@@ -11324,7 +12066,7 @@ public class SurveillanceEngineGpu {
                     // Idle cleanup gate: hero JPEG bytes land after the mp4's
                     // save hook — bump so a parked idle tick sees them.
                     try {
-                        com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+                        com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(segmentMp4);
                     } catch (Throwable ignored) {}
                 }
             } else {
@@ -11384,7 +12126,7 @@ public class SurveillanceEngineGpu {
                         // Idle cleanup gate: async hero/fallback JPEG bytes
                         // land after the save hook — one bump per batch.
                         try {
-                            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+                            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(segmentMp4);
                         } catch (Throwable ignored) {}
                         inFlightSegmentMetadata.decrementAndGet();
                         synchronized (segmentMetadataDrainLock) {
@@ -11427,7 +12169,7 @@ public class SurveillanceEngineGpu {
                         // Idle cleanup gate: per-actor JPEG bytes land after
                         // the save hook — one bump per batch.
                         try {
-                            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty();
+                            com.overdrive.app.storage.StorageManager.getInstance().markStorageDirty(segmentMp4);
                         } catch (Throwable ignored) {}
                         inFlightSegmentMetadata.decrementAndGet();
                         synchronized (segmentMetadataDrainLock) {
@@ -11773,7 +12515,20 @@ public class SurveillanceEngineGpu {
         for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) {
             salienceRunTicks[q] = 0;
             salienceLumaAnchor[q] = 0f;
+            lightKillSeenMs[q] = 0;
+            lightKillBlocks[q] = 0;
+            lastLightProbeMs[q] = 0;
+            lightProbeTimes[q] = null;
+            lightProbeBudgetLoggedMs[q] = 0;
+            // lightProbeSighting[] / lightProbePersonSpots are aiExecutor-owned; their
+            // epoch check retires the previous session's.
+            lightProbeFollowUpAt.set(q, 0);
         }
+        lastAiDispatchWasProbe = false;
+        // A previous session's refusals must not stretch this session's first retry.
+        // (The SD write-fault latch deliberately survives: the card is still broken.)
+        eventStartRefusals = 0;
+        eventStartRetryAtMs = 0;
         
         // Reset post-suppression baseline refresh tracking
         for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) {
@@ -11800,6 +12555,8 @@ public class SurveillanceEngineGpu {
         if (pipelineV2 != null) {
             try {
                 NativeMotion.initPipelineV2();
+                // Native init resets every camera to the whole view; the ROI loop below re-applies.
+                for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) quadrantRoiMirror.set(q, null);
                 logger.info("V2 pipeline reset for new surveillance session");
             } catch (Exception e) {
                 logger.warn("V2 pipeline reset failed: " + e.getMessage());
@@ -12427,7 +13184,7 @@ public class SurveillanceEngineGpu {
      *         same geometry the native pipeline and the web ROI editor use.
      *         Previously reported 300 from a dead 640×480 constant, so the
      *         /api/surveillance config told the UI a block count that matched
-     *         neither the mask it posts back (roiBlocks_Q* is length-70, and
+     *         neither the mask it posts back (roiBlocks_Q* is length-80, with legacy migration, and
      *         applyEffectiveRoi silently ignores any other length) nor the array
      *         the pipeline fills.
      */
@@ -12856,9 +13613,12 @@ public class SurveillanceEngineGpu {
         latestMosaicJpeg = null;
 
         // Clean up YOLO detector
-        if (yoloDetector != null) {
-            yoloDetector.close();
-            yoloDetector = null;
+        synchronized (yoloLifecycleLock) {
+            yoloReleased = true;
+            if (yoloDetector != null) {
+                yoloDetector.close();
+                yoloDetector = null;
+            }
         }
 
         currentFrame = null;

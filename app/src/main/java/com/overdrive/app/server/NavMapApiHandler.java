@@ -2,10 +2,22 @@ package com.overdrive.app.server;
 
 import com.overdrive.app.logging.DaemonLogger;
 import com.overdrive.app.navmap.NavMapConfig;
+import com.overdrive.app.navmap.google.GoogleApi;
+import com.overdrive.app.navmap.google.GoogleApiState;
+import com.overdrive.app.navmap.google.GoogleKeyValidator;
+import com.overdrive.app.navmap.google.GoogleMapsBudget;
+import com.overdrive.app.navmap.google.GoogleMapsConfig;
+import com.overdrive.app.navmap.google.GoogleMapsSettings;
+import com.overdrive.app.navmap.google.GooglePricing;
+import com.overdrive.app.navmap.google.GoogleSku;
+import com.overdrive.app.navmap.google.GoogleUsageMirror;
 
 import org.json.JSONObject;
 
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * RoadSense Map routing (BYOK) HTTP API — backs the "Routing" config card on the
@@ -64,6 +76,9 @@ public class NavMapApiHandler {
         if (cleanPath.equals("/api/navmap/cluster/status") && method.equals("GET")) {
             sendClusterStatus(out);
             return true;
+        }
+        if (cleanPath.startsWith(GOOGLE_PREFIX)) {
+            return handleGoogle(method, cleanPath.substring(GOOGLE_PREFIX.length()), body, out);
         }
         return false;
     }
@@ -132,9 +147,10 @@ public class NavMapApiHandler {
 
             response.put("success", true);
         } catch (Exception e) {
-            logger.warn(TAG + ": setup failed: " + e.getMessage());
+            // JSONException messages quote the request body, which carries the key.
+            logger.warn(TAG + ": setup failed: " + e.getClass().getSimpleName());
             response.put("success", false);
-            response.put("error", e.getMessage());
+            response.put("error", "setup_failed");
         }
         HttpResponse.sendJson(out, response.toString());
     }
@@ -154,5 +170,370 @@ public class NavMapApiHandler {
             response.put("error", e.getMessage());
         }
         HttpResponse.sendJson(out, response.toString());
+    }
+
+    // ==================== Google Maps (BYOK) ====================
+
+    private static final String GOOGLE_PREFIX = "/api/navmap/google/";
+    private static final int GOOGLE_MAX_BODY_BYTES = 16 * 1024;
+    private static final long GOOGLE_MAX_QUOTA = 1_000_000L;
+    private static final long GOOGLE_MIN_BUDGET_CENTS = 100L;
+    private static final long GOOGLE_MAX_BUDGET_CENTS = 1_000_000L;
+    private static final String[][] GOOGLE_FLAG_KEYS = {
+            {"basemap", "googleBasemap"}, {"traffic", "googleTraffic"}, {"routing", "googleRouting"},
+            {"routeTraffic", "googleRouteTraffic"}, {"search", "googleSearch"}, {"enabled", "googleEnabled"}
+    };
+    private static final String[][] GOOGLE_QUOTA_KEYS = {
+            {"quotaTilesPerDay", "googleQuotaTilesPerDay"},
+            {"quotaRoutesPerDay", "googleQuotaRoutesPerDay"},
+            {"quotaPlacesPerDay", "googleQuotaPlacesPerDay"},
+            {"quotaGeocodePerDay", "googleQuotaGeocodePerDay"}
+    };
+    // Serialises key probes with the writes that depend on them (setup, test, clear).
+    private static final Object GOOGLE_LOCK = new Object();
+    private static volatile GoogleProbeMemo googleLastProbe;
+
+    /** Per-API reasons from the last stored probe, with the states they explain. */
+    private static final class GoogleProbeMemo {
+        final JSONObject states;
+        final JSONObject reasons;
+
+        GoogleProbeMemo(JSONObject states, JSONObject reasons) {
+            this.states = states;
+            this.reasons = reasons;
+        }
+    }
+
+    /**
+     * /api/navmap/google/{status,setup,test,settings,clear,usage}. The API key is write-only: it is
+     * never part of a response, log line or error, and responses are same-origin only.
+     */
+    private static boolean handleGoogle(String method, String route, String body, OutputStream out)
+            throws Exception {
+        boolean get = method.equals("GET") && route.equals("status");
+        boolean post = method.equals("POST") && (route.equals("setup") || route.equals("test")
+                || route.equals("settings") || route.equals("clear") || route.equals("usage"));
+        if (!get && !post) return false;
+        if (post && isOverGoogleBodyLimit(body)) {
+            sendGoogleJson(out, 413, googleError("body_too_large"));
+            return true;
+        }
+        JSONObject response;
+        try {
+            switch (route) {
+                case "status": response = googleStatus(); break;
+                case "setup": response = googleSetup(body); break;
+                case "test": response = googleTest(); break;
+                case "settings": response = googleSettings(body); break;
+                case "clear": response = googleClear(); break;
+                default: response = googleUsage(body); break;
+            }
+        } catch (Exception | LinkageError e) {
+            // Exception text can quote the request body, so only the type is logged.
+            logger.warn(TAG + ": google " + route + " failed: " + e.getClass().getSimpleName());
+            response = googleError(route + "_failed");
+        }
+        sendGoogleJson(out, 200, response);
+        return true;
+    }
+
+    private static JSONObject googleStatus() throws Exception {
+        GoogleMapsSettings settings = GoogleMapsConfig.load();
+        GooglePricing pricing = settings.getPricing();
+        JSONObject features = new JSONObject();
+        features.put("basemap", settings.getBasemap());
+        features.put("traffic", settings.getTraffic());
+        features.put("routing", settings.getRouting());
+        features.put("routeTraffic", settings.getRouteTraffic());
+        features.put("search", settings.getSearch());
+        JSONObject quotas = new JSONObject();
+        quotas.put("tiles", settings.getQuotaTilesPerDay());
+        quotas.put("routes", settings.getQuotaRoutesPerDay());
+        quotas.put("places", settings.getQuotaPlacesPerDay());
+        quotas.put("geocode", settings.getQuotaGeocodePerDay());
+        boolean paid = settings.getPaid();
+        int budgetCents = settings.getMonthlyBudgetCents();
+        JSONObject recommended = new JSONObject();
+        JSONObject recommendedPaid = new JSONObject();
+        JSONObject caps = new JSONObject();
+        JSONObject priceMicros = new JSONObject();
+        for (GoogleSku sku : GoogleSku.values()) {
+            recommended.put(sku.getWire(), GoogleMapsBudget.recommendedDailyQuota(pricing, sku));
+            caps.put(sku.getWire(), GoogleMapsBudget.monthlyFreeCap(pricing, sku));
+            priceMicros.put(sku.getWire(), GoogleMapsBudget.unitPriceMicros(pricing, sku));
+            if (paid) {
+                recommendedPaid.put(sku.getWire(),
+                        GoogleMapsBudget.recommendedDailyQuotaPaid(pricing, sku, budgetCents));
+            }
+        }
+        JSONObject apiState = googleStateJson(settings.getApiState());
+        JSONObject usage = GoogleUsageMirror.latest();
+        long spendMicros = usage != null ? Math.max(0L, usage.optLong("spendMicros", 0L)) : 0L;
+
+        JSONObject response = new JSONObject();
+        response.put("success", true);
+        response.put("hasKey", settings.getHasKey());
+        response.put("enabled", settings.getEnabled());
+        response.put("termsAccepted", settings.getTermsAcceptedMs() > 0);
+        response.put("features", features);
+        response.put("pricing", googleWire(pricing));
+        response.put("quotas", quotas);
+        response.put("recommended", recommended);
+        response.put("caps", caps);
+        response.put("apiState", apiState);
+        response.put("apiReason", googleReasonsFor(apiState));
+        response.put("validatedMs", settings.getValidatedMs());
+        response.put("usage", usage != null ? usage : JSONObject.NULL);
+        response.put("resetAtMs", GoogleMapsBudget.nextResetMs());
+        response.put("suggestedPricing", googleSuggestedPricing());
+        response.put("spendMode", paid ? "paid" : "free");
+        response.put("monthlyBudgetCents", budgetCents);
+        response.put("estimatedSpendCents", spendMicros / 10_000L);
+        response.put("priceMicros", priceMicros);
+        if (paid) response.put("recommendedPaid", recommendedPaid);
+        return response;
+    }
+
+    /** POST setup {apiKey, acceptTerms, pricing?}: probes the new key and stores it unless Google rejects it outright. */
+    private static JSONObject googleSetup(String body) throws Exception {
+        JSONObject req = parseGoogleBody(body);
+        if (req == null) return googleError("bad_request");
+        Object rawKey = req.opt("apiKey");
+        String apiKey = rawKey instanceof String ? ((String) rawKey).trim() : "";
+        boolean acceptTerms = Boolean.TRUE.equals(req.opt("acceptTerms"));
+        String pricing = null;
+        if (req.has("pricing")) {
+            pricing = googlePricingWire(req.opt("pricing"));
+            if (pricing == null) return googleError("invalid_pricing");
+        }
+        synchronized (GOOGLE_LOCK) {
+            GoogleMapsSettings current = GoogleMapsConfig.load();
+            if (current.getTermsAcceptedMs() <= 0 && !acceptTerms) return googleError("terms_required");
+            if (!GoogleKeyValidator.isValidFormat(apiKey)) return googleError("invalid_format");
+
+            GoogleKeyValidator.ValidationResult result = GoogleKeyValidator.validate(apiKey);
+            JSONObject response = googleProbeJson(result);
+            if (result.getKeyRejected()) {
+                response.put("success", false);
+                response.put("error", "invalid_key");
+                return response;
+            }
+            long now = System.currentTimeMillis();
+            JSONObject delta = new JSONObject();
+            delta.put("googleTermsAcceptedMs", acceptTerms ? now : current.getTermsAcceptedMs());
+            if (pricing != null) delta.put("googlePricing", pricing);
+            if (!GoogleMapsConfig.saveSettings(delta) || !GoogleMapsConfig.saveKey(apiKey)) {
+                response.put("success", false);
+                response.put("error", "save_failed");
+                return response;
+            }
+            if (!rememberGoogleProbe(result, response, now)) {
+                response.put("success", false);
+                response.put("error", "save_failed");
+                return response;
+            }
+            logger.info(TAG + ": saved Google key (encrypted)");
+            response.put("success", true);
+            return response;
+        }
+    }
+
+    /** POST test: probes the stored key and records the per-API states. */
+    private static JSONObject googleTest() throws Exception {
+        synchronized (GOOGLE_LOCK) {
+            GoogleMapsSettings current = GoogleMapsConfig.load();
+            if (!current.getHasKey()) return googleError("no_key");
+            GoogleKeyValidator.ValidationResult result = GoogleKeyValidator.validate(current.getApiKey());
+            JSONObject response = googleProbeJson(result);
+            boolean saved = rememberGoogleProbe(result, response, System.currentTimeMillis());
+            response.put("success", saved);
+            if (!saved) response.put("error", "save_failed");
+            return response;
+        }
+    }
+
+    /** POST settings: feature flags, pricing, daily quotas, spend mode and budget (non-secret keys only). */
+    private static JSONObject googleSettings(String body) throws Exception {
+        JSONObject req = parseGoogleBody(body);
+        if (req == null) return googleError("bad_request");
+        JSONObject delta = new JSONObject();
+        for (String[] flag : GOOGLE_FLAG_KEYS) {
+            if (!req.has(flag[0])) continue;
+            Object value = req.opt(flag[0]);
+            if (!(value instanceof Boolean)) return googleError("invalid_value");
+            delta.put(flag[1], value);
+        }
+        if (req.has("pricing")) {
+            String pricing = googlePricingWire(req.opt("pricing"));
+            if (pricing == null) return googleError("invalid_value");
+            delta.put("googlePricing", pricing);
+        }
+        for (String[] quota : GOOGLE_QUOTA_KEYS) {
+            if (!req.has(quota[0])) continue;
+            Object value = req.opt(quota[0]);
+            if (!(value instanceof Number)) return googleError("invalid_value");
+            double requested = ((Number) value).doubleValue();
+            if (Double.isNaN(requested) || Double.isInfinite(requested)) return googleError("invalid_value");
+            long clamped = Math.max(0L, Math.min(GOOGLE_MAX_QUOTA, Math.round(requested)));
+            delta.put(quota[1], (int) clamped);
+        }
+        String spendMode = null;
+        if (req.has("spendMode")) {
+            spendMode = googleSpendModeWire(req.opt("spendMode"));
+            if (spendMode == null) return googleError("invalid_value");
+            delta.put("googleSpendMode", spendMode);
+        }
+        long budgetCents = -1L;
+        if (req.has("monthlyBudgetCents")) {
+            Object value = req.opt("monthlyBudgetCents");
+            if (!(value instanceof Number)) return googleError("invalid_value");
+            double requested = ((Number) value).doubleValue();
+            if (Double.isNaN(requested) || Double.isInfinite(requested) || requested <= 0) {
+                return googleError("invalid_value");
+            }
+            if (Math.round(requested) < GOOGLE_MIN_BUDGET_CENTS) return googleError("budget_min");
+            budgetCents = Math.min(GOOGLE_MAX_BUDGET_CENTS, Math.round(requested));
+            delta.put("googleMonthlyBudgetCents", (int) budgetCents);
+        }
+        // Paid mode always carries a budget: from this request or the one already stored.
+        if ("paid".equals(spendMode) && budgetCents < 0 && GoogleMapsConfig.load().getMonthlyBudgetCents() <= 0) {
+            return googleError("budget_required");
+        }
+        if (delta.length() == 0) return googleError("no_settings");
+        boolean saved = GoogleMapsConfig.saveSettings(delta);
+        JSONObject response = new JSONObject();
+        response.put("success", saved);
+        if (!saved) response.put("error", "save_failed");
+        return response;
+    }
+
+    private static JSONObject googleClear() throws Exception {
+        synchronized (GOOGLE_LOCK) {
+            boolean cleared = GoogleMapsConfig.clear();
+            googleLastProbe = null;
+            if (cleared) logger.info(TAG + ": cleared Google key");
+            JSONObject response = new JSONObject();
+            response.put("success", cleared);
+            if (!cleared) response.put("error", "clear_failed");
+            return response;
+        }
+    }
+
+    /** POST usage: the app's budget snapshot, mirrored for the settings page. */
+    private static JSONObject googleUsage(String body) throws Exception {
+        boolean stored = GoogleUsageMirror.store(body);
+        JSONObject response = new JSONObject();
+        response.put("success", stored);
+        if (!stored) response.put("error", "invalid_snapshot");
+        return response;
+    }
+
+    private static boolean rememberGoogleProbe(GoogleKeyValidator.ValidationResult result,
+                                               JSONObject probe, long validatedMs) throws Exception {
+        boolean saved = GoogleMapsConfig.saveApiState(result.getStates(), validatedMs);
+        googleLastProbe = saved
+                ? new GoogleProbeMemo(probe.getJSONObject("apiState"), probe.getJSONObject("apiReason"))
+                : null;
+        if (!saved) logger.warn(TAG + ": Google API state not saved");
+        return saved;
+    }
+
+    private static JSONObject googleProbeJson(GoogleKeyValidator.ValidationResult result) throws Exception {
+        JSONObject reasons = new JSONObject();
+        for (GoogleApi api : GoogleApi.values()) {
+            String reason = result.getReasons().get(api);
+            reasons.put(googleWire(api), reason != null ? reason : GoogleKeyValidator.REASON_UNEXPECTED);
+        }
+        JSONObject response = new JSONObject();
+        response.put("apiState", googleStateJson(result.getStates()));
+        response.put("apiReason", reasons);
+        return response;
+    }
+
+    private static JSONObject googleStateJson(Map<GoogleApi, GoogleApiState> states) throws Exception {
+        JSONObject json = new JSONObject();
+        for (GoogleApi api : GoogleApi.values()) {
+            GoogleApiState state = states != null ? states.get(api) : null;
+            json.put(googleWire(api), state != null ? googleWire(state) : "unknown");
+        }
+        return json;
+    }
+
+    // Reasons live only in memory, so they are served only while the saved state still matches.
+    private static JSONObject googleReasonsFor(JSONObject apiState) throws Exception {
+        JSONObject reasons = new JSONObject();
+        GoogleProbeMemo memo = googleLastProbe;
+        if (memo == null) return reasons;
+        for (GoogleApi api : GoogleApi.values()) {
+            String wire = googleWire(api);
+            if (memo.reasons.has(wire) && memo.states.optString(wire).equals(apiState.optString(wire))) {
+                reasons.put(wire, memo.reasons.optString(wire));
+            }
+        }
+        return reasons;
+    }
+
+    private static JSONObject parseGoogleBody(String body) {
+        try {
+            return new JSONObject(body == null || body.trim().isEmpty() ? "{}" : body);
+        } catch (Exception | StackOverflowError e) {
+            // Deeply nested input recurses in the parser; treat it as a bad request.
+            return null;
+        }
+    }
+
+    private static boolean isOverGoogleBodyLimit(String body) {
+        if (body == null) return false;
+        return body.length() > GOOGLE_MAX_BODY_BYTES
+                || body.getBytes(StandardCharsets.UTF_8).length > GOOGLE_MAX_BODY_BYTES;
+    }
+
+    private static String googleWire(Enum<?> value) {
+        return value.name().toLowerCase(Locale.ROOT);
+    }
+
+    private static String googlePricingWire(Object value) {
+        if (!(value instanceof String)) return null;
+        String pricing = ((String) value).trim().toLowerCase(Locale.ROOT);
+        return pricing.equals("global") || pricing.equals("india") ? pricing : null;
+    }
+
+    private static String googleSpendModeWire(Object value) {
+        if (!(value instanceof String)) return null;
+        String mode = ((String) value).trim().toLowerCase(Locale.ROOT);
+        return mode.equals("free") || mode.equals("paid") ? mode : null;
+    }
+
+    // India when the network or SIM country list (one entry per slot) includes "in".
+    private static String googleSuggestedPricing() {
+        String[] props = {"gsm.operator.iso-country", "gsm.sim.operator.iso-country"};
+        for (String prop : props) {
+            for (String country : systemProperty(prop).split(",")) {
+                if (country.trim().equalsIgnoreCase("in")) return "india";
+            }
+        }
+        return "global";
+    }
+
+    private static String systemProperty(String key) {
+        try {
+            Object value = Class.forName("android.os.SystemProperties")
+                    .getMethod("get", String.class, String.class)
+                    .invoke(null, key, "");
+            return value instanceof String ? (String) value : "";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static JSONObject googleError(String code) throws Exception {
+        JSONObject response = new JSONObject();
+        response.put("success", false);
+        response.put("error", code);
+        return response;
+    }
+
+    private static void sendGoogleJson(OutputStream out, int status, JSONObject response) throws Exception {
+        HttpResponse.sendJsonNoCors(out, status, response.toString());
     }
 }

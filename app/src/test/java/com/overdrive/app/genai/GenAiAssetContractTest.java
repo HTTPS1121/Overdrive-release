@@ -117,7 +117,7 @@ public class GenAiAssetContractTest {
         assertTrue(html.contains("margin: 0 !important;"));
         assertTrue(html.contains(
                 "class=\"card ai-insight-card\""));
-        assertTrue(html.contains("core.js?v=23"));
+        assertTrue(html.contains("core.js?v=24"));
         assertTrue(html.contains("placeholder=\"Ask OverDrive…\""));
         assertTrue(html.contains(
                 "min-height: 180px; max-height: 720px"));
@@ -144,7 +144,7 @@ public class GenAiAssetContractTest {
         assertTrue(runtime.contains("old.connectionPool().evictAll()"));
         assertTrue(runtime.contains(
                 "old.dispatcher().executorService().shutdownNow()"));
-        assertTrue(runtime.contains("ProxyHelper.getFailClosedHttpProxy()"));
+        assertTrue(runtime.contains("ProxyHelper.routeFor("));
         assertTrue(runtime.contains("\"proxy_required_unavailable\""));
     }
 

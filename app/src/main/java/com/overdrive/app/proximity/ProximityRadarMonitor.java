@@ -3,6 +3,7 @@ package com.overdrive.app.proximity;
 import android.content.Context;
 import android.hardware.bydauto.radar.AbsBYDAutoRadarListener;
 
+import com.overdrive.app.byd.dilink5.Dilink5RadarBridge;
 import com.overdrive.app.byd.radar.RadarConstants;
 import com.overdrive.app.logging.DaemonLogger;
 import com.overdrive.app.proximity.ProximityGuardConfig.TriggerLevel;
@@ -45,17 +46,18 @@ public class ProximityRadarMonitor {
     }
     
     private final Context context;
-    private final TriggerLevel triggerLevel;
+    private volatile TriggerLevel triggerLevel;
     private TriggerCallback callback;
     
     // Radar device and listener
     private Object radarDevice = null;
     private RadarListener radarListener = null;
-    private boolean listening = false;
+    private Dilink5RadarBridge.Listener bridgeListener = null;
+    private volatile boolean listening = false;
     
     // Sensor state tracking
     private final int[] sensorStates = new int[RadarConstants.SENSOR_COUNT];
-    private boolean isTriggered = false;
+    private volatile boolean isTriggered = false;
 
     // Per-sensor "trustworthy" flag. A sensor's cached state may participate in
     // the trigger scan ONLY after we've observed it deliver at least one real
@@ -78,6 +80,8 @@ public class ProximityRadarMonitor {
     private long lastTriggerTime = 0;
     private long lastSafeTime = 0;
     private static final long DEBOUNCE_MS = 500;  // 500ms debounce
+    // Whether RED was reported for the live trigger; YELLOW -> RED inside it is not an edge.
+    private boolean redReported = false;
     
     public ProximityRadarMonitor(Context context, TriggerLevel triggerLevel) {
         this.context = context;
@@ -93,6 +97,13 @@ public class ProximityRadarMonitor {
         this.callback = callback;
     }
     
+    /** Applies a sensitivity change; the next radar event is evaluated against it. */
+    public void setTriggerLevel(TriggerLevel level) {
+        if (level == null || level == triggerLevel) return;
+        logger.info("Trigger level changed: " + triggerLevel + " -> " + level);
+        triggerLevel = level;
+    }
+
     /**
      * Start listening to radar events.
      */
@@ -101,7 +112,11 @@ public class ProximityRadarMonitor {
             logger.warn("Already listening to radar events");
             return;
         }
-        
+        if (Dilink5RadarBridge.isConsumerProcess()) {
+            startRelayListening();
+            return;
+        }
+
         try {
             logger.info("Starting radar listener...");
             
@@ -134,7 +149,30 @@ public class ProximityRadarMonitor {
             e.printStackTrace();
         }
     }
-    
+
+    // The DI5 daemon cannot bind the radar service, so it takes the app-process relay.
+    private void startRelayListening() {
+        Arrays.fill(sensorStates, RadarConstants.STATE_SAFE);
+        Arrays.fill(sensorObserved, false);
+        isTriggered = false;
+        bridgeListener = new Dilink5RadarBridge.Listener() {
+            @Override
+            public void onRadarProbeStates(int mask, int[] states) {
+                onRelayedStates(mask, states);
+            }
+
+            @Override
+            public void onRadarProbesExpired() {
+                onRelayExpired();
+            }
+        };
+        listening = true;
+        Dilink5RadarBridge.addListener(bridgeListener);
+        logger.info("Radar listener registered via DI5 app relay");
+        logger.info("Trigger configuration: level=" + triggerLevel +
+                   " (triggers on: " + getTriggerDescription() + ")");
+    }
+
     /**
      * Stop listening to radar events.
      */
@@ -142,9 +180,12 @@ public class ProximityRadarMonitor {
         if (!listening) {
             return;
         }
-        
+
         try {
-            if (radarDevice != null && radarListener != null) {
+            if (bridgeListener != null) {
+                Dilink5RadarBridge.removeListener(bridgeListener);
+                logger.info("Radar relay listener removed");
+            } else if (radarDevice != null && radarListener != null) {
                 Class<?> radarClass = radarDevice.getClass();
                 Method unregisterListener = radarClass.getMethod("unregisterListener", 
                     Class.forName("android.hardware.bydauto.radar.AbsBYDAutoRadarListener"));
@@ -155,6 +196,7 @@ public class ProximityRadarMonitor {
             logger.error("Failed to unregister radar listener: " + e.getMessage());
         } finally {
             listening = false;
+            bridgeListener = null;
             radarDevice = null;
             radarListener = null;
             Arrays.fill(sensorStates, RadarConstants.STATE_SAFE);
@@ -239,7 +281,10 @@ public class ProximityRadarMonitor {
         // and reporting, so its state is now trustworthy for the trigger scan.
         sensorStates[area] = state;
         sensorObserved[area] = true;
+        evaluateTrigger(area, state);
+    }
 
+    private void evaluateTrigger(int area, int state) {
         // Check trigger condition
         boolean wasTriggered = isTriggered;
         boolean nowTriggered = checkTriggerCondition();
@@ -258,6 +303,7 @@ public class ProximityRadarMonitor {
                 lastTriggerTime = now;
                 
                 String level = getHighestTriggerLevel();
+                redReported = "RED".equals(level);
                 logger.info("PROXIMITY TRIGGER: area=" + RadarConstants.areaToString(area) + 
                            " state=" + RadarConstants.stateToString(state) + 
                            " level=" + level);
@@ -282,9 +328,62 @@ public class ProximityRadarMonitor {
             } else {
                 logger.debug("Safe transition debounced (too soon after last safe)");
             }
+        } else if (nowTriggered && !redReported && "RED".equals(getHighestTriggerLevel())) {
+            redReported = true;
+            logger.info("PROXIMITY ESCALATION: area=" + RadarConstants.areaToString(area) + " level=RED");
+            if (callback != null) {
+                callback.onProximityTrigger(area, state, "RED");
+            }
         }
     }
-    
+
+    /** Complete relayed set: an area outside {@code mask} is unknown and leaves the scan. */
+    private void onRelayedStates(int mask, int[] states) {
+        if (!listening) return;
+        int changedArea = -1;
+        for (int i = 0; i < RadarConstants.SENSOR_COUNT; i++) {
+            boolean observed = (mask & (1 << i)) != 0;
+            int state = observed ? states[i] : RadarConstants.STATE_SAFE;
+            if (observed && (!sensorObserved[i] || sensorStates[i] != state)) {
+                logger.debug("Radar event: area=" + RadarConstants.areaToString(i) +
+                            " state=" + RadarConstants.stateToString(state) + " (relay)");
+                changedArea = i;
+            }
+            sensorStates[i] = state;
+            sensorObserved[i] = observed;
+        }
+        int area = firstTriggeringArea();
+        if (area < 0) area = changedArea >= 0 ? changedArea : Integer.numberOfTrailingZeros(mask);
+        evaluateTrigger(area, sensorStates[area]);
+    }
+
+    private void onRelayExpired() {
+        if (!listening) return;
+        Arrays.fill(sensorStates, RadarConstants.STATE_SAFE);
+        Arrays.fill(sensorObserved, false);
+        if (!isTriggered) return;
+        // Not debounced: once the relay is silent no later event could retry a deferred safe edge.
+        isTriggered = false;
+        lastSafeTime = System.currentTimeMillis();
+        logger.info("PROXIMITY SAFE: radar relay went silent");
+        if (callback != null) {
+            callback.onProximitySafe();
+        }
+    }
+
+    private int firstTriggeringArea() {
+        int yellow = -1;
+        for (int i = 0; i < sensorStates.length; i++) {
+            if (!sensorObserved[i]) continue;
+            if (sensorStates[i] == RadarConstants.STATE_RED) return i;
+            if (yellow < 0 && triggerLevel == TriggerLevel.YELLOW_RED
+                    && sensorStates[i] == RadarConstants.STATE_YELLOW) {
+                yellow = i;
+            }
+        }
+        return yellow;
+    }
+
     /**
      * Check if any sensor meets the trigger condition.
      *

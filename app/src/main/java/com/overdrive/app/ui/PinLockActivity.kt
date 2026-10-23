@@ -139,7 +139,9 @@ class PinLockActivity : AppCompatActivity() {
         // the lock-screen surface automatically.
         findViewById<TextView?>(R.id.tvPinRecoveryHint)?.text = getString(
             R.string.pin_lock_recovery_hint_prefix,
-            getString(R.string.settings_security_recovery_command)
+            // Live flag path: matches the resource on the legacy root and the
+            // alternate folder on head units that opted into it.
+            PinManager.recoveryCommand()
         )
 
         wireKeypad()

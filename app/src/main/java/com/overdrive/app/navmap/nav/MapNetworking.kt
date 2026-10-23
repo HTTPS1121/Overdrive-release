@@ -169,6 +169,7 @@ object MapNetworking {
     fun installMapLibreHttpClient() {
         try {
             val tileClient = builder()
+                .addInterceptor(com.overdrive.app.navmap.google.GoogleHttp.interceptor())
                 .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
                 .build()

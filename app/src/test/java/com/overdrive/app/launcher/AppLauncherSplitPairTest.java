@@ -92,6 +92,25 @@ public class AppLauncherSplitPairTest {
 
         // Parsed dump with other tasks but none for the package: CONFIRMED absent.
         assertEquals(-1, AppLauncher.taskIdInDump(dumpWithTasks, "com.maps.app"));
+        // A root task REMEMBERING a destroyed activity (mLastPausedActivity etc.) is
+        // bookkeeping, not a live member: it must not resurrect the task. Android 12
+        // shared cluster displays keep such references after force-stop, which made
+        // taskConfirmedAbsent false forever and wedged the DI5 cleanup.
+        String dumpWithStaleReference =
+                "* Task{root #11 type=standard}\n"
+                + "    mLastPausedActivity: ActivityRecord{abc u0 com.maps.app/.MainActivity t42 f}\n"
+                + "    topResumedActivity=ActivityRecord{def u0 com.maps.app/.MainActivity t42 f}\n"
+                + "* Task{aaa #40 type=standard}\n"
+                + "    com.other.app/.MainActivity\n";
+        assertEquals(-1, AppLauncher.taskIdInDump(dumpWithStaleReference, "com.maps.app"));
+        assertTrue(AppLauncher.isTaskStateReferenceLine(
+                "mLastPausedActivity: ActivityRecord{abc u0 com.maps.app/.Main t42 f}"));
+        assertTrue(AppLauncher.isTaskStateReferenceLine(
+                "mResumedActivity: ActivityRecord{abc u0 com.maps.app/.Main t42 f}"));
+        assertFalse(AppLauncher.isTaskStateReferenceLine(
+                "com.maps.app/.MainActivity"));
+        assertFalse(AppLauncher.isTaskStateReferenceLine(
+                "* Hist #0: ActivityRecord{ghi u0 com.maps.app/.MainActivity t42}"));
         // Shell/dumpsys failure: unverifiable, never "absent".
         assertEquals(AppLauncher.TASK_LOOKUP_FAILED,
                 AppLauncher.taskIdInDump(null, "com.maps.app"));

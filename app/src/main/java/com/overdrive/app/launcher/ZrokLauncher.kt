@@ -31,12 +31,12 @@ class ZrokLauncher(
     private val logManager: LogManager
 ) {
     companion object {
-        private val TAG = "ZrokLauncher"
+        private const val TAG = "ZrokLauncher"
         
         // Zrok paths
-        private val ZROK_TMP_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok")
-        private val ZROK_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok.log")
-        private val ZROK_HOME = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp")
+        private val ZROK_TMP_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("zrok")
+        private val ZROK_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("zrok.log")
+        private val ZROK_HOME: String get() = com.overdrive.app.util.ScratchRoot.dir()
         private const val ZROK_BACKEND_PORT = 8080
         private const val ZROK_BACKEND_URL = "http://127.0.0.1:8080"
         private const val ZROK_RUNTIME_PROBE_CLASS = "com.overdrive.app.launcher.ZrokRuntimeProbe"
@@ -50,20 +50,20 @@ class ZrokLauncher(
         // zrok unsupervised — if the share process then drops its session
         // the public URL stays registered at the edge but routes to
         // nothing, and the user sees 502 until the next manual restart.
-        @JvmField val ZROK_WATCHDOG_SCRIPT = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_zrok.sh")
-        @JvmField val ZROK_DISABLED_SENTINEL = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok.disabled")
+        val ZROK_WATCHDOG_SCRIPT: String get() = com.overdrive.app.util.ScratchRoot.path("start_zrok.sh")
+        val ZROK_DISABLED_SENTINEL: String get() = com.overdrive.app.util.ScratchRoot.path("zrok.disabled")
         
         // Identity file - THIS IS THE KEY FILE that proves device is enabled
-        private val ZROK_IDENTITY_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.zrok/environment.json")
+        private val ZROK_IDENTITY_FILE: String get() = com.overdrive.app.util.ScratchRoot.path(".zrok/environment.json")
         
         // Reserved token file - stores the reserved share token
-        private val ZROK_RESERVED_TOKEN_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.zrok/reserved_token")
+        private val ZROK_RESERVED_TOKEN_FILE: String get() = com.overdrive.app.util.ScratchRoot.path(".zrok/reserved_token")
         
         // Enable token file - stores the enable token for cross-UID access
-        private val ZROK_ENABLE_TOKEN_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.zrok/enable_token")
+        private val ZROK_ENABLE_TOKEN_FILE: String get() = com.overdrive.app.util.ScratchRoot.path(".zrok/enable_token")
         
         // Unique name file - stores the generated unique name
-        private val ZROK_UNIQUE_NAME_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.zrok/unique_name")
+        private val ZROK_UNIQUE_NAME_FILE: String get() = com.overdrive.app.util.ScratchRoot.path(".zrok/unique_name")
         
         // Process name for identification
         private const val ZROK_PROCESS = "zrok"
@@ -248,8 +248,6 @@ class ZrokLauncher(
      * Priority:
      * 1. If reservedShareToken is set, use reserved mode (permanent URL)
      * 2. Otherwise, use public mode (random URL)
-     * 
-     * NOTE: Zrok and Cloudflared are mutually exclusive - this will kill cloudflared first.
      */
     fun launchZrok(callback: ZrokCallback) {
         logManager.info(TAG, "Launching Zrok tunnel...")
@@ -265,48 +263,44 @@ class ZrokLauncher(
             
             callback.onLog("Checking for existing tunnel...")
             
-            // Kill cloudflared first (mutually exclusive)
-            killCloudflaredIfRunning {
-                // Then check if zrok tunnel is already running
-                isTunnelRunning { isRunning ->
-                    if (isRunning) {
-                        logManager.info(TAG, "Zrok already running, checking for URL...")
-                        callback.onLog("Tunnel already running, getting URL...")
-                        // Clear the disable sentinel synchronously: report
-                        // "running" to the caller only after the rm has
-                        // landed. If we proceeded asynchronously, a daemon
-                        // exit racing the rm could let the watchdog gate-2
-                        // see the still-present sentinel and exit 0
-                        // (silent permanent stop). The continuation runs
-                        // inside the rm callback so ordering is guaranteed.
-                        val proceedAfterSentinelClear = {
-                            getTunnelUrl { existingUrl ->
-                                if (existingUrl != null) {
-                                    logManager.info(TAG, "Reusing existing tunnel: $existingUrl")
-                                    callback.onLog("Reusing existing tunnel")
-                                    callback.onTunnelUrl(existingUrl)
-                                } else {
-                                    logManager.info(TAG, "Tunnel running but no URL yet, waiting...")
-                                    callback.onLog("Waiting for tunnel URL...")
-                                    waitForTunnelUrl(callback, 1)
-                                }
+            isTunnelRunning { isRunning ->
+                if (isRunning) {
+                    logManager.info(TAG, "Zrok already running, checking for URL...")
+                    callback.onLog("Tunnel already running, getting URL...")
+                    // Clear the disable sentinel synchronously: report
+                    // "running" to the caller only after the rm has
+                    // landed. If we proceeded asynchronously, a daemon
+                    // exit racing the rm could let the watchdog gate-2
+                    // see the still-present sentinel and exit 0
+                    // (silent permanent stop). The continuation runs
+                    // inside the rm callback so ordering is guaranteed.
+                    val proceedAfterSentinelClear = {
+                        getTunnelUrl { existingUrl ->
+                            if (existingUrl != null) {
+                                logManager.info(TAG, "Reusing existing tunnel: $existingUrl")
+                                callback.onLog("Reusing existing tunnel")
+                                callback.onTunnelUrl(existingUrl)
+                            } else {
+                                logManager.info(TAG, "Tunnel running but no URL yet, waiting...")
+                                callback.onLog("Waiting for tunnel URL...")
+                                waitForTunnelUrl(callback, 1)
                             }
                         }
-                        adbShellExecutor.execute(
-                            command = "rm -f $ZROK_DISABLED_SENTINEL 2>/dev/null; echo done",
-                            callback = object : AdbShellExecutor.ShellCallback {
-                                override fun onSuccess(o: String) { proceedAfterSentinelClear() }
-                                override fun onError(e: String) {
-                                    logManager.warn(TAG, "Sentinel rm failed on already-running fast path: $e")
-                                    proceedAfterSentinelClear()
-                                }
-                            }
-                        )
-                    } else {
-                        // Not running, check if binary is installed
-                        callback.onLog("Setting up zrok...")
-                        checkAndInstallZrok(callback)
                     }
+                    adbShellExecutor.execute(
+                        command = "rm -f $ZROK_DISABLED_SENTINEL 2>/dev/null; echo done",
+                        callback = object : AdbShellExecutor.ShellCallback {
+                            override fun onSuccess(o: String) { proceedAfterSentinelClear() }
+                            override fun onError(e: String) {
+                                logManager.warn(TAG, "Sentinel rm failed on already-running fast path: $e")
+                                proceedAfterSentinelClear()
+                            }
+                        }
+                    )
+                } else {
+                    // Not running, check if binary is installed
+                    callback.onLog("Setting up zrok...")
+                    checkAndInstallZrok(callback)
                 }
             }
         }
@@ -324,38 +318,35 @@ class ZrokLauncher(
         logManager.info(TAG, "Launching Zrok in RESERVED mode...")
         callback.onLog("Starting reserved tunnel...")
         
-        // Kill cloudflared first (mutually exclusive)
-        killCloudflaredIfRunning {
-            isTunnelRunning { isRunning ->
-                if (isRunning) {
-                    logManager.info(TAG, "Zrok already running")
-                    callback.onLog("Tunnel already running")
-                    // Clear the disable sentinel synchronously, then
-                    // reconcile. The reconcile + onTunnelUrl callback runs
-                    // inside the rm's onSuccess so ordering is guaranteed.
-                    val proceedAfterSentinelClear = {
-                        // Reconcile against the running tunnel's actual URL —
-                        // the zrok process from a previous boot may have
-                        // bound a name that disagrees with the permanentUrl
-                        // the app cached.
-                        reconcileTunnelUrl(permanentUrl, attempt = 1) { actualUrl ->
-                            callback.onTunnelUrl(actualUrl)
+        isTunnelRunning { isRunning ->
+            if (isRunning) {
+                logManager.info(TAG, "Zrok already running")
+                callback.onLog("Tunnel already running")
+                // Clear the disable sentinel synchronously, then
+                // reconcile. The reconcile + onTunnelUrl callback runs
+                // inside the rm's onSuccess so ordering is guaranteed.
+                val proceedAfterSentinelClear = {
+                    // Reconcile against the running tunnel's actual URL —
+                    // the zrok process from a previous boot may have
+                    // bound a name that disagrees with the permanentUrl
+                    // the app cached.
+                    reconcileTunnelUrl(permanentUrl, attempt = 1) { actualUrl ->
+                        callback.onTunnelUrl(actualUrl)
+                    }
+                }
+                adbShellExecutor.execute(
+                    command = "rm -f $ZROK_DISABLED_SENTINEL 2>/dev/null; echo done",
+                    callback = object : AdbShellExecutor.ShellCallback {
+                        override fun onSuccess(o: String) { proceedAfterSentinelClear() }
+                        override fun onError(e: String) {
+                            logManager.warn(TAG, "Sentinel rm failed on reserved fast path: $e")
+                            proceedAfterSentinelClear()
                         }
                     }
-                    adbShellExecutor.execute(
-                        command = "rm -f $ZROK_DISABLED_SENTINEL 2>/dev/null; echo done",
-                        callback = object : AdbShellExecutor.ShellCallback {
-                            override fun onSuccess(o: String) { proceedAfterSentinelClear() }
-                            override fun onError(e: String) {
-                                logManager.warn(TAG, "Sentinel rm failed on reserved fast path: $e")
-                                proceedAfterSentinelClear()
-                            }
-                        }
-                    )
-                } else {
-                    callback.onLog("Setting up zrok...")
-                    checkAndInstallZrokForReserved(shareToken, permanentUrl, callback)
-                }
+                )
+            } else {
+                callback.onLog("Setting up zrok...")
+                checkAndInstallZrokForReserved(shareToken, permanentUrl, callback)
             }
         }
     }
@@ -906,8 +897,10 @@ class ZrokLauncher(
     private fun reconcileTunnelUrl(expectedUrl: String, attempt: Int, onUrl: (String) -> Unit) {
         // 10 attempts × ~1s each = ~10s to find the URL in the log. zrok
         // typically emits within 1-2s; the higher cap covers slow links.
-        if (attempt > 10) {
-            logManager.warn(TAG, "reconcileTunnelUrl: log never emitted URL after 10 attempts, " +
+        // A DiLink 5 cold boot spends longer in the watchdog's pre-start (binary refresh, proxy wait).
+        val maxAttempts = if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) 30 else 10
+        if (attempt > maxAttempts) {
+            logManager.warn(TAG, "reconcileTunnelUrl: log never emitted URL after $maxAttempts attempts, " +
                     "falling back to local expected=$expectedUrl")
             onUrl(expectedUrl)
             return
@@ -917,7 +910,7 @@ class ZrokLauncher(
         // the inter-attempt wait. CameraDaemon's
         // launch shell commands queued on the same executor can interleave
         // between attempts without delay.
-        reconcileScheduler.schedule({
+        scheduleOrStop("tunnel URL reconcile") {
             adbShellExecutor.execute(
                     "tail -n 200 $ZROK_LOG 2>/dev/null",
                     object : AdbShellExecutor.ShellCallback {
@@ -946,39 +939,19 @@ class ZrokLauncher(
                         }
                     }
             )
-        }, 1, java.util.concurrent.TimeUnit.SECONDS)
+        }
     }
-    
+
     /**
-     * Kill cloudflared if running (mutual exclusion).
+     * Runs [task] on [reconcileScheduler] after 1 s. A scheduler shut down by [shutdown] rejects it;
+     * that ends the wait instead of throwing out of the ADB callback that asked for it.
      */
-    private fun killCloudflaredIfRunning(onComplete: () -> Unit) {
-        adbShellExecutor.execute(
-            command = "pgrep -f cloudflared",
-            callback = object : AdbShellExecutor.ShellCallback {
-                override fun onSuccess(output: String) {
-                    if (output.trim().isNotEmpty()) {
-                        logManager.info(TAG, "Killing cloudflared (mutually exclusive with zrok)")
-                        adbShellExecutor.execute(
-                            command = "killall -9 cloudflared 2>/dev/null; echo done",
-                            callback = object : AdbShellExecutor.ShellCallback {
-                                override fun onSuccess(o: String) {
-                                    // Settle on the reconcile scheduler, NOT on the ADB
-                                    // executor — Thread.sleep here parks the shared
-                                    // single-thread executor, blocking every other
-                                    // queued shell command for 300ms.
-                                    reconcileScheduler.schedule({ onComplete() }, 300, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                }
-                                override fun onError(e: String) { onComplete() }
-                            }
-                        )
-                    } else {
-                        onComplete()
-                    }
-                }
-                override fun onError(error: String) { onComplete() }
-            }
-        )
+    private fun scheduleOrStop(what: String, task: () -> Unit) {
+        try {
+            reconcileScheduler.schedule({ task() }, 1, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            logManager.debug(TAG, "$what stopped: launcher shut down")
+        }
     }
     
     private fun checkAndInstallZrok(callback: ZrokCallback) {
@@ -1422,9 +1395,9 @@ class ZrokLauncher(
         // handshake completes. reconcileScheduler is a separate single
         // thread dedicated to delayed work, so the ADB executor stays
         // free to service other calls during the wait.
-        reconcileScheduler.schedule({
+        scheduleOrStop("tunnel URL wait") {
             doWaitForTunnelUrlPoll(callback, attempt)
-        }, 1, java.util.concurrent.TimeUnit.SECONDS)
+        }
     }
 
     private fun doWaitForTunnelUrlPoll(callback: ZrokCallback, attempt: Int) {

@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "name": "Speed & power",
+  "size": "medium",
+  "about": "Speed with a one-minute trace, and a power bar that turns blue while regenerating.",
+  "layers": [
+    { "type": "text", "name": "Label", "x": 26, "y": 50, "size": 15, "weight": 500, "text": "Speed", "color": "text2" },
+    { "type": "text", "name": "Gear", "x": 150, "y": 50, "size": 15, "weight": 700, "align": "right",
+      "text": "=!known(driving) ? '–' : reversing ? 'R' : driving ? 'D' : 'P'", "color": "accent" },
+    { "type": "text", "name": "Speed", "x": 26, "y": 104, "size": 48, "weight": 600, "text": "{dist(speed)}", "unit": "=speed_unit", "color": "text", "motion": "number" },
+    { "type": "spark", "name": "Speed trace", "x": 172, "y": 36, "w": 204, "h": 74, "value": "=speed", "window": 60, "color": "glowAccent", "fill": 0.2 },
+    { "type": "bar", "name": "Power bar", "x": 26, "y": 126, "w": 350, "h": 9, "value": "=clamp(abs(power) / 150, 0, 1)",
+      "color": "=power < 0 ? regen : glowAccent", "track": "etch", "glow": 0.8, "motion": "liquid" },
+    { "type": "text", "name": "Power", "x": 26, "y": 160, "size": 15, "weight": 600,
+      "text": "=power < 0 ? 'Regen ' + fmt(-power) + ' kW' : fmt(power) + ' kW'", "color": "=power < 0 ? regenText : text2" },
+    { "type": "text", "name": "Trace caption", "x": 376, "y": 160, "size": 13, "weight": 500, "align": "right", "text": "last 60 s", "color": "text3" }
+  ]
+}

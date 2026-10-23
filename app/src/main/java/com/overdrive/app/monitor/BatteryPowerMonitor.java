@@ -21,6 +21,10 @@ public class BatteryPowerMonitor extends BaseDeviceMonitor<BatteryPowerData> {
     // consumes voltage from the same poll loop for MCU sleep/wake hysteresis,
     // and V2's hysteresis windows are minute-scale.
     private static final long POLL_INTERVAL_MS = 60_000;
+    // A DiLink 5 daemon (non-app UID) is refused the OTA service bind with a SecurityException
+    // that never clears; reconnecting every 30 s only floods the log.
+    private static final long DI5_DAEMON_DENIED_RECONNECT_MS = 10 * 60_000L;
+    private volatile boolean bindDeniedOnDi5Daemon = false;
     
     public BatteryPowerMonitor() {
         super("BatteryPowerMonitor");
@@ -29,6 +33,7 @@ public class BatteryPowerMonitor extends BaseDeviceMonitor<BatteryPowerData> {
     @Override
     public void init(Context context) {
         this.context = context;
+        bindDeniedOnDi5Daemon = false;
         
         try {
             log("Initializing BYDAutoOtaDevice via reflection...");
@@ -36,8 +41,7 @@ public class BatteryPowerMonitor extends BaseDeviceMonitor<BatteryPowerData> {
             // Context is already PermissionBypassContext from AccSentryDaemon
             // Get real device via reflection
             Class<?> deviceClass = Class.forName("android.hardware.bydauto.ota.BYDAutoOtaDevice");
-            Method getInstance = deviceClass.getMethod("getInstance", Context.class);
-            device = getInstance.invoke(null, context);
+            device = com.overdrive.app.byd.BydDeviceHelper.invokeGetInstance(deviceClass, context);
             
             if (device == null) {
                 logError("BYDAutoOtaDevice.getInstance returned null", null);
@@ -62,8 +66,23 @@ public class BatteryPowerMonitor extends BaseDeviceMonitor<BatteryPowerData> {
             
         } catch (Exception e) {
             logError("Initialization failed", e);
+            bindDeniedOnDi5Daemon = isSecurityDenial(e)
+                    && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                    && android.os.Process.myUid() < android.os.Process.FIRST_APPLICATION_UID;
             markUnavailable();
         }
+    }
+
+    @Override
+    protected long reconnectIntervalMs() {
+        return bindDeniedOnDi5Daemon ? DI5_DAEMON_DENIED_RECONNECT_MS : super.reconnectIntervalMs();
+    }
+
+    private static boolean isSecurityDenial(Throwable t) {
+        for (int depth = 0; t != null && depth < 8; t = t.getCause(), depth++) {
+            if (t instanceof SecurityException) return true;
+        }
+        return false;
     }
     
     @Override

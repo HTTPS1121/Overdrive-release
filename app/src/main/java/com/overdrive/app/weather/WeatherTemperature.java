@@ -190,4 +190,124 @@ public final class WeatherTemperature {
             return -1;
         }
     }
+
+    // ---- Assistant forecast ----
+    // Deliberately a second cache: the fields above feed the "rain likely" automation
+    // trigger on the telemetry poll thread, and its cache clock must not be disturbed
+    // by an assistant question. One extra Open-Meteo round-trip every FORECAST_CACHE_MS.
+
+    private static final long FORECAST_CACHE_MS = 10 * 60 * 1000;
+    private static volatile String forecastJson = "";
+    private static volatile long forecastFetchedAt;
+    private static volatile double forecastLat = Double.NaN, forecastLon = Double.NaN;
+
+    /**
+     * Current conditions plus today's high/low for the assistant, or {@code available:false}.
+     * Synchronous and bounded like {@link #fetchNow} — call it off the hot path. Re-fetches
+     * when the cache ages out or the car has moved more than ~5 km.
+     */
+    public static synchronized JSONObject forecast(double lat, double lon) {
+        try {
+            if (lat == 0.0 && lon == 0.0) {
+                return new JSONObject().put("available", false).put("reason", "no_location");
+            }
+            long now = System.currentTimeMillis();
+            boolean moved = Double.isNaN(forecastLat)
+                    || Math.abs(lat - forecastLat) > 0.05 || Math.abs(lon - forecastLon) > 0.05;
+            if (!forecastJson.isEmpty() && !moved && now - forecastFetchedAt < FORECAST_CACHE_MS) {
+                return new JSONObject(forecastJson);
+            }
+            String url = String.format(Locale.US,
+                    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+                    + "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+                    + "precipitation,weather_code,wind_speed_10m"
+                    + "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+                    + "&forecast_days=2&timezone=auto", lat, lon);
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "OverDrive/1.0")
+                    .build();
+            OkHttpClient client = new OkHttpClient.Builder()
+                    .proxySelector(ProxyHelper.chainProxySelector())
+                    .connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(5, TimeUnit.SECONDS)
+                    .build();
+            try (Response response = client.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) {
+                    return new JSONObject().put("available", false).put("reason", "fetch_failed");
+                }
+                JSONObject root = new JSONObject(response.body().string());
+                JSONObject current = root.optJSONObject("current");
+                if (current == null) {
+                    return new JSONObject().put("available", false).put("reason", "fetch_failed");
+                }
+                JSONObject out = new JSONObject()
+                        .put("available", true)
+                        .put("source", "open-meteo")
+                        .put("temperatureC", current.optDouble("temperature_2m", Double.NaN))
+                        .put("feelsLikeC", current.optDouble("apparent_temperature", Double.NaN))
+                        .put("humidityPct", current.optInt("relative_humidity_2m", -1))
+                        .put("precipitationMm", current.optDouble("precipitation", Double.NaN))
+                        .put("windKph", current.optDouble("wind_speed_10m", Double.NaN))
+                        .put("conditions", describeCode(current.optInt("weather_code", -1)));
+                JSONObject daily = root.optJSONObject("daily");
+                if (daily != null) {
+                    out.put("today", day(daily, 0)).put("tomorrow", day(daily, 1));
+                }
+                forecastJson = out.toString();
+                forecastFetchedAt = now;
+                forecastLat = lat;
+                forecastLon = lon;
+                return out;
+            }
+        } catch (Exception e) {
+            logger.debug("weather forecast failed: " + e.getMessage());
+            try {
+                return new JSONObject().put("available", false).put("reason", "fetch_failed");
+            } catch (Exception ignored) {
+                return new JSONObject();
+            }
+        }
+    }
+
+    private static JSONObject day(JSONObject daily, int index) throws Exception {
+        org.json.JSONArray high = daily.optJSONArray("temperature_2m_max");
+        org.json.JSONArray low = daily.optJSONArray("temperature_2m_min");
+        org.json.JSONArray rain = daily.optJSONArray("precipitation_probability_max");
+        org.json.JSONArray dates = daily.optJSONArray("time");
+        JSONObject out = new JSONObject();
+        if (dates != null && index < dates.length()) out.put("date", dates.optString(index, ""));
+        if (high != null && index < high.length()) out.put("highC", high.optDouble(index, Double.NaN));
+        if (low != null && index < low.length()) out.put("lowC", low.optDouble(index, Double.NaN));
+        if (rain != null && index < rain.length()) {
+            out.put("precipitationProbabilityPct", rain.optInt(index, -1));
+        }
+        return out;
+    }
+
+    /** WMO weather codes as Open-Meteo documents them; unknown stays numeric-free. */
+    private static String describeCode(int code) {
+        switch (code) {
+            case 0: return "clear sky";
+            case 1: return "mainly clear";
+            case 2: return "partly cloudy";
+            case 3: return "overcast";
+            case 45: case 48: return "fog";
+            case 51: case 53: case 55: return "drizzle";
+            case 56: case 57: return "freezing drizzle";
+            case 61: return "light rain";
+            case 63: return "rain";
+            case 65: return "heavy rain";
+            case 66: case 67: return "freezing rain";
+            case 71: return "light snow";
+            case 73: return "snow";
+            case 75: return "heavy snow";
+            case 77: return "snow grains";
+            case 80: case 81: case 82: return "rain showers";
+            case 85: case 86: return "snow showers";
+            case 95: return "thunderstorm";
+            case 96: case 99: return "thunderstorm with hail";
+            default: return "unknown";
+        }
+    }
 }

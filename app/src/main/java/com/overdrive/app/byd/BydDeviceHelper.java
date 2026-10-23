@@ -216,6 +216,11 @@ public final class BydDeviceHelper {
      * Returns null if the device class doesn't exist or getInstance fails.
      */
     public static Object getDevice(String className, Context context) {
+        return acquireDevice(className, context, null);
+    }
+
+    private static Object acquireDevice(
+            String className, Context context, Throwable[] failureOut) {
         try {
             boolean dilink5 =
                     com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
@@ -229,13 +234,13 @@ public final class BydDeviceHelper {
                             ? com.overdrive.app.byd.dilink5.Dilink5SdkInjector.class
                                     .getClassLoader()
                             : BydDeviceHelper.class.getClassLoader());
-            Method getInstance = cls.getMethod("getInstance", Context.class);
-            Object device = getInstance.invoke(
-                    null, dilink5 ? withBydPermissionBypass(context) : context);
-            if (device != null) {
-                logger.info("Device OK: " + cls.getSimpleName());
-            } else {
-                logger.info("Device NULL: " + cls.getSimpleName());
+            Object device = invokeGetInstance(
+                    cls, dilink5 ? withBydPermissionBypass(context) : context);
+            int outcome = device != null ? 1 : 0;
+            Integer previous = lastDeviceOutcome.put(className, outcome);
+            if (previous == null || previous != outcome) {
+                logger.info((device != null ? "Device OK: " : "Device NULL: ")
+                        + cls.getSimpleName());
             }
             return device;
         } catch (Throwable e) {
@@ -243,8 +248,100 @@ public final class BydDeviceHelper {
                     ? e.getCause() : e;
             logger.debug("Device init failed: " + className + " — "
                     + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            lastDeviceOutcome.put(className, -1);
+            if (failureOut != null) failureOut[0] = cause;
         }
         return null;
+    }
+
+    // DiLink 5's OTA SDK starts a HandlerThread and then binds a service, which a non-app process
+    // can never do; it caches nothing on failure, so every retry leaks one live thread.
+    private static final String DI5_OTA_DEVICE = "android.hardware.bydauto.ota.BYDAutoOtaDevice";
+    private static final Object di5OtaLock = new Object();
+    private static Throwable di5OtaBindRefusal; // guarded by di5OtaLock
+
+    /**
+     * {@code cls.getInstance(context)}. In a DiLink 5 non-app process the OTA constructor runs until
+     * its bind is refused once; later calls rethrow that failure instead of constructing again.
+     */
+    public static Object invokeGetInstance(Class<?> cls, Context context) throws Exception {
+        if (!DI5_OTA_DEVICE.equals(cls.getName())
+                || !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                || android.os.Process.myUid() >= android.os.Process.FIRST_APPLICATION_UID) {
+            return cls.getMethod("getInstance", Context.class).invoke(null, context);
+        }
+        synchronized (di5OtaLock) {
+            if (di5OtaBindRefusal != null) throw new InvocationTargetException(di5OtaBindRefusal);
+            try {
+                return cls.getMethod("getInstance", Context.class).invoke(null, context);
+            } catch (InvocationTargetException failure) {
+                if (failure.getCause() instanceof SecurityException) {
+                    di5OtaBindRefusal = failure.getCause();
+                    logger.warn("DI5: " + cls.getSimpleName()
+                            + " cannot bind outside the app process; not constructed again");
+                }
+                throw failure;
+            }
+        }
+    }
+
+    // Last logged getInstance outcome per class (1 OK, 0 NULL, -1 failed); 5 s pollers
+    // log only transitions.
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer>
+            lastDeviceOutcome = new java.util.concurrent.ConcurrentHashMap<>();
+
+    // A DiLink 5 daemon (non-app UID) cannot bind the SDK's vehicle services, and the SDK re-runs
+    // that constructor on every getInstance until one succeeds. Display pollers only: a backed-off
+    // null must never feed a control or arming decision.
+    private static final long POLLED_DEVICE_BACKOFF_MIN_MS = 5_000L;
+    private static final long POLLED_DEVICE_BACKOFF_MAX_MS = 60_000L;
+    // key = class@context identity -> {consecutive failures, retry-at, last success}, elapsedRealtime.
+    private static final java.util.concurrent.ConcurrentHashMap<String, long[]>
+            polledDeviceState = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** {@link #getDevice} for display pollers; backs off failed DiLink 5 daemon acquisitions. */
+    public static Object getPolledDevice(String className, Context context) {
+        if (className == null
+                || !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                || android.os.Process.myUid() >= android.os.Process.FIRST_APPLICATION_UID) {
+            return getDevice(className, context);
+        }
+        String key = className + '@' + System.identityHashCode(context);
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        long[] state = polledDeviceState.get(key);
+        if (state != null && startedAt < state[1]) return null;
+        Throwable[] failure = new Throwable[1];
+        Object device = acquireDevice(className, context, failure);
+        recordPolledDevice(key, className, device != null, startedAt, failure[0]);
+        return device;
+    }
+
+    private static void recordPolledDevice(String key, String className, boolean acquired,
+                                           long startedAt, Throwable cause) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (acquired) {
+            polledDeviceState.compute(key, (k, previous) -> new long[] {
+                    0L, 0L, previous == null ? now : Math.max(previous[2], now)});
+            return;
+        }
+        long[] next = polledDeviceState.compute(key, (k, previous) -> {
+            // An acquisition that finished after this attempt started wins.
+            if (previous != null && previous[2] >= startedAt) return previous;
+            // A poller that went quiet for longer than the cap starts a fresh streak.
+            boolean freshStreak = previous == null
+                    || now - previous[1] > POLLED_DEVICE_BACKOFF_MAX_MS;
+            long failures = freshStreak ? 1L : previous[0] + 1L;
+            long delay = Math.min(POLLED_DEVICE_BACKOFF_MAX_MS,
+                    POLLED_DEVICE_BACKOFF_MIN_MS << (int) Math.min(failures - 1L, 4L));
+            return new long[] {failures, now + delay, previous == null ? 0L : previous[2]};
+        });
+        if (next[0] == 1L && next[1] > now) {
+            logger.warn("DI5 daemon cannot acquire " + className + " ("
+                    + (cause != null
+                            ? cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                            : "getInstance returned null")
+                    + "); polling backs off");
+        }
     }
 
     /**
@@ -585,6 +682,28 @@ public final class BydDeviceHelper {
         return null;
     }
 
+    /** Call a method taking one int[] (e.g. DiLink 5 setWindowControlState(int[])). */
+    public static Object callMethod(Object device, String methodName, int[] values) {
+        if (device == null || values == null
+                || VehicleActuatorBridge.isDiLink5RequestExpired()) {
+            return null;
+        }
+        Method m = lookupPublicMethodCached(device.getClass(), methodName,
+                publicIntArrayMethodCache, INT_ARRAY_PARAMS);
+        if (m == null) return null;
+        try {
+            return m.invoke(device, (Object) values.clone());
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            logger.debug(methodName + "(" + java.util.Arrays.toString(values) + ") threw: "
+                    + (cause != null ? cause.getClass().getSimpleName() + ": " + cause.getMessage() : "unknown"));
+        } catch (Exception e) {
+            logger.debug(methodName + "(" + java.util.Arrays.toString(values) + ") failed: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+        return null;
+    }
+
     private static Object callGetterDeclared(Object device, String methodName) {
         Class<?> cls = device.getClass();
         Method m = lookupDeclaredNoArgCached(cls, methodName);
@@ -657,9 +776,8 @@ public final class BydDeviceHelper {
      *
      * <p>Needed because {@link #callGet} prefers the {@code get(int[], Class)} form and only
      * falls back to {@code (int,int)} when the array form is absent entirely — so on a device
-     * exposing both, the {@code (int,int)} pairing is never attempted. The OEM app reads its
-     * battery-health index exactly this way (device type 1014 for the STATISTIC family) as its
-     * second-tier attempt, so some trims answer here and nowhere else.
+     * exposing both, the {@code (int,int)} pairing is never attempted. This helper lets callers
+     * select an explicit device-type channel, including the direct instrument health read.
      *
      * @return the raw returned object (usually a boxed number), or null when unavailable.
      */
@@ -1029,6 +1147,37 @@ public final class BydDeviceHelper {
         return false;
     }
 
+    /** DiLink 5 radar probe callbacks are concrete methods on the typed listener. */
+    public static boolean registerRadarListener(Object device, ListenerCallback callback) {
+        if (device == null) return false;
+        ensureRuntimeSdk();
+        try {
+            android.hardware.bydauto.radar.AbsBYDAutoRadarListener listener =
+                    new android.hardware.bydauto.radar.AbsBYDAutoRadarListener() {
+                        @Override
+                        public void onRadarProbeStateChanged(int area, int state) {
+                            invokeCallback(callback, "onRadarProbeStateChanged",
+                                    new Object[]{area, state});
+                        }
+
+                        @Override
+                        public void onReverseRadarSwitchStateChanged(int state) {
+                        }
+                    };
+            Method register = findRegisterMethod(
+                    device.getClass(),
+                    android.hardware.bydauto.radar.AbsBYDAutoRadarListener.class);
+            if (register != null) {
+                return registerRetainedListener(device, listener, register, null);
+            }
+        } catch (LinkageError e) {
+            logger.debug("registerRadarListener: class not available on this firmware");
+        } catch (Exception e) {
+            logger.debug("registerRadarListener failed: " + e.getMessage());
+        }
+        return false;
+    }
+
     /** DiLink 5 regenerative-braking strength callback. */
     public static boolean registerSettingListener(Object device, ListenerCallback callback) {
         if (device == null) return false;
@@ -1122,32 +1271,7 @@ public final class BydDeviceHelper {
                     public void onPowerLevelChanged(int level) {
                         invokeCallback(callback, "onPowerLevelChanged", new Object[]{level});
                     }
-                    // Generic feature-ID channel. There is no typed callback for the fob
-                    // unlock-button event, so it arrives only here, and only when the listener
-                    // is registered through the 2-arg int[] overload.
-                    public void onDataEventChanged(int eventId, android.hardware.bydauto.BYDAutoEventValue value) {
-                        invokeCallback(callback, "onDataEventChanged", new Object[]{eventId, value});
-                    }
                 };
-
-            if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
-                // DiLink 3: same legacy-additive shape as the tyre listener — a subscribe-all
-                // 2-arg registration for the generic channel (where the fob unlock event
-                // arrives), plus the typed 1-arg registration for doors/windows/power. The
-                // DiLink 3 HAL ignores the id filter and delivers every bodywork event on the
-                // generic channel anyway, so an empty array states what actually happens; the
-                // collector drops everything but the fob id without touching the HAL.
-                return registerLegacyAdditive(
-                        device,
-                        listener,
-                        android.hardware.bydauto.bodywork.AbsBYDAutoBodyworkListener.class,
-                        new int[0],
-                        false,
-                        "Bodywork");
-            }
-
-            // DiLink 5: exactly one overload, unchanged. The fob unlock source is not available
-            // there; unlockSource/easyEntry simply never fire.
             Method register = findRegisterMethod(device.getClass(),
                 android.hardware.bydauto.bodywork.AbsBYDAutoBodyworkListener.class);
             if (register != null) {
@@ -1163,6 +1287,43 @@ public final class BydDeviceHelper {
         }
         return false;
     }
+
+    /**
+     * A second bodywork listener for the generic feature-id channel, which only the 2-arg
+     * overload delivers. Its typed callbacks stay the base no-ops, so the typed listener's
+     * door/window events are not duplicated. Not used on DiLink 5.
+     */
+    public static boolean registerBodyworkEventListener(
+            Object device, int featureId, ListenerCallback callback) {
+        if (device == null || com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            return false;
+        }
+        try {
+            android.hardware.bydauto.bodywork.AbsBYDAutoBodyworkListener listener =
+                new android.hardware.bydauto.bodywork.AbsBYDAutoBodyworkListener() {
+                    public void onDataEventChanged(int eventId, android.hardware.bydauto.BYDAutoEventValue value) {
+                        invokeCallback(callback, "onDataEventChanged", new Object[]{eventId, value});
+                    }
+                };
+            Method register = findRegisterMethodWithIds(device.getClass(),
+                android.hardware.bydauto.bodywork.AbsBYDAutoBodyworkListener.class);
+            if (register == null) return false;
+            try {
+                register.invoke(device, listener, new int[]{featureId});
+            } catch (Exception filteredFailure) {
+                logger.debug("Bodywork event filtered registration failed: "
+                    + filteredFailure.getMessage());
+                register.invoke(device, listener, new int[0]);
+            }
+            return true;
+        } catch (LinkageError e) {
+            logger.debug("registerBodyworkEventListener: class not available on this firmware");
+        } catch (Exception e) {
+            logger.debug("registerBodyworkEventListener failed: " + e.getMessage());
+        }
+        return false;
+    }
+
     public static boolean registerTyreListener(Object device, ListenerCallback callback) {
         if (device == null) return false;
         ensureRuntimeSdk();
@@ -2019,6 +2180,7 @@ public final class BydDeviceHelper {
         if (device == null || VehicleActuatorBridge.isDiLink5RequestExpired()) {
             return Integer.MIN_VALUE;
         }
+        if (isForeignDiLink5FeatureId(featureId)) return Integer.MIN_VALUE;
         try {
             Class<?> eventValueClass = Class.forName("android.hardware.bydauto.BYDAutoEventValue");
             Object eventValue = eventValueClass.getConstructor(new Class[0]).newInstance(new Object[0]);
@@ -2057,13 +2219,16 @@ public final class BydDeviceHelper {
                 || VehicleActuatorBridge.isDiLink5RequestExpired()) {
             return Integer.MIN_VALUE;
         }
+        for (int id : ids) {
+            if (isForeignDiLink5FeatureId(id)) return Integer.MIN_VALUE;
+        }
         try {
             Class<?> eventValueClass = Class.forName("android.hardware.bydauto.BYDAutoEventValue");
             Object eventValue;
             try {
                 eventValue = eventValueClass.getConstructor(int[].class).newInstance((Object) values);
-            } catch (NoSuchMethodException noIntArrayCtor) {
-                // Older SDKs without the int[] constructor: fall back to the field form.
+            } catch (ReflectiveOperationException noUsableIntArrayCtor) {
+                // Any SDK where that ctor is missing or unusable: fall back to the field form.
                 eventValue = eventValueClass.getConstructor(new Class[0]).newInstance(new Object[0]);
                 eventValueClass.getField("intArrayValue").set(eventValue, values);
             }
@@ -2088,6 +2253,7 @@ public final class BydDeviceHelper {
      */
     public static Integer sendSetCommandIntegerResult(Object device, int featureId, int value) {
         if (device == null || VehicleActuatorBridge.isDiLink5RequestExpired()) return null;
+        if (isForeignDiLink5FeatureId(featureId)) return null;
         try {
             Class<?> eventValueClass = Class.forName("android.hardware.bydauto.BYDAutoEventValue");
             Object eventValue = eventValueClass.getConstructor(new Class[0]).newInstance(new Object[0]);
@@ -2236,11 +2402,64 @@ public final class BydDeviceHelper {
         NEGATIVE_CACHE_SENTINEL = sentinel;
     }
 
+    private static volatile java.util.Set<Integer> diLink5FeatureIds;
+    private static volatile boolean diLink5FeatureIdsUnavailable;
+
+    /** DiLink 5's set(int[], value) returns 0 for unknown ids; refuse ids outside its own table. */
+    static boolean isForeignDiLink5FeatureId(int featureId) {
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return false;
+        java.util.Set<Integer> known = diLink5FeatureIds();
+        if (known == null || known.contains(featureId)) return false;
+        logger.debug("feature id " + featureId + " (0x" + Integer.toHexString(featureId)
+                + ") is not a DiLink 5 feature id — write not sent");
+        return true;
+    }
+
+    private static java.util.Set<Integer> diLink5FeatureIds() {
+        java.util.Set<Integer> known = diLink5FeatureIds;
+        if (known != null || diLink5FeatureIdsUnavailable) return known;
+        synchronized (BydDeviceHelper.class) {
+            if (diLink5FeatureIds != null || diLink5FeatureIdsUnavailable) return diLink5FeatureIds;
+            ensureRuntimeSdk();
+            java.util.Set<Integer> ids = new java.util.HashSet<>();
+            try {
+                Class<?> table = Class.forName("android.hardware.bydauto.BYDAutoFeatureIds");
+                collectIntConstants(table, ids);
+                for (Class<?> nested : table.getDeclaredClasses()) collectIntConstants(nested, ids);
+            } catch (Throwable unavailable) {
+                logger.debug("DiLink 5 feature-id table unavailable: " + unavailable.getMessage());
+            }
+            if (ids.isEmpty()) {
+                diLink5FeatureIdsUnavailable = true;
+                return null;
+            }
+            diLink5FeatureIds = java.util.Collections.unmodifiableSet(ids);
+            return diLink5FeatureIds;
+        }
+    }
+
+    private static void collectIntConstants(Class<?> type, java.util.Set<Integer> out) {
+        for (Field field : type.getDeclaredFields()) {
+            int modifiers = field.getModifiers();
+            if (field.getType() != int.class
+                    || !java.lang.reflect.Modifier.isStatic(modifiers)
+                    || !java.lang.reflect.Modifier.isFinal(modifiers)) {
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+                out.add(field.getInt(null));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     private static final Class<?>[] NO_PARAMS = new Class<?>[0];
     private static final Class<?>[] INT_PARAMS = new Class<?>[]{int.class};
     private static final Class<?>[] INT_INT_PARAMS = new Class<?>[]{int.class, int.class};
     private static final Class<?>[] INT3_PARAMS = new Class<?>[]{int.class, int.class, int.class};
     private static final Class<?>[] INT4_PARAMS = new Class<?>[]{int.class, int.class, int.class, int.class};
+    private static final Class<?>[] INT_ARRAY_PARAMS = new Class<?>[]{int[].class};
 
     private static final java.util.concurrent.ConcurrentMap<Class<?>, java.util.concurrent.ConcurrentMap<String, Method>>
             publicNoArgMethodCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -2252,6 +2471,8 @@ public final class BydDeviceHelper {
             publicInt3MethodCache = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.ConcurrentMap<Class<?>, java.util.concurrent.ConcurrentMap<String, Method>>
             publicInt4MethodCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.ConcurrentMap<Class<?>, java.util.concurrent.ConcurrentMap<String, Method>>
+            publicIntArrayMethodCache = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.ConcurrentMap<Class<?>, java.util.concurrent.ConcurrentMap<String, Method>>
             declaredNoArgMethodCache = new java.util.concurrent.ConcurrentHashMap<>();
 

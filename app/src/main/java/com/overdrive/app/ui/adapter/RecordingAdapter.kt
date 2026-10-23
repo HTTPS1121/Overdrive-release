@@ -22,6 +22,7 @@ import com.google.android.material.color.MaterialColors
 import com.overdrive.app.ui.model.RecordingFile
 import com.overdrive.app.R
 import com.overdrive.app.ui.util.RecordingUiText
+import com.overdrive.app.ui.util.SafeKeepClipClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,8 +43,33 @@ class RecordingAdapter(
     private val onSelectionChanged: ((Int) -> Unit)? = null,
     private val onShare: ((RecordingFile) -> Unit)? = null,
     private val onEvidencePack: ((RecordingFile) -> Unit)? = null,
-    private val landscapeRows: Boolean = false
+    private val landscapeRows: Boolean = false,
+    private val onSafeKeepAction: ((RecordingFile, SafeKeepAction) -> Unit)? = null
 ) : ListAdapter<RecordingFile, RecordingAdapter.RecordingViewHolder>(RecordingDiffCallback()) {
+
+    enum class SafeKeepAction { UPLOAD_NOW, LOCK, UNLOCK, OPEN_CLOUD }
+
+    // SafeKeep pill state keyed by file name. Empty, with every pill hidden, while SafeKeep is off.
+    var safeKeepEnabled = false
+        private set
+    private var safeKeepStates: Map<String, SafeKeepClipClient.ClipState> = emptyMap()
+
+    /** Rebinds only the pills whose state changed (payload bind, no thumbnail reload). */
+    fun setSafeKeepStates(enabled: Boolean, states: Map<String, SafeKeepClipClient.ClipState>) {
+        val flipped = enabled != safeKeepEnabled
+        val previous = safeKeepStates
+        safeKeepEnabled = enabled
+        safeKeepStates = if (enabled) states else emptyMap()
+        for (i in 0 until itemCount) {
+            val name = getItem(i).file.name
+            if (flipped || previous[name] != safeKeepStates[name]) {
+                notifyItemChanged(i, PAYLOAD_SAFEKEEP)
+            }
+        }
+    }
+
+    fun safeKeepState(name: String): SafeKeepClipClient.ClipState? =
+        if (safeKeepEnabled) safeKeepStates[name] else null
     
     // Cache for thumbnails — size-bounded LRU. The cap is set in BYTES so a
     // mix of small sidecar JPEGs (~50 KB decoded) and full-res
@@ -149,6 +175,18 @@ class RecordingAdapter(
         holder.bind(getItem(position))
     }
 
+    override fun onBindViewHolder(
+        holder: RecordingViewHolder,
+        position: Int,
+        payloads: MutableList<Any>
+    ) {
+        if (payloads.isNotEmpty() && payloads.all { it === PAYLOAD_SAFEKEEP }) {
+            holder.bindSafeKeep(getItem(position))
+            return
+        }
+        super.onBindViewHolder(holder, position, payloads)
+    }
+
     override fun onViewRecycled(holder: RecordingViewHolder) {
         holder.recycle()
         super.onViewRecycled(holder)
@@ -174,6 +212,7 @@ class RecordingAdapter(
         private val tvActorSummary: TextView? = itemView.findViewById(R.id.tvActorSummary)
         private val severityStripe: View? = itemView.findViewById(R.id.severityStripe)
         private val tvLocation: TextView? = itemView.findViewById(R.id.tvLocation)
+        private val tvSafeKeepBadge: TextView? = itemView.findViewById(R.id.tvSafeKeepBadge)
         private var thumbnailJob: Job? = null
 
         fun bind(recording: RecordingFile) {
@@ -249,6 +288,7 @@ class RecordingAdapter(
                     else -> sb.visibility = View.GONE
                 }
             }
+            bindSafeKeep(recording)
 
             // Severity badge + stripe (item 7) — only when v3 sidecar provided severity
             when (recording.peakSeverity?.uppercase()) {
@@ -377,6 +417,53 @@ class RecordingAdapter(
             }
         }
 
+        /** SafeKeep pill: same tonal status treatment as the storage tag, lock glyph when locked. */
+        fun bindSafeKeep(recording: RecordingFile) {
+            val badge = tvSafeKeepBadge ?: return
+            val st = safeKeepState(recording.file.name)
+            val ctx = badge.context
+            val text = when (st?.state) {
+                "saved" -> ctx.getString(R.string.recording_safekeep_saved)
+                "uploading" -> ctx.getString(R.string.recording_safekeep_uploading, st.progress)
+                "queued" -> ctx.getString(R.string.recording_safekeep_queued)
+                "waiting" -> ctx.getString(R.string.recording_safekeep_waiting)
+                "failed" -> ctx.getString(R.string.recording_safekeep_failed)
+                else -> if (st?.locked == true) ctx.getString(R.string.recording_safekeep_locked) else null
+            }
+            if (st == null || text == null) {
+                badge.visibility = View.GONE
+                badge.setCompoundDrawablesRelative(null, null, null, null)
+                badge.contentDescription = null
+                return
+            }
+            when (st.state) {
+                "saved" -> badge.tintAsStatusBadge(
+                    R.color.overdrive_status_success_container, R.color.overdrive_status_success)
+                "uploading" -> badge.tintAsStatusBadge(
+                    R.color.overdrive_status_info_container, R.color.overdrive_status_info)
+                "queued", "waiting" -> badge.tintAsStatusBadge(
+                    R.color.overdrive_status_warning_container, R.color.overdrive_status_warning)
+                "failed" -> badge.tintAsStatusBadge(
+                    R.color.overdrive_status_danger_container, R.color.overdrive_status_danger)
+                else -> badge.tintAsNeutralBadge()
+            }
+            badge.text = text
+            val glyph = if (st.locked) {
+                ContextCompat.getDrawable(ctx, R.drawable.ic_security_lock)?.mutate()?.also {
+                    val px = (badge.textSize * 1.15f).toInt()
+                    it.setBounds(0, 0, px, px)
+                    it.setTint(badge.currentTextColor)
+                }
+            } else {
+                null
+            }
+            badge.setCompoundDrawablesRelative(glyph, null, null, null)
+            badge.compoundDrawablePadding =
+                if (glyph != null) (3 * badge.resources.displayMetrics.density).toInt() else 0
+            badge.contentDescription = ctx.getString(R.string.cd_recording_safekeep_state, text)
+            badge.visibility = View.VISIBLE
+        }
+
         private fun renderActiveState(recording: RecordingFile) {
             val active = !selectMode && recording.path == activeRecordingPath
             activeIndicator?.visibility = if (active) View.VISIBLE else View.GONE
@@ -389,14 +476,43 @@ class RecordingAdapter(
                 R.string.action_create_evidence_pack
             )
             val deleteTitle = anchor.context.getString(R.string.action_delete)
+            // SafeKeep entries only while it is on; state comes from the last pill refresh.
+            val skOn = onSafeKeepAction != null && safeKeepEnabled
+            val sk = if (skOn) safeKeepState(recording.file.name) else null
+            val skLocked = sk?.locked == true
+            val uploadTitle = anchor.context.getString(R.string.action_safekeep_upload_now)
+            val lockTitle = anchor.context.getString(
+                if (skLocked) R.string.action_safekeep_unlock else R.string.action_safekeep_lock
+            )
+            val cloudTitle = anchor.context.getString(R.string.action_safekeep_open_cloud)
             PopupMenu(anchor.context, anchor).apply {
                 if (onShare != null) menu.add(shareTitle)
                 if (onEvidencePack != null && !recording.recordingId.isNullOrEmpty()) {
                     menu.add(evidenceTitle)
                 }
+                if (skOn) {
+                    if (sk?.link != null) menu.add(cloudTitle)
+                    if (sk?.state != "saved" && sk?.state != "uploading") menu.add(uploadTitle)
+                    menu.add(lockTitle)
+                }
                 menu.add(deleteTitle)
                 setOnMenuItemClickListener { item ->
                     when (item.title?.toString()) {
+                        cloudTitle -> {
+                            onSafeKeepAction?.invoke(recording, SafeKeepAction.OPEN_CLOUD)
+                            true
+                        }
+                        uploadTitle -> {
+                            onSafeKeepAction?.invoke(recording, SafeKeepAction.UPLOAD_NOW)
+                            true
+                        }
+                        lockTitle -> {
+                            onSafeKeepAction?.invoke(
+                                recording,
+                                if (skLocked) SafeKeepAction.UNLOCK else SafeKeepAction.LOCK
+                            )
+                            true
+                        }
                         shareTitle -> {
                             onShare?.invoke(recording)
                             true
@@ -592,6 +708,7 @@ class RecordingAdapter(
     companion object {
         private const val THUMBNAIL_WIDTH_PX = 480
         private const val THUMBNAIL_HEIGHT_PX = 270
+        private val PAYLOAD_SAFEKEEP = Any()
     }
 }
 

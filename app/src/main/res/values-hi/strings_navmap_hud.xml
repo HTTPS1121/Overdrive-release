@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>चलते रहें</item>
+        <item>रवाना हों</item>
+        <item>गंतव्य पर पहुँचें</item>
+        <item>गंतव्य दाईं ओर</item>
+        <item>गंतव्य बाईं ओर</item>
+        <item>थोड़ा दाएँ मुड़ें</item>
+        <item>दाएँ मुड़ें</item>
+        <item>तेज़ी से दाएँ मुड़ें</item>
+        <item>यू-टर्न लें</item>
+        <item>तेज़ी से बाएँ मुड़ें</item>
+        <item>बाएँ मुड़ें</item>
+        <item>थोड़ा बाएँ मुड़ें</item>
+        <item>रैंप लें</item>
+        <item>एग्ज़िट लें</item>
+        <item>सीधे चलते रहें</item>
+        <item>दाईं ओर रहें</item>
+        <item>बाईं ओर रहें</item>
+        <item>मर्ज करें</item>
+        <item>दाईं ओर मर्ज करें</item>
+        <item>बाईं ओर मर्ज करें</item>
+        <item>गोलचक्कर में जाएँ</item>
+        <item>गोलचक्कर से निकलें</item>
+        <item>फ़ेरी लें</item>
+        <item>फ़ेरी से उतरें</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>चलते रहें:</item>
+        <item>रवाना हों:</item>
+        <item>गंतव्य:</item>
+        <item>गंतव्य दाईं ओर:</item>
+        <item>गंतव्य बाईं ओर:</item>
+        <item>थोड़ा दाएँ मुड़ें:</item>
+        <item>दाएँ मुड़ें:</item>
+        <item>तेज़ी से दाएँ मुड़ें:</item>
+        <item>यू-टर्न लें:</item>
+        <item>तेज़ी से बाएँ मुड़ें:</item>
+        <item>बाएँ मुड़ें:</item>
+        <item>थोड़ा बाएँ मुड़ें:</item>
+        <item>रैंप लें:</item>
+        <item>एग्ज़िट लें:</item>
+        <item>सीधे चलते रहें:</item>
+        <item>दाईं ओर रहें:</item>
+        <item>बाईं ओर रहें:</item>
+        <item>मर्ज करें:</item>
+        <item>दाईं ओर मर्ज करें:</item>
+        <item>बाईं ओर मर्ज करें:</item>
+        <item>गोलचक्कर से होकर:</item>
+        <item>गोलचक्कर से निकलें:</item>
+        <item>फ़ेरी लें:</item>
+        <item>फ़ेरी से उतरें:</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>पहला</item>
+        <item>दूसरा</item>
+        <item>तीसरा</item>
+        <item>चौथा</item>
+        <item>पाँचवाँ</item>
+        <item>छठा</item>
+        <item>सातवाँ</item>
+        <item>आठवाँ</item>
+        <item>नौवाँ</item>
+        <item>दसवाँ</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">%1$s एग्ज़िट लें</string>
+    <string name="nav_hud_roundabout_exit_onto">%1$s एग्ज़िट लें:</string>
+    <string name="nav_hud_towards">दिशा:</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">एग्ज़िट %1$s</string>
+    <string name="nav_hud_then">फिर</string>
+    <string name="nav_hud_arrive">आगमन</string>
+    <string name="nav_hud_recenter">केंद्र में लाएँ</string>
+    <string name="nav_hud_end">समाप्त</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">वॉइस गाइडेंस म्यूट करें</string>
+    <string name="nav_hud_cd_unmute">वॉइस गाइडेंस अनम्यूट करें</string>
+    <string name="nav_hud_cd_overview">पूरा मार्ग दिखाएँ</string>
+    <string name="nav_hud_cd_overview_exit">ड्राइविंग व्यू पर लौटें</string>
+    <string name="nav_hud_cd_end">नेविगेशन समाप्त करें</string>
+    <string name="nav_hud_cd_recenter">कार पर केंद्रित करें</string>
+    <string name="nav_hud_cd_compass_heading_up">कंपास: चलने की दिशा ऊपर। उत्तर को ऊपर करने के लिए टैप करें</string>
+    <string name="nav_hud_cd_compass_north_up">कंपास: उत्तर ऊपर। चलने की दिशा को ऊपर करने के लिए टैप करें</string>
+    <string name="nav_hud_cd_back">मैप से बाहर निकलें</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">फिर %2$s बाद: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">%1$s पर पहुँचेंगे, %2$s और %3$s बाकी</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">ट्रैफ़िक से %1$s की देरी</string>
+</resources>

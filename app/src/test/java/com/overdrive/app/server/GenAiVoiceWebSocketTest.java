@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -47,6 +48,64 @@ public class GenAiVoiceWebSocketTest {
                 setup.getJSONArray("tools").getJSONObject(0)
                         .getJSONArray("functionDeclarations")
                         .getJSONObject(1).getString("name"));
+    }
+
+    @Test
+    public void farFieldSetupsAddTheTypedCommandToolAsThirdTool() throws Exception {
+        JSONObject openAi = GenAiVoiceWebSocket.openAiSetup(
+                "gpt-realtime-2.1", "grounded", true);
+        JSONArray openAiTools = openAi.getJSONObject("session")
+                .getJSONArray("tools");
+        // The fourth is search_web, which every OpenAI session gets.
+        assertEquals(4, openAiTools.length());
+        assertEquals("propose_overdrive_action",
+                openAiTools.getJSONObject(0).getString("name"));
+        assertEquals("get_overdrive_context",
+                openAiTools.getJSONObject(1).getString("name"));
+        assertEquals("run_overdrive_command",
+                openAiTools.getJSONObject(2).getString("name"));
+        assertFalse(openAi.toString().contains("transcription"));
+        JSONObject gemini = GenAiVoiceWebSocket.geminiSetup(
+                "gemini-3.1-flash-live-preview", "grounded", true);
+        JSONArray declarations = gemini.getJSONObject("setup")
+                .getJSONArray("tools").getJSONObject(0)
+                .getJSONArray("functionDeclarations");
+        assertEquals(3, declarations.length());
+        assertEquals("propose_overdrive_action",
+                declarations.getJSONObject(0).getString("name"));
+        assertEquals("get_overdrive_context",
+                declarations.getJSONObject(1).getString("name"));
+        assertEquals("run_overdrive_command",
+                declarations.getJSONObject(2).getString("name"));
+        assertFalse(declarations.toString().contains("transcription"));
+    }
+
+    @Test
+    public void nearFieldSetupsKeepExactlyTheTwoPageTools() throws Exception {
+        for (JSONObject openAi : new JSONObject[] {
+                GenAiVoiceWebSocket.openAiSetup("gpt-realtime-2.1", "grounded"),
+                GenAiVoiceWebSocket.openAiSetup("gpt-realtime-2.1", "grounded", false)}) {
+            JSONArray tools = openAi.getJSONObject("session").getJSONArray("tools");
+            // The read-only search_web is the only addition; never the typed command tool.
+            assertEquals(3, tools.length());
+            assertEquals("propose_overdrive_action",
+                    tools.getJSONObject(0).getString("name"));
+            assertEquals("get_overdrive_context",
+                    tools.getJSONObject(1).getString("name"));
+            assertEquals("search_web", tools.getJSONObject(2).getString("name"));
+        }
+        for (JSONObject gemini : new JSONObject[] {
+                GenAiVoiceWebSocket.geminiSetup("gemini-3.1-flash-live-preview", "grounded"),
+                GenAiVoiceWebSocket.geminiSetup("gemini-3.1-flash-live-preview", "grounded", false)}) {
+            JSONArray declarations = gemini.getJSONObject("setup")
+                    .getJSONArray("tools").getJSONObject(0)
+                    .getJSONArray("functionDeclarations");
+            assertEquals(2, declarations.length());
+            assertEquals("propose_overdrive_action",
+                    declarations.getJSONObject(0).getString("name"));
+            assertEquals("get_overdrive_context",
+                    declarations.getJSONObject(1).getString("name"));
+        }
     }
 
     @Test

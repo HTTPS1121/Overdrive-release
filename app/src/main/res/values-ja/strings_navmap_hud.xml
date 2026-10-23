@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>道なりに進む</item>
+        <item>出発</item>
+        <item>目的地に到着</item>
+        <item>目的地は右側</item>
+        <item>目的地は左側</item>
+        <item>斜め右方向</item>
+        <item>右折</item>
+        <item>大きく右折</item>
+        <item>Uターン</item>
+        <item>大きく左折</item>
+        <item>左折</item>
+        <item>斜め左方向</item>
+        <item>ランプに進む</item>
+        <item>出口を出る</item>
+        <item>直進</item>
+        <item>右側を進む</item>
+        <item>左側を進む</item>
+        <item>合流</item>
+        <item>右車線に合流</item>
+        <item>左車線に合流</item>
+        <item>環状交差点に入る</item>
+        <item>環状交差点を出る</item>
+        <item>フェリーに乗る</item>
+        <item>フェリーを降りる</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>道なりに進んで</item>
+        <item>出発して</item>
+        <item>目的地：</item>
+        <item>目的地は右側：</item>
+        <item>目的地は左側：</item>
+        <item>斜め右に進んで</item>
+        <item>右折して</item>
+        <item>大きく右折して</item>
+        <item>Uターンして</item>
+        <item>大きく左折して</item>
+        <item>左折して</item>
+        <item>斜め左に進んで</item>
+        <item>ランプから</item>
+        <item>出口から</item>
+        <item>直進して</item>
+        <item>右側を進んで</item>
+        <item>左側を進んで</item>
+        <item>合流して</item>
+        <item>右車線に合流して</item>
+        <item>左車線に合流して</item>
+        <item>環状交差点を経由して</item>
+        <item>環状交差点を出て</item>
+        <item>フェリーに乗る：</item>
+        <item>フェリーを降りて</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1番目</item>
+        <item>2番目</item>
+        <item>3番目</item>
+        <item>4番目</item>
+        <item>5番目</item>
+        <item>6番目</item>
+        <item>7番目</item>
+        <item>8番目</item>
+        <item>9番目</item>
+        <item>10番目</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">%1$sの出口を出る</string>
+    <string name="nav_hud_roundabout_exit_onto">%1$sの出口から</string>
+    <string name="nav_hud_towards">方面</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">出口 %1$s</string>
+    <string name="nav_hud_then">その先</string>
+    <string name="nav_hud_arrive">到着</string>
+    <string name="nav_hud_recenter">現在地に戻る</string>
+    <string name="nav_hud_end">終了</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">音声案内をミュート</string>
+    <string name="nav_hud_cd_unmute">音声案内のミュートを解除</string>
+    <string name="nav_hud_cd_overview">ルート全体を表示</string>
+    <string name="nav_hud_cd_overview_exit">走行画面に戻る</string>
+    <string name="nav_hud_cd_end">ナビゲーションを終了</string>
+    <string name="nav_hud_cd_recenter">車の位置に戻る</string>
+    <string name="nav_hud_cd_compass_heading_up">コンパス：進行方向が上。タップすると北が上になります</string>
+    <string name="nav_hud_cd_compass_north_up">コンパス：北が上。タップすると進行方向が上になります</string>
+    <string name="nav_hud_cd_back">地図を閉じる</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">その先、%2$s先で%1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">%1$sに到着予定、残り%2$s、%3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">渋滞による遅れ %1$s</string>
+</resources>

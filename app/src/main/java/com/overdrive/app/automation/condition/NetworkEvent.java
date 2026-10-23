@@ -94,19 +94,22 @@ public class NetworkEvent {
     }
 
     private static void publishWifi() {
-        // Refresh from the OS, then publish the (possibly changed) state. refresh()
-        // is internally cache-bounded and falls back to shell only when the Android
-        // APIs are unavailable.
-        NetworkMonitor.refresh();
+        // Read through the cache, then publish the (possibly changed) state.
+        // getNetworkInfo() refreshes at most once per 10 s; this task must never call the
+        // uncached refresh() — on some firmware each shell probe is expensive (it forks,
+        // and under uid 2000 the Android APIs are unavailable) and the cadence here is 2 s.
+        // The returned JSON is not needed; the accessors below read the same cached state.
+        NetworkMonitor.getNetworkInfo();
         boolean connected = NetworkMonitor.isWifiConnected();
         // ORDER MATTERS on connect: publish the SSID before the connection STATE, for the
         // same reason BluetoothStateMonitor relays btDeviceName before btState. wifiState is
         // the edge that triggers rule evaluation; if it went first, a "WiFi connects AND
         // ssid == home" rule would evaluate the SSID against the previous poll's value (empty
         // on the first connect) in the gap before wifiSsid lands, and silently not fire.
-        // Publish the SSID (empty string when not on WiFi) so an SSID-match condition
-        // sees a stable value. Never publish null — a null would be treated as
-        // "unseen" and could NPE downstream comparisons.
+        // Publish the SSID (empty string when not on WiFi; NetworkMonitor.SSID_UNKNOWN_PLACEHOLDER
+        // when on WiFi with a hidden name — relayed unchanged, there is no second placeholder)
+        // so an SSID-match condition sees a stable value. Never publish null — a null would
+        // be treated as "unseen" and could NPE downstream comparisons.
         String ssid = NetworkMonitor.getWifiSsid();
         // forceStore so the value lands even while no automation is enabled (the seed pass
         // above). Sampled semantics are unchanged: update() still treats a first value as a

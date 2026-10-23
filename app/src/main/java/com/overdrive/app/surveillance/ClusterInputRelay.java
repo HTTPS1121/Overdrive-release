@@ -191,7 +191,7 @@ public final class ClusterInputRelay {
     /** {@code [fissionDisplayId, panelW, panelH]}, or null if no safe cluster target.
      *  HARD-REFUSES id <= 0 (0 = head unit) so injection can never hit the infotainment. */
     private static int[] resolvePanel(ProjectionMapping mapping) {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
             int targetId = com.overdrive.app.launcher.DiLink5ClusterCast
                     .currentTargetDisplayId();
             int w = com.overdrive.app.launcher.DiLink5ClusterCast
@@ -339,7 +339,7 @@ public final class ClusterInputRelay {
     private static boolean runShell(String cmd) {
         Process p = null;
         try {
-            p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             if (!p.waitFor(3, TimeUnit.SECONDS)) { p.destroyForcibly(); return false; }
             return p.exitValue() == 0;
         } catch (Throwable t) {

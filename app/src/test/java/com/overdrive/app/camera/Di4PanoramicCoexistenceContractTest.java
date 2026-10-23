@@ -10,7 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import org.junit.Test;
 
-/** Structural guard for DIPlus-compatible continuous DI4 pano recording. */
+/** Structural guard for continuous DI4 pano recording. */
 public class Di4PanoramicCoexistenceContractTest {
 
     @Test
@@ -31,7 +31,7 @@ public class Di4PanoramicCoexistenceContractTest {
                 "cameraCoordinator.register();",
                 "} else if (USE_DILINK4_AVM_PATH) {",
                 "skipping IBYDCameraService registration",
-                "DIPlus panoramic recorder parity");
+                "continuous panoramic co-consumer");
         assertTrue(gpu.contains(
                 "Ignoring camera-yield callback on DiLink 4"));
         assertTrue(gpu.contains(
@@ -47,7 +47,7 @@ public class Di4PanoramicCoexistenceContractTest {
     }
 
     @Test
-    public void di4SelectionMatchesDiplusTagAndPreviewOrder()
+    public void di4SelectionMatchesApaTagAndPreviewOrder()
             throws IOException {
         String helper = readRepositoryFile(
                 "app/src/main/java/com/overdrive/app/camera/"

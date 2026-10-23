@@ -192,7 +192,7 @@ public final class TrafficMonitorPolicy {
      */
     private static String execShell(String cmd) {
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
             BufferedReader reader = new BufferedReader(
                     new InputStreamReader(p.getInputStream()));
             StringBuilder out = new StringBuilder();

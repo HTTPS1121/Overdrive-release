@@ -80,6 +80,18 @@
             android:defaultValue="/recording" />
     </fragment>
 
+    <!-- Storage settings (web): location, space limits, OEM dashcam reserve -->
+    <fragment
+        android:id="@+id/storageSettingsWebFragment"
+        android:name="com.overdrive.app.ui.fragment.WebViewFragment"
+        android:label="@string/recording_lib_filter_section_storage"
+        tools:layout="@layout/fragment_webview">
+        <argument
+            android:name="page_path"
+            app:argType="string"
+            android:defaultValue="/storage" />
+    </fragment>
+
     <!-- Vehicle (web canonical) -->
     <fragment
         android:id="@+id/vehicleControlFragment"
@@ -90,6 +102,18 @@
             android:name="page_path"
             app:argType="string"
             android:defaultValue="/vehicle-control" />
+    </fragment>
+
+    <!-- Proximity has its own rail entry and shares the canonical web page. -->
+    <fragment
+        android:id="@+id/remoteAccessFragment"
+        android:name="com.overdrive.app.ui.fragment.WebViewFragment"
+        android:label="@string/nav_page_remote_access"
+        tools:layout="@layout/fragment_webview">
+        <argument
+            android:name="page_path"
+            app:argType="string"
+            android:defaultValue="/remote-access" />
     </fragment>
 
     <!-- Projection (native only — cast + live mirror of the driver cluster) -->
@@ -215,6 +239,18 @@
             android:defaultValue="/byd-cloud" />
     </fragment>
 
+    <!-- SafeKeep: own-storage backup of clips and trips (web page, master toggle inside). -->
+    <fragment
+        android:id="@+id/safeKeepFragment"
+        android:name="com.overdrive.app.ui.fragment.WebViewFragment"
+        android:label="@string/nav_page_safekeep"
+        tools:layout="@layout/fragment_webview">
+        <argument
+            android:name="page_path"
+            app:argType="string"
+            android:defaultValue="/safekeep" />
+    </fragment>
+
     <!-- RoadSense: hazard / road-surface sensing surface (web). Hosts the
          /road-sense page via WebViewFragment, mirroring the other web
          destinations on a single renderer. -->
@@ -222,6 +258,12 @@
         android:id="@+id/roadSenseFragment"
         android:name="com.overdrive.app.ui.fragment.RoadSenseFragment"
         android:label="@string/rail_roadsense" />
+
+    <!-- Widgets: the glass widgets overlay settings (web /widgets page). -->
+    <fragment
+        android:id="@+id/widgetsFragment"
+        android:name="com.overdrive.app.ui.fragment.WidgetsFragment"
+        android:label="@string/rail_widgets" />
 
     <!-- Network & Hotspot: SIM-data sharing, clients, data limit, proxy.
          Its own top-level destination (not a Daemons entry) because it owns

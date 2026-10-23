@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Weiterfahren</item>
+        <item>Losfahren</item>
+        <item>Ziel erreichen</item>
+        <item>Ziel rechts</item>
+        <item>Ziel links</item>
+        <item>Leicht rechts abbiegen</item>
+        <item>Rechts abbiegen</item>
+        <item>Scharf rechts abbiegen</item>
+        <item>Wenden</item>
+        <item>Scharf links abbiegen</item>
+        <item>Links abbiegen</item>
+        <item>Leicht links abbiegen</item>
+        <item>Auffahrt nehmen</item>
+        <item>Ausfahrt nehmen</item>
+        <item>Geradeaus weiterfahren</item>
+        <item>Rechts halten</item>
+        <item>Links halten</item>
+        <item>Einfädeln</item>
+        <item>Rechts einfädeln</item>
+        <item>Links einfädeln</item>
+        <item>In den Kreisverkehr fahren</item>
+        <item>Kreisverkehr verlassen</item>
+        <item>Fähre nehmen</item>
+        <item>Fähre verlassen</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Weiter auf</item>
+        <item>Losfahren auf</item>
+        <item>Ziel:</item>
+        <item>Ziel rechts:</item>
+        <item>Ziel links:</item>
+        <item>Leicht rechts abbiegen auf</item>
+        <item>Rechts abbiegen auf</item>
+        <item>Scharf rechts abbiegen auf</item>
+        <item>Wenden auf</item>
+        <item>Scharf links abbiegen auf</item>
+        <item>Links abbiegen auf</item>
+        <item>Leicht links abbiegen auf</item>
+        <item>Auffahrt nehmen auf</item>
+        <item>Ausfahrt nehmen auf</item>
+        <item>Geradeaus weiter auf</item>
+        <item>Rechts halten auf</item>
+        <item>Links halten auf</item>
+        <item>Einfädeln auf</item>
+        <item>Rechts einfädeln auf</item>
+        <item>Links einfädeln auf</item>
+        <item>Über den Kreisverkehr auf</item>
+        <item>Kreisverkehr verlassen auf</item>
+        <item>Fähre nehmen:</item>
+        <item>Von der Fähre auf</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1.</item>
+        <item>2.</item>
+        <item>3.</item>
+        <item>4.</item>
+        <item>5.</item>
+        <item>6.</item>
+        <item>7.</item>
+        <item>8.</item>
+        <item>9.</item>
+        <item>10.</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">%1$s Ausfahrt nehmen</string>
+    <string name="nav_hud_roundabout_exit_onto">%1$s Ausfahrt nehmen auf</string>
+    <string name="nav_hud_towards">Richtung</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Ausfahrt %1$s</string>
+    <string name="nav_hud_then">Dann</string>
+    <string name="nav_hud_arrive">Ankunft</string>
+    <string name="nav_hud_recenter">Zentrieren</string>
+    <string name="nav_hud_end">Beenden</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Sprachansagen stummschalten</string>
+    <string name="nav_hud_cd_unmute">Sprachansagen einschalten</string>
+    <string name="nav_hud_cd_overview">Gesamte Route anzeigen</string>
+    <string name="nav_hud_cd_overview_exit">Zurück zur Fahransicht</string>
+    <string name="nav_hud_cd_end">Navigation beenden</string>
+    <string name="nav_hud_cd_recenter">Auf das Fahrzeug zentrieren</string>
+    <string name="nav_hud_cd_compass_heading_up">Kompass: Fahrtrichtung oben. Tippen für Norden oben</string>
+    <string name="nav_hud_cd_compass_north_up">Kompass: Norden oben. Tippen für Fahrtrichtung oben</string>
+    <string name="nav_hud_cd_back">Karte verlassen</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Danach in %2$s: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Ankunft um %1$s, noch %2$s und %3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">%1$s Verzögerung durch Verkehr</string>
+</resources>

@@ -25,13 +25,21 @@
     var STORAGE_KEY = 'overdrive_theme';
     var DEFAULT_THEME = 'dark';
 
+    // Direction has to be on <html> before the stylesheet, same as the theme.
     // core.js only sets dir after the language file arrives, so every Hebrew
     // navigation first paints the English layout (sidebar on the left, content
     // pushed right) and then jumps. On a phone the sidebar's transform
     // transition also slides that menu across the screen.
     (function stampDir() {
         var lang = '';
-        try { lang = localStorage.getItem('overdrive_locale') || ''; } catch (e) {}
+        try {
+            if (window.AndroidBridge && typeof window.AndroidBridge.getAppLocale === 'function') {
+                lang = window.AndroidBridge.getAppLocale() || '';
+            }
+        } catch (e) {}
+        if (!lang) {
+            try { lang = localStorage.getItem('overdrive_locale') || ''; } catch (e) {}
+        }
         if (!lang && navigator.language) lang = navigator.language;
         var base = String(lang).toLowerCase().split('-')[0];
         if (base === 'iw') base = 'he';
@@ -290,7 +298,20 @@
             '#bydThemePicker .byd-theme-opt.active {',
             '   background: var(--status-success-container, rgba(91, 211, 130, 0.14));',
             '   color: var(--primary, #5DDBB6); }',
-            '#bydThemePicker .byd-theme-opt svg { width: 16px; height: 16px; flex-shrink: 0; }'
+            '#bydThemePicker .byd-theme-opt svg { width: 16px; height: 16px; flex-shrink: 0; }',
+            // Docked in an app bar: a plain round icon button, popup below it.
+            '#bydThemePicker.is-docked { position: relative; z-index: 60; flex: 0 0 auto; margin-left: 4px; }',
+            '[dir="rtl"] #bydThemePicker.is-docked { margin-left: 0; margin-right: 4px; }',
+            '.header-actions > #bydThemePicker.is-docked { margin: 0; }',
+            '#bydThemePicker.is-docked .byd-theme-fab { width: 44px; height: 44px; border-color: transparent;',
+            '   background: var(--well, rgba(255,255,255,0.06)); box-shadow: none;',
+            '   -webkit-backdrop-filter: none; backdrop-filter: none; }',
+            '.mobile-header > #bydThemePicker.is-docked .byd-theme-fab { background: transparent; }',
+            '#bydThemePicker.is-docked:not(:hover):not(.open) .byd-theme-fab { opacity: 1; }',
+            '#bydThemePicker.is-docked .byd-theme-fab:hover { transform: none; background: var(--state-hover, rgba(255,255,255,0.08)); }',
+            '#bydThemePicker.is-docked .byd-theme-fab svg { width: 20px; height: 20px; }',
+            '#bydThemePicker.is-docked[data-popup="down"] .byd-theme-popup,',
+            '#bydThemePicker.is-docked[data-popup="down-left"] .byd-theme-popup { top: 52px; }'
         ].join(' ');
         document.head.appendChild(s);
     }
@@ -324,6 +345,34 @@
         return isRtl() ? vertical + '-left' : vertical;
     }
 
+    // Bars pinned to the bottom of the viewport (bars moved to the top are
+    // ignored). Returns the one reaching highest, so the picker clears all.
+    function lowestStickyBar() {
+        var els = document.querySelectorAll('.footer-bar, .mobile-nav, .tab-bar, .bottom-tabs, .app-bottom-nav');
+        var vh = window.innerHeight || document.documentElement.clientHeight;
+        var best = null, bestTop = vh;
+        for (var i = 0; i < els.length; i++) {
+            var r = els[i].getBoundingClientRect();
+            if (!r.height || r.top < vh / 2) continue;
+            if (r.top < bestTop) { bestTop = r.top; best = els[i]; }
+        }
+        return best;
+    }
+
+    function pickerDock() {
+        if (document.querySelector('.vc-bar')) return null;
+        var bars = document.querySelectorAll('.mobile-header, .page-header, [data-theme-dock]');
+        for (var i = 0; i < bars.length; i++) {
+            if (bars[i].getClientRects().length && getComputedStyle(bars[i]).visibility !== 'hidden') return bars[i];
+        }
+        return null;
+    }
+
+    function stickyCover(el) {
+        var vh = window.innerHeight || document.documentElement.clientHeight;
+        return Math.max(0, vh - el.getBoundingClientRect().top);
+    }
+
     function applyPickerAnchor(wrap) {
         if (!wrap) return;
         // Reset all positioning properties; the branch below re-sets only
@@ -331,6 +380,22 @@
         // mid-edge placement doesn\'t carry over to a corner placement.
         wrap.style.top = wrap.style.bottom = wrap.style.left = wrap.style.right = '';
         wrap.style.transform = '';
+
+        // A visible app bar carries the picker, so it never floats over page
+        // content: the phone bar below 769px, else the page header (in its
+        // actions) or a [data-theme-dock] row.
+        var dock = pickerDock();
+        if (dock) {
+            var slot = dock.querySelector('.header-actions') || dock;
+            if (wrap.parentNode !== slot) slot.appendChild(wrap);
+            wrap.classList.add('is-docked');
+            wrap.setAttribute('data-popup', popupSide('down'));
+            return;
+        }
+        if (wrap.classList.contains('is-docked')) {
+            wrap.classList.remove('is-docked');
+            document.body.appendChild(wrap);
+        }
 
         // Ensure we have a MutationObserver watching for footer-bar /
         // mobile-nav appearing AFTER first mount. Without this, on
@@ -381,9 +446,9 @@
         // TOP of the Apply slot inside the tab bar. Match either chrome
         // and measure its actual rendered height + 12px clearance so the
         // picker always sits above whatever sticky chrome the page has.
-        var stickyBottom = document.querySelector('.footer-bar, .mobile-nav, .tab-bar, .bottom-tabs');
+        var stickyBottom = lowestStickyBar();
         if (stickyBottom) {
-            var stickyH = stickyBottom.getBoundingClientRect().height || 0;
+            var stickyH = stickyCover(stickyBottom);
             // Defensive minimum — if the bar hasn't laid out yet (zero
             // height), use 80px as the legacy fallback so the picker still
             // clears a typical mobile-nav. The ResizeObserver below also
@@ -398,7 +463,7 @@
             // applyPickerAnchor don't stack duplicate observers.
             if (typeof ResizeObserver !== 'undefined' && !wrap._stickyRO) {
                 wrap._stickyRO = new ResizeObserver(function () {
-                    var h = stickyBottom.getBoundingClientRect().height || 0;
+                    var h = stickyCover(stickyBottom);
                     var c = Math.max(h + 12, 80);
                     wrap.style.bottom = 'calc(' + c + 'px + env(safe-area-inset-bottom, 0px))';
                 });

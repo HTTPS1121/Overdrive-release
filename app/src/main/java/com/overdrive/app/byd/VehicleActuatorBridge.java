@@ -39,6 +39,27 @@ public final class VehicleActuatorBridge {
     public static final String DILINK5_MODE_GENERATION = "bridge_mode_generation";
     public static final String DILINK5_ACC_AUTHORITATIVE = "bridge_acc_authoritative";
     public static final String DILINK5_ACC_ON = "bridge_acc_on";
+    public static final String DILINK5_GEAR = "bridge_gear";
+    public static final String DILINK5_SPEED_KMH = "bridge_speed_kmh";
+    public static final String DILINK5_DYNAMICS_AT = "bridge_dynamics_at";
+    public static final String DILINK5_RESULT_DETAIL = "detail";
+    /** App → daemon: the CPD write found no cabin-camera switch on this trim. */
+    public static final String DILINK5_RESULT_CPD_CABIN_ABSENT = "cpdCabinAbsent";
+    /** App → daemon: the {@code DiLink5DoorLockControl.Result.Outcome} name of a DI5 lock/unlock. */
+    public static final String DILINK5_RESULT_LOCK_OUTCOME = "lockOutcome";
+    /** A generic frame's terminal admission refusal, separate from its vendor return code. */
+    public static final String DILINK5_RESULT_ACTUATION_ABORT = "actuationAbort";
+    public static final String DILINK5_CANCELLATION_RECEIVER = "frameCancellation";
+    public static final String DILINK5_FRAME_CANCELLATION_OPT_IN = "frameCancellationOptIn";
+    public static final int DILINK5_CANCELLATION_REGISTERED = 2;
+    private static final ThreadLocal<LocalActuationCancellation> REMOTE_KEY_CANCELLATION =
+            new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> SHELL_START_UNCERTAIN = new ThreadLocal<>();
+    /** Daemon side, per dispatching thread: the app's lock outcome of the last DI5 dispatch. */
+    private static final ThreadLocal<String> LAST_DILINK5_LOCK_OUTCOME = new ThreadLocal<>();
+    /** Same freshness the daemon applies to bridged DI5 dynamics. */
+    private static final long DILINK5_SCOPED_DYNAMICS_MAX_AGE_MS =
+            CarSvcTelemetry.DUMP_TTL_MS + 1_000L;
     public static final String DILINK5_VEHICLE_COMMAND = "vehicle_command";
     public static final String DILINK5_POSITION_READ = "position_read";
     public static final String DILINK5_POSITION_APPLY = "position_apply";
@@ -49,10 +70,22 @@ public final class VehicleActuatorBridge {
     public static final String DILINK5_AMBIENT_READ = "ambient_read";
     public static final String DILINK5_AMBIENT_APPLY = "ambient_apply";
     public static final String DILINK5_AMBIENT_COLOUR_MAX = "ambient_colour_max";
+    public static final String DILINK5_AMBIENT_PALETTE = "ambient_palette";
+    public static final String DILINK5_AMBIENT_PALETTE_PROBE = "ambient_palette_probe";
+    private static volatile String diLink5AmbientPaletteProbeLogged;
+    private static volatile long diLink5AmbientPaletteProbeLoggedAtMs;
+    // The daemon log rotates within a couple of hours; repeat the raw arrays so an upload has them.
+    private static final long DILINK5_AMBIENT_PALETTE_PROBE_RELOG_MS = 30L * 60_000L;
     public static final String DILINK5_AMBIENT_STATE = "ambient_state";
+    public static final String DILINK5_AC_CHARGE_LIMIT_READ = "ac_charge_limit_read";
+    public static final String DILINK5_CALIBRATION_READ = "calibration_read";
+    // The shell-identity start is this daemon's normal path; log it once, and again after a failure.
+    private static volatile boolean diLink5ShellStartLogged;
     public static final String DILINK5_RESULT_SETPOINT = "result_setpoint";
     private static final ThreadLocal<DiLink5RequestScope> DILINK5_REQUEST_SCOPE =
             new ThreadLocal<>();
+    private static final ThreadLocal<com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope>
+            PROXIMITY_COMMAND_SCOPE = new ThreadLocal<>();
     private static final EnergyGenerationGate ENERGY_GENERATIONS = new EnergyGenerationGate();
     private static final long ENERGY_LAUNCH_TIMEOUT_MS = 1500L;
     private static final long ENERGY_STANDALONE_TIMEOUT_MS = 6000L;
@@ -67,9 +100,9 @@ public final class VehicleActuatorBridge {
     private static final String ENERGY_AUTHORITY_EPOCH_SETTING =
             "overdrive_energy_request_v5_epoch";
     private static final String ENERGY_STATE_LOCK_FILE =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_energy_request.lock");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_energy_request.lock");
     private static final String ENERGY_STATE_COORDINATE_FILE =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_energy_request.state");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_energy_request.state");
     private static final long ENERGY_STATE_LOCK_TIMEOUT_MS = 400L;
     private static final long ENERGY_MARKER_MAX_FUTURE_NANOS =
             TimeUnit.SECONDS.toNanos(30L);
@@ -117,13 +150,41 @@ public final class VehicleActuatorBridge {
             boolean accOn,
             Callable<T> action)
             throws Exception {
+        return runDiLink5Request(
+                deadlineElapsedMs, modeGeneration, accAuthoritative, accOn,
+                BydVehicleData.UNAVAILABLE, Double.NaN, 0L, action);
+    }
+
+    /** {@code gear}/{@code speedKmh} are the daemon's movement-gate inputs, sampled at dispatch. */
+    public static <T> T runDiLink5Request(
+            long deadlineElapsedMs,
+            String modeGeneration,
+            boolean accAuthoritative,
+            boolean accOn,
+            int gear,
+            double speedKmh,
+            long dynamicsAtElapsedMs,
+            Callable<T> action)
+            throws Exception {
+        return runDiLink5Request(deadlineElapsedMs, modeGeneration, accAuthoritative, accOn,
+                gear, speedKmh, dynamicsAtElapsedMs, null, action);
+    }
+
+    public static <T> T runDiLink5Request(
+            long deadlineElapsedMs, String modeGeneration, boolean accAuthoritative, boolean accOn,
+            int gear, double speedKmh, long dynamicsAtElapsedMs,
+            com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope proximity,
+            Callable<T> action) throws Exception {
         DiLink5RequestScope previous = DILINK5_REQUEST_SCOPE.get();
         DILINK5_REQUEST_SCOPE.set(
                 new DiLink5RequestScope(
                         deadlineElapsedMs,
                         modeGeneration,
                         accAuthoritative,
-                        accOn));
+                        accOn,
+                        gear,
+                        speedKmh,
+                        dynamicsAtElapsedMs, proximity));
         try {
             if (isDiLink5RequestExpired()) {
                 throw new IllegalStateException("vehicle mode changed or request expired");
@@ -146,7 +207,76 @@ public final class VehicleActuatorBridge {
                     || isDiLink5RequestExpired(scope.deadlineElapsedMs)
                     || !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
                     || !com.overdrive.app.camera.dilink5.DiLink5Platform
-                            .matchesActiveModeGeneration(scope.modeGeneration));
+                            .matchesActiveModeGeneration(scope.modeGeneration)
+                    || (scope.proximity != null && !scope.proximity.locallyCurrent()));
+    }
+
+    /** Covers nested app requests and a daemon-side proximity scope without creating a lease. */
+    public static boolean isRemoteKeyRequestExpired() {
+        com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope proximity =
+                PROXIMITY_COMMAND_SCOPE.get();
+        return isRemoteKeyRequestCancelled() || isDiLink5RequestExpired()
+                || (proximity != null && !proximity.locallyCurrent());
+    }
+
+    public static boolean isRemoteKeyRequestCancelled() {
+        LocalActuationCancellation ticket = REMOTE_KEY_CANCELLATION.get();
+        return ticket != null && ticket.isCancelled();
+    }
+
+    public static <T> T withRemoteKeyRequestCancellation(
+            LocalActuationCancellation ticket, Callable<T> request) throws Exception {
+        LocalActuationCancellation previous = REMOTE_KEY_CANCELLATION.get();
+        REMOTE_KEY_CANCELLATION.set(ticket);
+        try {
+            return request.call();
+        } finally {
+            if (previous == null) REMOTE_KEY_CANCELLATION.remove();
+            else REMOTE_KEY_CANCELLATION.set(previous);
+        }
+    }
+
+    /** The daemon binds only automated proximity dispatches; manual control is unchanged. */
+    public static <T> T withProximityCommand(
+            com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope scope,
+            Callable<T> command) throws Exception {
+        com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope previous =
+                PROXIMITY_COMMAND_SCOPE.get();
+        PROXIMITY_COMMAND_SCOPE.set(scope);
+        try { return command.call(); }
+        finally {
+            if (previous == null) PROXIMITY_COMMAND_SCOPE.remove();
+            else PROXIMITY_COMMAND_SCOPE.set(previous);
+        }
+    }
+
+    /** App side: the proximity scope of the bridged request running on this thread, or null (manual). */
+    public static com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope
+            currentDiLink5ProximityScope() {
+        DiLink5RequestScope scope = DILINK5_REQUEST_SCOPE.get();
+        return scope == null ? null : scope.proximity;
+    }
+
+    /** Daemon side: get-and-clear of the app's lock outcome recorded by the last dispatch on this thread. */
+    public static String takeLastDiLink5LockOutcome() {
+        String outcome = LAST_DILINK5_LOCK_OUTCOME.get();
+        LAST_DILINK5_LOCK_OUTCOME.remove();
+        return outcome;
+    }
+
+    /** Daemon side: records (null clears) the outcome a dispatch result carried; package-private for tests. */
+    static void noteDiLink5LockOutcome(String outcome) {
+        if (outcome == null) LAST_DILINK5_LOCK_OUTCOME.remove();
+        else LAST_DILINK5_LOCK_OUTCOME.set(outcome);
+    }
+
+    public static boolean confirmProximityBeforeDiLink5Write() {
+        DiLink5RequestScope scope = DILINK5_REQUEST_SCOPE.get();
+        return scope == null || scope.proximity == null
+                || (!isDiLink5RequestExpired()
+                    && com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard
+                            .confirmBeforeWrite(scope.proximity)
+                    && !isDiLink5RequestExpired());
     }
 
     public static boolean isDiLink5RequestExpired(long deadlineElapsedMs) {
@@ -169,31 +299,84 @@ public final class VehicleActuatorBridge {
                 ? Boolean.valueOf(scope.accOn) : null;
     }
 
+    /** Daemon-sampled gear for this request, or UNAVAILABLE when absent or stale. */
+    public static int currentDiLink5RequestGear() {
+        DiLink5RequestScope scope = DILINK5_REQUEST_SCOPE.get();
+        return scope != null && scope.hasFreshDynamics()
+                ? scope.gear : BydVehicleData.UNAVAILABLE;
+    }
+
+    /** Daemon-sampled speed for this request, or NaN when absent or stale. */
+    public static double currentDiLink5RequestSpeedKmh() {
+        DiLink5RequestScope scope = DILINK5_REQUEST_SCOPE.get();
+        return scope != null && scope.hasFreshDynamics()
+                ? scope.speedKmh : Double.NaN;
+    }
+
     private static final class DiLink5RequestScope {
         final long deadlineElapsedMs;
         final String modeGeneration;
         final boolean accAuthoritative;
         final boolean accOn;
+        final int gear;
+        final double speedKmh;
+        final long dynamicsAtElapsedMs;
+        final com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope proximity;
 
         DiLink5RequestScope(
                 long deadlineElapsedMs,
                 String modeGeneration,
                 boolean accAuthoritative,
-                boolean accOn) {
+                boolean accOn,
+                int gear,
+                double speedKmh,
+                long dynamicsAtElapsedMs,
+                com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope proximity) {
             this.deadlineElapsedMs = deadlineElapsedMs;
             this.modeGeneration = modeGeneration;
             this.accAuthoritative = accAuthoritative;
             this.accOn = accOn;
+            this.gear = gear;
+            this.speedKmh = speedKmh;
+            this.dynamicsAtElapsedMs = dynamicsAtElapsedMs;
+            this.proximity = proximity;
+        }
+
+        boolean hasFreshDynamics() {
+            long age = android.os.SystemClock.elapsedRealtime() - dynamicsAtElapsedMs;
+            return dynamicsAtElapsedMs > 0L
+                    && age >= 0L && age <= DILINK5_SCOPED_DYNAMICS_MAX_AGE_MS;
         }
     }
 
     public static boolean dispatchDiLink5Command(
             android.content.Context context,
             com.overdrive.app.byd.routing.VehicleCommandRouter.VehicleCommand command) {
+        RemoteKeyControl.takeLastAbort();
         if (command == null) return false;
         android.content.Intent intent = newDiLink5BridgeIntent(DILINK5_VEHICLE_COMMAND);
         intent.putExtra(DILINK5_VEHICLE_COMMAND, command);
-        android.os.Bundle result = dispatchDiLink5Request(context, intent);
+        com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope proximity =
+                PROXIMITY_COMMAND_SCOPE.get();
+        if (proximity != null) {
+            try {
+                intent.putExtra(com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.EXTRA,
+                        proximity.toJson().toString());
+            } catch (Exception malformed) { return false; }
+        }
+        android.os.Bundle result = dispatchDiLink5Request(
+                context, intent,
+                command.motionSafety()
+                        == com.overdrive.app.byd.routing.VehicleCommandRouter.VehicleCommand
+                                .MotionSafety.BLOCK_WHILE_MOVING,
+                !isDiLink5CabinLightCommand(command),
+                usesGenericRemoteKeyFrame(command));
+        if (command
+                instanceof com.overdrive.app.byd.routing.VehicleCommandRouter
+                        .AcChargeCurrentLimitCommand) {
+            // Even a timed-out request may still apply in the app process.
+            BydDataCollector.getInstance().invalidateDiLink5AcChargingLimit();
+        }
         if (result != null) {
             applyDiLink5CommandResult(
                     command,
@@ -201,7 +384,39 @@ public final class VehicleActuatorBridge {
                             DILINK5_RESULT_SETPOINT,
                             com.overdrive.app.byd.BydVehicleData.UNAVAILABLE));
         }
-        return result != null && result.getBoolean("success", false);
+        boolean success = result != null && result.getBoolean("success", false);
+        if (result != null) {
+            LocalActuationAbort stopped = LocalActuationAbort.fromWire(
+                    result.getString(DILINK5_RESULT_ACTUATION_ABORT),
+                    result.getString("error"));
+            if (stopped != null) RemoteKeyControl.noteAbort(stopped);
+        }
+        // Always (re)set: a previous dispatch's outcome must not survive into this one.
+        noteDiLink5LockOutcome(result == null ? null : result.getString(DILINK5_RESULT_LOCK_OUTCOME));
+        if (success && result.getString(DILINK5_RESULT_DETAIL) != null) {
+            logger.info("DI5 app-process '" + command.name() + "': "
+                    + result.getString(DILINK5_RESULT_DETAIL));
+        }
+        boolean cpdCabinAbsent = !success && result != null
+                && result.getBoolean(DILINK5_RESULT_CPD_CABIN_ABSENT, false)
+                && command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter
+                        .SettingChildPresenceDetectionCommand;
+        if (result != null && !success && !cpdCabinAbsent) {
+            String error = result.getString("error");
+            String detail = result.getString(DILINK5_RESULT_DETAIL);
+            logger.warn("DI5 app-process '" + command.name() + "' failed: "
+                    + (error != null ? error : "local SDK write returned false")
+                    + (detail != null ? " | " + detail : ""));
+        }
+        if (cpdCabinAbsent) {
+            // This trim has no cabin-camera CPD switch; its CPD sits on DiPilot (Sealion 7).
+            logger.info("DI5 'setting-cpd': no cabin-camera CPD switch; trying DiPilot");
+            return BydDataCollector.getInstance().setDiLink5ChildPresenceViaDiPilot(
+                    context,
+                    ((com.overdrive.app.byd.routing.VehicleCommandRouter
+                            .SettingChildPresenceDetectionCommand) command).value);
+        }
+        return success;
     }
 
     static void applyDiLink5CommandResult(
@@ -213,11 +428,17 @@ public final class VehicleActuatorBridge {
             ((com.overdrive.app.byd.routing.VehicleCommandRouter.ClimateStepTempCommand) command)
                     .resultSetpoint = resultSetpoint;
         }
+        if (command
+                instanceof com.overdrive.app.byd.routing.VehicleCommandRouter
+                        .AmbientColourCommand) {
+            ((com.overdrive.app.byd.routing.VehicleCommandRouter.AmbientColourCommand) command)
+                    .resultColour = resultSetpoint;
+        }
     }
 
     public static org.json.JSONObject readDiLink5Position(android.content.Context context) {
         return dispatchDiLink5Json(
-                context, newDiLink5BridgeIntent(DILINK5_POSITION_READ));
+                context, newDiLink5BridgeIntent(DILINK5_POSITION_READ), false);
     }
 
     public static org.json.JSONObject applyDiLink5Position(
@@ -227,7 +448,7 @@ public final class VehicleActuatorBridge {
                 DILINK5_POSITION_OVERRIDES,
                 new java.util.HashMap<>(overrides != null
                         ? overrides : java.util.Collections.emptyMap()));
-        return dispatchDiLink5Json(context, intent);
+        return dispatchDiLink5Json(context, intent, true);
     }
 
     public static org.json.JSONObject writeDiLink5Position(
@@ -235,13 +456,14 @@ public final class VehicleActuatorBridge {
         android.content.Intent intent = newDiLink5BridgeIntent(DILINK5_POSITION_WRITE);
         intent.putExtra(DILINK5_POSITION_IDS, ids);
         intent.putExtra(DILINK5_POSITION_VALUES, values);
-        return dispatchDiLink5Json(context, intent);
+        return dispatchDiLink5Json(context, intent, true);
     }
 
     public static org.json.JSONObject readDiLink5Ambient(
             android.content.Context context) {
+        // Ambient reads use no ACC either; a lease about to expire must not reject them.
         return dispatchDiLink5Json(
-                context, newDiLink5BridgeIntent(DILINK5_AMBIENT_READ));
+                context, newDiLink5BridgeIntent(DILINK5_AMBIENT_READ), false, false);
     }
 
     public static org.json.JSONObject applyDiLink5Ambient(
@@ -250,7 +472,8 @@ public final class VehicleActuatorBridge {
         intent.putExtra(
                 DILINK5_AMBIENT_STATE,
                 ambient != null ? ambient.toString() : null);
-        org.json.JSONObject result = dispatchDiLink5Json(context, intent);
+        // Confirmed zone writes take seconds and read no ACC: no lease, as for cabin-light commands.
+        org.json.JSONObject result = dispatchDiLink5Json(context, intent, false, false);
         if (!result.has("applied")) {
             try {
                 result.put("applied", false);
@@ -263,10 +486,66 @@ public final class VehicleActuatorBridge {
     public static int readDiLink5AmbientColourMax(
             android.content.Context context) {
         android.os.Bundle result = dispatchDiLink5Request(
-                context, newDiLink5BridgeIntent(DILINK5_AMBIENT_COLOUR_MAX));
+                context, newDiLink5BridgeIntent(DILINK5_AMBIENT_COLOUR_MAX), false, false);
         return result != null && result.getBoolean("success", false)
                 ? result.getInt(DILINK5_AMBIENT_COLOUR_MAX, 31)
                 : 31;
+    }
+
+    /** The car's ambient colour count, or {@link BydVehicleData#UNAVAILABLE} when not known yet. */
+    public static int readDiLink5AmbientColourCount(android.content.Context context) {
+        return readDiLink5AmbientColours(context).count;
+    }
+
+    /** The car's ambient colour count and, when it reports one, its own palette. */
+    public static final class DiLink5AmbientColours {
+        public final int count;
+        public final String[] palette;
+
+        DiLink5AmbientColours(int count, String[] palette) {
+            this.count = count;
+            this.palette = palette;
+        }
+    }
+
+    public static DiLink5AmbientColours readDiLink5AmbientColours(android.content.Context context) {
+        android.os.Bundle result = dispatchDiLink5Request(
+                context, newDiLink5BridgeIntent(DILINK5_AMBIENT_COLOUR_MAX), false, false);
+        if (result == null) return new DiLink5AmbientColours(BydVehicleData.UNAVAILABLE, null);
+        boolean known = result.getBoolean("success", false);
+        int count = known
+                ? result.getInt(DILINK5_AMBIENT_COLOUR_MAX, BydVehicleData.UNAVAILABLE)
+                : BydVehicleData.UNAVAILABLE;
+        String[] palette = result.getStringArray(DILINK5_AMBIENT_PALETTE);
+        String probe = result.getString(DILINK5_AMBIENT_PALETTE_PROBE);
+        long nowElapsedMs = android.os.SystemClock.elapsedRealtime();
+        if (probe != null && (!probe.equals(diLink5AmbientPaletteProbeLogged)
+                || nowElapsedMs - diLink5AmbientPaletteProbeLoggedAtMs
+                        >= DILINK5_AMBIENT_PALETTE_PROBE_RELOG_MS)) {
+            diLink5AmbientPaletteProbeLogged = probe;
+            diLink5AmbientPaletteProbeLoggedAtMs = nowElapsedMs;
+            logger.info("DI5 ambient palette probe ("
+                    + (known ? count + " colours" : "colour count unknown") + "): " + probe);
+        }
+        // An unknown count writes 1..31, so a 31-entry car palette still applies.
+        int fit = count == BydVehicleData.UNAVAILABLE ? 31 : count;
+        return new DiLink5AmbientColours(count,
+                palette != null && palette.length == fit ? palette : null);
+    }
+
+    public static String readDiLink5Calibration(android.content.Context context) {
+        android.os.Bundle result = dispatchDiLink5Request(
+                context, newDiLink5BridgeIntent(DILINK5_CALIBRATION_READ), false);
+        return result != null && result.getBoolean("success", false)
+                ? result.getString(DILINK5_CALIBRATION_READ) : null;
+    }
+
+    public static int readDiLink5AcChargeLimit(android.content.Context context) {
+        android.os.Bundle result = dispatchDiLink5Request(
+                context, newDiLink5BridgeIntent(DILINK5_AC_CHARGE_LIMIT_READ), false);
+        return result != null && result.getBoolean("success", false)
+                ? result.getInt(DILINK5_AC_CHARGE_LIMIT_READ, BydVehicleData.UNAVAILABLE)
+                : BydVehicleData.UNAVAILABLE;
     }
 
     private static android.content.Intent newDiLink5BridgeIntent(String operation) {
@@ -280,8 +559,16 @@ public final class VehicleActuatorBridge {
     }
 
     private static org.json.JSONObject dispatchDiLink5Json(
-            android.content.Context context, android.content.Intent intent) {
-        android.os.Bundle result = dispatchDiLink5Request(context, intent);
+            android.content.Context context, android.content.Intent intent,
+            boolean withDynamics) {
+        return dispatchDiLink5Json(context, intent, withDynamics, true);
+    }
+
+    private static org.json.JSONObject dispatchDiLink5Json(
+            android.content.Context context, android.content.Intent intent,
+            boolean withDynamics, boolean withAccLease) {
+        android.os.Bundle result =
+                dispatchDiLink5Request(context, intent, withDynamics, withAccLease);
         if (result != null) {
             String json = result.getString("json");
             if (json != null) {
@@ -300,11 +587,63 @@ public final class VehicleActuatorBridge {
         }
     }
 
+    /**
+     * Ambient and reading-lamp writes: they never read ACC, and their readback runs for seconds,
+     * so the ACC safety lease must not cut their deadline short.
+     */
+    public static boolean isDiLink5CabinLightCommand(
+            com.overdrive.app.byd.routing.VehicleCommandRouter.VehicleCommand command) {
+        return command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.AmbientColourCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.AmbientBrightnessCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.AmbientPowerCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.ReadingLightCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.CabinLightProbeCommand;
+    }
+
+    /** Di5 lock/unlock use their existing typed rails; these commands use generic frames. */
+    public static boolean usesGenericRemoteKeyFrame(
+            com.overdrive.app.byd.routing.VehicleCommandRouter.VehicleCommand command) {
+        return command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.VehiclePowerOnCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.VehiclePowerOffCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.FindCarCommand
+                || command instanceof com.overdrive.app.byd.routing.VehicleCommandRouter.FlashLightsCommand;
+    }
+
     private static android.os.Bundle dispatchDiLink5Request(
-            android.content.Context context, android.content.Intent intent) {
+            android.content.Context context, android.content.Intent intent,
+            boolean withDynamics) {
+        return dispatchDiLink5Request(context, intent, withDynamics, true);
+    }
+
+    private static android.os.Bundle dispatchDiLink5Request(
+            android.content.Context context, android.content.Intent intent,
+            boolean withDynamics, boolean withAccLease) {
+        return dispatchDiLink5Request(context, intent, withDynamics, withAccLease, false);
+    }
+
+    private static android.os.Bundle dispatchDiLink5Request(
+            android.content.Context context, android.content.Intent intent,
+            boolean withDynamics, boolean withAccLease, boolean genericFrameCommand) {
+        final LocalActuationCancellation cancellation = genericFrameCommand
+                ? new LocalActuationCancellation() : null;
+        final java.util.concurrent.atomic.AtomicBoolean serviceMayOwnRequest =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicReference<LocalActuationAbort> invalidReply =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        if (genericFrameCommand) intent.putExtra(DILINK5_FRAME_CANCELLATION_OPT_IN, true);
+        if (genericFrameCommand && Thread.currentThread().isInterrupted()) {
+            RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                    LocalActuationAbort.Kind.CANCELLED, "vehicle request cancelled"));
+            return null;
+        }
         com.overdrive.app.camera.dilink5.DiLink5Platform.refreshActiveMode();
         if (context == null
                 || !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            if (genericFrameCommand
+                    && !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                        LocalActuationAbort.Kind.REQUEST_EXPIRED, "vehicle mode changed"));
+            }
             return null;
         }
         String modeGeneration =
@@ -312,7 +651,16 @@ public final class VehicleActuatorBridge {
                         .currentActiveModeGeneration();
         if (modeGeneration == null) {
             logger.warn("DI5 app-process vehicle request refused: active mode marker unavailable");
+            if (genericFrameCommand) RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                    LocalActuationAbort.Kind.REQUEST_EXPIRED, "active vehicle mode unavailable"));
             return null;
+        }
+        if (withDynamics) {
+            // The app UID cannot read DI5 gear/speed; it gates on the daemon's sample.
+            BydDataCollector collector = BydDataCollector.getInstance();
+            intent.putExtra(DILINK5_GEAR, collector.readGearNow());
+            intent.putExtra(DILINK5_SPEED_KMH, collector.readCurrentSpeedKmh());
+            intent.putExtra(DILINK5_DYNAMICS_AT, android.os.SystemClock.elapsedRealtime());
         }
         android.content.Context startContext = context.getApplicationContext();
         if (startContext == null) startContext = context;
@@ -329,8 +677,8 @@ public final class VehicleActuatorBridge {
             long accFreshUntil =
                     com.overdrive.app.monitor.AccMonitor
                             .accStateFreshUntilForSafety();
-            accAuthoritative =
-                    com.overdrive.app.monitor.AccMonitor.isAccStateAuthoritative()
+            accAuthoritative = withAccLease
+                    && com.overdrive.app.monitor.AccMonitor.isAccStateAuthoritative()
                             && nowElapsedMs < accFreshUntil;
             accOn = accAuthoritative
                     && com.overdrive.app.monitor.AccMonitor.isAccOn();
@@ -338,12 +686,51 @@ public final class VehicleActuatorBridge {
                     bridgeDeadline, accAuthoritative, accFreshUntil);
         }
         intent.putExtra(DILINK5_BRIDGE_DEADLINE, bridgeDeadline);
+        if (intent.hasExtra(com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.EXTRA)) {
+            try {
+                com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope proximity =
+                        com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.Scope.parse(
+                                intent.getStringExtra(com.overdrive.app.remoteaccess.DiLink5ProximityCommandGuard.EXTRA));
+                bridgeDeadline = Math.min(bridgeDeadline, proximity.expiresAt);
+                intent.putExtra(DILINK5_BRIDGE_DEADLINE, bridgeDeadline);
+            } catch (Exception malformed) { return null; }
+        }
         intent.putExtra(DILINK5_MODE_GENERATION, modeGeneration);
         intent.putExtra(DILINK5_ACC_AUTHORITATIVE, accAuthoritative);
         intent.putExtra(DILINK5_ACC_ON, accOn);
         intent.putExtra(DILINK5_BRIDGE_RESULT, new android.os.ResultReceiver(null) {
             @Override protected void onReceiveResult(
                     int resultCode, android.os.Bundle resultData) {
+                if (cancellation != null && resultCode == DILINK5_CANCELLATION_REGISTERED) {
+                    try {
+                        android.os.ResultReceiver cancelRemote = resultData != null
+                                ? resultData.getParcelable(DILINK5_CANCELLATION_RECEIVER) : null;
+                        if (cancelRemote == null) throw new IllegalStateException("missing cancellation owner");
+                        serviceMayOwnRequest.set(true);
+                        cancellation.onRemoteCancellation(() -> cancelRemote.send(0, null));
+                    } catch (Throwable malformed) {
+                        invalidReply.compareAndSet(null, new LocalActuationAbort(
+                                LocalActuationAbort.Kind.REQUEST_EXPIRED,
+                                "invalid vehicle request ownership reply"));
+                        cancellation.cancel();
+                        done.countDown();
+                    }
+                    return;
+                }
+                if (cancellation != null) {
+                    try {
+                        if (resultData == null || !resultData.containsKey("success")
+                                || (resultCode != 0 && resultCode != 1)
+                                || (resultCode == 1) != resultData.getBoolean("success", false)) {
+                            throw new IllegalStateException("invalid final response");
+                        }
+                    } catch (Throwable malformed) {
+                        invalidReply.compareAndSet(null, new LocalActuationAbort(
+                                LocalActuationAbort.Kind.REQUEST_EXPIRED,
+                                "invalid vehicle request result"));
+                        cancellation.cancel();
+                    }
+                }
                 response.set(resultData);
                 done.countDown();
             }
@@ -355,10 +742,19 @@ public final class VehicleActuatorBridge {
                 started = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
                         ? startContext.startForegroundService(intent)
                         : startContext.startService(intent);
+                if (started != null) serviceMayOwnRequest.set(true);
             } catch (Throwable directStart) {
                 directFailure = directStart;
+                if (!isDefiniteServiceStartRejection(directStart)) serviceMayOwnRequest.set(true);
             }
             if (started == null) {
+                if (genericFrameCommand && serviceMayOwnRequest.get()) {
+                    cancellation.cancel();
+                    RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                            LocalActuationAbort.Kind.REQUEST_EXPIRED,
+                            "vehicle request ownership uncertain after launch"));
+                    return null;
+                }
                 // Field evidence (on-car log, 16:05): AMS rejects the daemon's
                 // synthetic-context start with "Unable to find app for caller
                 // ... when starting service" — the forged IApplicationThread
@@ -369,28 +765,68 @@ public final class VehicleActuatorBridge {
                 // intact (they cannot be marshalled through `am` string
                 // extras). UID-2000 only; a real app process never takes it.
                 started = startDiLink5ServiceAsShell(startContext, intent);
+                if (Boolean.TRUE.equals(SHELL_START_UNCERTAIN.get())) serviceMayOwnRequest.set(true);
+                SHELL_START_UNCERTAIN.remove();
+                if (started != null) serviceMayOwnRequest.set(true);
                 if (started != null) {
-                    logger.info("DI5 app-process vehicle request started via "
-                            + "shell-identity ActivityManager fallback");
+                    if (!diLink5ShellStartLogged) {
+                        diLink5ShellStartLogged = true;
+                        logger.info("DI5 app-process vehicle request started via "
+                                + "shell-identity ActivityManager fallback");
+                    }
                 } else if (directFailure != null) {
+                    diLink5ShellStartLogged = false;
                     logger.warn("DI5 app-process vehicle request failed: "
                             + directFailure.getMessage());
+                    if (genericFrameCommand && serviceMayOwnRequest.get()) {
+                        cancellation.cancel();
+                        RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                                LocalActuationAbort.Kind.REQUEST_EXPIRED,
+                                "vehicle request ownership unavailable"));
+                    }
                     return null;
                 }
             }
             if (started == null
                     || !done.await(DILINK5_BRIDGE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                diLink5ShellStartLogged = false;
                 logger.warn("DI5 app-process vehicle request timed out");
+                if (genericFrameCommand && serviceMayOwnRequest.get()) {
+                    cancellation.cancel();
+                    RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                            LocalActuationAbort.Kind.REQUEST_EXPIRED, "vehicle request timed out"));
+                }
+                return null;
+            }
+            if (invalidReply.get() != null) {
+                RemoteKeyControl.noteAbort(invalidReply.get());
                 return null;
             }
             return response.get();
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            if (genericFrameCommand) {
+                cancellation.cancel();
+                RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                        LocalActuationAbort.Kind.CANCELLED, "vehicle request cancelled"));
+            }
             return null;
         } catch (Throwable failure) {
             logger.warn("DI5 app-process vehicle request failed: " + failure.getMessage());
+            if (genericFrameCommand && serviceMayOwnRequest.get()) {
+                cancellation.cancel();
+                RemoteKeyControl.noteAbort(new LocalActuationAbort(
+                        LocalActuationAbort.Kind.REQUEST_EXPIRED,
+                        "vehicle request ownership lost"));
+            }
             return null;
         }
+    }
+
+    private static boolean isDefiniteServiceStartRejection(Throwable failure) {
+        Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
+        return cause instanceof SecurityException || cause instanceof IllegalArgumentException
+                || cause instanceof IllegalStateException || cause instanceof NoSuchMethodException;
     }
 
     /**
@@ -410,7 +846,9 @@ public final class VehicleActuatorBridge {
      */
     private static android.content.ComponentName startDiLink5ServiceAsShell(
             android.content.Context context, android.content.Intent intent) {
+        SHELL_START_UNCERTAIN.remove();
         if (android.os.Process.myUid() != ANDROID_SHELL_UID) return null;
+        boolean serviceStartInvoked = false;
         try {
             try {
                 com.overdrive.app.shell.HiddenApiBypass.INSTANCE.bypass();
@@ -453,6 +891,7 @@ public final class VehicleActuatorBridge {
                 } else {
                     continue;
                 }
+                serviceStartInvoked = true;
                 Object component = candidate.invoke(activityManager, arguments);
                 return component instanceof android.content.ComponentName
                         ? (android.content.ComponentName) component : null;
@@ -463,9 +902,15 @@ public final class VehicleActuatorBridge {
         } catch (java.lang.reflect.InvocationTargetException invocation) {
             Throwable cause = invocation.getCause() != null
                     ? invocation.getCause() : invocation;
+            if (serviceStartInvoked && !isDefiniteServiceStartRejection(cause)) {
+                SHELL_START_UNCERTAIN.set(true);
+            }
             logger.warn("DI5 shell-identity start rejected: " + cause.getMessage());
             return null;
         } catch (Throwable failed) {
+            if (serviceStartInvoked && !isDefiniteServiceStartRejection(failed)) {
+                SHELL_START_UNCERTAIN.set(true);
+            }
             logger.warn("DI5 shell-identity start failed: " + failed.getMessage());
             return null;
         }
@@ -3106,7 +3551,7 @@ public final class VehicleActuatorBridge {
     /** Fire-and-forget {@code am} exec — identical to {@link AudioPlaybackController}'s. */
     private static void exec(String cmd) {
         try {
-            Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
         } catch (Throwable t) {
             logger.warn("exec failed [" + cmd + "]: " + t.getMessage());
         }

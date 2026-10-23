@@ -31,7 +31,7 @@ public class SocHistoryDatabase {
     // H2 JDBC URL - file-based embedded database
     // FILE_LOCK=SOCKET uses socket-based locking (more reliable than file locks on Android)
     // AUTO_SERVER=TRUE allows multiple processes to connect via TCP fallback
-    private static final String DB_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_soc_h2");
+    private static final String DB_PATH = com.overdrive.app.util.ScratchRoot.path("overdrive_soc_h2");
     // DB_CLOSE_ON_EXIT=FALSE: we drive shutdown ourselves from CameraDaemon.shutdown().
     // Without it, H2's JVM shutdown hook runs concurrently with our explicit
     // stop() and our last in-flight 2-minute SOC tick, producing the
@@ -68,8 +68,10 @@ public class SocHistoryDatabase {
     private static final int REMAINING_KWH_FORMAT_VERSION = 1;
     private static final int REMAINING_KWH_MIGRATION_ATTEMPTS = 3;
     private static final String CHARGING_LIFECYCLE_JOURNAL_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_charging_lifecycle.json");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_charging_lifecycle.json");
     private static final int CHARGING_LIFECYCLE_JOURNAL_VERSION = 1;
+    private static final String UNREADABLE_JOURNAL_SUFFIX = ".unreadable-";
+    private static final int KEPT_UNREADABLE_JOURNALS = 3;
 
     /** Intentional physical/session boundary; it breaks integration but is not itself missing data. */
     public static final double STOP_BOUNDARY_POWER_KW = -1.0;
@@ -128,6 +130,8 @@ public class SocHistoryDatabase {
     private ScheduledExecutorService scheduler;
     private volatile boolean isRunning = false;
     private volatile boolean isInitialized = false;
+    private final com.overdrive.app.storage.H2StoreSalvage storeSalvage =
+            new com.overdrive.app.storage.H2StoreSalvage(DB_PATH, logger);
     
     // Charging session tracking
     private volatile boolean wasCharging = false;
@@ -337,8 +341,9 @@ public class SocHistoryDatabase {
     private volatile long lastAllocatedChargingStartMs = 0L;
     private final java.io.File chargingLifecycleJournalFile;
     private boolean chargingLifecycleJournalLoaded = false;
-    /** A journal that could not be decoded must remain byte-for-byte untouched for recovery. */
+    /** A journal that could not be decoded or set aside must remain byte-for-byte untouched. */
     private boolean chargingLifecycleJournalReadFailed = false;
+    private String chargingLifecycleJournalReadFailure = null;
     /** An in-memory lifecycle mutation has not yet reached the atomic journal file. */
     private boolean chargingLifecycleJournalDirty = false;
     /** Tariff mutations whose historical repricing has not yet completed. "*" means all tariffs. */
@@ -515,7 +520,14 @@ public class SocHistoryDatabase {
                         }
                     } else {
                         logger.error("Failed to initialize SOC database: " + e.getClass().getName() + " - " + msg, e);
-                        break;
+                        if (isLockError || !storeSalvage.shouldReplace(e)) break;
+                        if (connection != null) {
+                            try { connection.close(); } catch (Exception ignored) { }
+                            connection = null;
+                        }
+                        if (!storeSalvage.replace()) break;
+                        // The replacement store gets an attempt of its own.
+                        attempt--;
                     }
                 }
             }
@@ -1360,15 +1372,12 @@ public class SocHistoryDatabase {
             double sohPercent = -999;
             try {
                 com.overdrive.app.abrp.SohEstimator sohEst = getSohEstimator();
-                com.overdrive.app.abrp.SohEstimator.CapacitySohSnapshot capacitySoh =
-                        sohEst != null ? sohEst.getCapacitySohSnapshot() : null;
-                if (capacitySoh != null && capacitySoh.hasDisplaySoh()) {
-                    // Displayed (capped, anchored) SOH so stored history agrees with
-                    // every live surface.
-                    sohPercent = capacitySoh.getDisplaySoh();
+                double canonicalSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(sohEst);
+                if (canonicalSoh > 0) {
+                    sohPercent = canonicalSoh;
                 }
                 if (sohPercent > 0) {
-                    logger.debug("SOH from estimator: " + String.format("%.1f", sohPercent) + "%");
+                    logger.debug("Canonical SOH: " + String.format("%.1f", sohPercent) + "%");
                 } else {
                     logger.info("Canonical SOH unavailable; history sample omits SOH");
                 }
@@ -1532,6 +1541,8 @@ public class SocHistoryDatabase {
                             optOutBoundaryMs = strictlyAfterChargingStart(
                                     chargingStartTime, now);
                         }
+                        // A captured boundary is always a pending opt-out close (journal invariant).
+                        optOutClosePending = true;
                         if (Double.isNaN(optOutBoundarySoc)) optOutBoundarySoc = soc;
                         if (!optOutCounterCaptured) {
                             double counterAtBoundary = snapshotChargeCounterKwh();
@@ -3312,6 +3323,32 @@ public class SocHistoryDatabase {
         return !deferredPhysicalGenerations.isEmpty();
     }
 
+    /**
+     * DI5: the producer that reads the charged-energy counter went quiet mid-session. The counter
+     * keeps counting unobserved, so its next reading must reconcile the gap, and a close before then
+     * must not present the pre-outage subtotal as the whole charge.
+     */
+    public synchronized void noteChargeCounterOutage() {
+        if (sessionInputsFenced && !deferredPhysicalGenerations.isEmpty()) {
+            DeferredChargingGeneration generation = currentDeferredPhysicalGeneration();
+            if (generation != null && !generation.isEnded()
+                    && generation.counter.hasSeriesState()) {
+                generation.counter.beginLiveGapReconciliation();
+                persistChargingLifecycleJournal();
+            }
+            return;
+        }
+        boolean ended = pendingCloseSessionStart == chargingStartTime || optOutClosePending;
+        if (!wasCharging || chargingStartTime <= 0L || ended
+                || !chargingCounter.hasSeriesState()) {
+            return;
+        }
+        chargingCounter.beginLiveGapReconciliation();
+        counterProgressDirty = true;
+        if (isInitialized && connection != null) persistCounterProgress();
+        else persistChargingLifecycleJournal();
+    }
+
     /** True when startup must reconcile journal-restored lifecycle work even with no ON/OFF edge. */
     public synchronized boolean hasPendingChargingLifecycle() {
         return pendingActiveReplacement != null
@@ -3600,8 +3637,12 @@ public class SocHistoryDatabase {
                                                   boolean resumeBlocked) {
         if (generation == null) return false;
         if (!generation.isEnded()) {
-            generation.endMs = strictlyAfterChargingStart(
-                    generation.startMs, boundaryMs);
+            long endMs = strictlyAfterChargingStart(generation.startMs, boundaryMs);
+            // A backward clock step must not place the boundary before evidence already recorded.
+            for (DeferredChargingSample sample : generation.samples) {
+                endMs = Math.max(endMs, sample.t);
+            }
+            generation.endMs = endMs;
             generation.endSoc = !Double.isNaN(boundarySoc)
                     ? boundarySoc : generation.startSoc;
             finalizeDeferredCounterBaseline(generation);
@@ -3904,7 +3945,8 @@ public class SocHistoryDatabase {
         java.io.File file = chargingLifecycleJournalFile;
         if (chargingLifecycleJournalReadFailed) {
             chargingLifecycleJournalDirty = true;
-            logger.error("Refusing to overwrite an unreadable charging lifecycle journal");
+            logger.error("Refusing to overwrite an unreadable charging lifecycle journal ("
+                    + chargingLifecycleJournalReadFailure + ")");
             return false;
         }
         if (file == null) {
@@ -4013,11 +4055,11 @@ public class SocHistoryDatabase {
         putFinite(active, "peak", chargingPeakPower);
         putFinite(active, "powerSum", chargingPowerSum);
         active.put("powerCount", chargingPowerCount);
-        active.put("startRange", chargingStartRange);
-        active.put("startOdometer", chargingStartOdometer);
-        active.put("gun", chargingGunState);
+        active.put("startRange", journalSentinelInt(chargingStartRange));
+        active.put("startOdometer", journalSentinelInt(chargingStartOdometer));
+        active.put("gun", journalSentinelInt(chargingGunState));
         active.put("typeVerdict", currentChargingTypeVerdict());
-        active.put("timeToFull", chargingTimeToFullMin);
+        active.put("timeToFull", journalSentinelInt(chargingTimeToFullMin));
         putFinite(active, "lat", chargingStartLat);
         putFinite(active, "lng", chargingStartLng);
         active.put("counterOwner", counterOwner != null ? counterOwner : "");
@@ -4070,11 +4112,11 @@ public class SocHistoryDatabase {
         putFinite(out, "startSoc", generation.startSoc);
         out.put("end", generation.endMs);
         putFinite(out, "endSoc", generation.endSoc);
-        out.put("startRange", generation.startRange);
-        out.put("startOdometer", generation.startOdometer);
-        out.put("gun", generation.gun);
+        out.put("startRange", journalSentinelInt(generation.startRange));
+        out.put("startOdometer", journalSentinelInt(generation.startOdometer));
+        out.put("gun", journalSentinelInt(generation.gun));
         out.put("typeVerdict", deferredChargingTypeVerdict(generation));
-        out.put("timeToFull", generation.timeToFull);
+        out.put("timeToFull", journalSentinelInt(generation.timeToFull));
         putFinite(out, "lat", generation.lat);
         putFinite(out, "lng", generation.lng);
         putFinite(out, "peak", generation.peakPower);
@@ -4157,11 +4199,11 @@ public class SocHistoryDatabase {
         out.put("previousStart", state.previousStartTime);
         out.put("start", state.startTime);
         putFinite(out, "startSoc", state.startSoc);
-        out.put("startRange", state.startRange);
-        out.put("startOdometer", state.startOdometer);
-        out.put("gun", state.gun);
+        out.put("startRange", journalSentinelInt(state.startRange));
+        out.put("startOdometer", journalSentinelInt(state.startOdometer));
+        out.put("gun", journalSentinelInt(state.gun));
         out.put("typeVerdict", state.typeVerdict);
-        out.put("timeToFull", state.timeToFull);
+        out.put("timeToFull", journalSentinelInt(state.timeToFull));
         putFinite(out, "lat", state.lat);
         putFinite(out, "lng", state.lng);
         out.put("counterSource", state.counterSource != null ? state.counterSource : "");
@@ -4349,6 +4391,11 @@ public class SocHistoryDatabase {
                 source.optString("currency", ""),
                 source.optString("tariffId", ""),
                 source.optString("tariffLabel", ""));
+    }
+
+    /** Every negative "unknown" sentinel is journaled as -1. */
+    private static int journalSentinelInt(int value) {
+        return value >= -1 ? value : -1;
     }
 
     private static void putFinite(JSONObject target, String key, double value)
@@ -4756,12 +4803,8 @@ public class SocHistoryDatabase {
                     "counter baseline and last value must be present together");
         }
         requireJournalFinite(counter, "energy", 0.0, Double.MAX_VALUE);
-        long lastAt = requireJournalLong(
-                counter, "lastAt", 0L, Long.MAX_VALUE);
-        if (baseline != null && lastAt <= 0L) {
-            throw invalidJournal(
-                    "counter series has no observation timestamp");
-        }
+        // lastAt 0 with endpoints is a series restored across an outage (elapsed time unknown).
+        requireJournalLong(counter, "lastAt", 0L, Long.MAX_VALUE);
         long observationGeneration = requireJournalLong(
                 counter, "observationGeneration", 0L, Long.MAX_VALUE);
         requireJournalLong(counter, "wraps", 0L, Integer.MAX_VALUE);
@@ -4776,7 +4819,7 @@ public class SocHistoryDatabase {
                 requireJournalBoolean(counter, "gapReconstructed");
         if ((awaitingGap || gapReconstructed)
                 && (baseline == null || last == null
-                        || lastAt <= 0L || observationGeneration <= 0L)) {
+                        || observationGeneration <= 0L)) {
             throw invalidJournal(
                     "counter gap state has no durable endpoint lineage");
         }
@@ -4795,7 +4838,8 @@ public class SocHistoryDatabase {
             JSONObject parent, String key) {
         JSONObject pricing = optionalJournalObject(parent, key);
         if (pricing == null) return;
-        requireJournalFinite(pricing, "rate", 0.0, Double.MAX_VALUE);
+        // -1 is the frozen "no rate configured" decision (PricingDecision's unset convention).
+        requireJournalFinite(pricing, "rate", -1.0, Double.MAX_VALUE);
         requireJournalString(pricing, "currency");
         requireJournalString(pricing, "tariffId");
         requireJournalString(pricing, "tariffLabel");
@@ -4931,6 +4975,7 @@ public class SocHistoryDatabase {
         chargingLifecycleJournalLoaded = true;
         java.io.File file = chargingLifecycleJournalFile;
         if (file == null || !file.isFile()) return;
+        long allocatedBeforeLoad = lastAllocatedChargingStartMs;
         try {
             String encoded = new String(
                     java.nio.file.Files.readAllBytes(file.toPath()),
@@ -4997,11 +5042,65 @@ public class SocHistoryDatabase {
                     + (wasCharging ? chargingStartTime : "none")
                     + ", deferred=" + deferredPhysicalGenerations.size());
         } catch (Exception e) {
+            String reason = e.getClass().getSimpleName() + ": " + e.getMessage();
+            discardPartiallyRestoredChargingLifecycle(allocatedBeforeLoad);
+            if (setAsideUnreadableChargingLifecycleJournal(file, reason)) return;
             chargingLifecycleJournalReadFailed = true;
+            chargingLifecycleJournalReadFailure = reason;
             chargingLifecycleJournalDirty = true;
-            logger.error("Charging lifecycle journal is unreadable; preserving it: "
-                    + e.getMessage());
+            logger.error("Charging lifecycle journal is unreadable; preserving it: " + reason);
         }
+    }
+
+    /** A rejected journal publishes nothing: undo whatever the load assigned before it threw. */
+    private void discardPartiallyRestoredChargingLifecycle(long allocatedBeforeLoad) {
+        resetLiveChargingState(false, false);
+        deferredPhysicalGenerations.clear();
+        sessionInputsFenced = false;
+        pendingChargingMaintenanceIntent = null;
+        pendingTariffReprices.clear();
+        preSessionCounterLowKwh = Double.NaN;
+        preSessionCounterAtMs = 0L;
+        preSessionCounterSource = null;
+        clearPreSessionProvisionalExternal();
+        lastAllocatedChargingStartMs = allocatedBeforeLoad;
+    }
+
+    /**
+     * Moves an undecodable journal aside byte-for-byte so the lifecycle can restart from H2 alone;
+     * left in place it would fence every journal write, and with it analytics, indefinitely.
+     */
+    private boolean setAsideUnreadableChargingLifecycleJournal(java.io.File file, String reason) {
+        java.io.File parent = file.getParentFile();
+        if (parent == null) return false;
+        String prefix = file.getName() + UNREADABLE_JOURNAL_SUFFIX;
+        java.io.File aside = new java.io.File(parent, prefix + System.currentTimeMillis());
+        try {
+            try {
+                java.nio.file.Files.move(file.toPath(), aside.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                java.nio.file.Files.move(file.toPath(), aside.toPath());
+            }
+        } catch (Exception moveFailure) {
+            logger.error("Could not set aside the unreadable charging lifecycle journal ("
+                    + reason + "): " + moveFailure.getMessage());
+            return false;
+        }
+        try {
+            syncDirectoryMetadata(parent);
+        } catch (Exception ignored) {}
+        java.io.File[] setAside = parent.listFiles(
+                (dir, candidate) -> candidate.startsWith(prefix));
+        if (setAside != null && setAside.length > KEPT_UNREADABLE_JOURNALS) {
+            java.util.Arrays.sort(setAside, (a, b) -> b.getName().compareTo(a.getName()));
+            for (int i = KEPT_UNREADABLE_JOURNALS; i < setAside.length; i++) {
+                setAside[i].delete();
+            }
+        }
+        logger.error("Charging lifecycle journal was unreadable (" + reason + "); moved to "
+                + aside.getName() + " and continuing from the database");
+        return true;
     }
 
     private void restoreActiveChargingLifecycle(JSONObject active) {
@@ -7856,7 +7955,9 @@ public class SocHistoryDatabase {
                     int h = vd.chargingRestTimeHours, m = vd.chargingRestTimeMinutes;
                     int UNAVAIL = com.overdrive.app.byd.BydVehicleData.UNAVAILABLE;
                     if (h != UNAVAIL || m != UNAVAIL) {
-                        return (h != UNAVAIL ? h * 60 : 0) + (m != UNAVAIL ? m : 0);
+                        long ttf = (h != UNAVAIL ? h * 60L : 0L) + (m != UNAVAIL ? m : 0);
+                        // Negative HAL codes are "unknown", not a duration.
+                        if (ttf >= 0 && ttf <= Integer.MAX_VALUE) return (int) ttf;
                     }
                 }
             }
@@ -8715,10 +8816,9 @@ public class SocHistoryDatabase {
         double soh = -999;
         try {
             com.overdrive.app.abrp.SohEstimator est = getSohEstimator();
-            com.overdrive.app.abrp.SohEstimator.CapacitySohSnapshot capacitySoh =
-                    est != null ? est.getCapacitySohSnapshot() : null;
-            if (capacitySoh != null && capacitySoh.hasDisplaySoh()) {
-                soh = capacitySoh.getDisplaySoh();
+            double canonicalSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(est);
+            if (canonicalSoh > 0) {
+                soh = canonicalSoh;
             }
         } catch (Exception ignored) {}
 
@@ -10678,6 +10778,38 @@ public class SocHistoryDatabase {
                     }
                 }
             }
+            // The period totals cover exactly the sessions the list shows: closed rows whose
+            // start falls in [fromMs, toMs], with the same per-row rules as
+            // rebuildChargingDailyDay. The UTC end-day buckets above only feed the daily
+            // chart; summing them pulled in sessions from outside the window at both edges.
+            try (PreparedStatement pstmt = conn.prepareStatement(
+                    "SELECT COUNT(*),"
+                    + " COALESCE(SUM(CASE WHEN energy_added_kwh > 0 THEN energy_added_kwh ELSE 0 END), 0),"
+                    + " COALESCE(SUM(CASE WHEN session_cost > 0 THEN session_cost ELSE 0 END), 0),"
+                    + " COALESCE(SUM(CASE WHEN is_dc = 1 THEN 1 ELSE 0 END), 0),"
+                    + " COALESCE(SUM(CASE WHEN is_dc = 0 THEN 1 ELSE 0 END), 0),"
+                    + " COALESCE(SUM(CASE WHEN range_gained_km > 0 THEN range_gained_km ELSE 0 END), 0),"
+                    + " COALESCE(SUM(CASE WHEN energy_incomplete = 1 THEN 1 ELSE 0 END), 0),"
+                    + " COALESCE(SUM(CASE WHEN energy_added_kwh > 0 AND (energy_incomplete = 1"
+                    + " OR energy_source IS NULL OR energy_source <> ?) THEN 1 ELSE 0 END), 0)"
+                    + " FROM " + TABLE_CHARGING
+                    + " WHERE end_time IS NOT NULL AND start_time >= ? AND start_time <= ?;")) {
+                pstmt.setString(1, com.overdrive.app.charging.SessionEnergyResolver.SRC_METERED);
+                pstmt.setLong(2, fromMs);
+                pstmt.setLong(3, toMs);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        periodSessions = rs.getInt(1);
+                        periodEnergy = rs.getDouble(2);
+                        periodCost = rs.getDouble(3);
+                        periodDc = rs.getInt(4);
+                        periodAc = rs.getInt(5);
+                        periodRange = rs.getInt(6);
+                        periodIncomplete = rs.getInt(7);
+                        periodEstimated = rs.getInt(8);
+                    }
+                }
+            }
             out.put("daily", daily);
             out.put("periodSessions", periodSessions);
             out.put("periodEnergyKwh", periodEnergy);
@@ -11115,16 +11247,11 @@ public class SocHistoryDatabase {
                 if (liveKwh > 0) livePoint.put("kwh", Math.round(liveKwh * 10) / 10.0);
                 
                 com.overdrive.app.abrp.SohEstimator sohEst = getSohEstimator();
-                com.overdrive.app.abrp.SohEstimator.CapacitySohSnapshot capacitySoh =
-                        sohEst != null ? sohEst.getCapacitySohSnapshot() : null;
-                if (capacitySoh != null && capacitySoh.hasDisplaySoh()) {
-                    // Use the headline display chain (frame_anchor > capacity_ah
-                    // > live > calibration on PHEV) so this last "live" point
-                    // matches the chip / detail card the user sees, instead
-                    // of the raw live formula that often diverges from the
-                    // higher-priority anchors on PHEV trims.
+                double canonicalSoh =
+                        com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(sohEst);
+                if (canonicalSoh > 0) {
                     livePoint.put("soh",
-                            Math.round(capacitySoh.getDisplaySoh() * 10) / 10.0);
+                            Math.round(canonicalSoh * 10) / 10.0);
                 }
 
                 // MONOTONICITY GUARD, belt-and-braces with the query's upper bound. The chart
@@ -11806,11 +11933,6 @@ public class SocHistoryDatabase {
             com.overdrive.app.abrp.SohEstimator.CapacitySohSnapshot capacitySoh =
                     sohEst != null ? sohEst.getCapacitySohSnapshot() : null;
             if (capacitySoh != null && capacitySoh.hasDisplaySoh()) {
-                // Headline display chain (frame_anchor > capacity_ah > live >
-                // calibration on PHEV) — keeps the battery-health card and
-                // the SoH detail card in lockstep instead of showing two
-                // different numbers on PHEV trims where capacity_ah outranks
-                // the live formula.
                 double nominalCapacityKwh = capacitySoh.getNominalCapacityKwh();
                 double estimatedCapacityKwh = nominalCapacityKwh > 0
                         ? capacitySoh.getDisplaySoh() / 100.0 * nominalCapacityKwh
@@ -11821,7 +11943,12 @@ public class SocHistoryDatabase {
                         Math.round(estimatedCapacityKwh * 10) / 10.0);
                 current.put("nominalCapacityKwh", nominalCapacityKwh);
             } else {
-                logger.info("Canonical SOH unavailable for health report");
+                double oemSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(sohEst);
+                if (oemSoh > 0) {
+                    current.put("soh", Math.round(oemSoh * 10) / 10.0);
+                } else {
+                    logger.info("Canonical SOH unavailable for health report");
+                }
             }
             
             double remainingKwh = monitor.getBatteryRemainPowerKwh();

@@ -4,6 +4,7 @@ import com.overdrive.app.byd.cloud.crypto.BydCryptoUtils;
 import com.overdrive.app.logging.DaemonLogger;
 import com.overdrive.app.mqtt.ProxyHelper;
 
+import org.eclipse.paho.mqttv5.client.IMqttMessageListener;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttCallback;
 import org.eclipse.paho.mqttv5.client.MqttClient;
@@ -13,6 +14,7 @@ import org.eclipse.paho.mqttv5.client.MqttDisconnectResponse;
 import org.eclipse.paho.mqttv5.client.persist.MemoryPersistence;
 import org.eclipse.paho.mqttv5.common.MqttException;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
+import org.eclipse.paho.mqttv5.common.MqttSubscription;
 import org.eclipse.paho.mqttv5.common.packet.MqttProperties;
 import org.json.JSONObject;
 
@@ -53,6 +55,11 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
     private volatile String topic;
     private volatile boolean running = false;
     private volatile int consecutiveFailures = 0;
+    // A session dropped within this window (e.g. a same-clientId takeover) keeps the
+    // backoff ramp instead of restarting at 5 s.
+    private static final long STABLE_SESSION_MS = 60_000L;
+    private volatile int failuresAtConnect = 0;
+    private volatile long connectedAtMs = 0;
     private volatile long lastConnectAttemptMs = 0;
     private volatile long lastReauthAtMs = 0;
     // Decrypt failures since last successful decrypt.  We allow a few before
@@ -63,17 +70,9 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
     private static final int DECRYPT_FAILURE_THRESHOLD = 3;
     private static final long DECRYPT_FAILURE_WINDOW_MS = 60 * 1000;
     private volatile long firstDecryptFailureAtMs = 0;
-    // Route preference learned from the last EMQ connect in this process. The
-    // Tailscale SOCKS listener (ProxyHelper port 8539) is tailnet-only on most
-    // cars: BYD's public EMQ broker is unreachable THROUGH it even though the
-    // listener itself probes healthy, so a proxied connect keeps failing for
-    // as long as the proxy is up — invalidateCache() can't help because the
-    // next probe re-selects the same live listener. After a direct fallback
-    // succeeds, try direct FIRST on later attempts so reconnects and the
-    // 25-min session refresh don't re-pay the dead proxied leg's connect
-    // timeout every time. Flips back to proxy-first the moment a direct-first
-    // attempt has to fall back to the proxy (sing-box / exit-node cars where
-    // the proxy IS the working egress).
+    // Route preference learned from the last EMQ connect in this process: after a
+    // direct fallback wins, try direct first; flips back once direct-first has to
+    // fall back to the sing-box egress proxy.
     private volatile boolean preferDirectEmqRoute = false;
 
     private final AtomicBoolean connecting = new AtomicBoolean(false);
@@ -101,8 +100,13 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
         scheduler.execute(this::connectAndSubscribe);
 
         // Session refresh timer
+        // A throw out of a fixed-rate task cancels every later run.
         scheduler.scheduleAtFixedRate(() -> {
-            if (running) refreshSession();
+            try {
+                if (running) refreshSession();
+            } catch (Throwable t) {
+                logger.warn("Session refresh task error: " + t);
+            }
         }, SESSION_REFRESH_MS, SESSION_REFRESH_MS, TimeUnit.MILLISECONDS);
     }
 
@@ -232,15 +236,12 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
             opts.setSessionExpiryInterval(0L);
 
             // Route-aware connect with one fallback leg. BYD's EMQ broker is
-            // public internet; the probed local proxy may be sing-box (general
-            // egress — proxied connect works) OR the tailnet-only Tailscale
-            // SOCKS listener users enable for private MQTT brokers, through
-            // which this broker is unreachable while the listener stays
-            // healthy. So: try the preferred route, and on a TRANSPORT-level
-            // failure (never an auth/CONNACK rejection) retry once via the
-            // other route in the same attempt. Whichever leg wins sets the
-            // preference for the next attempt.
-            boolean proxyActive = ProxyHelper.isProxyAvailable();
+            // public internet, so the only proxy leg is the sing-box egress
+            // (never the Tailscale listener). Try the preferred route, and on a
+            // TRANSPORT-level failure (never an auth/CONNACK rejection) retry
+            // once via the other route in the same attempt. Whichever leg wins
+            // sets the preference for the next attempt.
+            boolean proxyActive = ProxyHelper.isEgressProxyAvailable();
             boolean firstViaProxy = proxyActive && !preferDirectEmqRoute;
             logger.info("Connecting to BYD EMQ: " + brokerUri + " topic=" + topic
                     + " proxy=" + proxyActive
@@ -267,17 +268,23 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
             // A topic listener supersedes the global callback for matching messages in Paho v5.
             // Route both callback surfaces through one ingestion function; its identity guard also
             // protects against versions that fan the same MqttMessage out to both callbacks.
-            mc.subscribe(topic, 1, this::dispatchIncomingMessage);
+            // Array overload only: Paho 1.2.5's (String, int, listener) path recurses into
+            // StackOverflowError before any SUBSCRIBE is sent.
+            mc.subscribe(
+                    new MqttSubscription[]{new MqttSubscription(topic, 1)},
+                    new IMqttMessageListener[]{this::dispatchIncomingMessage});
 
             mqttClient = mc;
             mc = null; // ownership transferred to the field — don't close in a later failure path
+            failuresAtConnect = consecutiveFailures;
+            connectedAtMs = System.currentTimeMillis();
             consecutiveFailures = 0;
             dataProvider.setMqttConnected(true);
             logger.info("Connected and subscribed to BYD EMQ topic=" + topic);
 
-        } catch (Exception e) {
+        } catch (Throwable e) {
             String msg = e.getMessage() != null ? e.getMessage() : "";
-            logger.warn("EMQ connect failed: " + msg);
+            logger.warn("EMQ connect failed: " + (msg.isEmpty() ? e.getClass().getSimpleName() : msg));
             ProxyHelper.invalidateCache();
 
             // Classify the failure:
@@ -362,7 +369,7 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
             if (viaProxy) {
                 // Explicitly factory-proxied — immune to the global SOCKS props, so no
                 // props lock needed; connect concurrently with anything.
-                opts.setSocketFactory(ProxyHelper.getProxiedSslSocketFactory(false));
+                opts.setSocketFactory(ProxyHelper.getEgressSslSocketFactory());
                 candidate.connect(opts);
             } else {
                 // DIRECT connect on the default SSL factory, which DOES honor the
@@ -554,6 +561,10 @@ public final class BydCloudMqttSubscriber implements MqttCallback {
                 ? response.getException().getMessage()
                 : (response != null ? response.getReasonString() : "unknown");
         logger.warn("EMQ disconnected: " + msg);
+        long sessionMs = System.currentTimeMillis() - connectedAtMs;
+        if (connectedAtMs > 0 && sessionMs < STABLE_SESSION_MS) {
+            consecutiveFailures = Math.max(consecutiveFailures, failuresAtConnect);
+        }
         consecutiveFailures++;
         ProxyHelper.invalidateCache();
         if (running) scheduleReconnect();

@@ -196,6 +196,10 @@ public final class ScreenDeterrent {
         cacheScheduler.scheduleWithFixedDelay(
             this::refreshHotCacheFromDisk, 0, HOT_CACHE_TTL_MS,
             java.util.concurrent.TimeUnit.MILLISECONDS);
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()) {
+            com.overdrive.app.byd.BydDataCollector.getInstance()
+                    .addDoorStateListener(diLink5DoorListener);
+        }
     }
 
     private void refreshHotCacheFromDisk() {
@@ -207,6 +211,8 @@ public final class ScreenDeterrent {
         } catch (Throwable ignored) {
             // Keep last known good values on read failure.
         }
+        refreshDiLink5CarAwake();
+        refreshDiLink5OwnerAtCar();
     }
 
     public static ScreenDeterrent getInstance() {
@@ -308,7 +314,90 @@ public final class ScreenDeterrent {
         return !com.overdrive.app.monitor.AccMonitor.isAccStateAuthoritative()
                 || com.overdrive.app.monitor.AccMonitor.isAccOn()
                 || (com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()
-                    && com.overdrive.app.monitor.AccMonitor.isVehicleActive());
+                    && (com.overdrive.app.monitor.AccMonitor.isVehicleActive()
+                        || diLink5CarAwake));
+    }
+
+    // DiLink 5 keeps ACC OFF on a weak wake, so an owner who unlocked or switched on still reads
+    // parked. Refreshed by cacheScheduler; the GL thread only reads it.
+    private static volatile boolean diLink5CarAwake = false;
+
+    /** Power level ON, or the IVI out of Standby (our own panel lighting leaves it in Standby). */
+    private static void refreshDiLink5CarAwake() {
+        boolean awake = false;
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()) {
+            try {
+                com.overdrive.app.byd.BydVehicleData snap =
+                        com.overdrive.app.byd.BydDataCollector.getInstance().getData();
+                awake = snap != null
+                        && snap.powerLevel >= com.overdrive.app.byd.BydConstants.POWER_LEVEL_ON;
+            } catch (Throwable ignored) {
+                // No snapshot: fall back to the power-mode observation alone.
+            }
+            awake = awake || com.overdrive.app.monitor.AccMonitor
+                    .describeLastDiLink5AccObservation().startsWith("state=ON");
+        }
+        if (awake != diLink5CarAwake) {
+            diLink5CarAwake = awake;
+            logger.info(awake
+                    ? "Screen deterrent paused on DiLink 5 — car awake (power level ON or IVI out of Standby)"
+                    : "Screen deterrent re-armed on DiLink 5 — car back in Standby");
+        }
+    }
+
+    // DiLink 5: door, trunk or unlock activity means someone with the key is at the car, often
+    // before it wakes. Motion deterrents stay off for the hold, longer while a door stays open.
+    private static final long DILINK5_OWNER_HOLD_MS = 120_000;
+    private static final long DILINK5_OPEN_DOOR_HOLD_MS = 600_000;
+    private static final Object DILINK5_OWNER_LOCK = new Object();
+    private static volatile boolean diLink5OwnerAtCar = false;
+    private static long diLink5OwnerActivityElapsedMs;
+    private static boolean diLink5DoorWasOpen;
+    private static int diLink5LastLockState;
+
+    private final com.overdrive.app.byd.BydDataCollector.DoorStateListener diLink5DoorListener =
+            (area, state) -> {
+                if (area >= com.overdrive.app.byd.bodywork.BodyworkConstants.AREA_FRONT_DRIVER
+                        && area <= com.overdrive.app.byd.bodywork.BodyworkConstants.AREA_TRUNK
+                        && area != com.overdrive.app.byd.bodywork.BodyworkConstants.AREA_HOOD) {
+                    synchronized (DILINK5_OWNER_LOCK) {
+                        diLink5OwnerActivityElapsedMs = SystemClock.elapsedRealtime();
+                        setDiLink5OwnerAtCar(true);
+                    }
+                }
+            };
+
+    /** Door edges come from the listener; this adds doors left open and unlock edges. */
+    private static void refreshDiLink5OwnerAtCar() {
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()) return;
+        com.overdrive.app.byd.BydDataCollector collector =
+                com.overdrive.app.byd.BydDataCollector.getInstance();
+        boolean doorOpen = collector.isDiLink5DoorOrTrunkOpen();
+        int lock = collector.readDiLink5GateDoorLockState();
+        synchronized (DILINK5_OWNER_LOCK) {
+            long now = SystemClock.elapsedRealtime();
+            boolean unlocked = lock == com.overdrive.app.byd.BydDataCollector.DOOR_STATE_UNLOCK
+                    && diLink5LastLockState == com.overdrive.app.byd.BydDataCollector.DOOR_STATE_LOCK;
+            if ((doorOpen && !diLink5DoorWasOpen) || unlocked) {
+                diLink5OwnerActivityElapsedMs = now;
+            }
+            diLink5DoorWasOpen = doorOpen;
+            if (lock != com.overdrive.app.byd.BydDataCollector.DOOR_STATE_INVALID) {
+                diLink5LastLockState = lock;
+            }
+            long since = now - diLink5OwnerActivityElapsedMs;
+            setDiLink5OwnerAtCar(diLink5OwnerActivityElapsedMs > 0L && since >= 0L
+                    && since < (doorOpen ? DILINK5_OPEN_DOOR_HOLD_MS : DILINK5_OWNER_HOLD_MS));
+        }
+    }
+
+    /** Caller holds DILINK5_OWNER_LOCK. */
+    private static void setDiLink5OwnerAtCar(boolean atCar) {
+        if (atCar == diLink5OwnerAtCar) return;
+        diLink5OwnerAtCar = atCar;
+        logger.info(atCar
+                ? "Screen deterrent paused on DiLink 5 — door, trunk or unlock activity (owner at the car)"
+                : "Screen deterrent re-armed on DiLink 5 — door, trunk and unlock hold ended");
     }
 
     /**
@@ -318,6 +407,9 @@ public final class ScreenDeterrent {
      */
     public void onMotionDetected() {
         if (!hotCacheEnabled) return;
+        // DI5 owner present: surveillance keeps running there, so stay quiet (logged on the edge).
+        if (diLink5CarAwake) return;
+        if (diLink5OwnerAtCar) return;
 
         // SAFETY (deterrent-while-driving): the deterrent renders a full-screen
         // SurfaceControl layer at z=Integer.MAX_VALUE that occludes the ENTIRE
@@ -511,6 +603,9 @@ public final class ScreenDeterrent {
             return;
         }
         Point size = resolveDisplaySize(ctx);
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            logger.info("Screen deterrent preview showing on " + size.x + "x" + size.y);
+        }
         renderAsset(size.x, size.y, this::shouldStopPreview, this::maybeReassertWake);
     }
 
@@ -562,6 +657,10 @@ public final class ScreenDeterrent {
             terminateCurrentSession();
             return;
         }
+        if (diLink5OwnerAtCar) {
+            terminateCurrentSession();
+            return;
+        }
         Context ctx = resolveContext();
         if (ctx == null) {
             // Throttle: cleanup() re-enqueues onMotionDetected on sustained
@@ -610,6 +709,9 @@ public final class ScreenDeterrent {
         final int dispW = size.x;
         final int dispH = size.y;
 
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            logger.info("Screen deterrent showing on " + dispW + "x" + dispH);
+        }
         renderAsset(dispW, dispH, this::shouldStop, this::maybeReassertWake);
     }
 
@@ -768,6 +870,8 @@ public final class ScreenDeterrent {
         if (isAccUnsafe()) {
             return terminateCurrentSession();
         }
+        // DI5 owner at the car (door, trunk or unlock): end a motion deterrent within one tick.
+        if (diLink5OwnerAtCar) return terminateCurrentSession();
         long now = SystemClock.elapsedRealtime();
         long localDeadline = extendDeadlineElapsedMs.get();
         if (now >= localDeadline) return true;
@@ -1234,6 +1338,9 @@ public final class ScreenDeterrent {
         } catch (Throwable t) {
             logger.warn("TurnBacklightOn reflection failed: " + t.getMessage());
         }
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            wakeDiLink5Display(ctx);
+        }
         // dilink4: escalate to the WithLock tier + verify, else the layer may be
         // invisible. Self-gated — no-op on legacy.
         try {
@@ -1249,6 +1356,43 @@ public final class ScreenDeterrent {
             }
         } catch (Throwable t) {
             logger.debug("Verified panel wake failed: " + t.getMessage());
+        }
+    }
+
+    private static final int WAKE_REASON_APPLICATION = 2;
+    private static volatile boolean diLink5WakeFailureLogged;
+
+    /**
+     * DiLink 5 has no TurnBacklight* API, so the parked display stays off. Wake it the way
+     * AccSentryDaemon does on this platform: PowerManager.wakeUp, else KEYCODE_WAKEUP.
+     */
+    private static void wakeDiLink5Display(Context ctx) {
+        try {
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                PowerManager.class
+                        .getMethod("wakeUp", long.class, int.class, String.class)
+                        .invoke(pm, SystemClock.uptimeMillis(), WAKE_REASON_APPLICATION,
+                                "overdrive:screen_deterrent");
+                return;
+            }
+        } catch (Throwable t) {
+            if (!diLink5WakeFailureLogged) {
+                diLink5WakeFailureLogged = true;
+                Throwable cause = t.getCause() != null ? t.getCause() : t;
+                logger.warn("DI5 display wake via PowerManager failed ("
+                        + cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                        + ") — using KEYCODE_WAKEUP");
+            }
+        }
+        try {
+            // Detached like launchActivity(): the render loop re-asserts the wake every 5 s.
+            new ProcessBuilder("input", "keyevent", "224")
+                    .redirectErrorStream(true)
+                    .redirectOutput(new File("/dev/null"))
+                    .start();
+        } catch (Throwable t) {
+            logger.warn("DI5 display wake: KEYCODE_WAKEUP failed: " + t.getMessage());
         }
     }
 

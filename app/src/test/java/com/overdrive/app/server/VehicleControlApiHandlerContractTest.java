@@ -463,20 +463,74 @@ public class VehicleControlApiHandlerContractTest {
 
         assertTrue(source.contains(
                 "hasDiLink5CameraHardware()"));
+        // Cast routing follows the CLUSTER TRANSPORT (DI5 firmware / config /
+        // dilink5 mode); the "switch to DiLink 5 mode" nag only applies when
+        // the transport ALSO stayed legacy — otherwise DiLink 5.0 units
+        // without the QCarCam library could never cast.
         assertTrue(source.contains(
-                "boolean modeRequired = installed && diLink5Hardware && !diLink5;"));
+                "com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5();"));
         assertTrue(source.contains(
-                "? \"dilink5_mode_required\""));
+                "boolean modeRequired =\n"
+                        + "                    installed && diLink5Hardware"
+                        + " && !diLink5Mode && !diLink5;"));
+        assertTrue(source.contains(
+                "reason = \"dilink5_mode_required\";"));
         assertTrue(source.contains(
                 "response.put(\"vehicleMode\""));
         assertTrue(source.contains(
                 "response.put(\"dilink5Hardware\""));
+        assertTrue(source.contains(
+                "response.put(\"clusterTransport\""));
+        // The mode-required veto must keep vetoing the legacy fall-through.
+        assertTrue(source.contains("if (installed && !modeRequired)"));
         assertTrue(ui.contains(
                 "\"dilink5_mode_required\""));
         assertTrue(ui.contains(
                 "projection_dilink5_mode_required"));
         assertTrue(ui.contains(
                 "!casting && !diLink5ModeRequired"));
+    }
+
+    /**
+     * The Projection screen's transport selector rides a dedicated endpoint
+     * that (a) validates against the ClusterTransport vocabulary, (b) always
+     * persists, and (c) live-applies ONLY while no cast / cluster map / legacy
+     * projection is active — flipping the routing under a live session would
+     * split its start and stop across two different transports.
+     */
+    @Test
+    public void clusterTransportOverrideIsValidatedAndIdleGated()
+            throws IOException {
+        String source = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/server/"
+                        + "VehicleControlApiHandler.java");
+        assertTrue(source.contains(
+                "cleanPath.equals(\"/api/vehicle/cluster-transport\")"));
+        int handler = source.indexOf(
+                "private static void handleClusterTransport(");
+        assertTrue(handler >= 0);
+        String body = source.substring(handler,
+                source.indexOf("private static void handleClusterStop(", handler));
+        assertTrue(body.contains(".normalizeConfigured(req.optString(\"transport\", \"\"))"));
+        assertTrue(body.contains("transport must be auto, legacy or dilink5"));
+        assertTrue(body.contains("ClusterCast.isActive()"));
+        assertTrue(body.contains("ClusterMapProjector.isActive()"));
+        assertTrue(body.contains("isProjectionIdleStatic()"));
+        assertTrue(body.contains("response.put(\"restartRequired\", busy)"));
+        assertTrue(body.contains("response.put(\"applied\", !busy)"));
+        // The persist must precede the live-apply decision so a busy cluster
+        // still records the choice for the next restart.
+        int persist = body.indexOf("UnifiedConfigManager.updateValues(");
+        int busyCheck = body.indexOf("ClusterCast.isActive()");
+        assertTrue(persist >= 0 && busyCheck > persist);
+
+        String ui = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/ui/fragment/"
+                        + "ProjectionFragment.kt");
+        assertTrue(ui.contains("/api/vehicle/cluster-transport"));
+        assertTrue(ui.contains("projectionTransportGroup"));
+        assertTrue(ui.contains("transportWriteInFlight"));
+        assertTrue(ui.contains("projection_transport_restart_required"));
     }
 
     private static Object invokePrivate(String name, Class<?>[] parameterTypes, Object... args)

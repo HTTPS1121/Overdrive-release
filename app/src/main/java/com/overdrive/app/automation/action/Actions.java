@@ -3,7 +3,7 @@ package com.overdrive.app.automation.action;
 import com.overdrive.app.automation.type.AppType;
 import com.overdrive.app.automation.type.AudioType;
 import com.overdrive.app.automation.type.StringType;
-import com.overdrive.app.automation.type.ColourType;
+import com.overdrive.app.automation.type.DynamicColourType;
 import com.overdrive.app.automation.type.DynamicIntType;
 import com.overdrive.app.automation.type.EnumType;
 import com.overdrive.app.automation.type.IntType;
@@ -77,6 +77,12 @@ public class Actions {
         addAction(new ApiAction(
                 new Label("findCar", "automation.find_car"), "automation.find_car_description",
                 "POST", "/api/vehicle/find-car", ""));
+        addAction(new ApiAction(
+                new Label("powerOn", "automation.power_on"), "automation.power_on_description",
+                "POST", "/api/vehicle/power-on", ""));
+        addAction(new ApiAction(
+                new Label("powerOff", "automation.power_off"), "automation.power_off_description",
+                "POST", "/api/vehicle/power-off", ""));
         addAction(new VehicleControlAction(
                 new Label("adas_slw", "automation.set_slw"), "automation.set_slw_description",
                 new EnumType(new Label("payload", "automation.action"), new Label("off", "automation.off"), new Label("on", "automation.on"))));
@@ -213,6 +219,27 @@ public class Actions {
                 "{\"action\":\"fan_only_${action}\"}",
                 new EnumType(new Label("action", "automation.action"), new Label("off", "automation.off"), new Label("on", "automation.on"))));
         addAction(new ApiAction(
+                new Label("maxCool", "automation.set_max_cool"),
+                "automation.set_max_cool_description",
+                "POST",
+                "/api/vehicle/climate",
+                "{\"action\":\"max_cool_${action}\"}",
+                new EnumType(new Label("action", "automation.action"), new Label("off", "automation.off"), new Label("on", "automation.on"))));
+        addAction(new ApiAction(
+                new Label("airPurify", "automation.set_air_purify"),
+                "automation.set_air_purify_description",
+                "POST",
+                "/api/vehicle/climate",
+                "{\"action\":\"purify_${action}\"}",
+                new EnumType(new Label("action", "automation.action"), new Label("off", "automation.off"), new Label("on", "automation.on"))));
+        addAction(new ApiAction(
+                new Label("rainCloseWindows", "automation.set_rain_close_windows"),
+                "automation.set_rain_close_windows_description",
+                "POST",
+                "/api/vehicle/window",
+                "{\"action\":\"rain_close_${action}\"}",
+                new EnumType(new Label("action", "automation.action"), new Label("off", "automation.off"), new Label("on", "automation.on"))));
+        addAction(new ApiAction(
                 new Label("steeringHeat", "automation.set_steering_heat"),
                 "automation.set_steering_heat_description",
                 "POST",
@@ -254,6 +281,20 @@ public class Actions {
                 "POST",
                 "/api/vehicle/lights",
                 "{\"target\":\"welcomeLight\",\"enable\":${action}}",
+                new EnumType(new Label("action", "automation.action"), new Label("false", "automation.off"), new Label("true", "automation.on"))));
+        addAction(new ApiAction(
+                new Label("turnSignalLeft", "automation.set_turn_signal_left"),
+                "automation.set_turn_signal_left_description",
+                "POST",
+                "/api/vehicle/lights",
+                "{\"target\":\"turnSignalLeft\",\"enable\":${action}}",
+                new EnumType(new Label("action", "automation.action"), new Label("false", "automation.off"), new Label("true", "automation.on"))));
+        addAction(new ApiAction(
+                new Label("turnSignalRight", "automation.set_turn_signal_right"),
+                "automation.set_turn_signal_right_description",
+                "POST",
+                "/api/vehicle/lights",
+                "{\"target\":\"turnSignalRight\",\"enable\":${action}}",
                 new EnumType(new Label("action", "automation.action"), new Label("false", "automation.off"), new Label("true", "automation.on"))));
         addAction(new ApiAction(
                 new Label("readingLight", "automation.set_reading_light"),
@@ -559,7 +600,7 @@ public class Actions {
                 "POST",
                 "/api/vehicle/lights",
                 "{\"target\":\"ambientColour\",\"value\":${colour},\"zone\":\"${zone}\"}",
-                new ColourType(new Label("colour", "automation.colour"), LightConstants.AMBIENT_COLOURS),
+                new DynamicColourType(new Label("colour", "automation.colour"), LightConstants.AMBIENT_COLOURS),
                 ambientZoneType()));
         // Media volume (STREAM_MUSIC) as an ABSOLUTE step 0-40 — the same scale as the
         // car's own volume button. Routes through the allowlisted /api/vehicle/media
@@ -703,7 +744,7 @@ public class Actions {
                 "POST",
                 "/api/vehicle/media",
                 "{\"target\":\"ambient_brightness\",\"value\":${percent},\"zone\":\"${zone}\"}",
-                new IntType(new Label("percent", "automation.percent"), 0, 100),
+                new DynamicIntType(new Label("percent", "automation.percent"), 0, 100),
                 ambientZoneType()));
         // Ambient light on/off, per zone (front/rear/both). "Both" uses the real global main
         // switch (a three-tier chain); a single zone has no dedicated switch on this platform, so
@@ -984,6 +1025,11 @@ public class Actions {
         addAction(new ManualClipAction(
                 new Label("manualClip", "automation.save_replay"),
                 "automation.save_replay_description"));
+        // SafeKeep (own-storage backup): sync now / pause / resume / upload latest event.
+        // In-process + detached like manualClip; refused (logged) while SafeKeep is off.
+        addAction(new SafeKeepAction(
+                new Label("safeKeep", "automation.safekeep"),
+                "automation.safekeep_description"));
         // Open app — launch a user-selected installed app. The package is chosen
         // from a live picker (AppType → dropdown fed by GET /api/apps/list). Routes
         // through the allowlisted POST /api/apps/launch (shared with key mapping).

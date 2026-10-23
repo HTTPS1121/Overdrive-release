@@ -120,7 +120,7 @@
                         android:gravity="end"
                         android:maxWidth="180dp"
                         android:maxLines="2"
-                        android:text="@string/dashboard_vehicle_tap_to_set"
+                        android:text="@string/placeholder_dash"
                         android:textAppearance="@style/TextAppearance.Material3.LabelLarge"
                         android:textColor="?attr/colorPrimary" />
 
@@ -1113,6 +1113,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
+                            android:ellipsize="end"
                             android:fontFamily="monospace"
                             android:maxLines="1"
                             android:text="@string/dashboard_token_masked"

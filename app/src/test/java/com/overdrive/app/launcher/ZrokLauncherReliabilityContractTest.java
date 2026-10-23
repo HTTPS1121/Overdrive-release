@@ -128,9 +128,16 @@ public class ZrokLauncherReliabilityContractTest {
 
         assertTrue(adb.contains("fun execute(command: String, callback: ShellCallback)"));
         assertTrue(adb.contains("fun executeSensitive("));
-        // The raw command must reach dadb unchanged (shellGuarded runs it on
-        // the generation-tagged connection); logs see only $commandForLog.
-        assertTrue(adb.contains("conn.dadb.shell(command)"));
+        // The command must reach dadb without passing through any logger
+        // (shellGuarded runs it on the generation-tagged connection); logs see
+        // only $commandForLog. ScratchRoot.prepare is the sole transform and is
+        // the identity on every vehicle that has not opted into the alternate
+        // scratch root (see ScratchRootLegacyIdentityTest).
+        assertTrue(adb.contains(
+                "conn.dadb.shell(\n"
+                        + "                com.overdrive.app.util.ScratchRoot.prepare(command)\n"
+                        + "            )"));
+        assertFalse(adb.contains("logger.debug(TAG, \"adb#$seq SUBMIT [${Thread.currentThread().name}]: $command\")"));
         assertTrue(adb.contains("$commandForLog"));
 
         assertTrue(telegram.contains("ZrokRuntimeProbe.shellQuote(enableToken)"));

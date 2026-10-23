@@ -217,12 +217,14 @@ public class DiLink5RuntimeContractTest {
                 "app/src/main/java/com/overdrive/app/camera/"
                         + "PanoramicCameraGpu.java");
 
+        // Scratch-root relative: resolves to /data/local/tmp/... on every
+        // vehicle that has not opted into the alternate root (ScratchRoot).
         assertTrue(safety.contains(
-                "/data/local/tmp/overdrive_dilink5_camera_session"));
+                "ScratchRoot.path(\"overdrive_dilink5_camera_session\")"));
         assertTrue(safety.contains(
-                "/data/local/tmp/overdrive_dilink5_camera_blocked"));
+                "ScratchRoot.path(\"overdrive_dilink5_camera_blocked\")"));
         assertTrue(safety.contains(
-                "/data/local/tmp/overdrive_dilink5_camera_release"));
+                "ScratchRoot.path(\"overdrive_dilink5_camera_release\")"));
         assertTrue(safety.contains(
                 "/proc/sys/kernel/random/boot_id"));
         assertTrue(safety.contains(
@@ -612,7 +614,8 @@ public class DiLink5RuntimeContractTest {
         assertTrue(backend.contains(
                 "FAST_CAM_ASSET =\n            \"dilink5/fast_cam_capture\""));
         assertTrue(backend.contains(
-                "FAST_CAM_PATH =\n            \"/data/local/tmp/fast_cam_capture\""));
+                "FAST_CAM_PATH =\n            com.overdrive.app.util.ScratchRoot"
+                        + ".path(\"fast_cam_capture\")"));
         assertTrue(backend.contains(
                 "\"--cams\", cameraIds"));
         assertTrue(backend.contains(
@@ -1843,11 +1846,13 @@ public class DiLink5RuntimeContractTest {
                 "scaler.setCameraLayout(mode == 7 || mode == 8 ? 3 : 1);"));
         assertTrue(bridge.contains("g_active_camera{4}"));
         assertTrue(scaler.contains(
-                "if (uViewMode == 2) corner = vec2(0.5, 0.0)"));
+                "if (uViewMode == 2) corner = uProducerForRight;"));
         assertTrue(scaler.contains(
-                "else if (uViewMode == 3) corner = vec2(0.0, 0.5)"));
+                "else if (uViewMode == 3) corner = uProducerForRear;"));
         assertTrue(scaler.contains(
-                "else if (uViewMode == 4) corner = vec2(0.5, 0.5)"));
+                "else if (uViewMode == 4) corner = uProducerForLeft;"));
+        assertTrue(pipeline.contains("applyDiLink5ProducerLayout(streamScaler);"));
+        assertTrue(pipeline.contains("applyDiLink5ProducerLayout(bsScaler);"));
     }
 
     @Test
@@ -1969,15 +1974,13 @@ public class DiLink5RuntimeContractTest {
         assertTrue(server.contains(
                 "if (!diLink5Authenticated) return null;"));
         assertTrue(server.contains(
-                "ps -A -o PID,NAME"));
+                "ACTION_VEHICLE_MODE_SYNC"));
         assertTrue(server.contains(
-                "$2==\\\"acc_sentry_daemon\\\""));
-        assertTrue(server.contains(
-                "/data/local/tmp/start_acc_sentry.sh"));
-        assertTrue(server.contains(
-                "/data/local/tmp/acc_sentry_daemon.disabled"));
-        assertTrue(server.contains(
-                "/data/local/tmp/overdrive_parked_shutdown"));
+                "EXTRA_ACTIVE_MODE"));
+        assertFalse(server.contains(
+                "restartAccSentryForVehicleModeChange"));
+        assertFalse(server.contains(
+                "nohup sh /data/local/tmp/start_acc_sentry.sh"));
         assertTrue(server.contains(
                 "request.optJSONArray(\"doorStates\")"));
         assertTrue(collector.contains(
@@ -2198,6 +2201,60 @@ public class DiLink5RuntimeContractTest {
     }
 
     @Test
+    public void vehicleModeSyncRegeneratesAccWatchdogFromCommittedMode()
+            throws IOException {
+        String ipc = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/server/SurveillanceIpcServer.java");
+        String keepalive = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/services/DaemonKeepaliveService.kt");
+        String facade = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/launcher/AdbDaemonLauncher.kt");
+        String launcher = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/launcher/DaemonLauncher.kt");
+
+        assertTrue(ipc.contains("ACTION_VEHICLE_MODE_SYNC"));
+        assertTrue(ipc.contains("EXTRA_ACTIVE_MODE"));
+        assertFalse(ipc.contains(
+                "restartAccSentryForVehicleModeChange"));
+        assertFalse(ipc.contains(
+                "nohup sh /data/local/tmp/start_acc_sentry.sh"));
+
+        assertOrdered(
+                keepalive,
+                ".refreshActiveModeFromCommittedMarker()",
+                "intent?.action == ACTION_VEHICLE_MODE_SYNC",
+                "markAccSentryWatchdogModeSyncPending()",
+                "requestAccSentryWatchdogModeSync(requestedActiveMode)");
+        assertOrdered(
+                keepalive,
+                "private fun runAccSentryWatchdogModeSync(",
+                ".refreshActiveModeFromCommittedMarker()",
+                ".currentActiveModeGeneration()",
+                "val enableDi5HealthSupervision =",
+                ".isSelected()",
+                "launcher.redeployAccSentryDaemonForVehicleMode(");
+        assertTrue(keepalive.contains(
+                "vehicleModeSyncRequestedVersion++"));
+        assertTrue(keepalive.contains(
+                "deployedGeneration != currentGeneration"));
+        assertTrue(keepalive.contains(
+                "isAccSentryWatchdogModeSyncPending()"));
+        assertTrue(keepalive.contains(
+                "clearAccSentryWatchdogModeSyncPending()"));
+        assertTrue(keepalive.contains(
+                "pending reconciliation retained"));
+        assertTrue(facade.contains(
+                "fun redeployAccSentryDaemonForVehicleMode("));
+        assertOrdered(
+                launcher,
+                "fun redeployAccSentryDaemonForVehicleMode(",
+                "buildAccSentryModeSyncCleanupScript()",
+                "writeWatchdogScript(",
+                "enableDi5HealthSupervision",
+                "allowBareFallback = false");
+    }
+
+    @Test
     public void dilink5StartupRemainsAsynchronousLikeTheWorkingBranch()
             throws IOException {
         String pipeline = readRepositoryFile(
@@ -2247,7 +2304,7 @@ public class DiLink5RuntimeContractTest {
         assertTrue(legacySleep > sleepComment);
 
         assertTrue(telegram.contains(
-                "com.overdrive.app.mqtt.ProxyHelper.isProxyAvailable()"));
+                "com.overdrive.app.mqtt.ProxyHelper.isEgressProxyAvailable()"));
         assertTrue(telegram.contains(".retryOnConnectionFailure(true)"));
         assertTrue(telegram.contains("connectionPool().evictAll()"));
         assertTrue(telegram.contains("if (elapsed > 5_000)"));

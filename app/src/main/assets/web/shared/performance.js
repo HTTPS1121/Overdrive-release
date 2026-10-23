@@ -2033,6 +2033,8 @@ BYD.performance = {
         this.updateElement('evKwhValue', currentKwh != null ? currentKwh.toFixed(1) : '--');
         this.updateElement('evRangeValue', currentRange != null ? BYD.units.dist(currentRange) : '-- ' + BYD.units.distLabel());
         this.updateElement('evChargingStatus', isCharging ? BYD.i18n.t('performance.status_charging') : BYD.i18n.t('performance.status_idle'));
+        const evChargingStatus = document.getElementById('evChargingStatus');
+        if (evChargingStatus) evChargingStatus.classList.toggle('is-charging', !!isCharging);
         
         // Update EV SOC bar
         const evSocBar = document.getElementById('evSocBar');
@@ -2430,7 +2432,18 @@ BYD.performance = {
         if (hasKwh) {
             ctx.fillStyle = '#fbbf24'; // Amber color for energy
             ctx.font = '11px Inter, sans-serif';
-            ctx.fillText('⚡ ' + point.kwh.toFixed(1) + ' kWh', tooltipX + boxPadding, tooltipY + boxPadding + yOffset);
+            // Bolt glyph drawn as a path (canvas text can't carry the SVG icon set).
+            const bx = tooltipX + boxPadding, by = tooltipY + boxPadding + yOffset - 9;
+            ctx.beginPath();
+            ctx.moveTo(bx + 6, by);
+            ctx.lineTo(bx + 1, by + 6);
+            ctx.lineTo(bx + 4.5, by + 6);
+            ctx.lineTo(bx + 3.5, by + 10);
+            ctx.lineTo(bx + 8.5, by + 4);
+            ctx.lineTo(bx + 5, by + 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillText(point.kwh.toFixed(1) + ' kWh', bx + 12, tooltipY + boxPadding + yOffset);
             yOffset += 16;
         }
         
@@ -2567,7 +2580,7 @@ BYD.performance = {
         const statusEl = document.getElementById('thermalStatus');
         if (statusEl) {
             statusEl.textContent = status;
-            statusEl.style.color = status === 'CRITICAL' ? '#ef4444' : status === 'WARNING' ? '#fbbf24' : status === 'NORMAL' ? '#22c55e' : 'var(--text-muted)';
+            statusEl.style.color = status === 'CRITICAL' ? 'var(--danger)' : status === 'WARNING' ? 'var(--warning)' : status === 'NORMAL' ? 'var(--success)' : 'var(--text-muted)';
         }
     },
 
@@ -3100,10 +3113,10 @@ BYD.performance = {
         var hint = document.getElementById('sohDetailHint');
         if (hint) {
             if (!nominalSet && displaySource !== 'oem') {
-                hint.style.display = 'block';
+                hint.style.display = '';
                 hint.textContent = BYD.i18n.t('soh.set_battery_capacity_prompt');
             } else if (!data.hasEstimate) {
-                hint.style.display = 'block';
+                hint.style.display = '';
                 hint.textContent = BYD.i18n.t('performance.soh_no_estimate');
             } else {
                 hint.style.display = 'none';
@@ -3450,7 +3463,16 @@ BYD.performance = {
     },
 
     async resetSoh() {
-        if (!confirm(BYD.i18n.t('performance.confirm_reset_soh'))) {
+        const ask = BYD.i18n.t('performance.confirm_reset_soh');
+        const ok = (BYD.utils && typeof BYD.utils.confirmDialog === 'function')
+            ? await BYD.utils.confirmDialog({
+                title: BYD.i18n.t('performance.btn_reset'),
+                body: ask,
+                confirmLabel: BYD.i18n.t('performance.btn_reset'),
+                danger: true
+            })
+            : confirm(ask);
+        if (!ok) {
             return;
         }
 
@@ -3466,11 +3488,16 @@ BYD.performance = {
                 // Refresh the card
                 this.fetchSohStatus();
             } else {
-                alert(BYD.i18n.t('performance.reset_failed', {error: data.error || BYD.i18n.t('errors.generic')}));
+                this._resetSohError(BYD.i18n.t('performance.reset_failed', {error: data.error || BYD.i18n.t('errors.generic')}));
             }
         } catch (e) {
-            alert(BYD.i18n.t('performance.reset_failed', {error: e.message}));
+            this._resetSohError(BYD.i18n.t('performance.reset_failed', {error: e.message}));
         }
+    },
+
+    _resetSohError(msg) {
+        if (BYD.utils && BYD.utils.toast) BYD.utils.toast(msg, 'error');
+        else alert(msg);
     },
 
     toggleAllResetCategories(checked) {

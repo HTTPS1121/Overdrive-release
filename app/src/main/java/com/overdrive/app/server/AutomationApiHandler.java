@@ -91,7 +91,8 @@ public final class AutomationApiHandler {
             return disableAutomation(id, body, out);
         }
         // Automation-wide settings (not per-automation): shell-action permission
-        // plus the global driving-safety guard switches shown on this page.
+        // plus the global driving-safety guard switches shown on this page and on
+        // Vehicle Control's Safety tab (the one writer for both).
         // Live signal values for the editor's "reads X right now" hints. Read-only.
         if (path.equals("/api/automations/state") && method.equals("GET")) {
             return getState(out);
@@ -438,6 +439,25 @@ public final class AutomationApiHandler {
             return true;
         }
 
+        // Arming unattended shell needs a JWT-authenticated non-tunnel caller; the loopback
+        // safety net is every local app. Disabling it, or re-saving the current value, is
+        // always allowed. Mirrors the keymap allowAdvanced gate.
+        if (allowShell != null && allowShell.booleanValue()
+                && !HttpServer.canGrantShellAccess()) {
+            // Fresh read only on the refusal candidate, so a stale cross-UID cache can't
+            // reject a re-save of an already-enabled gate.
+            com.overdrive.app.config.UnifiedConfigManager.forceReload();
+            if (!com.overdrive.app.config.UnifiedConfigManager.isAutomationShellAllowed()) {
+                HttpResponse.sendJson(out, 403, new JSONObject()
+                        .put("success", false)
+                        .put("error", "Automation shell needs a signed-in local session. "
+                                + "Sign in again on the car, or reload this page; it "
+                                + "cannot be enabled over a tunnel.")
+                        .toString());
+                return true;
+            }
+        }
+
         boolean ok = allowShell == null
                 || com.overdrive.app.config.UnifiedConfigManager
                         .setAutomationShellAllowed(allowShell.booleanValue());
@@ -563,6 +583,10 @@ public final class AutomationApiHandler {
                 com.overdrive.app.automation.Automation.fromJson(json);
         if (parsed == null) {
             HttpResponse.sendError(out, 400, "Invalid automation provided. Check the automation follows the schema");
+            return true;
+        }
+        if (Automations.hasInvalidMqttChannel(parsed)) {
+            HttpResponse.sendError(out, 400, Automations.MQTT_CHANNEL_ERROR);
             return true;
         }
         if (Automations.updateAutomation(id, parsed)) {

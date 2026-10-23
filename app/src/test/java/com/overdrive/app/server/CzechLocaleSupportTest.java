@@ -42,6 +42,14 @@ public class CzechLocaleSupportTest {
                 "app/src/main/assets/web/shared/core.js");
         assertTrue(core.contains("Čeština"));
         assertTrue(core.contains("n === i && i >= 2 && i <= 4"));
+
+        String launcherController = readRepositoryFile(
+                "launcher/src/main/java/com/overdrive/launcher/i18n/LocaleController.kt");
+        String launcherStrings = readRepositoryFile(
+                "launcher/src/main/res/values-cs/strings.xml");
+        assertTrue(launcherController.contains("\"cs\""));
+        assertTrue(launcherStrings.contains(
+                "name=\"settings_language\">Jazyk</string>"));
     }
 
     private static JSONObject readJson(String relativePath) throws Exception {

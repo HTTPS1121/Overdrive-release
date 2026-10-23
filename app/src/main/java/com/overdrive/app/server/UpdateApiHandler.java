@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class UpdateApiHandler {
 
     private static final String TAG = "UpdateApi";
-    private static final String PROGRESS_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_update_progress.json");
+    private static final String PROGRESS_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_update_progress.json");
 
     // One install at a time. AtomicReference so we don't hold an updater past
     // the install (it's GC'd along with the dying process anyway).
@@ -382,7 +382,7 @@ public class UpdateApiHandler {
         // named cloudflared tunnels) and fall back to process probe.
         // AdbDaemonLauncher.tunnelType is intentionally NOT used; it's a default
         // value that's never reassigned at runtime.
-        String lastUrl = readTextFile(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/tunnel_url.txt"));
+        String lastUrl = readTextFile(com.overdrive.app.util.ScratchRoot.path("tunnel_url.txt"));
         String tunnelType = "none";
         boolean tunnelUrlMayChange = false;
         if (lastUrl != null && !lastUrl.isEmpty()) {
@@ -797,7 +797,7 @@ public class UpdateApiHandler {
      */
     private static boolean isProcessRunning(String name) {
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", "pgrep -f '" + name + "' >/dev/null 2>&1"});
+            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap("pgrep -f '" + name + "' >/dev/null 2>&1")});
             p.waitFor();
             return p.exitValue() == 0;
         } catch (Exception e) {

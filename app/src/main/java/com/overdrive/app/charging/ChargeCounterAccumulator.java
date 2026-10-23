@@ -92,6 +92,8 @@ public final class ChargeCounterAccumulator {
     private int unattributedGaps = 0;       // wraps across gaps that could have held several cycles
     /** Set by {@link #restore}: the next observation must reconcile the unobserved outage gap. */
     private boolean awaitingGapReconcile = false;
+    /** Last observation time before a live (same-process) outage; 0 when the gap has no known span. */
+    private long liveGapSinceMs = 0L;
     /** True once any gap has been reconstructed into this total (see containsReconstructedGap). */
     private boolean gapReconstructed = false;
     /** Independent estimate used to attribute that gap; NaN when none is available. */
@@ -215,6 +217,7 @@ public final class ChargeCounterAccumulator {
         abandonedKwh = 0;
         unattributedGaps = 0;
         awaitingGapReconcile = false;
+        liveGapSinceMs = 0L;
         gapReconstructed = false;
         gapEstimateKwh = Double.NaN;
         recentRateKwhPerH = Double.NaN;
@@ -455,6 +458,16 @@ public final class ChargeCounterAccumulator {
     }
 
     /**
+     * Mark a live outage: the reader went quiet while this process kept running, so the gap's span is
+     * known and the next reading can rule out a wrap the counter could not have made in that time.
+     */
+    public void beginLiveGapReconciliation() {
+        if (awaitingGapReconcile) return;   // a pending restart gap keeps its own estimate
+        beginGapReconciliation(Double.NaN);
+        if (awaitingGapReconcile && lastAtMs > 0L) liveGapSinceMs = lastAtMs;
+    }
+
+    /**
      * True when any part of this total was RECONSTRUCTED across an unobserved gap rather than
      * integrated from readings we saw.
      *
@@ -569,6 +582,28 @@ public final class ChargeCounterAccumulator {
         // is made against the independent SOC estimate, exactly as for any other gap.
         if (awaitingGapReconcile) {
             awaitingGapReconcile = false;
+            long liveSince = liveGapSinceMs;
+            liveGapSinceMs = 0L;
+            // Same reach bound the fall path uses: this session's own pace, never above the cap.
+            double liveReachKw = Double.isFinite(recentRateKwhPerH) && recentRateKwhPerH > 0
+                    ? Math.min(MAX_PLAUSIBLE_RATE_KW, recentRateKwhPerH * REACH_RATE_HEADROOM)
+                    : MAX_PLAUSIBLE_RATE_KW;
+            double liveHours = liveSince > 0L && nowMs > liveSince
+                    ? (nowMs - liveSince) / 3_600_000.0 : 0.0;
+            if (liveHours > 0.0 && valueKwh >= last
+                    && (valueKwh - last + fullScaleKwh) / liveHours > liveReachKw
+                    && valueKwh / liveHours > liveReachKw) {
+                // Too little time for a wrap, or for a restarted counter to climb back to this
+                // value, so the plain rise is a measurement.
+                accumulated += valueKwh - last;
+                if (valueKwh > last) {
+                    saturated = false;
+                    ceilingStreak = 0;
+                }
+                last = valueKwh;
+                lastAtMs = nowMs;
+                return;
+            }
             // An exactly unchanged endpoint with no positive independent gap estimate is a
             // successfully reconciled zero delta, not an ambiguous lost interval. In particular,
             // restoring a row whose counter energy is exactly zero and then observing the same

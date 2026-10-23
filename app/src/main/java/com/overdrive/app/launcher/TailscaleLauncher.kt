@@ -19,20 +19,20 @@ class TailscaleLauncher(
     private val logManager: LogManager
 ) {
     companion object {
-        private val TAG = "TailscaleLauncher"
+        private const val TAG = "TailscaleLauncher"
 
         // Tailscale paths
-        private val TAILSCALE_HOME = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.tailscale")
-        private val TAILSCALE_LOG = "$TAILSCALE_HOME/tailscale.log"
-        private val TAILSCALE_PATH = "$TAILSCALE_HOME/tailscale"
-        private val TAILSCALED_PATH = "$TAILSCALE_HOME/tailscaled"
-        private val TAILSCALE_VERSION_FILE = "$TAILSCALE_HOME/installed_version"
+        private val TAILSCALE_HOME: String get() = com.overdrive.app.util.ScratchRoot.path(".tailscale")
+        private val TAILSCALE_LOG: String get() = "$TAILSCALE_HOME/tailscale.log"
+        private val TAILSCALE_PATH: String get() = "$TAILSCALE_HOME/tailscale"
+        private val TAILSCALED_PATH: String get() = "$TAILSCALE_HOME/tailscaled"
+        private val TAILSCALE_VERSION_FILE: String get() = "$TAILSCALE_HOME/installed_version"
         private const val DEPLOYMENT_CURRENT = "current"
         private const val DEPLOYMENT_STALE = "stale"
 
         private const val TAILSCALE_COMMUNICATION_PORT = "8532"
 
-        private val TAILSCALE_PROXY_FILE = "$TAILSCALE_HOME/proxy_enabled"
+        private val TAILSCALE_PROXY_FILE: String get() = "$TAILSCALE_HOME/proxy_enabled"
         private const val TAILSCALE_PROXY_PORT = "8539"
 
         // Dashboard ingress. Tailscale userspace networking forwards an
@@ -41,7 +41,7 @@ class TailscaleLauncher(
         // 8080 through TCP Serve with PROXY v1 gives HttpServer a trustworthy
         // tunnel marker while preserving the existing http://100.x:8080 URL.
         private const val DASHBOARD_PORT = "8080"
-        private val DASHBOARD_BACKEND = "tcp://127.0.0.1:$DASHBOARD_PORT"
+        private const val DASHBOARD_BACKEND = "tcp://127.0.0.1:$DASHBOARD_PORT"
         private const val DASHBOARD_DENY_BACKEND = "tcp://127.0.0.1:1"
 
         // Retry through a short tailscaled startup race before failing closed.
@@ -61,17 +61,17 @@ class TailscaleLauncher(
         // Remote-ADB opt-in sentinel + the adbd port we forward to. Same
         // sentinel-file pattern as TAILSCALE_PROXY_FILE so the UID-2000 shell
         // side and the app agree on state across restarts.
-        private val TAILSCALE_ADB_FILE = "$TAILSCALE_HOME/adb_enabled"
+        private val TAILSCALE_ADB_FILE: String get() = "$TAILSCALE_HOME/adb_enabled"
         private const val ADB_PORT = "5555"
 
         // Tailnet HTTPS is opt-in. Standard HTTPS Serve terminates TLS and
         // injects X-Forwarded-* identity before proxying to HttpServer. The
         // server treats those headers as tunnel markers, so a remote request
         // cannot regain the direct-loopback authentication fallback.
-        private val TAILSCALE_HTTPS_FILE = "$TAILSCALE_HOME/https_enabled"
+        private val TAILSCALE_HTTPS_FILE: String get() = "$TAILSCALE_HOME/https_enabled"
         private const val HTTPS_PORT = "443"
-        private val HTTPS_BACKEND = "http://127.0.0.1:$DASHBOARD_PORT"
-        private val LEGACY_HTTPS_BACKEND = "127.0.0.1:$DASHBOARD_PORT"
+        private const val HTTPS_BACKEND = "http://127.0.0.1:$DASHBOARD_PORT"
+        private const val LEGACY_HTTPS_BACKEND = "127.0.0.1:$DASHBOARD_PORT"
 
         // Retries after the initial replay attempt, ~2s apart — covers a slow
         // tailscaled cold start without spinning if serve is genuinely broken.
@@ -837,7 +837,8 @@ class TailscaleLauncher(
             append(safePids.joinToString(" "))
             append("; do ")
             append("if [ -r /proc/\$pid/cmdline ] && ")
-            append("tr '\\000' ' ' < /proc/\$pid/cmdline | grep -q '/tailscaled'; ")
+            // Not `tr < cmdline`: toybox tr spins forever if the PID exits before its read.
+            append("cat /proc/\$pid/cmdline 2>/dev/null | tr '\\000' ' ' | grep -q '/tailscaled'; ")
             append("then kill -9 \$pid 2>/dev/null; fi; ")
             append("done; echo stopped")
         }

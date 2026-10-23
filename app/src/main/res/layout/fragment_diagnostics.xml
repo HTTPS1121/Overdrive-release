@@ -588,8 +588,10 @@
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/cardSettingsShortcut"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="@dimen/card_gap_horizontal_half"
             android:clickable="true"
             android:focusable="true"
             android:foreground="?attr/selectableItemBackground"
@@ -621,7 +623,51 @@
                     android:textColor="?attr/colorOnSurface" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
+        <!-- Daemon storage (scratch root) opt-in. Deliberately a plain tile
+             with no daemon dependency: on a locked-down head unit nothing
+             else in the app can run until this has been switched. -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardDaemonStorage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="@dimen/card_gap_horizontal_half"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
+            app:cardBackgroundColor="?attr/colorSurfaceContainerHigh"
+            app:cardCornerRadius="@dimen/card_radius_standard"
+            app:cardElevation="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="@dimen/card_padding_standard">
+
+                <ImageView
+                    android:layout_width="@dimen/card_icon_standard"
+                    android:layout_height="@dimen/card_icon_standard"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_recording_storage"
+                    app:tint="?attr/colorOnSurfaceVariant" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:text="@string/diagnostics_section_daemon_storage"
+                    android:textAppearance="@style/TextAppearance.Material3.TitleSmall"
+                    android:textColor="?attr/colorOnSurface" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
     </LinearLayout>
+
+    <!-- Last on purpose: tour spotlights read on-screen positions of the cards above. -->
+    <include layout="@layout/view_vehicle_setup_card" />
 
     <!-- The Live Event Log card was removed from this page. Logs are
          still available via the ADB Console tile if a power user needs

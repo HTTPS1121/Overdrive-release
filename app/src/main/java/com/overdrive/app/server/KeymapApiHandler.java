@@ -84,6 +84,9 @@ import java.io.OutputStream;
  *       Save a user-triggered instant replay from the encoded camera ring.
  *       Dedicated manual-only path: deliberately not routed through the
  *       automation API allowlist.
+ *   { "kind":"voice_assistant" }
+ *       Push-to-talk. The app's key dispatcher starts the voice turn; it must be a
+ *       direct binding, so a sequence step or quick control reaching here is refused.
  *   { "kind":"shell", "cmd":"..." }         — advanced, gated by allowAdvanced
  *   { "kind":"sequence", "steps":[ {kind:...}, ... ] }
  *       Run several of the above actions in order on one keypress. Best-effort:
@@ -174,6 +177,102 @@ public final class KeymapApiHandler {
     // poll; false when actively watching (not-bound, precondition-missing, or just
     // force-restarted) so the loop stays on the tight poll. Watchdog-thread-only.
     private static boolean watchdogTickSettled = false;
+    // Watchdog-thread-only: the DiLink 5 "restart disabled" notice is logged once per not-bound episode.
+    private static boolean diLink5RestartSkipLogged = false;
+    // Watchdog-thread-only: the DiLink 5 bind diagnostics are captured once per daemon run.
+    private static boolean diLink5A11yDiagnosed = false;
+
+    /**
+     * One-shot DiLink 5 evidence for why the system never binds the service: current user, the
+     * enable settings, the bind app-op (AOSP skips the service when it is not allowed), the
+     * accessibility user state, and the system's own log lines about it.
+     */
+    private static void logDiLink5A11yDiagnostics() {
+        if (diLink5A11yDiagnosed) return;
+        diLink5A11yDiagnosed = true;
+        logDiLink5A11yDiagnosticsSnapshot();
+    }
+
+    /** Also run at each DI5 calibration start: the startup capture is often truncated away by then. */
+    public static void logDiLink5A11yDiagnosticsSnapshot() {
+        int bindings;
+        try {
+            bindings = com.overdrive.app.config.UnifiedConfigManager.getKeymapBindings().length();
+        } catch (Throwable t) {
+            bindings = -1;
+        }
+        logger.warn("Keymap a11y DI5 keymap: enabled="
+                + com.overdrive.app.config.UnifiedConfigManager.isKeymapEnabled()
+                + " bindings=" + bindings + " bound=" + isAccessibilityServiceBound());
+        String state = execBounded(
+                "echo user=$(am get-current-user 2>/dev/null)"
+                        + " enabled=$(settings get secure enabled_accessibility_services)"
+                        + " master=$(settings get secure accessibility_enabled);"
+                        + " appops get " + APP_PACKAGE + " BIND_ACCESSIBILITY_SERVICE 2>&1;"
+                        + " dumpsys accessibility 2>/dev/null | grep -E 'User state|Bound services"
+                        + "|Enabled services|Binding services|Crashed services|overdrive' | head -12");
+        logger.warn("Keymap a11y DI5 state: " + oneLine(state));
+        String reasons = execBounded("logcat -d -t 4000 2>/dev/null | grep -iE "
+                + "'accessibility.*overdrive|overdrive.*accessib|KeepAliveAccessibility' | tail -8");
+        logger.warn("Keymap a11y DI5 system log: " + oneLine(reasons));
+    }
+
+    // Watchdog-thread-only: last DiLink 5 crashed-service recovery, rate-limited like a restart.
+    private static long lastDiLink5A11yRecoveryMs = 0L;
+
+    /**
+     * Android marks an accessibility service crashed when its process dies while bound, and never
+     * rebinds it while it stays enabled (field dump: Crashed services held ours, Bound did not).
+     * The flag clears only once the component leaves the enabled list, so drop it, then re-add it.
+     */
+    private static boolean recoverDiLink5CrashedService() {
+        String dump = execBounded("dumpsys accessibility 2>/dev/null");
+        if (dump == null || !listsOurComponent(dump, "Crashed services:")) return false;
+        long now = System.currentTimeMillis();
+        if (lastDiLink5A11yRecoveryMs != 0L
+                && now - lastDiLink5A11yRecoveryMs < WATCHDOG_MIN_RESTART_INTERVAL_MS) {
+            return false;
+        }
+        lastDiLink5A11yRecoveryMs = now;
+        String current = readEnabledA11yServices();
+        StringBuilder others = new StringBuilder();
+        if (current != null) {
+            for (String entry : current.trim().split(":")) {
+                String e = entry.trim();
+                if (e.isEmpty() || "null".equals(e) || containsOurService(e)) continue;
+                if (others.length() > 0) others.append(':');
+                others.append(e);
+            }
+        }
+        execBounded("settings put secure enabled_accessibility_services '" + others + "'; sleep 2");
+        ensureAccessibilityServiceEnabled();
+        logger.warn("Keymap a11y watchdog: DiLink 5 marked the service crashed; removed and "
+                + "re-added it to clear that (others kept: " + safeLog(others.toString()) + ")");
+        return true;
+    }
+
+    /** Brace-scoped: does the named dumpsys list contain our component? */
+    private static boolean listsOurComponent(String dump, String header) {
+        int i = dump.indexOf(header);
+        if (i < 0) return false;
+        int open = dump.indexOf('{', i);
+        if (open < 0) return false;
+        int depth = 0;
+        for (int p = open; p < dump.length(); p++) {
+            char c = dump.charAt(p);
+            if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) {
+                return containsOurService(dump.substring(open, p + 1));
+            }
+        }
+        return false;
+    }
+
+    private static String oneLine(String text) {
+        if (text == null || text.trim().isEmpty()) return "(none)";
+        String line = text.trim().replace('\n', '|');
+        return line.length() > 1500 ? line.substring(0, 1500) + "…" : line;
+    }
 
     /**
      * Start the accessibility bind watchdog. Idempotent; call once at daemon
@@ -266,6 +365,7 @@ public final class KeymapApiHandler {
 
         if (isAccessibilityServiceBound()) {
             watchdogTickSettled = true; // healthy — bound and dispatching; back off
+            diLink5RestartSkipLogged = false;
             return 0;
         }
 
@@ -274,6 +374,20 @@ public final class KeymapApiHandler {
         // Actively watching — keep the tight poll.
         watchdogTickSettled = false;
         notBound++;
+        if (notBound >= WATCHDOG_WEDGE_CONFIRM_CHECKS
+                && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            // DiLink 5's app process also hosts the vehicle bridge, and a restart has never
+            // re-bound the service there (field log: 26 restarts, 0 binds). Report once; no restart.
+            if (!diLink5RestartSkipLogged) {
+                diLink5RestartSkipLogged = true;
+                logger.warn("Keymap a11y watchdog: service not bound on DiLink 5; force-restart "
+                        + "disabled there (it restarts the vehicle bridge and never re-binds)");
+                logDiLink5A11yDiagnostics();
+            }
+            // A recovery attempt keeps the tight poll so its bind is confirmed on the next tick.
+            watchdogTickSettled = !recoverDiLink5CrashedService();
+            return WATCHDOG_WEDGE_CONFIRM_CHECKS;
+        }
         logger.warn("Keymap a11y watchdog: service enabled but NOT bound ("
                 + notBound + "/" + WATCHDOG_WEDGE_CONFIRM_CHECKS + " consecutive)");
         if (notBound < WATCHDOG_WEDGE_CONFIRM_CHECKS) {
@@ -324,7 +438,7 @@ public final class KeymapApiHandler {
                 "am start-foreground-service -n " + APP_PACKAGE
                         + "/.services.DaemonKeepaliveService";
         try {
-            final Process p = new ProcessBuilder("sh", "-c", script)
+            final Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(script))
                     .redirectErrorStream(true).start();
             final java.io.InputStream is = p.getInputStream();
             Thread drain = new Thread(() -> {
@@ -364,7 +478,25 @@ public final class KeymapApiHandler {
             handleInject(out, body);
             return true;
         }
+        if (cleanPath.equals("/api/keymap/di5-key-source") && method.equals("POST")) {
+            handleDi5KeySourceReport(out, body);
+            return true;
+        }
         return false;
+    }
+
+    /** App-process DiLink 5 key-source status: its own log is not uploadable, so record it here. */
+    private static void handleDi5KeySourceReport(OutputStream out, String body) throws Exception {
+        try {
+            JSONObject req = new JSONObject(body == null || body.isEmpty() ? "{}" : body);
+            String detail = req.optString("detail", "");
+            if (detail.length() > 200) detail = detail.substring(0, 200);
+            logger.info("DI5 key source: " + req.optString("status", "?")
+                    + (detail.isEmpty() ? "" : " " + detail));
+        } catch (Exception ignored) {
+            // Malformed report: nothing to record.
+        }
+        HttpResponse.sendJson(out, "{\"success\":true}");
     }
 
     /**
@@ -391,7 +523,7 @@ public final class KeymapApiHandler {
             }
             // Fire-and-forget shell, exactly like the UI-nav keyevents in
             // VehicleControlApiHandler.handleSystem. The int is range-checked above.
-            Runtime.getRuntime().exec(new String[]{"sh", "-c", "input keyevent " + keycode});
+            Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap("input keyevent " + keycode)});
             logger.info("Keymap inject native keyevent " + keycode);
             resp.put("success", true);
             HttpResponse.sendJson(out, resp.toString());
@@ -516,9 +648,32 @@ public final class KeymapApiHandler {
             return;
         }
 
+        // Advanced actions are the arbitrary-shell hatch (runShell, UID 2000), so turning
+        // the gate ON needs a JWT-authenticated non-tunnel caller — a loopback socket alone
+        // is every local app. Turning it off, or re-saving it unchanged, is always allowed
+        // so a remote client can still de-escalate and normal saves never break.
+        boolean wantAdvanced = req.optBoolean("allowAdvanced", false);
+        boolean advancedRefused = false;
+        if (wantAdvanced && !HttpServer.canGrantShellAccess()) {
+            // Only the refusal candidate pays a fresh read: the section may have been
+            // written under another UID, and a stale cache must not reject a re-save of
+            // an already-enabled gate. A trusted save never reaches this.
+            com.overdrive.app.config.UnifiedConfigManager.forceReload();
+            if (!com.overdrive.app.config.UnifiedConfigManager.isKeymapAdvancedAllowed()) {
+                // STRIP, don't refuse the request. The page posts the WHOLE desired state
+                // (enabled, doubleTapWindowMs, bindings), so returning early here threw
+                // away edits the caller had every right to make — a regression against the
+                // original handler, which always applied them. Dropping just this one flag
+                // keeps the gate and matches how the other three defences behave
+                // (/api/settings/unified, backup import, SafeKeep restore all strip).
+                wantAdvanced = false;
+                advancedRefused = true;
+            }
+        }
+
         JSONObject section = new JSONObject();
         section.put("enabled", req.optBoolean("enabled", false));
-        section.put("allowAdvanced", req.optBoolean("allowAdvanced", false));
+        section.put("allowAdvanced", wantAdvanced);
         // Single-vs-double disambiguation window (ms). Persist only a sane value; the
         // accessor (getKeymapDoubleTapWindowMs) clamps on read too, so a hand-edited
         // config can't push it out of the 250..1500 band. Absent → the accessor's default.
@@ -533,6 +688,14 @@ public final class KeymapApiHandler {
             JSONObject error = new JSONObject();
             error.put("success", false);
             error.put("error", manualClipError);
+            HttpResponse.sendJson(out, 400, error.toString());
+            return;
+        }
+        String voiceAssistantError = validateVoiceAssistantBindings(bindings);
+        if (voiceAssistantError != null) {
+            JSONObject error = new JSONObject();
+            error.put("success", false);
+            error.put("error", voiceAssistantError);
             HttpResponse.sendJson(out, 400, error.toString());
             return;
         }
@@ -580,6 +743,17 @@ public final class KeymapApiHandler {
         response.put("a11yBound", a11yBound);
         response.put("a11yPending", a11yEnabled && !a11yBound);
         response.put("restartRequired", ok && restartRequired);
+        // Always echo the EFFECTIVE flag so the client's checkbox can follow what was
+        // actually stored rather than what it asked for; this is how the page learns that
+        // an untrusted caller's allowAdvanced=true was dropped.
+        response.put("allowAdvanced", wantAdvanced);
+        if (advancedRefused) {
+            // Wording matters: the caller may well BE on the car with a stale cookie (e.g.
+            // just after a token regenerate), so don't claim they are remote.
+            response.put("warning", "Advanced keymap actions need a signed-in local "
+                    + "session, so that setting was not changed. Sign in again on the car, "
+                    + "or reload this page; it cannot be enabled over a tunnel.");
+        }
         if (!ok) response.put("error", "Failed to persist keymap config");
         HttpResponse.sendJson(out, response.toString());
     }
@@ -637,7 +811,7 @@ public final class KeymapApiHandler {
                 "settings put secure enabled_accessibility_services '" + A11Y_COMPONENT + "'; " +
                 "else settings put secure enabled_accessibility_services \"$cur:" + A11Y_COMPONENT + "\"; fi; " +
                 "settings put secure accessibility_enabled 1";
-            Process p = new ProcessBuilder("sh", "-c", script).redirectErrorStream(true).start();
+            Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(script)).redirectErrorStream(true).start();
             p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
             p.destroyForcibly();
             // Re-read to confirm the write actually landed in Secure settings.
@@ -687,7 +861,7 @@ public final class KeymapApiHandler {
     private static String readEnabledA11yServices() {
         try {
             Process p = new ProcessBuilder("sh", "-c",
-                    "settings get secure enabled_accessibility_services 2>/dev/null")
+                    com.overdrive.app.util.ScratchRoot.remap("settings get secure enabled_accessibility_services 2>/dev/null"))
                     .redirectErrorStream(true).start();
             java.io.BufferedReader r = new java.io.BufferedReader(
                     new java.io.InputStreamReader(p.getInputStream()));
@@ -714,7 +888,7 @@ public final class KeymapApiHandler {
     private static boolean isAccessibilityMasterEnabled() {
         try {
             Process p = new ProcessBuilder("sh", "-c",
-                    "settings get secure accessibility_enabled 2>/dev/null")
+                    com.overdrive.app.util.ScratchRoot.remap("settings get secure accessibility_enabled 2>/dev/null"))
                     .redirectErrorStream(true).start();
             java.io.BufferedReader r = new java.io.BufferedReader(
                     new java.io.InputStreamReader(p.getInputStream()));
@@ -853,7 +1027,7 @@ public final class KeymapApiHandler {
         // park the request thread; drained so the child can't wedge on a full pipe.
         try {
             Process p = new ProcessBuilder("sh", "-c",
-                    "dumpsys activity services " + A11Y_COMPONENT + " 2>/dev/null")
+                    com.overdrive.app.util.ScratchRoot.remap("dumpsys activity services " + A11Y_COMPONENT + " 2>/dev/null"))
                     .redirectErrorStream(true).start();
             java.io.BufferedReader r = new java.io.BufferedReader(
                     new java.io.InputStreamReader(p.getInputStream()));
@@ -957,7 +1131,7 @@ public final class KeymapApiHandler {
     private static String execBounded(String cmd) {
         Process p = null;
         try {
-            p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             StringBuilder sb = new StringBuilder();
             try (java.io.BufferedReader r = new java.io.BufferedReader(
                     new java.io.InputStreamReader(p.getInputStream()))) {
@@ -1037,6 +1211,7 @@ public final class KeymapApiHandler {
             case "manualClip": return runManualClip(req);
             case "openApp": return runOpenApp(req);
             case "shell":   return runShell(req);
+            case "voice_assistant": return runVoiceAssistant();
             default: {
                 JSONObject r = new JSONObject();
                 r.put("success", false);
@@ -1044,6 +1219,30 @@ public final class KeymapApiHandler {
                 return r;
             }
         }
+    }
+
+    private static String validateVoiceAssistantBindings(org.json.JSONArray bindings) {
+        for (int i = 0; i < bindings.length(); i++) {
+            JSONObject binding = bindings.optJSONObject(i);
+            JSONObject action = binding == null ? null : binding.optJSONObject("action");
+            if (action == null || !"sequence".equals(action.optString("kind", ""))) continue;
+            org.json.JSONArray steps = action.optJSONArray("steps");
+            for (int j = 0; steps != null && j < steps.length(); j++) {
+                JSONObject step = steps.optJSONObject(j);
+                if (step != null && "voice_assistant".equals(step.optString("kind", ""))) {
+                    return "bindings[" + i + "].action.steps[" + j
+                            + "]: voice_assistant must be a direct key binding, not a sequence step";
+                }
+            }
+        }
+        return null;
+    }
+
+    private static JSONObject runVoiceAssistant() throws org.json.JSONException {
+        JSONObject response = new JSONObject();
+        response.put("success", false);
+        response.put("error", "Talk to OverDrive runs only from a direct key binding");
+        return response;
     }
 
     private static String validateManualClipBindings(org.json.JSONArray bindings) {
@@ -1528,7 +1727,7 @@ public final class KeymapApiHandler {
             return response;
         }
         try {
-            final Process p = new ProcessBuilder("sh", "-c", cmd)
+            final Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd))
                     .redirectErrorStream(true)
                     .start();
             final java.io.InputStream is = p.getInputStream();

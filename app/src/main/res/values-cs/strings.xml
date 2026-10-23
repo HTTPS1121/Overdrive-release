@@ -353,7 +353,8 @@
     <string name="toast_soh_reset_failed_with_message">Obnovení selhalo: %1$s</string>
     <string name="toast_select_at_least_one_category">Vyberte alespoň jednu kategorii</string>
     <string name="toast_reset_failed_with_error">Obnovení selhalo: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s sledování provozu…</string>
+    <string name="toast_traffic_monitor_enabling">Traffic Monitor se zapíná…</string>
+    <string name="toast_traffic_monitor_disabling">Traffic Monitor se vypíná…</string>
     <string name="dialog_close">Zavřít</string>
     <string name="dialog_reset">Resetovat</string>
     <string name="dialog_delete">Vymazat</string>
@@ -372,13 +373,14 @@
     <string name="dialog_traffic_cannot_check_title">Stav nelze zkontrolovat</string>
     <string name="dialog_traffic_cannot_check_message">ADB připojení ještě není připraveno.\n\nAplikace potřebuje ADB přístup ke správě systémových balíčků. Zajistěte:\n\n• USB ladění je povoleno v Možnosti Vývojáře\n• ADB žádost o autorizaci byla přijata\n\nStav se po připojení automaticky aktualizuje.</string>
     <string name="dialog_traffic_disable_title">Zakázat BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) je vestavěná systémová aplikace, která nepřetržitě sleduje stav silničního provozu na pozadí.\n\nProč ji vypnout?\n\n• Spotřebovává mobilní data (i když je vozidlo zaparkované)\n• Využívá CPU a baterii na pozadí\n• Není potřeba, pokud používáte samostatnou navigační aplikaci\n• Může zasahovat do síťového provozu kamer\n\nBez obav ji můžete vypnout. Změna ovlivní pouze zobrazení dopravy na mapě. Navigace, Bluetooth a ostatní funkce vozidla zůstanou beze změny.\n\nPo vypnutí je nutný tvrdý restart (podržte tlačítko na středové konzole po dobu 5 sekund).</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) je vestavěná systémová aplikace, která řídí, které aplikace smějí používat mobilní data. Brání aplikacím třetích stran, včetně OverDrive, v používání vestavěné SIM karty auta.\n\nProč Traffic Monitor vypnout?\n\n• Umožní OverDrive a dalším aplikacím, které si nainstalujete, používat internet přes SIM kartu BYD\n• Nutné pro vzdálený přístup k autu přes SIM kartu BYD\n\nNavigace, Bluetooth a všechny ostatní funkce auta zůstanou nedotčeny.\n\nPo vypnutí je nutný tvrdý restart (podržte tlačítko na středové konzoli po dobu 5 sekund).</string>
     <string name="dialog_traffic_enable_title">Znovu povolit BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_enable_message">BYD Traffic Monitor je momentálně vypnutý.\n\nJeho opětovné zapnutí obnoví vestavěné zobrazení dopravy na navigační mapě. Poběží na pozadí a bude spotřebovávat mobilní data.\n\nPo zapnutí je nutný tvrdý restart (podržte tlačítko na středové konzole po dobu 5 sekund).</string>
-    <string name="dialog_traffic_status_title">Monitor provozu %1$s</string>
+    <string name="dialog_traffic_enable_message">BYD Traffic Monitor je momentálně vypnutý.\n\nPokud ho znovu zapnete, OverDrive a další aplikace třetích stran opět nebudou moci používat vestavěnou SIM kartu auta, takže vzdálený přístup přes SIM kartu BYD přestane fungovat.\n\nPo zapnutí je nutný tvrdý restart (podržte tlačítko na středové konzoli po dobu 5 sekund).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor je zapnutý</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor je vypnutý</string>
     <string name="dialog_traffic_reboot_message">Změna byla použita.\n\nNyní proveďte tvrdý restart:\nStiskněte a podržte tlačítko na středové konzole po dobu 5 sekund.</string>
-    <string name="traffic_monitor_loading">Monitor provozu: Kontrola…</string>
-    <string name="traffic_monitor_tap_to_check">Monitor provozu (klepněte pro kontrolu)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: kontrola…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (klepnutím zkontrolujete)</string>
     <string name="reset_label_trips">Jízda</string>
     <string name="reset_label_soc_history">Historie SoC + 12V</string>
     <string name="reset_label_soh">kalibrace SoH</string>
@@ -426,6 +428,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Tímto se MQTT směruje přes Tailscale, takže se můžete připojit k soukromému brokerovi ve své tailnet síti bez přesměrování portů.\n\nPo zapnutí:\n• MQTT na broker v tailnet síti funguje (např. Mosquitto na zařízení ve vaší tailnet síti)\n• MQTT na veřejné brokery (HiveMQ, AWS IoT atd.) přestane fungovat — Tailscale směruje pouze do vaší tailnet sítě\n• Daemon Tailscale se restartuje, aby se změna projevila\n• Ostatní provoz aplikace a zbytek zařízení nejsou ovlivněny\n\nToto můžete kdykoli vypnout.</string>
     <string name="dialog_zrok_reset_title">Obnovit Zrok prostředí</string>
     <string name="dialog_zrok_reset_message">Tímto se:\n• zastaví tunel Zrok, pokud běží\n• odstraní prostředí Zrok z tohoto zařízení\n• odstraní uložený token\n\nBudete muset token znovu zadat a službu povolit. Tím se využije jeden z pěti slotů zařízení na zrok.io.\n\nOpravdu chcete pokračovat?</string>
+    <string name="dialog_tunnel_conflict_title">Běží jiný tunel</string>
+    <string name="dialog_tunnel_conflict_message">%1$s už běží. Přepnout na %2$s (%1$s se zastaví), nebo spustit oba tunely současně?\n\nKdyž běží oba:\n• Ovládací panel je dostupný přes dva veřejné odkazy\n• Spotřeba mobilních dat v nečinnosti mírně vzroste\n• Oba se po restartu spustí automaticky</string>
+    <string name="dialog_tunnel_conflict_switch">Přepnout</string>
+    <string name="dialog_tunnel_conflict_run_both">Spustit oba</string>
     <string name="toast_resetting_zrok">Resetování zrok prostředí…</string>
     <string name="toast_zrok_reset_success">Prostředí Zrok bylo resetováno. Zadejte nový token a proveďte nové nastavení.</string>
     <string name="toast_zrok_reset_partial">Resetování prostředí (token soubor může vyžadovat ruční smazání)</string>
@@ -481,9 +487,9 @@
     <string name="setup_version_banner">Aktualizováno na %1$s — znovu potvrďte automatické spuštění, BYD ho maže při každé instalaci</string>
     <string name="setup_overlay_already_granted">Již uděleno</string>
     <string name="setup_tips_header">Tipy &amp; řešení problémů</string>
-    <string name="setup_traffic_title">Zakázat BYD Monitor provozu</string>
-    <string name="setup_traffic_body">BYD Traffic Monitor blokuje aplikace třetích stran v přístupu k internetu. Zakázání umožňuje OverDrive a všem dalším aplikacím, které skutečně instalujete, používat síť. Poté je nutný tvrdý restart.</string>
-    <string name="setup_traffic_button">Otevřít sledování provozu</string>
+    <string name="setup_traffic_title">Zakázat BYD Traffic Monitor</string>
+    <string name="setup_traffic_body">BYD Traffic Monitor brání aplikacím třetích stran v přístupu k internetu. Po jeho vypnutí mohou OverDrive a jakékoli další aplikace, které si nainstalujete, skutečně používat síť. Poté je nutný tvrdý restart.</string>
+    <string name="setup_traffic_button">Otevřít Traffic Monitor</string>
     <string name="setup_camera_fix_title">Obraz z kamer se nezobrazuje správně nebo je černý?</string>
     <string name="setup_camera_fix_body">Spusťte detekci kamer, nastavte ID kamery na 0, klepněte na Uložit a poté restartujte službu kamer. Pokud obraz stále není správný, zopakujte postup s ID kamery 1. Sekci mapování ponechte beze změny.</string>
     <string name="camera_current_manual">Aktuální: Kamera %1$d (Manuálně)</string>
@@ -539,6 +545,8 @@
     <string name="settings_about_support_share_value">Každý sdílený odkaz pomáhá jinému majiteli BYD objevit Overdrive.</string>
     <string name="settings_about_support_share_message">Podívejte se na Overdrive — open-source sledování &amp; dashcam pro BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Sdílet OverDrive</string>
+    <string name="settings_about_youtube_title">Odebírejte nás na YouTube</string>
+    <string name="settings_about_youtube_value">Dejte like, odebírejte a sdílejte — každé zhlédnutí pomáhá Overdrive růst.</string>
     <string name="settings_about_open_link_failed">Nelze otevřít odkaz.</string>
     <string name="settings_about_open_link_copied">Nebyl nalezen žádný prohlížeč. URL zkopírováno: %1$s</string>
     <string name="settings_about_support_kofi_title">Přispějte k vývoji příští verze</string>
@@ -570,7 +578,7 @@
     <string name="recordings_preview_placeholder_title">Vyberte záznam</string>
     <string name="recordings_preview_placeholder_body">Klepnutím na libovolnou položku vlevo ji přehrajete.</string>
     <string name="diagnostics_section_adb_console">ADB konzole</string>
-    <string name="diagnostics_section_traffic">Sledování provozu</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Detekce kamer</string>
     <string name="diagnostics_section_battery">Zdraví baterie</string>
     <string name="diagnostics_hero_title">Systémová diagnostika</string>
@@ -652,11 +660,12 @@
     <string name="dashboard_action_settings_subtitle">Předvolby a informace</string>
     <string name="settings_hero_overline">OVERDRIVE</string>
     <string name="settings_overline_preferences">PŘEDVOLBY</string>
-    <string name="settings_overline_about_data">DATA</string>
+    <string name="settings_overline_about_data">ÚDAJE</string>
     <string name="settings_quick_theme_label">Téma</string>
     <string name="settings_quick_language_label">Jazyk</string>
     <string name="settings_section_recording_subtitle">Před/po: vyrovnávací paměť, kodek, limity úložného prostoru.</string>
     <string name="settings_section_surveillance_subtitle">Detekční zóny, harmonogram, citlivost pohybu.</string>
+    <string name="settings_section_storage_subtitle">Kam se ukládají záznamy, limity místa, čištění kamery BYD.</string>
     <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT moduly.</string>
     <string name="settings_about_row_title">O aplikaci OverDrive</string>
     <string name="settings_about_row_subtitle">Verze, licence, podpora vývoje.</string>
@@ -937,8 +946,7 @@
     <string name="rail_collapse_label">Sbalit</string>
     <string name="settings_overlay_roadsense_title">Překryv RoadSense</string>
     <string name="settings_overlay_roadsense_subtitle">Zobrazit plovoucí štítek RoadSense a kartu s nebezpečími, když je funkce RoadSense zapnutá.</string>
-
-    <!-- ==================== New strings added in this app update — Czech translation ==================== -->
+    <!-- PR #302: Czech translations for current app strings -->
     <string name="cd_replay_status">Stav okamžitého přehrání</string>
     <string name="overlay_replay_label">CLIP</string>
     <string name="overlay_mode_off_label">OFF</string>
@@ -961,6 +969,8 @@
     <string name="toast_tailscale_adb_save_failed">Nepodařilo se změnit nastavení vzdáleného ADB</string>
     <string name="camera_mode_option_dilink5">DiLink 5 – Sealion 7 / SA8155P</string>
     <string name="camera_mode_current_dilink5">Aktuální: DiLink 5</string>
+    <string name="camera_mode_option_camera2">Camera2 360 – Atto 3 EVO / DiLink 100</string>
+    <string name="camera_mode_current_camera2">Aktuální: Camera2 360</string>
     <string name="camera_dilink5_mapping_title">Pořadí kamer DiLink 5</string>
     <string name="camera_dilink5_mapping_subtitle">ID fyzických kamer jsou uvedena jako vpředu, vpravo, vzadu, vlevo. Ponechte Auto, dokud syrové náhledy nepotvrdí, že toto vozidlo používá jiné pořadí.</string>
     <string name="camera_dilink5_mapping_current_auto">Aktuální: Auto / výchozí pro model</string>
@@ -1085,8 +1095,8 @@
     <string name="onboarding_expert_surveillance_body">Zde doladíte detekci, kvalitu a úložiště. Otevírají se jako konfigurační stránky uvnitř appky, poskytované z vašeho auta – prázdná obrazovka jen znamená, že se pomocník ještě spouští.</string>
     <string name="onboarding_expert_camprobe_title">Sonda kamery – opatrně</string>
     <string name="onboarding_expert_camprobe_body">Tímto se přemapuje, která fyzická kamera napájí jakou roli, a restartují se kamery. Měňte to jen pokud obraz vypadá špatně – toto jste nastavili už dříve v průvodci.</string>
-    <string name="onboarding_expert_traffic_title">Monitor dopravy – vyžadován pro vzdálený přístup</string>
-    <string name="onboarding_expert_traffic_body">Vestavěný Monitor dopravy od BYD brání ostatním aplikacím v používání zabudované SIM auta. Pokud chcete k autu přistupovat vzdáleně přes SIM BYD, musíte ho zde vypnout. Hlavní jednotka se kvůli změně restartuje.</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor – vyžadován pro vzdálený přístup</string>
+    <string name="onboarding_expert_traffic_body">Vestavěný Traffic Monitor od BYD brání ostatním aplikacím v používání vestavěné SIM karty auta. Pokud chcete k autu přistupovat vzdáleně přes SIM kartu BYD, musíte zde Traffic Monitor vypnout. Hlavní jednotka se restartuje, aby se změna projevila.</string>
     <string name="onboarding_expert_daemons_title">Služby – zacházejte opatrně</string>
     <string name="onboarding_expert_daemons_body">Tyto přepínače spouštějí a zastavují služby na pozadí. Vypnutím Kamery, Monitorování nebo ACC hlídky se zastaví nahrávání a zůstanou vypnuté, dokud je znovu nezapnete – i po restartu.</string>
     <string name="onboarding_expert_security_title">Uzamknout PINem</string>
@@ -1369,6 +1379,10 @@
     <string name="projection_status_none">Zatím nic není promítnuto – vyberte aplikaci a spusťte promítání.</string>
     <string name="projection_status_unsupported">Živé zrcadlení není na tomto vozidle podporováno. Aplikace je na štít přesto promítnuta.</string>
     <string name="projection_status_service_down">Služba zrcadlení není připravena – restartujte aplikaci (nebo službu kamery) a zkuste to znovu.</string>
+    <string name="projection_status_connecting">Připojování ke štítu…</string>
+    <string name="projection_status_mirror_unavailable">Zrcadlení není k dispozici</string>
+    <string name="projection_fullscreen_enter">Celá obrazovka</string>
+    <string name="projection_fullscreen_exit">Ukončit režim celé obrazovky</string>
     <string name="projection_note_single_app">Na štít lze najednou promítat jen jednu aplikaci.</string>
     <string name="projection_adjust_bounds">Změnit velikost</string>
     <string name="projection_done_adjusting">Hotovo</string>
@@ -1450,4 +1464,17 @@
     <string name="toast_share_failed">Sdílení selhalo</string>
     <string name="vehicle_dialog_value_pending">—</string>
     <string name="roi_tap_to_add_points">Klepnutím přidejte body (%1$d-%2$d)</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Poslouchám…</string>
+    <string name="voice_overlay_thinking">Přemýšlím…</string>
+    <string name="voice_overlay_speaking">Mluvím…</string>
+    <string name="voice_overlay_done">Hotovo</string>
+    <string name="voice_overlay_cancelled">Zrušeno</string>
+    <string name="voice_overlay_not_understood">Promiňte, tomu jsem nerozuměl</string>
+    <string name="voice_overlay_offline">AI asistent není dostupný</string>
+    <string name="voice_overlay_busy">Asistent se už používá</string>
+    <string name="voice_overlay_blocked_moving">Během jízdy nedostupné</string>
+    <string name="voice_overlay_refused">To nejde provést hlasem</string>
+    <string name="voice_overlay_failed">Nepodařilo se to dokončit</string>
 </resources>

@@ -155,6 +155,34 @@ class AdbDaemonLauncher(private val context: Context) {
             }
         })
     }
+
+    /**
+     * Force replacement of the mode-specific AccSentry watchdog after the
+     * committed vehicle mode changes. Manual-stop and parked-state gates are
+     * enforced by [DaemonLauncher].
+     */
+    fun redeployAccSentryDaemonForVehicleMode(
+        enableDi5HealthSupervision: Boolean,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        daemonLauncher.redeployAccSentryDaemonForVehicleMode(
+            enableDi5HealthSupervision,
+            object : DaemonLauncher.LaunchCallback {
+                override fun onLog(message: String) {
+                    logManager.debug(TAG, message)
+                }
+
+                override fun onLaunched() {
+                    onSuccess()
+                }
+
+                override fun onError(error: String) {
+                    onError(error)
+                }
+            }
+        )
+    }
     
     /**
      * Launch the TelegramBotDaemon via ADB shell.

@@ -37,6 +37,11 @@ object CarSvcTelemetry {
     private const val PROP_LEFT_FRONT_LOCK = 0x21404627
     private const val PROP_RIGHT_REAR_LOCK = 0x21405070
     private const val PROP_LEFT_REAR_LOCK = 0x2140506f
+    // Public ids of the four car_service door-lock properties for the collector's diagnostics.
+    const val LF_LOCK_PROP_ID = PROP_LEFT_FRONT_LOCK
+    const val RF_LOCK_PROP_ID = PROP_RIGHT_FRONT_LOCK
+    const val LR_LOCK_PROP_ID = PROP_LEFT_REAR_LOCK
+    const val RR_LOCK_PROP_ID = PROP_RIGHT_REAR_LOCK
     private const val PROP_CHARGE_DISCHARGE_STATE = 0x2140461c
     private const val PROP_CHARGING_GUN_STATE = 0x21403407
     private const val PROP_CHARGING_POWER = 0x21603408
@@ -72,13 +77,110 @@ object CarSvcTelemetry {
     private const val DUMP_FAILURE_BACKOFF_MS = 2_000L
 
     private val dumpLock = Any()
-    private data class DumpSnapshot(
+    internal data class DumpSnapshot(
         val text: String,
         val observedAtNanos: Long,
-        val cachedAtNanos: Long
+        val cachedAtNanos: Long,
+        // elapsedRealtime keeps counting through suspend, unlike nanoTime
+        val observedAtElapsedMs: Long
     )
     @Volatile private var cachedDump: DumpSnapshot? = null
     @Volatile private var lastDumpFailureAtNanos = 0L
+
+    /** Fresh cached dump exposed without spawning: text, pre-spawn stamp and dump duration. */
+    data class CachedDump(
+        val text: String,
+        val observedAtElapsedMs: Long,
+        val durationMs: Long
+    )
+
+    /**
+     * The currently cached dump if its source is still fresh, else null. Never spawns
+     * `dumpsys` — diagnostics piggyback on the dump a preceding reader already took.
+     */
+    @JvmStatic
+    fun cachedDump(): CachedDump? =
+        cachedDumpFrom(cachedDump, android.os.SystemClock.elapsedRealtime())
+
+    internal fun cachedDumpFrom(snapshot: DumpSnapshot?, nowElapsedMs: Long): CachedDump? {
+        if (snapshot == null) return null
+        if (!dumpSourceFresh(nowElapsedMs, snapshot.observedAtElapsedMs)) return null
+        val durationNanos = snapshot.cachedAtNanos - snapshot.observedAtNanos
+        val durationMs = if (durationNanos < 0L) 0L else durationNanos / 1_000_000L
+        return CachedDump(snapshot.text, snapshot.observedAtElapsedMs, durationMs)
+    }
+
+    /** Outcome of one `dumpsys car_service` attempt, for the Stage 0 timing statistics. */
+    enum class DumpOutcome { OK, SLOW_DISCARDED, TIMEOUT, FAILED }
+
+    private const val DUMP_OUTCOME_RING_SIZE = 64
+    private val dumpOutcomeLock = Any()
+    private val dumpOutcomeDurations = LongArray(DUMP_OUTCOME_RING_SIZE)
+    private val dumpOutcomeKinds = arrayOfNulls<DumpOutcome>(DUMP_OUTCOME_RING_SIZE)
+    private var dumpOutcomeNext = 0
+    private var dumpOutcomeCount = 0
+
+    /** Records one dump attempt; the ring keeps the newest 64 outcomes. Never throws. */
+    internal fun recordDumpOutcome(durationMs: Long, outcome: DumpOutcome) {
+        synchronized(dumpOutcomeLock) {
+            dumpOutcomeDurations[dumpOutcomeNext] = if (durationMs < 0L) 0L else durationMs
+            dumpOutcomeKinds[dumpOutcomeNext] = outcome
+            dumpOutcomeNext = (dumpOutcomeNext + 1) % DUMP_OUTCOME_RING_SIZE
+            if (dumpOutcomeCount < DUMP_OUTCOME_RING_SIZE) dumpOutcomeCount++
+        }
+    }
+
+    /**
+     * `n=<n> p50=<ms> p95=<ms> max=<ms> slowDiscarded=<n> timeout=<n> failed=<n>` over the ring;
+     * percentiles cover the completed (OK + SLOW_DISCARDED) durations only.
+     */
+    @JvmStatic
+    fun dumpStats(): String {
+        val durations = ArrayList<Long>()
+        var slowDiscarded = 0
+        var timeout = 0
+        var failed = 0
+        var n = 0
+        synchronized(dumpOutcomeLock) {
+            n = dumpOutcomeCount
+            for (i in 0 until dumpOutcomeCount) {
+                when (dumpOutcomeKinds[i]) {
+                    DumpOutcome.OK -> durations.add(dumpOutcomeDurations[i])
+                    DumpOutcome.SLOW_DISCARDED -> {
+                        slowDiscarded++
+                        durations.add(dumpOutcomeDurations[i])
+                    }
+                    DumpOutcome.TIMEOUT -> timeout++
+                    DumpOutcome.FAILED -> failed++
+                    null -> {}
+                }
+            }
+        }
+        durations.sort()
+        val p50 = percentile(durations, 50)
+        val p95 = percentile(durations, 95)
+        val max = if (durations.isEmpty()) 0L else durations[durations.size - 1]
+        return "n=$n p50=$p50 p95=$p95 max=$max slowDiscarded=$slowDiscarded" +
+            " timeout=$timeout failed=$failed"
+    }
+
+    /** Nearest-rank percentile over an ascending list; 0 when empty. */
+    private fun percentile(sorted: List<Long>, pct: Int): Long {
+        if (sorted.isEmpty()) return 0L
+        var rank = Math.ceil(pct * sorted.size / 100.0).toInt()
+        if (rank < 1) rank = 1
+        if (rank > sorted.size) rank = sorted.size
+        return sorted[rank - 1]
+    }
+
+    internal fun resetDumpStatsForTest() {
+        synchronized(dumpOutcomeLock) {
+            dumpOutcomeNext = 0
+            dumpOutcomeCount = 0
+            java.util.Arrays.fill(dumpOutcomeKinds, null)
+            java.util.Arrays.fill(dumpOutcomeDurations, 0L)
+        }
+    }
 
     private val indexLock = Any()
     private data class PropertyIndex(
@@ -103,7 +205,10 @@ object CarSvcTelemetry {
         if (!isActive()) return null
         val now = System.nanoTime()
         cachedDump?.let {
-            if (elapsedMs(now, it.cachedAtNanos) < DUMP_TTL_MS) return it
+            if (canReuseDump(
+                    now, it.cachedAtNanos,
+                    android.os.SystemClock.elapsedRealtime(), it.observedAtElapsedMs
+                )) return it
         }
         if (lastDumpFailureAtNanos > 0L
             && elapsedMs(now, lastDumpFailureAtNanos) < DUMP_FAILURE_BACKOFF_MS
@@ -113,7 +218,10 @@ object CarSvcTelemetry {
         synchronized(dumpLock) {
             val lockedNow = System.nanoTime()
             cachedDump?.let {
-                if (elapsedMs(lockedNow, it.cachedAtNanos) < DUMP_TTL_MS) {
+                if (canReuseDump(
+                        lockedNow, it.cachedAtNanos,
+                        android.os.SystemClock.elapsedRealtime(), it.observedAtElapsedMs
+                    )) {
                     return it
                 }
             }
@@ -123,18 +231,27 @@ object CarSvcTelemetry {
             ) {
                 return null
             }
-            val path = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.carsvc_dump_${Thread.currentThread().id}_${System.nanoTime()}.txt")
+            val path = com.overdrive.app.util.ScratchRoot.path(".carsvc_dump_${Thread.currentThread().id}_${System.nanoTime()}.txt")
             val file = File(path)
             var process: Process? = null
             var succeeded = false
+            var outcomeRecorded = false
+            var startedAtNanos = 0L
             return try {
                 val observedAtNanos = System.nanoTime()
+                startedAtNanos = observedAtNanos
+                val observedAtElapsedMs = android.os.SystemClock.elapsedRealtime()
                 process = Runtime.getRuntime().exec(
-                    arrayOf("/system/bin/sh", "-c", "dumpsys -t 3 car_service > $path 2>&1")
+                    arrayOf("/system/bin/sh", "-c", com.overdrive.app.util.ScratchRoot.remap("dumpsys -t 3 car_service > $path 2>&1"))
                 )
                 if (!process.waitFor(DUMP_PROCESS_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                     process.destroyForcibly()
                     logger.warn("dumpsys car_service timed out")
+                    try {
+                        recordDumpOutcome(DUMP_PROCESS_TIMEOUT_MS, DumpOutcome.TIMEOUT)
+                        outcomeRecorded = true
+                    } catch (_: Throwable) {
+                    }
                     return null
                 }
                 if (!file.isFile) return null
@@ -143,10 +260,29 @@ object CarSvcTelemetry {
                 val snapshot = DumpSnapshot(
                     text,
                     observedAtNanos,
-                    System.nanoTime()
+                    System.nanoTime(),
+                    observedAtElapsedMs
                 )
+                val durationMs = elapsedMs(snapshot.cachedAtNanos, observedAtNanos)
+                // A slow read is already an aged observation when it completes.
+                // Never give that dump another fresh cache interval.
+                if (!dumpSourceFresh(
+                        android.os.SystemClock.elapsedRealtime(), observedAtElapsedMs
+                    )) {
+                    try {
+                        recordDumpOutcome(durationMs, DumpOutcome.SLOW_DISCARDED)
+                        outcomeRecorded = true
+                    } catch (_: Throwable) {
+                    }
+                    return null
+                }
                 cachedDump = snapshot
                 succeeded = true
+                try {
+                    recordDumpOutcome(durationMs, DumpOutcome.OK)
+                    outcomeRecorded = true
+                } catch (_: Throwable) {
+                }
                 snapshot
             } catch (t: Throwable) {
                 logger.debug("dumpsysText failed: ${t.message}")
@@ -154,6 +290,17 @@ object CarSvcTelemetry {
             } finally {
                 if (!succeeded) {
                     lastDumpFailureAtNanos = System.nanoTime()
+                    if (!outcomeRecorded) {
+                        // Missing/blank file or an exception: counted once, never thrown.
+                        try {
+                            recordDumpOutcome(
+                                if (startedAtNanos == 0L) 0L
+                                else elapsedMs(System.nanoTime(), startedAtNanos),
+                                DumpOutcome.FAILED
+                            )
+                        } catch (_: Throwable) {
+                        }
+                    }
                 }
                 try {
                     process?.destroy()
@@ -168,6 +315,21 @@ object CarSvcTelemetry {
         val elapsed = nowNanos - thenNanos
         return if (elapsed < 0L) Long.MAX_VALUE else elapsed / 1_000_000L
     }
+
+    /** Source age includes suspension and starts before dumpsys, not when caching completes. */
+    internal fun dumpSourceFresh(nowElapsedMs: Long, observedAtElapsedMs: Long): Boolean =
+        observedAtElapsedMs >= 0L && nowElapsedMs >= observedAtElapsedMs &&
+            nowElapsedMs - observedAtElapsedMs <= DUMP_TTL_MS
+
+    internal fun canReuseDump(
+        nowNanos: Long,
+        cachedAtNanos: Long,
+        nowElapsedMs: Long,
+        observedAtElapsedMs: Long
+    ): Boolean =
+        nowNanos >= cachedAtNanos &&
+            elapsedMs(nowNanos, cachedAtNanos) < DUMP_TTL_MS &&
+            dumpSourceFresh(nowElapsedMs, observedAtElapsedMs)
 
     fun dumpsysText(): String? = dumpSnapshot()?.text
 
@@ -208,11 +370,25 @@ object CarSvcTelemetry {
     /**
      * Latest Automotive power-mode line from the cached car_service dump.
      * Null off-platform, on dump failure, or when the section is absent.
-     * Freshness is inherited from [dumpSnapshot]'s [DUMP_TTL_MS] cache.
+     * Source age includes suspension and dump time; parsing cannot renew it.
      */
     @JvmStatic
-    fun powerModeLine(): String? =
-        if (isActive()) parsePowerModeLineFromText(dumpsysText()) else null
+    fun powerModeLine(): String? {
+        if (!isActive()) return null
+        val snapshot = dumpSnapshot() ?: return null
+        return freshPowerModeLine(
+            snapshot.text, snapshot.observedAtElapsedMs
+        ) { android.os.SystemClock.elapsedRealtime() }
+    }
+
+    internal fun freshPowerModeLine(
+        text: String?,
+        observedAtElapsedMs: Long,
+        nowElapsedMs: () -> Long
+    ): String? {
+        val line = parsePowerModeLineFromText(text)
+        return if (dumpSourceFresh(nowElapsedMs(), observedAtElapsedMs)) line else null
+    }
 
     fun buildSearchKey(propId: Int): String =
         "lastEvent:Property:0x${propId.toString(16)},"
@@ -267,7 +443,7 @@ object CarSvcTelemetry {
         }
     }
 
-    private fun explicitStatus(line: String): Int? {
+    internal fun explicitStatus(line: String): Int? {
         val marker = "status:"
         val markerAt = line.indexOf(marker)
         if (markerAt < 0) return null
@@ -277,6 +453,100 @@ object CarSvcTelemetry {
         if (end < line.length && (line[end] == '-' || line[end] == '+')) end++
         while (end < line.length && line[end].isDigit()) end++
         return line.substring(start, end).toIntOrNull() ?: Int.MIN_VALUE
+    }
+
+    /**
+     * One raw `lastEvent:Property:` row of a dump, uninterpreted: the integer value, the
+     * explicit `status:` (null when the row has none), the `timestamp:` (null when absent or
+     * unparsable) and how many rows carried this property id.
+     */
+    data class LockEvent(
+        val value: Int?,
+        val status: Int?,
+        val timestampNs: Long?,
+        val lines: Int
+    )
+
+    /**
+     * Scans EVERY row for [propId] (not only the first, unlike [indexFor]) and returns the one
+     * with the greatest `timestamp:`. Pure text parsing: never consults or updates `lastKnown`.
+     */
+    @JvmStatic
+    fun parseLockEvent(text: String?, propId: Int): LockEvent? {
+        if (text == null) return null
+        val key = buildSearchKey(propId)
+        var best: LockEvent? = null
+        var bestTimestamp = Long.MIN_VALUE
+        var lines = 0
+        for (line in text.lineSequence()) {
+            if (!line.contains(key)) continue
+            lines++
+            val timestamp = parseTimestamp(line)
+            val rank = timestamp ?: Long.MIN_VALUE
+            if (best == null || rank > bestTimestamp) {
+                bestTimestamp = rank
+                best = LockEvent(
+                    parseValueLine(line)?.toInt(),
+                    explicitStatus(line),
+                    timestamp,
+                    0
+                )
+            }
+        }
+        return best?.copy(lines = lines)
+    }
+
+    /** Digits right after `timestamp:`; null when absent, empty, non-numeric or longer than 19 digits. */
+    internal fun parseTimestamp(line: String): Long? {
+        val marker = "timestamp:"
+        val markerAt = line.indexOf(marker)
+        if (markerAt < 0) return null
+        var start = markerAt + marker.length
+        while (start < line.length && line[start].isWhitespace()) start++
+        var end = start
+        while (end < line.length && line[end].isDigit()) end++
+        if (end == start || end - start > 19) return null
+        return line.substring(start, end).toLongOrNull()
+    }
+
+    /**
+     * `lf={v=2,status=0,ts=…,ageS=…,lines=1} rf={…} lr={…} rr={…}` for the four door-lock
+     * properties (`absent` when a property has no row). `ageS` is `nowElapsedNs - ts` in
+     * seconds and only meaningful when the dump's timestamps are in the elapsed-realtime domain.
+     */
+    @JvmStatic
+    fun describeLockProperties(text: String?, nowElapsedNs: Long): String {
+        val sb = StringBuilder()
+        appendLockProperty(sb, "lf", text, LF_LOCK_PROP_ID, nowElapsedNs)
+        sb.append(' ')
+        appendLockProperty(sb, "rf", text, RF_LOCK_PROP_ID, nowElapsedNs)
+        sb.append(' ')
+        appendLockProperty(sb, "lr", text, LR_LOCK_PROP_ID, nowElapsedNs)
+        sb.append(' ')
+        appendLockProperty(sb, "rr", text, RR_LOCK_PROP_ID, nowElapsedNs)
+        return sb.toString()
+    }
+
+    private fun appendLockProperty(
+        sb: StringBuilder,
+        label: String,
+        text: String?,
+        propId: Int,
+        nowElapsedNs: Long
+    ) {
+        sb.append(label).append('=')
+        val event = parseLockEvent(text, propId)
+        if (event == null) {
+            sb.append("absent")
+            return
+        }
+        sb.append("{v=").append(event.value)
+            .append(",status=").append(event.status)
+            .append(",ts=").append(event.timestampNs)
+        sb.append(",ageS=")
+        val ts = event.timestampNs
+        if (ts == null) sb.append("null") else sb.append((nowElapsedNs - ts) / 1_000_000_000L)
+        sb.append(",lines=").append(event.lines).append('}')
     }
 
     fun findInText(text: String?, propId: Int): Number? =
@@ -605,6 +875,48 @@ object CarSvcTelemetry {
         )
     }
 
+    /**
+     * [currentDynamics] for trip/overlay sampling: on either path a speed or pedal value whose
+     * status is not 0 is absent (-1), field by field. Gear is unfiltered on the car_service path.
+     */
+    fun currentHealthyDynamics(): DynamicObservation? {
+        val direct = DiLink5DirectTelemetry.currentDynamicsByField()
+        if (direct != null || DiLink5DirectTelemetry.ownsDynamics()) {
+            return direct
+        }
+        val snapshot = dumpSnapshot() ?: return null
+        val parsed = healthyDynamicObservation(snapshot.text, 0L) ?: return null
+        // Aged after parsing so the caller's clock sees the dump's true age.
+        return DynamicObservation(
+            parsed.speedKmh,
+            parsed.accelPercent,
+            parsed.brakePercent,
+            parsed.gear,
+            android.os.SystemClock.elapsedRealtime() - snapshot.observedAtElapsedMs
+        )
+    }
+
+    internal fun healthyDynamicObservation(
+        text: String?,
+        ageMs: Long
+    ): DynamicObservation? {
+        if (text == null || ageMs < 0L) return null
+        val speed = findHealthyInText(text, PROP_SPEED_VALUE)?.toInt()
+            ?.takeIf { it in 0..300 }
+            ?: findHealthyInText(text, PROP_VEHICLE_SPEED)?.toFloat()
+                ?.takeIf { it in 0f..300f }?.let { Math.round(it) }
+            ?: -1
+        return DynamicObservation(
+            speed,
+            findHealthyInText(text, PROP_ACCEL_DEEPNESS)?.toInt()
+                ?.takeIf { it in 0..100 } ?: -1,
+            findHealthyInText(text, PROP_BRAKE_DEEPNESS)?.toInt()
+                ?.takeIf { it in 0..100 } ?: -1,
+            parseGearFromText(text),
+            ageMs
+        )
+    }
+
     fun parseChargingObservation(text: String?): ChargingObservation {
         val rawGun = findHealthyInText(text, PROP_CHARGING_GUN_STATE)?.toInt()
         val gunState = when (rawGun) {
@@ -639,6 +951,55 @@ object CarSvcTelemetry {
         return ChargingObservation(
             gunState, bmsState, power, hours, minutes, charging
         )
+    }
+
+    /** Raw charging properties; -1 / NaN when absent or unhealthy. No charge-state interpretation. */
+    class ChargingSignals(
+        @JvmField val rawGun: Int,
+        @JvmField val rawState: Int,
+        @JvmField val powerKw: Double,
+        @JvmField val socPercent: Double,
+        @JvmField val driving: Boolean,
+        /** SoC from status-0 lines only, for anything published as the vehicle's SoC. */
+        @JvmField val healthySocPercent: Double
+    )
+
+    internal fun parseChargingSignals(text: String?): ChargingSignals? {
+        if (text == null) return null
+        val gear = parseGearFromText(text)
+        val healthySoc = findHealthyInText(text, PROP_REMAINING_BATTERY_POWER)?.toDouble()
+            ?.takeIf { it in 0.0..100.0 }
+            ?: findHealthyInText(text, PROP_SOC_VALUE)?.toDouble()?.takeIf { it in 0.0..100.0 }
+            ?: Double.NaN
+        return ChargingSignals(
+            findHealthyInText(text, PROP_CHARGING_GUN_STATE)?.toInt() ?: -1,
+            findHealthyInText(text, PROP_CHARGE_DISCHARGE_STATE)?.toInt() ?: -1,
+            findHealthyInText(text, PROP_CHARGING_POWER)?.toDouble() ?: Double.NaN,
+            parseSocFromText(text),
+            gear in 2..6 || liveSpeedKmh(text) > 0,
+            healthySoc
+        )
+    }
+
+    @JvmStatic
+    fun readChargingSignals(): ChargingSignals? =
+        if (isActive()) parseChargingSignals(dumpsysText()) else null
+
+    /** Why the gun reads -1: how often it appears in the cached dump and its first line. */
+    @JvmStatic
+    fun describeChargingGun(): String {
+        val text = dumpsysText() ?: return "no dump"
+        val key = buildSearchKey(PROP_CHARGING_GUN_STATE)
+        val first = text.indexOf(key)
+        if (first < 0) return "absent"
+        var lines = 0
+        var at = first
+        while (at >= 0) {
+            lines++
+            at = text.indexOf(key, at + key.length)
+        }
+        val end = text.indexOf('\n', first).let { if (it < 0) text.length else it }
+        return "lines=$lines first=" + text.substring(first, minOf(end, first + 160)).trim()
     }
 
     @JvmStatic

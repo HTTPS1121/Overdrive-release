@@ -72,6 +72,21 @@ public class AccMonitorDiLink5Test {
     }
 
     @Test
+    public void undecidedDiLink5ProbePreservesOnlyAuthoritativeState() {
+        // Authoritative parked state remains parked during a cloud/IVI wake.
+        assertTrue(AccMonitor.diLink5UndecidedAccOffFallback(
+                true, false));
+        // Authoritative driving state remains driving during a transient gap.
+        assertFalse(AccMonitor.diLink5UndecidedAccOffFallback(
+                true, true));
+        // A cold process has no OFF authority and therefore stays fail-drive-safe.
+        assertFalse(AccMonitor.diLink5UndecidedAccOffFallback(
+                false, false));
+        assertFalse(AccMonitor.diLink5UndecidedAccOffFallback(
+                false, true));
+    }
+
+    @Test
     public void sourceResolutionIsDriveSafeAndRejectsLifecycleConflicts() {
         AccMonitor.DiLink5AccObservation accAnimOn =
                 AccMonitor.resolveDiLink5AccObservation(

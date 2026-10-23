@@ -41,6 +41,42 @@ class WebViewFragment : Fragment() {
     companion object {
         const val ARG_PAGE_PATH = "page_path"
         private const val KEY_SAVED_URL = "saved_url"
+        /** Cap for AndroidBridge.downloadToFile (trip exports are KB to a few MB). */
+        private const val MAX_BRIDGE_DOWNLOAD_BYTES = 32L * 1024 * 1024
+
+        // Versioned /shared/ assets go through the WebView's own network stack (HTTP cache,
+        // 304s, V8 code cache, parallel fetches) whenever no proxy can capture loopback.
+        // false = every request takes the intercept proxy path again.
+        private const val NATIVE_ASSET_LOADS = true
+        private const val PREF_WEB_CACHE_STAMP = "webview_cache_install_stamp"
+        @Volatile private var webCacheChecked = false
+
+        // Last path segment of every daemon path that serves the widget builder page (the daemon also collapses "//").
+        private val WIDGET_BUILDER_PAGES = setOf("widget-builder", "widget-builder.html")
+
+        // APK-bundled catalogs can't change while the process lives.
+        private val i18nCatalogCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        // One JWT for every WebView screen; minting per screen ran on the UI thread.
+        private val jwtLock = Any()
+        @Volatile private var sharedJwt: String? = null
+        @Volatile private var sharedJwtExpiry: Long = 0
+        @Volatile private var sharedJwtStateVersion: Long = -1
+
+        // Page writes run off the JS thread; a single thread keeps them in issue order,
+        // as the synchronous bridge did.
+        private val writeExecutor: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "WebViewWrite").apply { isDaemon = true }
+            }
+
+        /** The daemon's own HTTP origin — the only place the bridges may send the session. */
+        @JvmStatic
+        fun isDaemonUrl(url: java.net.URL): Boolean =
+            url.protocol == "http" &&
+                (url.host == "127.0.0.1" || url.host == "localhost") &&
+                url.port == CameraDaemon.HTTP_PORT &&
+                url.path.startsWith("/")
 
         // Hides the in-page PWA chrome before the first paint. INJECT_JS runs
         // on onPageFinished, which is late enough for the sidebar to flash.
@@ -53,10 +89,27 @@ class WebViewFragment : Fragment() {
     if (!window.AndroidBridge || window._fetchPatched) return;
     window._fetchPatched = true;
     var _orig = window.fetch;
+    var seq = 0;
+    var pending = {};
+    // AndroidBridge.httpWrite answers here (off the JS thread, in issue order).
+    window.__odFetchDone = function(id, raw) {
+        var cb = pending[id];
+        if (!cb) return;
+        delete pending[id];
+        cb(raw);
+    };
+    function bridgeResponse(raw) {
+        var status = 200;
+        try {
+            var parsed = JSON.parse(raw);
+            if (parsed._status) { status = parsed._status; delete parsed._status; raw = JSON.stringify(parsed); }
+        } catch(e) {}
+        return new Response(raw, { status: status, headers: { 'Content-Type': 'application/json' } });
+    }
     window.fetch = function(input, init) {
         init = init || {};
         var url = (typeof input === 'string') ? input : (input.url || '');
-        var isLocal = url.startsWith('/') || url.indexOf('127.0.0.1') !== -1 || url.indexOf('localhost') !== -1;
+        var isLocal = url.startsWith('/') || url.indexOf('http://127.0.0.1:8080/') === 0 || url.indexOf('http://localhost:8080/') === 0;
 
         // Only intercept API calls — let media (video/thumb/snapshot/h264) go through normally
         // Also let /status go through normal async path — it polls every 3s and would block the JS thread
@@ -84,15 +137,23 @@ class WebViewFragment : Fragment() {
 
         var fullUrl = url.startsWith('/') ? 'http://127.0.0.1:8080' + url : url;
 
+        if (typeof AndroidBridge.httpWrite === 'function') {
+            return new Promise(function(resolve) {
+                var id = 'w' + (++seq);
+                pending[id] = function(raw) { resolve(bridgeResponse(raw)); };
+                try {
+                    AndroidBridge.httpWrite(fullUrl, method, body, JSON.stringify(headers), id);
+                } catch(e) {
+                    delete pending[id];
+                    console.error('AndroidBridge error:', e);
+                    resolve(new Response('{"error":"bridge_error"}', { status: 500 }));
+                }
+            });
+        }
         return new Promise(function(resolve) {
             try {
                 var raw = AndroidBridge.httpRequest(fullUrl, method, body, JSON.stringify(headers));
-                var status = 200;
-                try {
-                    var parsed = JSON.parse(raw);
-                    if (parsed._status) { status = parsed._status; delete parsed._status; raw = JSON.stringify(parsed); }
-                } catch(e) {}
-                resolve(new Response(raw, { status: status, headers: { 'Content-Type': 'application/json' } }));
+                resolve(bridgeResponse(raw));
             } catch(e) {
                 console.error('AndroidBridge error:', e);
                 resolve(new Response('{"error":"bridge_error"}', { status: 500 }));
@@ -102,24 +163,38 @@ class WebViewFragment : Fragment() {
     console.log('[OverDrive] fetch() patched to bypass proxy');
 })();
 """
+
+        // Reveal the page once its DOM and first frame are ready instead of waiting for
+        // window.onload (images, async scripts, the hidden sidebar's logo).
+        private const val PAGE_READY_JS =
+            """<script>document.addEventListener('DOMContentLoaded',function(){requestAnimationFrame(function(){setTimeout(function(){try{AndroidBridge.pageReady();}catch(e){}},0);});});</script>"""
+
         private const val EMBED_CHROME =
             """<script>document.documentElement.setAttribute('data-android-embed','1');""" +
                 FETCH_BRIDGE_JS +
-                """</script><style>[data-android-embed="1"] .sidebar,[data-android-embed="1"] .sidebar-overlay,[data-android-embed="1"] .mobile-header,[data-android-embed="1"] .page-header{display:none !important;}[data-android-embed="1"]{--sidebar-width:0px !important;}[data-android-embed="1"] .main-content{margin-left:0 !important;padding-top:0 !important;}[data-android-embed="1"] .bottom-tabs{left:0 !important;right:0 !important;}</style>"""
+                """</script><style>[data-android-embed="1"] .sidebar,[data-android-embed="1"] .sidebar-overlay,[data-android-embed="1"] .mobile-header,[data-android-embed="1"] .page-header{display:none !important;}[data-android-embed="1"]{--sidebar-width:0px !important;}[data-android-embed="1"] .main-content{margin-left:0 !important;padding-top:0 !important;}[data-android-embed="1"] .bottom-tabs{left:0 !important;right:0 !important;}</style>""" +
+                PAGE_READY_JS
 
         /** Splice [EMBED_CHROME] into a page's `<head>`, falling back to
          *  `<html>` and then the document start. */
         @JvmStatic
         fun spliceEmbedChrome(html: String): String {
             if (html.contains(EMBED_ATTR)) return html
+            var out = EMBED_CHROME + html
             for (tag in arrayOf("<head", "<html")) {
                 val open = html.indexOf(tag, ignoreCase = true)
                 if (open < 0) continue
                 val close = html.indexOf('>', open)
                 if (close < 0) continue
-                return html.substring(0, close + 1) + EMBED_CHROME + html.substring(close + 1)
+                out = html.substring(0, close + 1) + EMBED_CHROME + html.substring(close + 1)
+                break
             }
-            return EMBED_CHROME + html
+            // App-shell overrides at the end of <head>: the cascade position INJECT_JS
+            // gets on load, but in place for the first paint (no restyle jump).
+            val headEnd = out.indexOf("</head>", ignoreCase = true)
+            if (headEnd < 0) return out
+            return out.substring(0, headEnd) + "<script>" + INJECT_JS + "</script>" +
+                out.substring(headEnd)
         }
 
         // ── Key-mapping capture bridge ────────────────────────────────────
@@ -341,9 +416,12 @@ class WebViewFragment : Fragment() {
         '             max-width: 100% !important; max-height: 200px !important; }'
     ].join(' ');
 
-    var s = document.createElement('style');
-    s.textContent = css;
-    document.head.appendChild(s);
+    if (!document.getElementById('od-app-shell-css')) {
+        var s = document.createElement('style');
+        s.id = 'od-app-shell-css';
+        s.textContent = css;
+        (document.head || document.documentElement).appendChild(s);
+    }
 
     // === Blur focused .bottom-tab on click + after each tab swap.
     //     Chrome 58 keeps the focus ring drawn until the user taps
@@ -351,8 +429,10 @@ class WebViewFragment : Fragment() {
     //     so the visual highlight clears immediately. The .is-active
     //     pill remains, so the active tab is still obvious. ===
     function patchBottomTabsBlur() {
+        if (window.__odTabsBlurPatched) return true;
         var bar = document.querySelector('.bottom-tabs');
         if (!bar) return false;
+        window.__odTabsBlurPatched = true;
         bar.addEventListener('click', function (ev) {
             var btn = ev.target;
             while (btn && btn !== bar && !(btn.classList && btn.classList.contains('bottom-tab'))) {
@@ -364,7 +444,9 @@ class WebViewFragment : Fragment() {
         }, true);
         return true;
     }
-    if (!patchBottomTabsBlur()) {
+    // Runs again from pageReady / onPageFinished: the <head> copy has no body to watch.
+    if (document.body && !window.__odTabsBlurWatch && !patchBottomTabsBlur()) {
+        window.__odTabsBlurWatch = true;
         // Tab bar is built by app-tabs.js after DOMContentLoaded; observe.
         var tabsObserver = new MutationObserver(function () {
             if (patchBottomTabsBlur()) tabsObserver.disconnect();
@@ -387,6 +469,8 @@ class WebViewFragment : Fragment() {
     // an in-flight load — overlapping loadUrl + reload on Chrome 58 WebView
     // is the source of the "spinner forever" hang.
     private var loadInProgress = false
+    // Read on the WebView's IO threads; refreshed at the start of every load.
+    @Volatile private var nativeAssetLoads = false
     // Only allow the auth retry to trigger one reload across the fragment's
     // lifetime. After the first auth-driven reload, any further auth state
     // changes are picked up by the caller (Settings → Re-login → manual
@@ -488,8 +572,28 @@ class WebViewFragment : Fragment() {
         loadPage()
     }
 
+    /**
+     * Drop the WebView HTTP cache once after every app install or update, so nothing an
+     * older build cached (max-age=3600) outlives the update.
+     */
+    private fun clearCacheAfterAppUpdate(wv: WebView) {
+        if (webCacheChecked) return
+        webCacheChecked = true
+        try {
+            val ctx = context ?: return
+            val stamp = ctx.packageManager.getPackageInfo(ctx.packageName, 0).lastUpdateTime
+            val prefs = ctx.getSharedPreferences("webview", android.content.Context.MODE_PRIVATE)
+            if (prefs.getLong(PREF_WEB_CACHE_STAMP, 0L) != stamp) {
+                wv.clearCache(true)
+                prefs.edit().putLong(PREF_WEB_CACHE_STAMP, stamp).apply()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
+        webView?.let { clearCacheAfterAppUpdate(it) }
         webView?.apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -522,9 +626,10 @@ class WebViewFragment : Fragment() {
             // "max-age=3600, must-revalidate" plus an ETag, so HTML is always fresh and assets
             // are not re-downloaded on every page load.
             //
-            // Note the ETag does NOT help here: the proxy path below strips If-None-Match, so
-            // this client can never get a 304 and each expiry costs the full body. max-age is
-            // the only lever in-app, which is why it is an hour rather than minutes.
+            // Versioned /shared/ assets load natively when no proxy captures loopback (see
+            // nativeAssetLoadsAllowed), so they hit this cache and revalidate with the ETag.
+            // On the intercept path the ETag does NOT help: it strips If-None-Match and its
+            // responses never enter the HTTP cache.
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.loadWithOverviewMode = true
             settings.useWideViewPort = true
@@ -556,6 +661,18 @@ class WebViewFragment : Fragment() {
 
                     if (isLocalServer) {
                         interceptI18nCatalog(url)?.let { return it }
+                        // Versioned static assets (?v=…, bumped on every edit): let the WebView
+                        // fetch them itself so they are cached (and their compiled JS kept) across
+                        // screens. Unversioned ones stay on the uncached path below so a daemon
+                        // asset update is never masked. Only when nothing proxies loopback — see
+                        // nativeAssetLoadsAllowed().
+                        if (nativeAssetLoads && request.method == "GET" && !request.isForMainFrame &&
+                            request.requestHeaders.orEmpty().keys.none { it.equals("Range", ignoreCase = true) } &&
+                            request.url.path.orEmpty().startsWith("/shared/") &&
+                            request.url.getQueryParameter("v") != null
+                        ) {
+                            return null
+                        }
                     }
                     
                     // Bypass proxy for map tiles and CDN resources (sing-box proxy blocks these)
@@ -594,7 +711,7 @@ class WebViewFragment : Fragment() {
                     // 504 makes the resource fail instantly so the page can
                     // continue without it.
                     if (isMapTile) {
-                        val proxyAvailable = com.overdrive.app.mqtt.ProxyHelper.isProxyAvailable()
+                        val proxyAvailable = com.overdrive.app.mqtt.ProxyHelper.isEgressProxyAvailable()
 
                         val httpProxy: java.net.Proxy by lazy {
                             java.net.Proxy(java.net.Proxy.Type.HTTP,
@@ -951,24 +1068,14 @@ class WebViewFragment : Fragment() {
                     // load.
                     pageLoadFailed = false
                     loadInProgress = true
+                    nativeAssetLoads = nativeAssetLoadsAllowed()
                     applyLoadChrome()
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     loadInProgress = false
-                    if (!pageLoadFailed) {
-                        showContent()
-                        // Theme: tag <html data-theme="…"> BEFORE INJECT_JS so any
-                        // CSS that depends on the variable values uses the right
-                        // values on first paint.
-                        view?.evaluateJavascript(buildThemeInjectJs(), null)
-                        // Fallback for any page whose HTML could not be spliced.
-                        // Idempotent: normal pages installed it in <head>.
-                        view?.evaluateJavascript(FETCH_BRIDGE_JS, null)
-                        // Hide sidebar (app drawer handles navigation).
-                        view?.evaluateJavascript(INJECT_JS, null)
-                    }
+                    if (!pageLoadFailed) revealPage(view)
                 }
 
                 override fun onReceivedError(
@@ -986,6 +1093,18 @@ class WebViewFragment : Fragment() {
                 ): Boolean {
                     val url = request?.url?.toString() ?: return false
                     
+                    // The widget builder is a phone/computer page; the car never opens it.
+                    if ((url.startsWith("http://127.0.0.1:") || url.startsWith("http://localhost:")) &&
+                        request?.url?.path.orEmpty().trimEnd('/').substringAfterLast('/') in WIDGET_BUILDER_PAGES
+                    ) {
+                        context?.let {
+                            android.widget.Toast.makeText(it,
+                                it.getString(com.overdrive.app.R.string.widget_builder_open_elsewhere),
+                                android.widget.Toast.LENGTH_LONG).show()
+                        }
+                        return true
+                    }
+
                     // Intercept events page links — use native RecordingLibraryFragment
                     // which has reliable video playback via VideoView
                     if (url.contains("/events.html") || url.endsWith("/events")) {
@@ -1372,6 +1491,7 @@ class WebViewFragment : Fragment() {
         fun navigate(dest: String): String {
             val destinationId = when (dest) {
                 "bydCloud" -> R.id.bydCloudFragment
+                "remoteAccess" -> R.id.remoteAccessFragment
                 else -> return "unknown_destination"
             }
             return try {
@@ -1449,6 +1569,8 @@ class WebViewFragment : Fragment() {
             var conn: java.net.HttpURLConnection? = null
             try {
                 val url = java.net.URL(urlStr)
+                // The session cookie is attached below, so only the daemon may be called.
+                if (!isDaemonUrl(url)) return "{\"_status\":403,\"error\":\"Request not allowed\"}"
                 conn = url.openConnection(java.net.Proxy.NO_PROXY) as java.net.HttpURLConnection
                 conn.requestMethod = method
                 val isBydCloudApi = url.path.startsWith("/api/bydcloud")
@@ -1553,6 +1675,138 @@ class WebViewFragment : Fragment() {
             }
         }
 
+        /**
+         * Page writes (POST/PUT/DELETE from the patched fetch) without blocking the page's
+         * JS thread for the round trip, so pressed states and spinners keep painting. Runs
+         * on [writeExecutor] (one thread → same order as issued) and answers through
+         * window.__odFetchDone.
+         */
+        @android.webkit.JavascriptInterface
+        fun httpWrite(urlStr: String, method: String, body: String, headers: String, callbackId: String) {
+            if (!callbackId.matches(Regex("[A-Za-z0-9_-]{1,64}"))) return
+            val allowed = try {
+                val url = java.net.URL(urlStr)
+                isDaemonUrl(url) && (url.path.startsWith("/api/") || url.path.startsWith("/auth/"))
+            } catch (_: Exception) {
+                false
+            }
+            if (!allowed) {
+                deliverFetchResponse(callbackId, "{\"_status\":403,\"error\":\"Request not allowed\"}")
+                return
+            }
+            writeExecutor.execute {
+                deliverFetchResponse(callbackId, httpRequest(urlStr, method, body, headers))
+            }
+        }
+
+        /** The page's DOM and first frame are ready (posted from EMBED_CHROME). */
+        @android.webkit.JavascriptInterface
+        fun pageReady() {
+            webView?.post {
+                if (loadInProgress && !pageLoadFailed) revealPage(webView)
+            }
+        }
+
+        private fun deliverFetchResponse(callbackId: String, raw: String) {
+            val script = "window.__odFetchDone&&__odFetchDone(" +
+                org.json.JSONObject.quote(callbackId) + "," +
+                org.json.JSONObject.quote(raw) + ");"
+            webView?.post {
+                try {
+                    webView?.evaluateJavascript(script, null)
+                } catch (_: Throwable) {
+                    // Page closed while the write was finishing; the write itself completed.
+                }
+            }
+        }
+
+        /**
+         * Saves page-built text (e.g. a recovery kit) into Download/OverDrive/: the
+         * WebView has no download handler. Returns the absolute path, or "" on failure.
+         */
+        @android.webkit.JavascriptInterface
+        fun saveTextFile(filename: String?, text: String?): String {
+            if (text == null) return ""
+            return try {
+                writeDownload(filename, text.toByteArray(Charsets.UTF_8))
+            } catch (_: Throwable) {
+                ""
+            }
+        }
+
+        /**
+         * Fetches a daemon URL (loopback only) into Download/OverDrive/. Runs on the
+         * bridge thread and blocks the page script, so it is meant for small exports.
+         */
+        @android.webkit.JavascriptInterface
+        fun downloadToFile(url: String?, filename: String?): String {
+            var conn: java.net.HttpURLConnection? = null
+            return try {
+                val u = java.net.URL(url ?: return "")
+                val loopback = u.protocol == "http" &&
+                    (u.host == "127.0.0.1" || u.host == "localhost") &&
+                    u.port == CameraDaemon.HTTP_PORT
+                if (!loopback || !u.file.startsWith("/")) return ""
+                conn = com.overdrive.app.util.DaemonHttpClient.open(u.file, "GET", 5000, 20000)
+                conn.instanceFollowRedirects = false
+                if (conn.responseCode != 200 || conn.contentLengthLong > MAX_BRIDGE_DOWNLOAD_BYTES) {
+                    return ""
+                }
+                val bytes = conn.inputStream.use { readCapped(it, MAX_BRIDGE_DOWNLOAD_BYTES) }
+                    ?: return ""
+                writeDownload(filename, bytes)
+            } catch (_: Throwable) {
+                ""
+            } finally {
+                try { conn?.disconnect() } catch (_: Throwable) {}
+            }
+        }
+
+        private fun readCapped(input: java.io.InputStream, cap: Long): ByteArray? {
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(16 * 1024)
+            var total = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > cap) return null
+                out.write(buf, 0, n)
+            }
+            return out.toByteArray()
+        }
+
+        /** Temp file + rename so a half-written export never shows up under its real name. */
+        private fun writeDownload(filename: String?, bytes: ByteArray): String {
+            val name = (filename ?: "")
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                .trimStart('.')
+                .take(96)
+                .ifEmpty { "download" }
+            @Suppress("DEPRECATION")
+            val dir = java.io.File(
+                android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS),
+                "OverDrive"
+            )
+            if (!dir.isDirectory && !dir.mkdirs()) return ""
+            val target = java.io.File(dir, name)
+            val tmp = java.io.File(dir, ".$name.part")
+            try {
+                java.io.FileOutputStream(tmp).use { out ->
+                    out.write(bytes)
+                    out.fd.sync()
+                }
+                if (!tmp.renameTo(target)) {
+                    target.delete()
+                    if (!tmp.renameTo(target)) return ""
+                }
+                return target.absolutePath
+            } finally {
+                if (tmp.exists()) tmp.delete()
+            }
+        }
+
         private fun deliverAsyncHttpResponse(callbackId: String, raw: String) {
             val script = "window.GenAI&&GenAI.onNativeResponse(" +
                 org.json.JSONObject.quote(callbackId) + "," +
@@ -1569,19 +1823,22 @@ class WebViewFragment : Fragment() {
 
     // ==================== AUTH ====================
 
-    private var cachedJwt: String? = null
-    private var jwtExpiry: Long = 0
-    // Pin the WebView cookie's JWT to the AuthManager state version it was
-    // minted from — the cookie travels through CookieManager which has its
-    // own persistence, so a stale JWT here outlives the in-process cache.
-    private var cachedJwtStateVersion: Long = -1
-
+    // The JWT is shared by every WebView screen (companion: sharedJwt*) and pinned to
+    // the AuthManager state version it was minted from — the cookie travels through
+    // CookieManager which has its own persistence, so a stale JWT here outlives the
+    // in-process cache.
     private fun getAuthJwt(): String? {
         // Cache JWT for 5 minutes to avoid spamming auth state saves
         val now = System.currentTimeMillis()
         val curVersion = com.overdrive.app.auth.AuthManager.getStateVersion()
-        if (cachedJwt != null && now < jwtExpiry && cachedJwtStateVersion == curVersion) return cachedJwt
-        
+        sharedJwt?.let { if (now < sharedJwtExpiry && sharedJwtStateVersion == curVersion) return it }
+        return synchronized(jwtLock) {
+            sharedJwt?.let { if (now < sharedJwtExpiry && sharedJwtStateVersion == curVersion) return it }
+            mintAuthJwt(now)
+        }
+    }
+
+    private fun mintAuthJwt(now: Long): String? {
         return try {
             // Try to initialize AuthManager if not already done
             if (com.overdrive.app.auth.AuthManager.getState() == null) {
@@ -1598,9 +1855,9 @@ class WebViewFragment : Fragment() {
             }
             
             if (jwt != null) {
-                cachedJwt = jwt
-                jwtExpiry = now + 5 * 60 * 1000  // 5 min cache
-                cachedJwtStateVersion = com.overdrive.app.auth.AuthManager.getStateVersion()
+                sharedJwtStateVersion = com.overdrive.app.auth.AuthManager.getStateVersion()
+                sharedJwtExpiry = now + 5 * 60 * 1000  // 5 min cache
+                sharedJwt = jwt
                 android.util.Log.d("WebView", "JWT generated successfully")
             } else {
                 android.util.Log.e("WebView", "JWT generation failed after retry")
@@ -1622,8 +1879,12 @@ class WebViewFragment : Fragment() {
             if (jwt != null) {
                 val cm = CookieManager.getInstance()
                 cm.setAcceptCookie(true)
-                cm.setCookie("http://127.0.0.1:${CameraDaemon.HTTP_PORT}", "byd_session=$jwt; Path=/; Max-Age=31536000")
-                cm.flush()
+                val origin = "http://127.0.0.1:${CameraDaemon.HTTP_PORT}"
+                // Only write when it changed. No flush(): it blocks on disk I/O, and the
+                // cookie is set again on the first screen of every process.
+                if (cm.getCookie(origin)?.contains("byd_session=$jwt") != true) {
+                    cm.setCookie(origin, "byd_session=$jwt; Path=/; Max-Age=31536000")
+                }
                 android.util.Log.d("WebView", "Auth cookie set${if (attempt > 0) " (attempt ${attempt + 1})" else ""}")
                 if (attempt > 0 && !authReloadFired) {
                     // Auth came online after the page already tried to load.
@@ -1661,8 +1922,33 @@ class WebViewFragment : Fragment() {
 
     private fun loadPage() {
         pageLoadFailed = false
+        nativeAssetLoads = nativeAssetLoadsAllowed()
         applyLoadChrome()
         currentUrl?.let { webView?.loadUrl(it) }
+    }
+
+    /**
+     * True when the WebView's own network stack can reach the daemon directly: no
+     * system/global proxy is set, or its exclusion list covers loopback (the hotspot
+     * proxy excludes localhost,127.0.0.1). A PAC proxy or any failure keeps the
+     * intercept path, which always connects with Proxy.NO_PROXY.
+     */
+    private fun nativeAssetLoadsAllowed(): Boolean {
+        if (!NATIVE_ASSET_LOADS) return false
+        return try {
+            val cm = context?.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager ?: return false
+            val proxy = cm.defaultProxy ?: return true
+            val pac = proxy.pacFileUrl
+            if (pac != null && pac != Uri.EMPTY && pac.toString().isNotEmpty()) return false
+            if (proxy.host.isNullOrEmpty()) return true
+            proxy.exclusionList.orEmpty().any {
+                val rule = it.trim().lowercase()
+                rule == "127.0.0.1" || rule == "localhost" || rule == "127.*" || rule == "127.0.0.*"
+            }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun retryLoad() {
@@ -1676,10 +1962,38 @@ class WebViewFragment : Fragment() {
         showLoading()
     }
 
+    /**
+     * Shows the page and runs the shell scripts. Called from the page's DOMContentLoaded
+     * signal (AndroidBridge.pageReady) and again from onPageFinished; every step is
+     * idempotent.
+     */
+    private fun revealPage(view: WebView?) {
+        showContent()
+        // Theme: tag <html data-theme="…"> BEFORE INJECT_JS so any
+        // CSS that depends on the variable values uses the right
+        // values on first paint.
+        view?.evaluateJavascript(buildThemeInjectJs(), null)
+        // Fallback for any page whose HTML could not be spliced.
+        // Idempotent: normal pages installed it in <head>.
+        view?.evaluateJavascript(FETCH_BRIDGE_JS, null)
+        // Hide sidebar (app drawer handles navigation).
+        view?.evaluateJavascript(INJECT_JS, null)
+    }
+
     private fun showLoading() {
         loadingOverlay?.animate()?.cancel()
         loadingOverlay?.alpha = 1f
         loadingOverlay?.visibility = View.VISIBLE
+        // The backdrop covers the page at once; the spinner and caption only fade in
+        // if the load is still running after 300 ms, so quick loads don't flash them.
+        (loadingOverlay as? ViewGroup)?.let { overlay ->
+            for (i in 0 until overlay.childCount) {
+                val child = overlay.getChildAt(i)
+                child.animate().cancel()
+                child.alpha = 0f
+                child.animate().alpha(1f).setStartDelay(300).setDuration(150).start()
+            }
+        }
         errorOverlay?.visibility = View.GONE
         webView?.visibility = View.VISIBLE
     }
@@ -1696,7 +2010,7 @@ class WebViewFragment : Fragment() {
             hideLoading()
             return
         }
-        loadingOverlay?.animate()?.alpha(0f)?.setDuration(200)
+        loadingOverlay?.animate()?.alpha(0f)?.setDuration(120)
             ?.withEndAction { loadingOverlay?.visibility = View.GONE }?.start()
         errorOverlay?.visibility = View.GONE
         webView?.visibility = View.VISIBLE
@@ -1724,9 +2038,12 @@ class WebViewFragment : Fragment() {
         // Android WebView versions used by older BYD head units do not always
         // deliver a reliable visible-side Page Visibility event. Give pages an
         // explicit lifecycle signal as well; stream.js deduplicates this with
-        // visibilitychange so only one decoder/socket is created.
+        // visibilitychange so only one decoder/socket is created. Pages with
+        // their own live requests use the same signal without creating a stream.
         webView?.evaluateJavascript(
-            "(function(){if(window.BYD&&BYD.stream&&BYD.stream.resumeAfterBackground){" +
+            "(function(){window.OverdriveNativePaused=false;" +
+                "window.dispatchEvent(new CustomEvent('overdrive:resume'));" +
+                "if(window.BYD&&BYD.stream&&BYD.stream.resumeAfterBackground){" +
                 "BYD.stream.resumeAfterBackground(true);}})();",
             null
         )
@@ -1799,11 +2116,13 @@ class WebViewFragment : Fragment() {
         val tag = com.overdrive.app.server.LocaleManager.resolveOrNull(
             lang?.trim().orEmpty()
         ) ?: return ""
+        i18nCatalogCache[tag]?.let { return it }
         val ctx = context ?: return ""
         return try {
             ctx.assets.open("web/i18n/$tag.json")
                 .bufferedReader(Charsets.UTF_8)
                 .use { it.readText() }
+                .also { if (it.isNotEmpty()) i18nCatalogCache[tag] = it }
         } catch (_: Exception) {
             ""
         }
@@ -1895,7 +2214,9 @@ class WebViewFragment : Fragment() {
         // units don't always deliver the Page Visibility event, and webView
         // .onPause() stops neither JS timers nor the socket.
         webView?.evaluateJavascript(
-            "(function(){if(window.BYD&&BYD.stream&&BYD.stream.pauseForBackground){" +
+            "(function(){window.OverdriveNativePaused=true;" +
+                "window.dispatchEvent(new CustomEvent('overdrive:pause'));" +
+                "if(window.BYD&&BYD.stream&&BYD.stream.pauseForBackground){" +
                 "BYD.stream.pauseForBackground();}})();",
             null
         )

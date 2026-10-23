@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 
 /** Explicit opt-in boundary for every DiLink 5-only runtime path. */
@@ -17,10 +18,12 @@ public final class DiLink5Platform {
     private static final String MODE_DILINK5 = "dilink5";
     private static final String MODE_DEFAULT = "default";
     private static final String MODE_DILINK4 = "dilink4";
+    // Camera-only mode: every non-camera decision behaves exactly like "default".
+    private static final String MODE_CAMERA2 = "camera2";
     private static final String ACTIVE_MODE_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_active_vehicle_mode");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_active_vehicle_mode");
     private static final String PENDING_MODE_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_pending_vehicle_mode");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_pending_vehicle_mode");
     private static final long MODE_MARKER_MAX_BYTES = 1_024L;
     private static final String CAMERA_UTILITY_PATH =
             "/system/lib64/libais_test_util.so";
@@ -231,6 +234,60 @@ public final class DiLink5Platform {
         return matchesModeGeneration(expected, currentActiveModeGeneration());
     }
 
+    /** Mode and generation read from the same committed marker file. */
+    public static final class ActiveModeSnapshot {
+        public final String mode;
+        public final String generation;
+
+        private ActiveModeSnapshot(String mode, String generation) {
+            this.mode = mode;
+            this.generation = generation;
+        }
+
+        public boolean supportsLegacyVehicleApi() {
+            return MODE_DEFAULT.equals(mode) || MODE_DILINK4.equals(mode)
+                    || MODE_CAMERA2.equals(mode);
+        }
+
+        public boolean matches(ActiveModeSnapshot other) {
+            return other != null && mode.equals(other.mode)
+                    && generation.equals(other.generation);
+        }
+    }
+
+    /**
+     * A missing or malformed commit has no authority. This does not hydrate or
+     * mutate processMode, which other vehicle backends fence independently.
+     */
+    public static ActiveModeSnapshot currentActiveModeSnapshot() {
+        try {
+            return parseActiveModeMarker(readMarkerBytes(ACTIVE_MODE_PATH));
+        } catch (Exception unavailable) {
+            return null;
+        }
+    }
+
+    static ActiveModeSnapshot parseActiveModeMarker(byte[] bytes) {
+        if (bytes == null || bytes.length == 0 || bytes.length > MODE_MARKER_MAX_BYTES)
+            return null;
+        try (BufferedReader reader = new BufferedReader(new StringReader(
+                new String(bytes, StandardCharsets.UTF_8)))) {
+            String mode = normalizeMode(reader.readLine());
+            String generation = reader.readLine();
+            if (mode == null || generation == null) return null;
+            generation = generation.trim();
+            if (generation.isEmpty() || generation.length() > 128) return null;
+            String canonical = java.util.UUID.fromString(generation).toString();
+            if (!canonical.equalsIgnoreCase(generation)) return null;
+            String remaining;
+            while ((remaining = reader.readLine()) != null)
+                if (!remaining.trim().isEmpty()) return null;
+            return new ActiveModeSnapshot(mode, canonical);
+        } catch (Exception malformed) {
+            return null;
+        }
+    }
+
     static boolean matchesModeGeneration(String expected, String current) {
         return expected != null && current != null && expected.equals(current);
     }
@@ -361,6 +418,8 @@ public final class DiLink5Platform {
             byte[] buffer = new byte[128];
             int read;
             while ((read = input.read(buffer)) != -1) {
+                if (output.size() + read > MODE_MARKER_MAX_BYTES)
+                    throw new IllegalStateException("invalid mode marker");
                 output.write(buffer, 0, read);
             }
             return output.toByteArray();
@@ -406,6 +465,7 @@ public final class DiLink5Platform {
     private static String normalizeMode(String mode) {
         if (mode == null) return null;
         String normalized = mode.trim().toLowerCase(java.util.Locale.US);
+        if (MODE_CAMERA2.equals(normalized)) return normalized;
         if (MODE_DEFAULT.equals(normalized)
                 || MODE_DILINK4.equals(normalized)
                 || MODE_DILINK5.equals(normalized)) {

@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title data-i18n="app.assistant_title">Assistant - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <script>
         window.OT_TABS = [
             { id: 'assistant', label: 'Assistant', i18n: 'genai.tab_assistant', svg: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>' },
@@ -18,73 +18,89 @@
             if (button) button.click();
         };
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
-        .ai-state {
-            display: grid; grid-template-columns: 34px minmax(0, 1fr) auto;
-            align-items: center; column-gap: 12px;
-            padding: 12px 14px; margin-bottom: 12px;
-            border: 1px solid var(--border-subtle); border-radius: 12px;
-            background: var(--bg-elevated);
-        }
-        .ai-state-icon {
-            width: 34px; height: 34px; flex: 0 0 34px; border-radius: 10px;
-            display: flex; align-items: center; justify-content: center;
-            color: var(--brand-primary); background: var(--brand-primary-container);
-        }
-        .ai-state-icon svg { width: 19px; height: 19px; }
-        .ai-state-copy { flex: 1; min-width: 0; }
-        .ai-state-title { font-size: 14px; font-weight: 650; color: var(--text-primary); }
-        .ai-state-desc { margin-top: 3px; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
-        .ai-state-action { flex: 0 0 auto; }
+        /* Summary tile: the existing status block styled as the mock's .r-hero.
+           genai.js colours the icon inline, so its chip stays tonal instead of solid primary. */
+        .ai-state { margin-bottom: var(--card-gap); }
+        .ai-state > .r-hero-icon { background: var(--primary-soft); }
 
+        /* Grounded quick actions: tonal chips in one swipe rail; they wrap where a mouse cannot swipe. */
         .ai-quick-actions {
-            display: flex; overflow-x: auto; padding: 2px 1px 10px;
+            display: flex; overflow-x: auto; margin: 0 0 8px; padding: 2px 0 0;
             scrollbar-width: none; overscroll-behavior-x: contain;
             -webkit-overflow-scrolling: touch;
         }
-        .ai-quick-actions > * { margin-right: 8px; }
+        .ai-quick-actions > * { margin: 0 8px 8px 0; }
+        [dir="rtl"] .ai-quick-actions > * { margin: 0 0 8px 8px; }
         .ai-quick-actions::-webkit-scrollbar { display: none; }
-        .ai-chip {
-            flex: 0 0 auto; border: 1px solid var(--border-color);
-            border-radius: 999px; background: var(--bg-elevated);
-            color: var(--text-secondary); font: inherit; font-size: 12px;
-            padding: 8px 12px; cursor: pointer; white-space: nowrap;
+        @media (hover: hover) and (pointer: fine) {
+            .ai-quick-actions { flex-wrap: wrap; overflow-x: visible; }
         }
-        .ai-chip:active { transform: scale(.98); }
-        .ai-chip:disabled { opacity: .45; cursor: not-allowed; }
+        .ai-chip {
+            flex: 0 0 auto; display: inline-flex; align-items: center;
+            min-height: 44px; padding: 0 16px;
+            border: 0; border-radius: var(--radius-full);
+            background: var(--well); color: var(--on-surface-variant);
+            font: inherit; font-size: var(--fs-label); font-weight: 600; line-height: 1.25;
+            white-space: nowrap; cursor: pointer;
+            transition: background-color var(--duration-fast) var(--easing-standard),
+                        color var(--duration-fast) var(--easing-standard),
+                        transform var(--duration-fast) var(--easing-standard);
+        }
+        .ai-chip:active { transform: scale(.97); }
+        .ai-chip:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+        @media (hover: hover) {
+            .ai-chip:hover:not(:disabled) { background: var(--well-2); color: var(--on-surface); }
+        }
 
+        /* Conversation tile: replies on a neutral well, your own messages on primary. */
+        .ai-chat-card > .card-body:first-child { padding: 16px; }
         .ai-conversation {
             min-height: 300px; height: 48vh; height: calc(var(--vh, 1vh) * 48);
             max-height: 720px; overflow-y: auto; overscroll-behavior: contain;
-            padding: 14px; background: var(--bg-base);
-            border: 1px solid var(--border-subtle); border-radius: 12px;
+            padding: 4px 4px 8px;
         }
         .ai-empty {
-            min-height: 100%; display: flex; flex-direction: column;
+            box-sizing: border-box; min-height: 100%;
+            display: flex; flex-direction: column;
             align-items: center; justify-content: center; text-align: center;
-            color: var(--text-muted); padding: 24px;
+            padding: 24px 16px; color: var(--on-surface-variant);
         }
-        .ai-empty svg { width: 42px; height: 42px; opacity: .45; margin-bottom: 12px; }
-        .ai-empty strong { color: var(--text-primary); font-size: 15px; }
-        .ai-empty span { max-width: 420px; margin-top: 6px; font-size: 12px; line-height: 1.5; }
-        .ai-message { display: flex; min-width: 0; margin: 10px 0; }
+        .ai-empty svg {
+            box-sizing: border-box; width: 56px; height: 56px; margin-bottom: 14px; padding: 14px;
+            border-radius: var(--radius-lg); background: var(--primary-soft); color: var(--primary);
+        }
+        .ai-empty strong { color: var(--on-surface); font-size: var(--fs-title); font-weight: 600; }
+        .ai-empty span { max-width: 420px; margin-top: 6px; font-size: var(--fs-label); line-height: 1.5; }
+        .ai-message { display: flex; min-width: 0; margin: 12px 0; }
         .ai-message.user { justify-content: flex-end; }
         .ai-bubble {
-            min-width: 0; max-width: 680px; padding: 10px 12px; border-radius: 14px;
-            box-sizing: border-box;
-            font-size: 14px; line-height: 1.48; white-space: normal;
-            overflow-wrap: anywhere; color: var(--text-primary);
-            background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+            min-width: 0; max-width: 680px; box-sizing: border-box;
+            padding: 12px 16px; border-radius: var(--radius-lg);
+            font-size: var(--fs-body); line-height: 1.5; white-space: normal;
+            overflow-wrap: break-word; overflow-wrap: anywhere;
+            color: var(--on-surface); background: var(--well);
         }
         .ai-message.user .ai-bubble {
-            color: var(--on-primary, #fff); background: var(--brand-primary);
-            border-color: transparent; border-bottom-right-radius: 4px;
+            color: var(--on-primary); background: var(--primary);
+            border-bottom-right-radius: var(--radius-xs);
             white-space: pre-wrap;
         }
-        .ai-message.assistant .ai-bubble { border-bottom-left-radius: 4px; }
-        .ai-message.pending .ai-bubble { color: var(--text-muted); }
+        .ai-message.assistant .ai-bubble { border-bottom-left-radius: var(--radius-xs); }
+        [dir="rtl"] .ai-message.user .ai-bubble { border-bottom-right-radius: var(--radius-lg); border-bottom-left-radius: var(--radius-xs); }
+        [dir="rtl"] .ai-message.assistant .ai-bubble { border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-xs); }
+        /* Pending reply: full-contrast text plus a pulsing dot. */
+        .ai-message.pending .ai-bubble { color: var(--on-surface-variant); }
+        .ai-message.pending .ai-bubble::after {
+            content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 8px;
+            border-radius: 50%; background: currentColor; vertical-align: middle;
+            animation: ai-pending 900ms ease-in-out infinite alternate;
+        }
+        [dir="rtl"] .ai-message.pending .ai-bubble::after { margin-left: 0; margin-right: 8px; }
+        @keyframes ai-pending { from { opacity: .25; } to { opacity: 1; } }
         .ai-rich-text p { margin: 0; }
         .ai-rich-text p + p,
         .ai-rich-text p + ul,
@@ -93,209 +109,271 @@
         .ai-rich-text ol + p { margin-top: 10px; }
         .ai-rich-text ul,
         .ai-rich-text ol {
-            margin: 8px 0 0; padding-left: 21px;
+            margin: 8px 0 0; padding-left: 22px;
         }
+        [dir="rtl"] .ai-rich-text ul,
+        [dir="rtl"] .ai-rich-text ol { padding-left: 0; padding-right: 22px; }
         .ai-rich-text li { padding-left: 2px; }
-        .ai-rich-text li + li { margin-top: 9px; }
-        .ai-rich-text strong { font-weight: 700; color: var(--text-primary); }
+        [dir="rtl"] .ai-rich-text li { padding-left: 0; padding-right: 2px; }
+        .ai-rich-text li + li { margin-top: 8px; }
+        .ai-rich-text strong { font-weight: 700; color: var(--on-surface); }
         .ai-rich-text code {
-            padding: 2px 5px; border-radius: 5px;
-            color: var(--primary); background: var(--bg-base);
+            padding: 2px 6px; border-radius: var(--radius-xs);
+            color: var(--on-surface); background: var(--well-2);
             font-family: 'JetBrains Mono', 'SF Mono', monospace;
             font-size: .9em; word-break: break-all;
         }
         .ai-rich-heading {
-            margin: 12px 0 0; color: var(--text-primary);
-            font-size: 14px; font-weight: 700;
+            margin: 14px 0 0; color: var(--on-surface);
+            font-size: var(--fs-body); font-weight: 700;
         }
         .ai-rich-heading:first-child { margin-top: 0; }
         .ai-rich-quote {
-            margin: 10px 0 0; padding-left: 10px;
-            border-left: 3px solid var(--brand-primary);
-            color: var(--text-secondary);
+            margin: 10px 0 0; padding-left: 12px;
+            border-left: 3px solid var(--primary);
+            color: var(--on-surface-variant);
         }
+        [dir="rtl"] .ai-rich-quote { padding-left: 0; padding-right: 12px; border-left: 0; border-right: 3px solid var(--primary); }
+        /* Grounded answers carry their source as a primary chip (mock .chip.is-primary). */
         .ai-grounding-label {
-            margin: -2px 0 8px; color: var(--brand-primary);
-            font-size: 10px; font-weight: 700; letter-spacing: .05em;
-            text-transform: uppercase;
+            display: table; margin: 0 0 8px; padding: 3px 10px;
+            border-radius: var(--radius-full);
+            color: var(--primary); background: var(--primary-soft);
+            font-size: var(--fs-caption); font-weight: 600; line-height: 1.4;
         }
+        /* Result cards (routine suggestions, evidence packs, drafts, proposals, search hits):
+           wells inside tiles, raised back onto the tile colour inside a reply bubble. */
         .ai-result-card {
             min-width: 0; max-width: 100%; box-sizing: border-box;
-            margin-top: 10px; padding: 10px; overflow: hidden;
-            overflow-wrap: anywhere; white-space: normal;
-            border: 1px solid var(--border-color); border-radius: 10px;
-            background: var(--bg-base);
+            margin-top: 10px; padding: 14px 16px; overflow: hidden;
+            overflow-wrap: break-word; overflow-wrap: anywhere; white-space: normal;
+            border-radius: var(--radius-md);
+            background: var(--well);
         }
-        .ai-result-card strong { display: block; font-size: 13px; }
+        .ai-bubble .ai-result-card { background: var(--tile); }
+        .ai-result-card strong {
+            display: block; color: var(--on-surface);
+            font-size: var(--fs-body); font-weight: 600; line-height: 1.35;
+        }
         .ai-result-detail {
-            margin-top: 5px; color: var(--text-secondary);
-            font-size: 12px; line-height: 1.4;
+            margin-top: 4px; color: var(--on-surface-variant);
+            font-size: var(--fs-label); line-height: 1.45;
         }
         .ai-result-meta {
-            margin-top: 6px; color: var(--text-muted); font-size: 11px;
+            margin-top: 6px; color: var(--on-surface-variant);
+            font-size: var(--fs-caption); font-variant-numeric: tabular-nums;
         }
         .ai-result-actions {
-            display: flex; flex-wrap: wrap; margin-top: 9px;
+            display: flex; flex-wrap: wrap; margin: 12px 0 -8px;
         }
-        .ai-result-actions > * { margin: 0 7px 7px 0; }
-        .ai-result-actions .btn { padding: 7px 10px; font-size: 11px; }
+        .ai-result-actions > * { margin: 0 8px 8px 0; }
+        [dir="rtl"] .ai-result-actions > * { margin: 0 0 8px 8px; }
+        .ai-result-actions .btn { min-height: 40px; padding: 0 16px; font-size: var(--fs-label); }
+        @media (pointer: coarse) {
+            .ai-result-actions .btn { min-height: 44px; }
+        }
         .ai-draft-safety {
-            margin-top: 8px; padding: 7px 8px; border-radius: 7px;
-            color: var(--status-warning); background: var(--bg-elevated);
-            font-size: 11px; line-height: 1.35;
+            margin-top: 10px; padding: 8px 12px; border-radius: var(--radius-sm);
+            color: var(--on-surface); background: var(--warning-soft);
+            box-shadow: inset 3px 0 0 var(--warning);
+            font-size: var(--fs-label); line-height: 1.4;
         }
+        [dir="rtl"] .ai-draft-safety { box-shadow: inset -3px 0 0 var(--warning); }
         .ai-community-results { margin-top: 8px; }
-        .ai-local-grid {
-            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-            align-items: start; gap: 12px; margin-bottom: 12px;
-        }
-        .ai-local-list {
-            display: flex; flex-direction: column; gap: 8px;
-            color: var(--text-secondary); font-size: 12px;
-        }
-        .ai-local-list .ai-result-card { margin-top: 0; }
 
+        /* Tile grids under the conversation: intrinsic columns, one column on phones. */
+        .ai-local-grid,
         .ai-insight-grid {
-            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             align-items: start; align-content: start;
-            gap: 12px; margin-top: 12px;
+            grid-gap: var(--card-gap); gap: var(--card-gap);
+            margin-top: var(--card-gap);
         }
+        .ai-local-grid > .card + .card { margin-top: 0; }
+        .ai-local-list {
+            color: var(--on-surface-variant); font-size: var(--fs-label); line-height: 1.45;
+        }
+        .ai-local-list > .ai-result-card { margin-top: 8px; }
+        .ai-local-list > :first-child { margin-top: 0; }
+
         .ai-insight-card {
             align-self: start;
             margin: 0 !important;
         }
-        .ai-insight-controls {
-            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            gap: 12px;
+        /* "Generate an insight" reads as the mock's AI insight tile: tertiary tint and chip. */
+        .ai-insight-grid > .ai-insight-card:first-child {
+            background-image:
+                radial-gradient(320px 220px at 100% 0%, var(--tertiary-soft), rgba(0, 0, 0, 0) 70%),
+                linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
         }
+        [dir="rtl"] .ai-insight-grid > .ai-insight-card:first-child {
+            background-image:
+                radial-gradient(320px 220px at 0% 0%, var(--tertiary-soft), rgba(0, 0, 0, 0) 70%),
+                linear-gradient(180deg, var(--sheen) 0%, rgba(255, 255, 255, 0) 140px);
+        }
+        .ai-insight-grid > .ai-insight-card:first-child .card-title > svg:first-child {
+            background-color: var(--tertiary-soft); color: var(--tertiary);
+        }
+        .ai-insight-controls,
+        .ai-form-grid {
+            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-gap: 16px; gap: 16px;
+        }
+        .ai-local-grid > *,
         .ai-insight-grid > *,
         .ai-insight-controls > *,
         .ai-form-grid > * { min-width: 0; }
-        .ai-insight-controls .wide { grid-column: 1 / -1; }
+        .ai-insight-controls > .md-field,
+        .ai-form-grid > .md-field { margin-top: 0; margin-bottom: 0; }
+        .ai-insight-controls .wide,
+        .ai-form-grid .wide { grid-column: 1 / -1; }
         .ai-inline-note {
-            margin-top: 10px; padding: 9px 10px; border-radius: 9px;
-            color: var(--text-secondary); background: var(--bg-elevated);
-            font-size: 11px; line-height: 1.45;
+            margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-md);
+            color: var(--on-surface-variant); background: var(--well);
+            font-size: var(--fs-label); line-height: 1.45;
         }
 
+        /* Composer: a filled field between a round tonal voice button and a round primary send button. */
+        .ai-composer-dock {
+            position: relative; margin-top: 12px; padding-top: 12px;
+            border-top: 1px solid var(--hairline);
+        }
         .ai-composer {
             display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-            gap: 8px; align-items: end; margin-top: 10px;
+            grid-gap: 8px; gap: 8px; align-items: end; margin: 0;
         }
-        .ai-composer-dock { position: relative; }
         .ai-composer textarea {
-            width: 100%; min-height: 46px; max-height: 132px; resize: none;
-            box-sizing: border-box; padding: 12px 13px;
-            border: 1px solid var(--border-color); border-radius: 13px;
-            color: var(--text-primary); background: var(--bg-elevated);
-            font: inherit; font-size: 14px; line-height: 1.4;
+            display: block; width: 100%; min-height: 48px; max-height: 132px; margin: 0; resize: none;
+            box-sizing: border-box; padding: 13px 18px;
+            border: 1px solid var(--outline-variant); border-radius: var(--radius-xl);
+            color: var(--on-surface); background: var(--well);
+            font: inherit; font-size: var(--fs-body); line-height: 1.4;
+            transition: border-color var(--duration-fast) var(--easing-standard),
+                        box-shadow var(--duration-fast) var(--easing-standard);
         }
-        .ai-composer textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+        .ai-composer textarea::placeholder { color: var(--on-surface-variant); opacity: 1; }
+        .ai-composer textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+        .ai-composer textarea:disabled { opacity: .6; cursor: not-allowed; }
+        @media (hover: hover) {
+            .ai-composer textarea:hover:not(:focus):not(:disabled) { border-color: var(--outline); }
+        }
+        @media (pointer: coarse) {
+            .ai-composer textarea { font-size: 16px; }
+        }
         .ai-icon-button {
-            width: 46px; height: 46px; padding: 0; border-radius: 13px;
+            width: 48px; height: 48px; min-height: 48px; padding: 0;
+            border-radius: var(--radius-full);
             display: inline-flex; align-items: center; justify-content: center;
         }
-        .ai-icon-button svg { width: 20px; height: 20px; }
+        .ai-icon-button svg { width: 22px; height: 22px; }
         .ai-icon-button[hidden] { display: none; }
         .ai-icon-button.is-cancel svg { display: none; }
         .ai-icon-button.is-cancel::before {
             content: "";
-            width: 11px;
-            height: 11px;
-            border-radius: 2px;
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
             background: currentColor;
         }
+        /* Live voice: danger tonal with a solid ring (the label and note also change). */
         .ai-icon-button.is-live {
-            color: #fff; border-color: transparent; background: var(--danger);
-            box-shadow: 0 0 0 4px rgba(239, 68, 68, .18);
+            color: var(--danger); background-color: var(--danger-soft);
+            box-shadow: 0 0 0 2px var(--danger);
         }
-        .ai-voice-note { margin: 8px 2px 0; font-size: 11px; color: var(--text-muted); }
-        .ai-voice-note.is-live { color: var(--danger); font-weight: 650; }
+        .ai-voice-note {
+            margin: 8px 4px 0; color: var(--on-surface-variant);
+            font-size: var(--fs-caption); line-height: 1.4;
+        }
+        .ai-voice-note.is-live { color: var(--danger); font-weight: 600; }
 
-        .ai-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-        .ai-form-grid .wide { grid-column: 1 / -1; }
         .ai-custom-model-field { margin-top: 8px; }
         .ai-custom-model-field[hidden] { display: none; }
-        .assistant-page select.md-input {
-            min-height: 56px;
-            touch-action: manipulation;
+        .voice-enroll-voices {
+            list-style: none;
+            margin: 8px 0 0;
+            padding: 0;
         }
-        .ai-actions { display: flex; flex-wrap: wrap; margin-top: 16px; }
+        .voice-enroll-voices li {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+        }
+        .voice-enroll-voices li + li { border-top: 1px solid var(--hairline); }
+        .voice-enroll-voices li > span { flex: 1 1 auto; min-width: 0; margin-right: 12px; overflow-wrap: break-word; }
+        [dir="rtl"] .voice-enroll-voices li > span { margin-right: 0; margin-left: 12px; }
+
+        /* Name field and the three buttons share one row and wrap together on a narrow head unit. */
+        .voice-enroll-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            margin: 12px 0 -8px;
+        }
+        .voice-enroll-actions > *,
+        .voice-enroll-actions > .voice-enroll-name { margin: 0 12px 8px 0; }
+        [dir="rtl"] .voice-enroll-actions > *,
+        [dir="rtl"] .voice-enroll-actions > .voice-enroll-name { margin: 0 0 8px 12px; }
+        .voice-enroll-actions .voice-enroll-name {
+            flex: 1 1 220px;
+            max-width: 320px;
+        }
+
+        .voice-enroll-actions .btn,
+        .voice-enroll-voices .btn {
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }
+
+        .assistant-page select.md-input { touch-action: manipulation; }
+        .ai-actions { display: flex; flex-wrap: wrap; margin: 16px 0 -8px; }
         .ai-actions > * { margin: 0 8px 8px 0; }
+        [dir="rtl"] .ai-actions > * { margin: 0 0 8px 8px; }
+
+        /* Runtime readouts: the mock's stat wells. */
         .ai-runtime-grid {
-            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px; margin-top: 12px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            grid-gap: 8px; gap: 8px; margin-top: 12px;
         }
         .ai-runtime-item {
-            padding: 10px 12px; border-radius: 10px;
-            background: var(--bg-elevated); min-width: 0;
+            min-width: 0; padding: 12px 14px; border-radius: var(--radius-md);
+            background: var(--well);
         }
-        .ai-runtime-item span { display: block; font-size: 11px; color: var(--text-muted); }
+        .ai-runtime-item span { display: block; font-size: var(--fs-caption); color: var(--on-surface-variant); }
         .ai-runtime-item strong {
-            display: block; margin-top: 3px; font-size: 13px;
-            color: var(--text-primary); overflow-wrap: anywhere;
+            display: block; margin-top: 2px; color: var(--on-surface);
+            font-size: var(--fs-body); font-weight: 600;
+            overflow-wrap: break-word; overflow-wrap: anywhere;
         }
-        .ai-privacy-list { margin: 0; padding-left: 20px; color: var(--text-secondary); }
-        .ai-privacy-list li { margin: 9px 0; line-height: 1.5; font-size: 13px; }
-        @media (max-width: 1100px) {
-            .ai-local-grid { grid-template-columns: 1fr; }
-            .ai-insight-grid { grid-template-columns: 1fr; }
+        .ai-voice-modes { grid-template-columns: minmax(0, 1fr); }
+        .ai-voice-modes .mode-option input:disabled + .mode-card { opacity: .45; cursor: not-allowed; }
+        .ai-voice-modes .mode-option input:disabled + .mode-card:active { transform: none; }
+
+        /* Privacy statements read as mock rows: hairline-separated, primary marker. */
+        .ai-privacy-list { margin: 0 0 8px; padding: 0; list-style: none; }
+        .ai-privacy-list li {
+            position: relative; margin: 0; padding: 12px 0 12px 20px;
+            color: var(--on-surface-variant); font-size: var(--fs-body); line-height: 1.5;
+        }
+        .ai-privacy-list li + li { border-top: 1px solid var(--hairline); }
+        .ai-privacy-list li::before {
+            content: ""; position: absolute; top: 20px; left: 2px;
+            width: 6px; height: 6px; border-radius: 50%; background: var(--primary);
+        }
+        [dir="rtl"] .ai-privacy-list li { padding: 12px 20px 12px 0; }
+        [dir="rtl"] .ai-privacy-list li::before { left: auto; right: 2px; }
+        /* Provider and Privacy are forms: the same readable measure as body.r-settings pages.
+           The Assistant tab (chat) keeps the full width. */
+        @media (min-width: 1280px) {
+            html:not([data-android-embed="1"]) .page-body > section[data-tab="provider"],
+            html:not([data-android-embed="1"]) .page-body > section[data-tab="privacy"] { max-width: none; }
         }
         @media (max-width: 900px) {
-            .ai-form-grid { grid-template-columns: 1fr; }
-            .ai-form-grid .wide { grid-column: auto; }
-            .ai-insight-controls { grid-template-columns: 1fr; }
-            .ai-insight-controls .wide { grid-column: auto; }
-            .ai-state {
-                grid-template-columns: 34px minmax(0, 1fr);
-                align-items: start; padding: 14px;
-            }
-            .ai-state-copy { margin-left: 0; }
-            .ai-state-action {
-                grid-column: 2; justify-self: start; margin-top: 9px;
-            }
-            .ai-state-action .btn {
-                min-height: 36px; padding: 7px 12px;
-                font-size: 12px;
-            }
-            .ai-quick-actions {
-                display: flex; margin: 0 -4px 2px;
-                padding: 2px 16px 8px 4px;
-                scroll-snap-type: x proximity;
-            }
-            .ai-quick-actions > * { margin: 0 8px 8px 0; }
-            .ai-chip {
-                min-height: 38px; padding: 8px 12px;
-                scroll-snap-align: start;
-            }
-            .ai-chat-card {
-                overflow: visible; border: 0; background: transparent;
-            }
-            .ai-chat-card .card-body { padding: 0; }
+            /* Phones and narrow head units: the conversation takes what the header, chips and composer leave. */
             .ai-conversation {
                 height: calc((var(--vh, 1vh) * 100) - 480px);
                 min-height: 180px; max-height: 720px;
-                padding: 14px 12px 18px;
-                border-radius: 16px;
             }
-            .ai-message { width: 100%; margin: 12px 0; }
-            .ai-message.assistant .ai-bubble {
-                width: 100%; max-width: 100%; box-sizing: border-box;
-                padding: 0; border: 0; border-radius: 0;
-                background: transparent;
-            }
-            .ai-message.user .ai-bubble { max-width: 84%; }
-            .ai-composer-dock {
-                position: relative;
-                z-index: 30; margin: 10px 0 0;
-                padding: 10px 10px 11px;
-                border: 1px solid var(--border-subtle);
-                border-radius: 16px;
-                background: var(--bg-surface);
-                box-shadow: 0 -10px 28px rgba(0, 0, 0, .22);
-            }
-            .ai-composer { margin-top: 0; gap: 7px; }
-            .ai-voice-note { margin: 7px 2px 0; line-height: 1.35; }
 
             /* The web-only theme FAB uses the empty right side of the mobile
                header instead of covering the composer/send control. */
@@ -322,14 +400,45 @@
                 left: 0 !important;
             }
         }
-        @media (max-width: 480px) {
-            .ai-runtime-grid { grid-template-columns: 1fr; }
-            .ai-actions .btn { width: 100%; justify-content: center; }
-            .ai-composer {
-                grid-template-columns: 44px minmax(0, 1fr) 44px;
+        @media (max-width: 768px) {
+            /* Chip rail runs edge to edge; the first chip still lines up with the content. */
+            .ai-quick-actions {
+                margin: 0 -16px 8px; padding: 2px 16px 0;
+                scroll-snap-type: x proximity; scroll-padding: 0 16px;
             }
-            .ai-icon-button { width: 44px; height: 44px; }
+            .ai-chip { scroll-snap-align: start; }
+            .ai-chat-card > .card-body:first-child { padding: 12px; }
+            .ai-message { margin: 10px 0; }
+            .ai-bubble { padding: 10px 14px; }
+            .ai-message.assistant .ai-bubble { max-width: 100%; }
+            .ai-message.user .ai-bubble { max-width: 85%; }
+            .ai-form-grid { grid-template-columns: minmax(0, 1fr); }
+            .ai-form-grid .wide { grid-column: auto; }
         }
+        @media (max-width: 600px) {
+            .ai-local-grid,
+            .ai-insight-grid { grid-template-columns: minmax(0, 1fr); }
+            .ai-insight-controls { grid-template-columns: minmax(0, 1fr); }
+            .ai-insight-controls .wide { grid-column: auto; }
+        }
+        @media (max-width: 480px) {
+            .ai-runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .ai-actions > .btn { width: 100%; margin: 0 0 8px; justify-content: center; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .ai-message.pending .ai-bubble::after { animation: none; }
+            .ai-chip, .ai-composer textarea { transition: none; }
+            .ai-chip:active { transform: none; }
+        }
+
+        /* Car: 56px targets and body-size text, like body.r-settings pages. */
+        :root[data-android-embed="1"] .assistant-page .page-body .btn { min-height: 56px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .ai-chip { min-height: 56px; padding: 0 20px; font-size: var(--fs-body); }
+        :root[data-android-embed="1"] .ai-composer .ai-icon-button { width: 56px; height: 56px; }
+        :root[data-android-embed="1"] .ai-icon-button svg { width: 24px; height: 24px; }
+        :root[data-android-embed="1"] .ai-composer textarea { min-height: 56px; padding: 16px 20px; }
+        :root[data-android-embed="1"] .ai-result-meta,
+        :root[data-android-embed="1"] .ai-voice-note { font-size: var(--fs-label); }
     </style>
 </head>
 <body class="assistant-page">
@@ -353,41 +462,16 @@
 
             <div class="page-body">
                 <section data-tab="assistant">
-                    <div class="ai-state" id="genAiState">
-                        <div class="ai-state-icon" aria-hidden="true">
+                    <div class="ai-state r-hero" id="genAiState" data-hero-badge="genAiBadge">
+                        <div class="ai-state-icon r-hero-icon" aria-hidden="true">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="16" height="13" rx="3"/><path d="M9 3v3M8 12h.01M16 12h.01M9 16h6"/></svg>
                         </div>
-                        <div class="ai-state-copy">
-                            <div class="ai-state-title" id="genAiStateTitle" data-i18n="genai.loading">Loading assistant…</div>
-                            <div class="ai-state-desc" id="genAiStateDesc" data-i18n="genai.checking_runtime">Checking the on-vehicle BYOK runtime.</div>
+                        <div class="ai-state-copy r-hero-text">
+                            <div class="ai-state-title r-hero-title" id="genAiStateTitle" data-i18n="genai.loading">Loading assistant…</div>
+                            <div class="ai-state-desc r-hero-sub" id="genAiStateDesc" data-i18n="genai.checking_runtime">Checking the on-vehicle BYOK runtime.</div>
                         </div>
-                        <div class="ai-state-action">
+                        <div class="ai-state-action r-hero-ctl">
                             <button class="btn btn-secondary" id="genAiConfigureBtn" type="button" onclick="GenAI.openProvider()" data-i18n="genai.configure">Configure</button>
-                        </div>
-                    </div>
-
-                    <div class="ai-local-grid">
-                        <div class="card">
-                            <div class="card-header">
-                                <div class="card-title">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
-                                    <span>Routine suggestions</span>
-                                </div>
-                            </div>
-                            <div class="card-body">
-                                <div class="ai-local-list" id="genAiRoutineSuggestions">Loading local routine learner…</div>
-                            </div>
-                        </div>
-                        <div class="card">
-                            <div class="card-header">
-                                <div class="card-title">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>
-                                    <span>Incident evidence packs</span>
-                                </div>
-                            </div>
-                            <div class="card-body">
-                                <div class="ai-local-list" id="genAiIncidentPacks">Create a pack from a recording on the Events page.</div>
-                            </div>
                         </div>
                     </div>
 
@@ -427,6 +511,31 @@
                                     </button>
                                 </form>
                                 <div class="ai-voice-note" id="genAiVoiceNote" data-i18n="genai.voice_note">Voice appears only for providers with native realtime audio; OverDrive does not add speech-to-text fallback.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="ai-local-grid">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
+                                    <span>Routine suggestions</span>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="ai-local-list" id="genAiRoutineSuggestions">Loading local routine learner…</div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>
+                                    <span>Incident evidence packs</span>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="ai-local-list" id="genAiIncidentPacks">Create a pack from a recording on the Events page.</div>
                             </div>
                         </div>
                     </div>
@@ -656,6 +765,241 @@
                             </div>
                         </div>
                     </div>
+
+                    <div class="card" data-tab="provider" id="voiceAssistantCard">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/></svg>
+                                <span data-i18n="voice_assistant.title">Hands-free voice assistant</span>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.enable_title">Voice assistant</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.enable_desc">Say “OverDrive” to talk. Commands run instantly. Works only while the car is on, and nothing leaves the car until you say the wake word.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="voiceEnabled" disabled>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="ai-runtime-grid">
+                                <div class="ai-runtime-item"><span data-i18n="voice_assistant.status_label">Status</span><strong id="voiceState">—</strong></div>
+                                <div class="ai-runtime-item"><span data-i18n="voice_assistant.last_wake">Last wake</span><strong id="voiceLastWake">—</strong></div>
+                                <div class="ai-runtime-item"><span data-i18n="voice_assistant.wake_model">Wake word model</span><strong id="voiceWakeModel">—</strong></div>
+                                <div class="ai-runtime-item"><span data-i18n="voice_assistant.local_engine">Local commands</span><strong id="voiceLocalEngine">—</strong></div>
+                                <div class="ai-runtime-item"><span data-i18n="voice_assistant.wakes">Wake-ups</span><strong id="voiceWakes">—</strong></div>
+                                <div class="ai-runtime-item"><span data-i18n="voice_assistant.handled">Commands</span><strong id="voiceHandled">—</strong></div>
+                            </div>
+                            <div class="ai-inline-note" id="voiceRuntimeNote" hidden></div>
+
+                            <div class="setting-row" style="margin-top:12px;border-bottom:none;padding-bottom:12px;">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.mode_title">How commands are understood</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.mode_desc">Choose where your speech is understood.</div>
+                                </div>
+                            </div>
+                            <div class="mode-selector ai-voice-modes" id="voiceModeSelector" role="radiogroup" aria-busy="true" aria-label="Voice assistant mode" data-i18n-attr="aria-label:voice_assistant.mode_aria">
+                                <label class="mode-option">
+                                    <input type="radio" name="voiceMode" value="local" disabled>
+                                    <div class="mode-card">
+                                        <span class="mode-icon" aria-hidden="true">
+                                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+                                        </span>
+                                        <span class="mode-body">
+                                            <span class="mode-name" data-i18n="voice_assistant.mode_local_name">Local</span>
+                                            <span class="mode-desc" data-i18n="voice_assistant.mode_local_desc">Works offline and instantly. Understands a fixed set of commands like 'AC on' or 'temperature 22'. English and Chinese.</span>
+                                        </span>
+                                        <span class="mode-radio" aria-hidden="true"></span>
+                                    </div>
+                                </label>
+                                <label class="mode-option">
+                                    <input type="radio" name="voiceMode" value="hybrid" disabled>
+                                    <div class="mode-card">
+                                        <span class="mode-icon" aria-hidden="true">
+                                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.88L3 3"/><path d="m15 9 6-6"/></svg>
+                                        </span>
+                                        <span class="mode-body">
+                                            <span class="mode-name" data-i18n="voice_assistant.mode_hybrid_name">Hybrid (recommended)</span>
+                                            <span class="mode-desc" data-i18n="voice_assistant.mode_hybrid_desc">Common commands run instantly on the car. Anything else goes to your AI provider. Needs internet and an OpenAI or Gemini voice model.</span>
+                                        </span>
+                                        <span class="mode-radio" aria-hidden="true"></span>
+                                    </div>
+                                </label>
+                                <label class="mode-option">
+                                    <input type="radio" name="voiceMode" value="genai" disabled>
+                                    <div class="mode-card">
+                                        <span class="mode-icon" aria-hidden="true">
+                                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+                                        </span>
+                                        <span class="mode-body">
+                                            <span class="mode-name" data-i18n="voice_assistant.mode_genai_name">GenAI</span>
+                                            <span class="mode-desc" data-i18n="voice_assistant.mode_genai_desc">Understands natural speech in almost any language and can answer questions about your car. Every request goes to your AI provider, takes about 1–2 s, and uses your API key.</span>
+                                        </span>
+                                        <span class="mode-radio" aria-hidden="true"></span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div id="voiceGenAiGate" hidden>
+                                <div class="ai-inline-note" id="voiceGenAiReason"></div>
+                                <div class="ai-actions">
+                                    <button class="btn btn-secondary" id="voiceSetupGenAiBtn" type="button" data-i18n="voice_assistant.setup_genai">Set up GenAI</button>
+                                </div>
+                            </div>
+
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.share_title">Let the assistant read live car status</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.share_desc">Hybrid and GenAI only. Your AI provider receives the car's live status with your requests so the assistant can answer questions about your car.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="voiceShareVehicleState" disabled>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.share_location_title">Share the car's approximate location</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.share_location_desc">Hybrid and GenAI only. While you talk to the assistant, the car's approximate location (a nearby place name, or a position rounded to about 1 km) is sent to your AI provider so it can answer questions like “where am I”.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="voiceShareLocationWithAi" disabled>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="ai-form-grid" style="margin-top:16px;">
+                                <div class="md-field">
+                                    <div class="md-field-box">
+                                        <select class="md-input" id="voiceSensitivity" disabled>
+                                            <option value="low" data-i18n="voice_assistant.sensitivity_low">Low</option>
+                                            <option value="normal" data-i18n="voice_assistant.sensitivity_normal">Normal</option>
+                                            <option value="high" data-i18n="voice_assistant.sensitivity_high">High</option>
+                                        </select>
+                                        <label class="md-label" for="voiceSensitivity" data-i18n="voice_assistant.sensitivity">Wake word sensitivity</label>
+                                    </div>
+                                    <span class="md-supporting" data-i18n="voice_assistant.sensitivity_hint">Lower it if OverDrive wakes up on its own; raise it if it often misses you.</span>
+                                </div>
+                                <div class="md-field">
+                                    <div class="md-field-box">
+                                        <select class="md-input" id="voiceFollowUp" disabled></select>
+                                        <label class="md-label" for="voiceFollowUp" data-i18n="voice_assistant.follow_up">Follow-up window</label>
+                                    </div>
+                                    <span class="md-supporting" data-i18n="voice_assistant.follow_up_hint">How long OverDrive keeps listening for another command without the wake word.</span>
+                                </div>
+                                <div class="md-field">
+                                    <div class="md-field-box">
+                                        <select class="md-input" id="voiceCommandLanguage" disabled>
+                                            <option value="" data-i18n="voice_assistant.command_language_auto">Automatic (follow the app language)</option>
+                                            <option value="en" data-i18n="voice_assistant.command_language_en">English</option>
+                                            <option value="zh-CN" data-i18n="voice_assistant.command_language_zh_cn">中文（简体）</option>
+                                            <option value="zh-TW" data-i18n="voice_assistant.command_language_zh_tw">中文（繁體）</option>
+                                        </select>
+                                        <label class="md-label" for="voiceCommandLanguage" data-i18n="voice_assistant.command_language">Command language</label>
+                                    </div>
+                                    <span class="md-supporting" data-i18n="voice_assistant.command_language_hint">Which spoken commands OverDrive listens for. Only commands in this language are recognised locally.</span>
+                                </div>
+                                <div class="md-field wide">
+                                    <div class="md-field-box">
+                                        <select class="md-input" id="voiceAudioChannel" disabled>
+                                            <option value="media" data-i18n="voice_assistant.channel_media">Media</option>
+                                            <option value="navigation" data-i18n="voice_assistant.channel_navigation">Navigation</option>
+                                            <option value="voice" data-i18n="voice_assistant.channel_voice">Voice</option>
+                                        </select>
+                                        <label class="md-label" for="voiceAudioChannel" data-i18n="voice_assistant.audio_channel">Reply audio channel</label>
+                                    </div>
+                                    <span class="md-supporting" data-i18n="voice_assistant.audio_channel_hint">The car volume used for spoken replies and sounds.</span>
+                                </div>
+                                <div class="md-field wide">
+                                    <div class="md-field-box">
+                                        <select class="md-input" id="voiceMicSource" disabled>
+                                            <option value="mic" data-i18n="voice_assistant.mic_source_mic">Standard microphone</option>
+                                            <option value="voice_recognition" data-i18n="voice_assistant.mic_source_voice_recognition">Voice recognition</option>
+                                            <option value="voice_communication" data-i18n="voice_assistant.mic_source_voice_communication">Voice communication (echo cancelling)</option>
+                                            <option value="car_array" data-i18n="voice_assistant.mic_source_car_array">Car microphones with echo and noise cancelling</option>
+                                        </select>
+                                        <label class="md-label" for="voiceMicSource" data-i18n="voice_assistant.mic_source">Microphone input (experimental)</label>
+                                    </div>
+                                    <span class="md-supporting" data-i18n="voice_assistant.mic_source_hint">Voice communication may let the car cancel its own speakers so the wake word is heard over music. Try it if OverDrive misses you while media plays.</span>
+                                </div>
+                            </div>
+
+                            <div class="setting-row" id="voiceEnrollRow">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.enroll_title">Train the wake word to your voice</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.enroll_desc">Say “OverDrive” 4 times when the car asks. OverDrive learns how you say it, which helps with accents. Train parked, with the car on and the assistant listening.</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.enroll_people_desc">Each person can train their own voice: type their name, then Train. Up to 4 voices.</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.enroll_music_desc">For the wake word over music, play music at your usual volume and use Train with music.</div>
+                                    <div class="setting-desc" id="voiceEnrollStatus" aria-live="polite"></div>
+                                    <ul class="voice-enroll-voices" id="voiceEnrollVoices" hidden></ul>
+                                    <div class="voice-enroll-actions">
+                                        <div class="md-field voice-enroll-name">
+                                            <div class="md-field-box">
+                                                <input class="md-input" id="voiceEnrollName" type="text" maxlength="24" placeholder=" " autocomplete="off">
+                                                <label class="md-label" for="voiceEnrollName" data-i18n="voice_assistant.enroll_name">Who is training? (optional)</label>
+                                            </div>
+                                        </div>
+                                        <button class="btn btn-secondary" id="voiceEnrollBtn" type="button" disabled data-i18n="voice_assistant.enroll_start">Train</button>
+                                        <button class="btn btn-secondary" id="voiceEnrollMusicBtn" type="button" disabled data-i18n="voice_assistant.enroll_music_start">Train with music</button>
+                                        <button class="btn btn-secondary" id="voiceEnrollClearBtn" type="button" hidden data-i18n="voice_assistant.enroll_clear">Forget all</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.pause_media_title">Pause media while listening</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.pause_media_desc">When music or a podcast is playing, saying “OverDrive” pauses it for the command and resumes it afterwards. Turn off to only lower its volume instead.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="voicePauseMediaWhileListening" disabled>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.resume_media_title">Resume media afterwards</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.resume_media_desc">Plays the music or podcast again when OverDrive is done, but only if OverDrive paused it. Turn off to leave it paused.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="voiceResumeMediaAfterListening" disabled>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="voice_assistant.direct_fallback_title">Allow a direct connection when the proxy is unreachable</div>
+                                    <div class="setting-desc" data-i18n="voice_assistant.direct_fallback_desc">Hands-free assistant only. If the car's privacy proxy accepts the connection but relays nothing for 5 seconds, the voice session is retried once over the car's own internet connection. The AI provider then sees the car's IP address. Off by default.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="voiceRealtimeDirectFallback" disabled>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="ai-inline-note" data-i18n="voice_assistant.ptt_hint">Prefer a button? In Key Mapping, bind a steering-wheel button to “Talk to OverDrive”.</div>
+                            <div class="ai-actions">
+                                <button class="btn btn-secondary" type="button" onclick="window.location.href='/key-mapping#add'" data-i18n="voice_assistant.open_key_mapping">Open Key Mapping</button>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
                 <section data-tab="privacy">
@@ -673,7 +1017,7 @@
                                 <li data-i18n="genai.privacy_3">Vehicle context is sent only for an explicit grounded action. Context is treated as data, never as provider instructions.</li>
                                 <li data-i18n="genai.privacy_4">Starting voice opens a provider-native realtime session through the daemon. It closes when stopped, when this page leaves the foreground, or after inactivity.</li>
                                 <li data-i18n="genai.privacy_5">When the master switch is off, active calls are cancelled and the provider connection pool and dispatcher are destroyed.</li>
-                                <li data-i18n="genai.privacy_6">Requests re-evaluate the OverDrive proxy route each time. If a Tailscale proxy is expected but unavailable, the request fails closed instead of dialing directly.</li>
+                                <li data-i18n="genai.privacy_6">Requests re-evaluate the OverDrive proxy route each time. Public providers use the sing-box proxy when it is running, otherwise a direct connection. Tailnet endpoints, and private LAN endpoints while the Tailscale proxy is enabled, go only through Tailscale and fail closed if it is unavailable.</li>
                             </ul>
                             <div class="setting-row">
                                 <div class="setting-info">
@@ -709,9 +1053,10 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <script src="../shared/auth.js"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
-    <script src="../shared/genai.js?v=12"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/genai.js?v=14"></script>
+    <script src="../shared/voice-assistant.js?v=9"></script>
     <script>
         function toggleSidebar() {
             var sidebar = document.getElementById('sidebar');
@@ -723,6 +1068,7 @@
             BYD.i18n.init().then(function () {
                 BYD.core.init();
                 GenAI.init();
+                VoiceAssistantCard.init();
             });
         });
     </script>

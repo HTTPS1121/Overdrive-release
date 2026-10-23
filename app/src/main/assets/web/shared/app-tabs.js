@@ -127,9 +127,22 @@
         // untagged) cards correct.
         var untagged = root.querySelectorAll('.card:not([data-tab])');
         for (var j = 0; j < untagged.length; j++) {
+            // A card inside a tagged section follows that section, not the first tab.
+            var holder = untagged[j].parentElement;
+            if (holder && holder.closest && holder.closest('[data-tab]')) continue;
             if (activeId === firstId) untagged[j].removeAttribute('hidden');
             else untagged[j].setAttribute('hidden', '');
         }
+    }
+
+    // Keep the active tab in view when the strip scrolls sideways. A delta works
+    // in every RTL scrollLeft model.
+    function revealTab(nav, btn) {
+        var track = btn && btn.parentNode !== nav ? btn.parentNode : nav;
+        if (!btn || track.scrollWidth <= track.clientWidth) return;
+        var n = track.getBoundingClientRect();
+        var b = btn.getBoundingClientRect();
+        track.scrollLeft += (b.left + b.width / 2) - (n.left + n.width / 2);
     }
 
     function bindClicks(nav, tabs, root, getActive, setActive, refreshApply) {
@@ -149,6 +162,7 @@
                     else btns[k].classList.remove('is-active');
                 }
                 saveTab(id);
+                revealTab(nav, btn);
                 if (typeof refreshApply === 'function') refreshApply(id);
                 // Notify pages so per-tab dirty trackers can re-evaluate the
                 // Apply button + unsaved markers for the newly active tab.
@@ -303,9 +317,24 @@
         var active = readHashTab(tabs) || readSavedTab(tabs) || tabs[0].id;
         var nav = buildBar(tabs, active);
 
-        // Mount the tab bar at the END of <body> so it visually sits above
-        // the main content. CSS pins it to position:fixed bottom.
-        document.body.appendChild(nav);
+        // In flow just above the page body (after the header and any summary
+        // tile); revamp.css makes it sticky. Pages without a body keep the
+        // old fixed bar at the end of <body>.
+        var pageBody = main.querySelector('.page-body');
+        if (pageBody && pageBody.parentNode) {
+            nav.className += ' is-inflow';
+            // The tabs scroll in their own track, so the action slot sits
+            // beside them rather than over the last tab.
+            var track = document.createElement('div');
+            track.className = 'bottom-tabs-track';
+            track.setAttribute('role', 'tablist');
+            nav.removeAttribute('role');
+            while (nav.firstChild) track.appendChild(nav.firstChild);
+            nav.appendChild(track);
+            pageBody.parentNode.insertBefore(nav, pageBody);
+        } else {
+            document.body.appendChild(nav);
+        }
 
         applyActive(tabs, active, main);
         var refreshApply = relocateApplyButton(nav, tabs);
@@ -322,6 +351,7 @@
         // Add a class on <body> so CSS can give .main-content padding-bottom
         // equal to the tab bar height.
         document.body.classList.add('ot-tabs-on');
+        revealTab(nav, nav.querySelector('.bottom-tab.is-active'));
     }
 
     if (document.readyState === 'loading') {

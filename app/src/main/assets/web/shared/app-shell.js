@@ -13,7 +13,7 @@
  *       <div id="app-shell-mount"></div>
  *       <main class="main-content">…page-specific content…</main>
  *     </div>
- *     <script src="../shared/app-shell.js"></script>
+ *     <script src="../shared/app-shell.js?v=18"></script>
  *
  * If a page omits #app-shell-mount the shell appends itself to <body>.
  *
@@ -33,6 +33,12 @@
     var embeddedInNativeApp =
         typeof window.AndroidBridge !== 'undefined';
 
+    // Browser-only pages stay out of the car app's menu (its WebView stamps
+    // <html data-android-embed="1"> and refuses them).
+    function inCarApp() {
+        return embeddedInNativeApp || document.documentElement.getAttribute('data-android-embed') === '1';
+    }
+
     /*
      * Sidebar nav layout MIRRORS rail_menu.xml exactly:
      *   Dashboard → Live → Recordings → Vehicle → Trips → Integrations cluster →
@@ -49,51 +55,56 @@
     var NAV_ITEMS = [
         // ===== Overview ===== — the "what's happening now" cluster.
         { divider: true, label: 'Overview', i18n: 'nav.overview_group' },
-        { href: 'index.html',           i18n: 'nav.dashboard',       label: 'Dashboard',       svg: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>' },
-        { href: 'assistant.html',       i18n: 'nav.assistant',       label: 'Assistant',       svg: '<rect x="4" y="6" width="16" height="13" rx="3"/><path d="M9 3v3M8 12h.01M16 12h.01M9 16h6"/>' },
-        { href: 'live-view.html',       i18n: 'nav.live_view',       label: 'Live View',       svg: '<path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 0 8 8"/><circle cx="2" cy="12" r="2"/>' },
-        { href: 'communicate.html',     i18n: 'nav.communicate',     label: 'Communicate',     svg: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/>' },
-        { href: 'events.html',          i18n: 'nav.recordings',      label: 'Recordings',      svg: '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>' },
+        { href: 'index.html',           i18n: 'nav.dashboard',       label: 'Dashboard',       svg: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>' },
+        { href: 'assistant.html',       i18n: 'nav.assistant',       label: 'Assistant',       svg: '<rect x="4" y="7" width="16" height="13" rx="3"/><path d="M12 3v4M9 13h.01M15 13h.01M9.5 16.5h5"/>' },
+        { href: 'live-view.html',       i18n: 'nav.live_view',       label: 'Live View',       svg: '<path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8M2 16a5 5 0 0 1 4 4M2 20h.01"/>' },
+        { href: 'communicate.html',     i18n: 'nav.communicate',     label: 'Communicate',     svg: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/>' },
+        { href: 'events.html',          i18n: 'nav.recordings',      label: 'Recordings',      svg: '<path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/>' },
         // Parking Intelligence: sessions ("where did I park, what happened").
-        { href: 'parking.html',         i18n: 'nav.parking',         label: 'Parking',         svg: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
+        { href: 'parking.html',         i18n: 'nav.parking',         label: 'Parking',         svg: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/>' },
 
         // ===== Vehicle ===== — control + trip history.
         { divider: true, label: 'Vehicle', i18n: 'nav.vehicle_group' },
-        { href: 'vehicle-control.html', i18n: 'nav.vehicle_control', label: 'Vehicle Control', svg: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>' },
-        { href: 'trips.html',           i18n: 'nav.trips',           label: 'Trips',           svg: '<path d="M3 17h2v-7l4 4 4-4 4 4 4-4v7h2"/><path d="M4 5h16"/>' },
-        { href: 'charging.html',        i18n: 'nav.charging',        label: 'Charging',        svg: '<path d="M13 2 L4 14 h7 l-1 8 9-12 h-7 z"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
-        { href: 'seat-positions.html',  i18n: 'nav.seat_positions',  label: 'Seat Positions',  svg: '<g transform="translate(0 24) scale(.025)"><path fill="currentColor" stroke="none" d="M560-160H320q-33 0-56.5-23.5T240-240v-400q0-17 11.5-28.5T280-680q17 0 28.5 11.5T320-640v400h240q17 0 28.5 11.5T600-200q0 17-11.5 28.5T560-160ZM460-720q-33 0-56.5-23.5T380-800q0-33 23.5-56.5T460-880q33 0 56.5 23.5T540-800q0 33-23.5 56.5T460-720Zm180 600v-160H440q-33 0-56.5-23.5T360-360v-220q0-42 29-71t71-29q42 0 71 29t29 71v180h80q33 0 56.5 23.5T720-320v200q0 17-11.5 28.5T680-80q-17 0-28.5-11.5T640-120Z"/></g>' },
-        { href: 'automations.html',     i18n: 'nav.automations',     label: 'Automations',     svg: '<rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/>' },
-        { href: 'key-mapping.html',     i18n: 'nav.key_mapping',     label: 'Key Mapping',     svg: '<rect width="20" height="14" x="2" y="5" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M7 13h.01M17 13h.01M11 13h2"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
+        { href: 'vehicle-control.html', i18n: 'nav.vehicle_control', label: 'Vehicle Control', svg: '<path d="M5 17H3v-5l2.2-5.1A2 2 0 0 1 7 5.7h10a2 2 0 0 1 1.8 1.2L21 12v5h-2M3 12h18M9.5 17h5"/><circle cx="7.5" cy="17" r="2"/><circle cx="16.5" cy="17" r="2"/>' },
+        { href: 'remote-access.html',   i18n: 'nav.remote_access',   label: 'Proximity', svg: '<path d="M4.9 19.1a10 10 0 0 1 0-14.2M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M19.1 4.9a10 10 0 0 1 0 14.2"/><circle cx="12" cy="12" r="2"/>' },
+        { href: 'trips.html',           i18n: 'nav.trips',           label: 'Trips',           svg: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>' },
+        { href: 'charging.html',        i18n: 'nav.charging',        label: 'Charging',        svg: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>' },
+        { href: 'seat-positions.html',  i18n: 'nav.seat_positions',  label: 'Seat Positions',  svg: '<path d="M19 9V6a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v3"/><path d="M3 16a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5a2 2 0 0 0-4 0v1.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5V11a2 2 0 0 0-4 0zM5 18v2M19 18v2"/>' },
+        { href: 'automations.html',     i18n: 'nav.automations',     label: 'Automations',     svg: '<rect x="3" y="3" width="8" height="8" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect x="13" y="13" width="8" height="8" rx="2"/>' },
+        { href: 'key-mapping.html',     i18n: 'nav.key_mapping',     label: 'Key Mapping',     svg: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M7 13h.01M17 13h.01M10 15h4"/>' },
 
         // ===== Integrations group ===== — mirrors the native Integrations
         // sub-page (Telegram, ABRP, MQTT, BYD Cloud).
-        { divider: true, label: 'Integrations', i18n: 'nav.integrations_group' },
+        { divider: true, label: 'Integrations', i18n: 'nav.integrations_group', svg: '<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>' },
         { href: 'telegram.html',                          i18n: 'nav.telegram',       label: 'Telegram',       svg: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
         { href: 'abrp.html',                              i18n: 'nav.abrp',           label: 'ABRP',           svg: '<path d="M9 18l6-6-6-6"/><circle cx="18" cy="12" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>' },
         { href: 'mqtt.html',                              i18n: 'nav.mqtt',           label: 'MQTT',           svg: '<circle cx="12" cy="12" r="2"/><path d="M8.46 15.54A5 5 0 0 1 7 12a5 5 0 0 1 1.46-3.54"/><path d="M15.54 8.46A5 5 0 0 1 17 12a5 5 0 0 1-1.46 3.54"/><path d="M5.64 18.36A9 9 0 0 1 3 12a9 9 0 0 1 2.64-6.36"/><path d="M18.36 5.64A9 9 0 0 1 21 12a9 9 0 0 1-2.64 6.36"/>', svgExtra: 'stroke-linecap="round"' },
         { href: 'byd-cloud.html',                         i18n: 'nav.byd_cloud',      label: 'BYD Cloud',      svg: '<path d="M17.5 19a4.5 4.5 0 1 0-2.83-7.97A6 6 0 0 0 4 12.45a3 3 0 0 0 .5 5.95"/><path d="M17.5 19h-12"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
+        { href: 'safekeep.html',                          i18n: 'nav.safekeep',       label: 'SafeKeep',       svg: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><polyline points="9 14 11.5 16.5 16 12"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
 
         // ===== Diagnostics ===== — Performance is the only diagnostics-ish
         // page that exists on web; the native diagnostics fragment is native.
-        { divider: true, label: 'Diagnostics', i18n: 'nav.diagnostics_group' },
+        { divider: true, label: 'Diagnostics', i18n: 'nav.diagnostics_group', svg: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>' },
         { href: 'performance.html',                       i18n: 'nav.performance',    label: 'Performance',    svg: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>' },
         { href: 'network.html',                           i18n: 'nav.network',        label: 'Network',        svg: '<path d="M12 20h.01"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><path d="M5 13a9 9 0 0 1 14 0"/><path d="M1.8 9.6a14 14 0 0 1 20.4 0"/>', svgExtra: 'stroke-linecap="round"' },
         { href: 'remote-dev-view.html',                   i18n: 'nav.remote_dev_view', label: 'Remote Dev View',  svg: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="m9 8 2 2-2 2M13 12h2"/>' },
 
         // ===== Settings ===== — surveillance + recording + notifications
         // are settings sub-destinations under SettingsFragment on native.
-        { divider: true, label: 'Settings', i18n: 'nav.settings_group' },
+        { divider: true, label: 'Settings', i18n: 'nav.settings_group', svg: '<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>' },
         { href: 'surveillance.html',                      i18n: 'nav.surveillance',   label: 'Surveillance',   svg: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>' },
-        { href: 'recording.html',                         i18n: 'nav.recording_settings', label: 'Recording Settings', svg: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>' },
+        { href: 'recording.html',                         i18n: 'surveillance.tab_recording', label: 'Recording', svg: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/>' },
+        { href: 'storage.html',                           i18n: 'recording.tab_storage', label: 'Storage', svg: '<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/>' },
         { href: 'road-sense.html',                        i18n: 'nav.road_sense',     label: 'RoadSense',      svg: '<path d="M3.2 20.2 L8.6 11 L15.4 11 L20.8 20.2 Z"/><path d="M12 12.4v1.3M12 15.7v1.6M12 18.7v1.1"/><path d="M12 3.2v2.4"/><path d="M12 7.6h.01"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
+        { href: 'widgets.html',                           i18n: 'nav.widgets',        label: 'Widgets',        svg: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="18" height="8" rx="2"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
+        { href: 'widget-builder.html', browserOnly: true, i18n: 'widgetBuilder.nav', label: 'Widget Builder', svg: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><path d="M14 20.5l.6-2.9 5.2-5.2 2.3 2.3-5.2 5.2z"/><path d="M14 5h7M14 9h4"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' },
         { href: 'notifications.html',                     i18n: 'nav.notifications',  label: 'Notifications',  svg: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>' },
 
         // ===== About ===== — version, license, source, support links,
         // Check for Updates. Sits in its own group so the link isn't
         // dangling under "Settings".
         { divider: true, label: 'About', i18n: 'nav.about_group' },
-        { href: 'about.html',                             i18n: 'nav.about',          label: 'About',          svg: '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>', svgExtra: 'stroke-linecap="round" stroke-linejoin="round"' }
+        { href: 'about.html',                             i18n: 'nav.about',          label: 'About',          svg: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>' }
     ];
 
     function activeBasename() {
@@ -105,7 +116,8 @@
     }
 
     function buildNav() {
-        var current = activeBasename();
+        // Pages are served both as /trips and /trips.html.
+        var current = activeBasename().replace(/\.html$/, '') + '.html';
         var html = '';
         for (var i = 0; i < NAV_ITEMS.length; i++) {
             var item = NAV_ITEMS[i];
@@ -114,8 +126,10 @@
             // If the item only has `divider:true` (no label), render a bare
             // hairline.
             if (item.divider) {
-                if (item.label) {
+                // About stands on its own under a hairline (no group header).
+                if (item.label && item.i18n !== 'nav.about_group') {
                     html += '<div class="nav-group-header">'
+                        +    (item.svg ? '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + item.svg + '</svg>' : '')
                         +    '<span class="nav-group-line"></span>'
                         +    '<span class="nav-group-label"' + (item.i18n ? ' data-i18n="' + item.i18n + '"' : '') + '>' + item.label + '</span>'
                         +  '</div>';
@@ -125,6 +139,7 @@
                 continue;
             }
             // Normal nav link.
+            if (item.browserOnly && inCarApp()) continue;
             var isActive = item.href === current;
             var aria = isActive ? ' aria-current="page"' : '';
             var cls = 'nav-link' + (isActive ? ' active' : '');
@@ -133,7 +148,7 @@
             // state (see app-shell.css `.nav-link:hover::after`).
             html += '<a href="' + item.href + '" class="' + cls + '"' + aria
                 +     ' aria-label="' + item.label + '">'
-                +   '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' + extra + '>'
+                +   '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' + extra + '>'
                 +     item.svg
                 +   '</svg>'
                 +   '<span' + (item.i18n ? ' data-i18n="' + item.i18n + '"' : '') + '>' + item.label + '</span>'
@@ -289,11 +304,11 @@
             +     '<span class="ev-soh-val" id="evSohValue">--%</span>'
             +   '</div>'
             +   '<div class="ev-personalized-range" id="evPersonalizedRow" style="display:none;">'
-            +     '<span class="ev-personalized-label" data-i18n="vehicle.personalized_label">Personalized</span>'
+            +     '<span class="ev-personalized-label" data-i18n="vehicle.personalized_label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>Personalized</span>'
             +     '<span class="ev-personalized-val" id="evPersonalizedRange">-- km</span>'
             +   '</div>'
             +   '<div class="ev-personalized-range ev-personalized-combined" id="evCombinedRow" style="display:none;">'
-            +     '<span class="ev-personalized-label" data-i18n="vehicle.combined_label">Combined</span>'
+            +     '<span class="ev-personalized-label" data-i18n="vehicle.combined_label"><span class="ev-label-ico-pair"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22h12M4 22V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v17M4 10h10"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 4 0V9l-3-3"/></svg></span>Combined</span>'
             +     '<span class="ev-personalized-val" id="evCombinedRange">-- km</span>'
             +   '</div>'
             + '</div>';
@@ -316,7 +331,7 @@
             +     '<div class="fuel-bar-fill" id="fuelBarFill" style="width:0%"></div>'
             +   '</div>'
             +   '<div class="ev-personalized-range fuel-personalized-row" id="fuelPersonalizedRow" style="display:none;">'
-            +     '<span class="ev-personalized-label" data-i18n="vehicle.personalized_label">Personalized</span>'
+            +     '<span class="ev-personalized-label" data-i18n="vehicle.personalized_label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22h12M4 22V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v17M4 10h10"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 4 0V9l-3-3"/></svg>Personalized</span>'
             +     '<span class="ev-personalized-val" id="fuelPersonalizedRange">-- km</span>'
             +   '</div>'
             + '</div>';
@@ -401,12 +416,271 @@
         main.insertBefore(header, main.firstChild);
     }
 
+    // Phone bottom navigation (CSS shows it under 769px): four primary
+    // destinations plus More, which opens the full menu as a sheet.
+    var BOTTOM_NAV = ['index.html', 'live-view.html', 'events.html', 'trips.html'];
+    var BOTTOM_NAV_SKIP = { 'vehicle-control.html': 1, 'remote-dev-view.html': 1 };
+
+    function mountBottomNav() {
+        if (embeddedInNativeApp || !document.body) return;
+        // Pages are served both as /trips and /trips.html.
+        var current = activeBasename().replace(/\.html$/, '') + '.html';
+        if (BOTTOM_NAV_SKIP[current] || document.querySelector('.app-bottom-nav')) return;
+        var html = '';
+        var onPrimary = false;
+        for (var i = 0; i < BOTTOM_NAV.length; i++) {
+            var item = null;
+            for (var j = 0; j < NAV_ITEMS.length; j++) {
+                if (NAV_ITEMS[j].href === BOTTOM_NAV[i]) { item = NAV_ITEMS[j]; break; }
+            }
+            if (!item) continue;
+            var on = item.href === current;
+            if (on) onPrimary = true;
+            html += '<a class="abn-item' + (on ? ' is-active' : '') + '" href="' + item.href + '"' + (on ? ' aria-current="page"' : '') + '>'
+                + '<span class="abn-ind"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + item.svg + '</svg></span>'
+                + '<span class="abn-label" data-i18n="' + item.i18n + '">' + item.label + '</span>'
+                + '</a>';
+        }
+        html += '<button type="button" class="abn-item abn-more' + (onPrimary ? '' : ' is-active') + '" aria-haspopup="true">'
+            + '<span class="abn-ind"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></span>'
+            + '<span class="abn-label" data-i18n="common.more">More</span>'
+            + '</button>';
+        var nav = document.createElement('nav');
+        nav.className = 'app-bottom-nav';
+        nav.innerHTML = html;
+        nav.querySelector('.abn-more').addEventListener('click', function () {
+            if (typeof window.toggleSidebar === 'function') window.toggleSidebar(true);
+        });
+        document.body.appendChild(nav);
+        document.documentElement.classList.add('has-bottom-nav');
+        leadMobileHeader(onPrimary);
+    }
+
+    // The bottom bar's More opens the menu, so the header's menu button gives
+    // way to the app mark on the four primary pages and to Back elsewhere.
+    function leadMobileHeader(isPrimary) {
+        var header = document.querySelector('.mobile-header');
+        var toggle = header && header.querySelector('.menu-toggle');
+        if (!toggle || header.querySelector('.mh-lead')) return;
+        var lead = document.createElement('a');
+        lead.href = 'index.html';
+        if (isPrimary) {
+            lead.className = 'mh-lead mh-home';
+            lead.setAttribute('data-i18n-attr', 'aria-label:nav.brand_home');
+            lead.setAttribute('aria-label', i18nText('nav.brand_home', 'OverDrive — open Dashboard'));
+            lead.innerHTML = '<span class="brand-logo"><img src="../shared/app-icon-glyph-dark.webp" alt=""></span>';
+        } else {
+            lead.className = 'mh-lead mh-back';
+            lead.setAttribute('data-i18n-attr', 'aria-label:common.back');
+            lead.setAttribute('aria-label', i18nText('common.back', 'Back'));
+            lead.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>';
+            lead.addEventListener('click', function (e) {
+                var ref = document.referrer || '';
+                if (ref.indexOf(location.protocol + '//' + location.host + '/') === 0 && history.length > 1) {
+                    e.preventDefault();
+                    history.back();
+                }
+            });
+        }
+        toggle.parentNode.insertBefore(lead, toggle);
+        header.classList.add('has-lead');
+    }
+
+    // Rows whose only control is a switch keep it beside the text on phones
+    // (revamp.css .setting-row--inline). Rows rendered later are tagged too.
+    function tagSwitchRows(root) {
+        var rows = root.querySelectorAll('.setting-row:not(.setting-row--inline)');
+        for (var i = 0; i < rows.length; i++) {
+            var ctl = null, n = 0;
+            for (var c = rows[i].firstElementChild; c; c = c.nextElementSibling) {
+                if (c.classList.contains('setting-info')) continue;
+                n++;
+                ctl = c;
+            }
+            if (n !== 1) continue;
+            if (ctl.classList.contains('toggle-switch')
+                    || (ctl.children.length === 1 && ctl.firstElementChild.classList.contains('toggle-switch'))) {
+                rows[i].classList.add('setting-row--inline');
+            }
+        }
+        nameSwitches(root);
+    }
+
+    // The device already shows the time; no page header carries a clock badge.
+    function hideHeaderClock() {
+        var clock = document.getElementById('currentTime');
+        var badge = clock && clock.closest ? clock.closest('.header-badge') : null;
+        if (badge) badge.style.display = 'none';
+    }
+
+    // A switch whose label holds only the track gets its name from the row title.
+    var switchNameSeq = 0;
+    function nameSwitches(root) {
+        var inputs = root.querySelectorAll('.toggle-switch input');
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            if (input.getAttribute('aria-label') || input.getAttribute('aria-labelledby')) continue;
+            var label = input.closest ? input.closest('label') : null;
+            if (label && (label.textContent || '').replace(/\s+/g, '') !== '') continue;
+            var row = input.closest ? input.closest('.setting-row, .setting-stack, .r-hero, .card-header, li, [class*="-row"], [class*="-item"], [class*="-card"]') : null;
+            var name = row ? row.querySelector('.setting-name, .r-hero-title, .card-title, [class*="-name"], [class*="-title"], h2, h3, h4, strong') : null;
+            if (!name || !(name.textContent || '').replace(/\s+/g, '')) continue;
+            if (!name.id) name.id = 'sw-name-' + (++switchNameSeq);
+            input.setAttribute('aria-labelledby', name.id);
+        }
+    }
+
+    // Summary tiles take their off look from the page's own status badge
+    // (<div class="r-hero" data-hero-badge="badgeId">; badge.inactive = off).
+    function wireHeroState() {
+        var heroes = document.querySelectorAll('.r-hero[data-hero-badge]');
+        for (var i = 0; i < heroes.length; i++) {
+            (function (hero) {
+                var badge = document.getElementById(hero.getAttribute('data-hero-badge'));
+                if (!badge) return;
+                function sync() { hero.classList.toggle('is-off', badge.classList.contains('inactive')); }
+                sync();
+                if (typeof MutationObserver !== 'undefined') {
+                    new MutationObserver(sync).observe(badge, { attributes: true, attributeFilter: ['class'] });
+                }
+            }(heroes[i]));
+        }
+    }
+
+    // Long row descriptions fold to two lines behind a More / Less button
+    // (revamp.css .is-folded); the button only shows when text is clipped.
+    var FOLD_MIN_CHARS = 100;
+    var CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+
+    function i18nText(key, fallback) {
+        try {
+            var v = window.BYD && window.BYD.i18n && window.BYD.i18n.t ? window.BYD.i18n.t(key) : null;
+            return v && v !== key ? v : fallback;
+        } catch (e) { return fallback; }
+    }
+
+    function foldDescriptions(root) {
+        var descs = root.querySelectorAll('.setting-row .setting-desc:not([data-fold]), .setting-stack .setting-desc:not([data-fold])');
+        for (var i = 0; i < descs.length; i++) {
+            var d = descs[i], info = d.parentNode;
+            var hint = info && info.classList.contains('has-hint') ? info.querySelector('.setting-hint') : null;
+            if (!hint && (d.textContent || '').replace(/\s+/g, ' ').length < FOLD_MIN_CHARS) continue;
+            d.setAttribute('data-fold', hint ? 'hint' : 'clamp');
+            d.classList.add('is-folded');
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'desc-more';
+            btn.setAttribute('aria-expanded', 'false');
+            btn.hidden = !hint;
+            btn.innerHTML = '<span data-i18n="common.more">' + i18nText('common.more', 'More') + '</span>' + CHEVRON;
+            btn.addEventListener('click', (function (desc) {
+                return function () {
+                    var open = !desc.classList.contains('is-open');
+                    desc.classList.toggle('is-open', open);
+                    this.setAttribute('aria-expanded', open ? 'true' : 'false');
+                    var label = this.firstChild;
+                    label.setAttribute('data-i18n', open ? 'common.less' : 'common.more');
+                    label.textContent = i18nText(open ? 'common.less' : 'common.more', open ? 'Less' : 'More');
+                };
+            }(d)));
+            d.parentNode.insertBefore(btn, d.nextSibling);
+        }
+    }
+
+    function refreshFolds(root) {
+        var descs = root.querySelectorAll('.setting-desc[data-fold="clamp"]:not(.is-open)');
+        for (var i = 0; i < descs.length; i++) {
+            var d = descs[i], btn = d.nextSibling;
+            if (!btn || btn.className !== 'desc-more' || !d.offsetHeight) continue;
+            btn.hidden = !(d.scrollHeight > d.clientHeight + 2);
+        }
+    }
+
+    // The section tab bar sits under the page header, which some pages grow
+    // (subtitles, wrapped titles) or hide (detail views).
+    var lastHeaderH = null;
+    function syncHeaderHeight() {
+        var header = document.querySelector('.page-header');
+        var h = header ? header.offsetHeight : 0;
+        if (!h) {
+            var mobile = document.querySelector('.mobile-header');
+            h = mobile ? mobile.offsetHeight : 0;
+        }
+        if (h === lastHeaderH) return;
+        lastHeaderH = h;
+        document.documentElement.style.setProperty('--page-header-h', h + 'px');
+    }
+
+    // The page header is transparent at the top (as in the mock) and gains
+    // its bar once content scrolls under it.
+    function watchScrolled() {
+        var root = document.documentElement, on = false;
+        function check() {
+            var y = window.pageYOffset || root.scrollTop || 0;
+            if ((y > 4) !== on) {
+                on = !on;
+                root.classList.toggle('is-scrolled', on);
+            }
+        }
+        check();
+        window.addEventListener('scroll', check, { passive: true });
+    }
+
+    // Short helper text that belongs to a row (.setting-hint right after it)
+    // becomes the row's visible description; the long description moves
+    // behind More, as in the mock.
+    function inlineHints(root) {
+        // Choice cards carry their own descriptions, so their hint stays out of the row.
+        var hints = root.querySelectorAll('.setting-row + .setting-hint:not(.r-choice-hint)');
+        for (var i = 0; i < hints.length; i++) {
+            var hint = hints[i], row = hint.previousElementSibling;
+            var info = row && row.querySelector('.setting-info');
+            if (!info || info.querySelector('.setting-hint')) continue;
+            var desc = info.querySelector('.setting-desc');
+            info.insertBefore(hint, desc || null);
+            info.classList.add('has-hint');
+        }
+    }
+
+    function watchSwitchRows() {
+        var main = document.querySelector('.main-content');
+        if (!main) return;
+        function sweep() {
+            tagSwitchRows(main);
+            inlineHints(main);
+            foldDescriptions(main);
+            refreshFolds(main);
+            syncHeaderHeight();
+        }
+        sweep();
+        requestAnimationFrame(function () { refreshFolds(main); });
+        document.addEventListener('ot-tabs:active-changed', function () {
+            requestAnimationFrame(function () { refreshFolds(main); });
+        });
+        var resizeTimer = null;
+        window.addEventListener('resize', function () {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () { resizeTimer = null; refreshFolds(main); syncHeaderHeight(); }, 200);
+        });
+        if (typeof MutationObserver === 'undefined') return;
+        var pending = null;
+        new MutationObserver(function () {
+            if (pending) return;
+            pending = setTimeout(function () { pending = null; sweep(); }, 150);
+        }).observe(main, { childList: true, subtree: true });
+    }
+
     // A freshly built sidebar always starts at scroll 0, so picking a link
     // near the bottom and opening the menu again hid that link above the
     // fold. Bring the current page's row into view. No-op when it is
     // already on screen, so a short menu and the top items stay put.
     function revealActiveNav(aside) {
         if (!aside || !aside.clientHeight) return;
+        // The phone menu sheet opens at the top: vehicle status first, then the page grid.
+        if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches && !embeddedInNativeApp) {
+            aside.scrollTop = 0;
+            return;
+        }
         var link = aside.querySelector('.nav-link.active, .nav-link[aria-current="page"]');
         if (!link || link.hasAttribute('hidden')) return;
         var header = aside.querySelector('.sidebar-header');
@@ -464,6 +738,11 @@
         // Fill the two shell pieces that legacy pages occasionally omitted:
         // the dismiss overlay and the compact mobile app bar.
         ensureResponsiveShell(aside);
+        hideHeaderClock();
+        mountBottomNav();
+        watchSwitchRows();
+        wireHeroState();
+        watchScrolled();
 
         // The brand-logo <img> just got injected — re-run the theme.js icon
         // selector so it picks up the right asset for the active data-theme.
@@ -569,12 +848,16 @@
         return fresh;
     }
 
-    function ensureSpriteCacheModule(cb) {
+    function ensureSpriteCacheModule(cb, lifetime) {
+        if (lifetime && lifetime.disposed) return;
         if (typeof window.OverdriveEvSpriteCache === 'object') { cb(window.OverdriveEvSpriteCache); return; }
         if (spriteCacheLoadStarted) {
+            // A disabled preview is a single cache attempt, never a poller.
+            if (lifetime && lifetime.cacheOnly) { cb(null); return; }
             // Poll briefly for the global to land.
             var tries = 0;
             var iv = setInterval(function () {
+                if (lifetime && lifetime.disposed) { clearInterval(iv); return; }
                 tries++;
                 if (typeof window.OverdriveEvSpriteCache === 'object') {
                     clearInterval(iv);
@@ -584,50 +867,80 @@
                     cb(null);
                 }
             }, 50);
+            if (lifetime) lifetime.timers.push(iv);
             return;
         }
         spriteCacheLoadStarted = true;
         var s = document.createElement('script');
         s.src = '../shared/ev-card-sprite-cache.js';
         s.async = true;
-        s.onload = function () { cb(window.OverdriveEvSpriteCache || null); };
-        s.onerror = function () { cb(null); };
+        s.onload = function () {
+            if (!lifetime || !lifetime.disposed) cb(window.OverdriveEvSpriteCache || null);
+        };
+        s.onerror = function () { if (!lifetime || !lifetime.disposed) cb(null); };
         document.head.appendChild(s);
     }
 
     // Try to paint a cached sprite into `canvasEl` for the given key
     // tuple. On success the 3D pipeline can be skipped for this canvas
     // until the user changes selection. Calls `cb(true|false)`.
-    function tryPaintFromSpriteCache(canvasEl, modelId, color, view, cb) {
+    function tryPaintFromSpriteCache(canvasEl, modelId, color, view, cb, lifetime) {
+        if (lifetime && lifetime.disposed) return;
         if (!canvasEl || !modelId || !color) { cb(false); return; }
         ensureSpriteCacheModule(function (cache) {
+            if (lifetime && lifetime.disposed) return;
             if (!cache) { cb(false); return; }
             cache.get(modelId, color, view, canvasEl).then(function (entry) {
+                if (lifetime && lifetime.disposed) return;
                 if (!entry || !entry.blob) { cb(false); return; }
-                cache.paintInto(canvasEl, entry).then(cb);
-            }, function () { cb(false); });
-        });
+                // A sprite decode can finish after its owner is disabled. Paint
+                // cancellable mounts off-screen, then commit only while alive.
+                var target = canvasEl;
+                if (lifetime) {
+                    target = document.createElement('canvas');
+                    target.width = canvasEl.clientWidth || canvasEl.width;
+                    target.height = canvasEl.clientHeight || canvasEl.height;
+                }
+                cache.paintInto(target, entry).then(function (hit) {
+                    if (lifetime && lifetime.disposed) return;
+                    if (hit && lifetime) {
+                        canvasEl.width = target.width;
+                        canvasEl.height = target.height;
+                        var context = canvasEl.getContext('2d');
+                        if (!context) { cb(false); return; }
+                        context.clearRect(0, 0, target.width, target.height);
+                        context.drawImage(target, 0, 0);
+                    }
+                    cb(hit);
+                }, function () { if (!lifetime || !lifetime.disposed) cb(false); });
+            }, function () { if (!lifetime || !lifetime.disposed) cb(false); });
+        }, lifetime);
     }
 
     // Schedule a one-shot post-render snapshot into the sprite cache.
     // The 3D instance fires `onceAfterRender` after the next paint that
     // includes both the GLB and the requested colour, so the captured
     // canvas contents reflect the correct (model, colour) tuple.
-    function scheduleSpriteSnapshot(inst, canvasEl, modelId, color, view) {
+    function scheduleSpriteSnapshot(inst, canvasEl, modelId, color, view, lifetime) {
+        if (lifetime && lifetime.disposed) return;
         if (!inst || !canvasEl || !modelId || !color) return;
         ensureSpriteCacheModule(function (cache) {
+            if (lifetime && lifetime.disposed) return;
             if (!cache) return;
             var key = cache.buildKey(modelId, color, view, canvasEl);
             if (snapshotsTaken[key]) return;
-            snapshotsTaken[key] = true;
+            snapshotsTaken[key] = lifetime || true;
+            if (lifetime) lifetime.snapshotKeys.push(key);
             inst.onceAfterRender(function () {
+                if (lifetime && lifetime.disposed) return;
                 cache.snapshot(canvasEl).then(function (blob) {
+                    if (lifetime && lifetime.disposed) return;
                     if (!blob) { delete snapshotsTaken[key]; return; }
                     cache.put(modelId, color, view, canvasEl, blob,
                               canvasEl.width, canvasEl.height);
                 });
             });
-        });
+        }, lifetime);
     }
 
     // Clear a previously-set snapshotsTaken flag so a later attempt
@@ -713,7 +1026,7 @@
             }
 
             var s = document.createElement('script');
-            s.src = '../shared/ev-card-3d.js';
+            s.src = '../shared/ev-card-3d.js?v=3';
             s.async = true;
             s.setAttribute('data-overdrive-ev-card-3d', '1');
             s.onload = instantiate;
@@ -934,7 +1247,7 @@
         aux.setModel(modelId);
         aux.setColor(hexColor);
         if (aux.canvas) {
-            scheduleSpriteSnapshot(aux, aux.canvas, modelId, hexColor, view);
+            scheduleSpriteSnapshot(aux, aux.canvas, modelId, hexColor, view, aux._mountLifetime);
         }
     }
 
@@ -1014,18 +1327,35 @@
         }
         if (currentGroup) groups.push(currentGroup);
 
+        // Overview and Vehicle are plain labels; the other groups fold and
+        // start closed unless they hold the current page or the user opened them.
+        var PLAIN = { 'nav.overview_group': 1, 'nav.vehicle_group': 1 };
         function readState(slug) {
-            try { return localStorage.getItem('overdrive.navGroup.' + slug) === '1'; }
-            catch (e) { return false; }
+            try {
+                var v = localStorage.getItem('overdrive.navGroup.' + slug);
+                return v === null ? true : v === '1';
+            }
+            catch (e) { return true; }
         }
         function writeState(slug, collapsed) {
             try { localStorage.setItem('overdrive.navGroup.' + slug, collapsed ? '1' : '0'); }
             catch (e) { /* ignore */ }
         }
 
+        var firstFold = true;
         for (var g = 0; g < groups.length; g++) {
             (function (group) {
                 var header = group.headerEl;
+                if (PLAIN[group.slug]) {
+                    header.classList.add('nav-group-plain');
+                    for (var p = 0; p < group.members.length; p++) group.members[p].removeAttribute('hidden');
+                    return;
+                }
+                header.classList.add('nav-group-fold');
+                if (firstFold) { header.classList.add('nav-fold-start'); firstFold = false; }
+                for (var q = 0; q < group.members.length; q++) {
+                    if (group.members[q].classList.contains('nav-link')) group.members[q].classList.add('nav-link-sub');
+                }
 
                 // Determine whether this group is currently collapsed — we
                 // need to apply that state to ALL current members (including
@@ -1110,23 +1440,86 @@
     // Live View camera selector). Reuses the sidebar's vendor download —
     // ev-card-3d.js is idempotent and adopts already-loaded THREE — and
     // tracks whatever (model, colour) the user has selected, replaying
-    // the latest values once the renderer module is in place.
+    // the latest values once the renderer module is in place. The optional
+    // returned handle releases this mount without affecting other surfaces.
     window.OverdriveAppShell.mountVehicleCanvas = function (canvasEl, opts) {
         if (!canvasEl) return null;
+        opts = opts || {};
         var view = 'side';
-        if (opts && opts.view === 'top') view = 'top';
-        else if (opts && opts.view === 'three-quarter') view = 'three-quarter';
+        if (opts.view === 'top') view = 'top';
+        else if (opts.view === 'three-quarter') view = 'three-quarter';
         var readyNotified = false;
+        var unavailableNotified = false;
+        var lifetime = { disposed: false, cacheOnly: !!opts.cacheOnly, timers: [], snapshotKeys: [] };
+        var instance = null;
+        var spriteAux = null;
+        var vendorPoll = null;
+        var vendorScript = null;
+        var vendorReady = null;
+        var vendorFailed = null;
+
+        function removeAux(aux) {
+            for (var i = auxEv3dInstances.length - 1; i >= 0; i--) {
+                if (auxEv3dInstances[i] === aux) auxEv3dInstances.splice(i, 1);
+            }
+        }
+        function stopVendorWait() {
+            if (vendorPoll !== null) { clearInterval(vendorPoll); vendorPoll = null; }
+            if (vendorScript) {
+                vendorScript.removeEventListener('load', vendorReady);
+                vendorScript.removeEventListener('error', vendorFailed);
+                vendorScript = null;
+            }
+        }
+        var handle = {
+            dispose: function () {
+                if (lifetime.disposed) return;
+                lifetime.disposed = true;
+                stopVendorWait();
+                for (var i = 0; i < lifetime.timers.length; i++) clearInterval(lifetime.timers[i]);
+                lifetime.timers = [];
+                for (var w = vehicleSelectionWaiters.length - 1; w >= 0; w--) {
+                    if (vehicleSelectionWaiters[w] === mountResolvedSelection) vehicleSelectionWaiters.splice(w, 1);
+                }
+                for (var k = 0; k < lifetime.snapshotKeys.length; k++) {
+                    var key = lifetime.snapshotKeys[k];
+                    if (snapshotsTaken[key] === lifetime) delete snapshotsTaken[key];
+                }
+                lifetime.snapshotKeys = [];
+                if (spriteAux) {
+                    spriteAux._disposed = true;
+                    removeAux(spriteAux);
+                    spriteAux = null;
+                }
+                if (instance) {
+                    var current = instance;
+                    instance = null;
+                    removeAux(current);
+                    try { current.dispose(); } catch (e) {
+                        if (window.console) console.warn('[app-shell] vehicle canvas disposal failed:', e);
+                    }
+                }
+            }
+        };
 
         // Surfaces may keep an inexpensive placeholder visible until this
         // callback fires. A cache hit and the first complete WebGL render
         // both count as ready; notify at most once for the initial mount.
         function notifyReady(source) {
-            if (readyNotified) return;
+            if (lifetime.disposed || readyNotified) return;
             readyNotified = true;
-            if (opts && typeof opts.onReady === 'function') {
-                try { opts.onReady({ source: source }); } catch (e) {
+            if (typeof opts.onReady === 'function') {
+                try { opts.onReady({ source: source, canvas: canvasEl }); } catch (e) {
                     if (window.console) console.warn('[app-shell] vehicle canvas onReady failed:', e);
+                }
+            }
+        }
+        function notifyUnavailable() {
+            if (lifetime.disposed || unavailableNotified) return;
+            unavailableNotified = true;
+            if (typeof opts.onUnavailable === 'function') {
+                try { opts.onUnavailable(); } catch (e) {
+                    if (window.console) console.warn('[app-shell] vehicle canvas unavailable callback failed:', e);
                 }
             }
         }
@@ -1141,28 +1534,63 @@
         // markers, top-down hotspot art); it gives the same perf win
         // the sidebar already enjoys.
         function tryCache(cb) {
+            if (lifetime.disposed) return;
             if (!lastEv3dModel || !lastEv3dColor) { cb(false); return; }
-            tryPaintFromSpriteCache(canvasEl, lastEv3dModel, lastEv3dColor, view, cb);
+            tryPaintFromSpriteCache(canvasEl, lastEv3dModel, lastEv3dColor, view, cb, lifetime);
         }
 
-        var instance = null;
         function instantiate() {
+            if (lifetime.disposed || opts.cacheOnly) return null;
             if (instance) return instance;
             if (typeof window.OverdriveEvCard3D !== 'function') return null;
             try {
-                instance = new window.OverdriveEvCard3D(canvasEl, opts || {});
+                instance = new window.OverdriveEvCard3D(canvasEl, opts);
+                instance._mountLifetime = lifetime;
                 auxEv3dInstances.push(instance);
                 if (lastEv3dColor) instance.setColor(lastEv3dColor);
                 if (lastEv3dModel) instance.setModel(lastEv3dModel);
                 if (lastEv3dModel && lastEv3dColor) {
                     instance.onceAfterRender(function () { notifyReady('render'); });
                     scheduleSpriteSnapshot(instance, canvasEl,
-                                           lastEv3dModel, lastEv3dColor, view);
+                                           lastEv3dModel, lastEv3dColor, view, lifetime);
                 }
             } catch (e) {
                 if (window.console) console.warn('[app-shell] aux ev-card-3d init failed:', e);
             }
             return instance;
+        }
+
+        // Aux mounts own their wait instead of invoking ensureEv3d(), whose
+        // sidebar idle callback must keep its independent lifecycle.
+        function loadRenderer() {
+            if (lifetime.disposed || opts.cacheOnly) return;
+            if (typeof window.OverdriveEvCard3D === 'function') { instantiate(); return; }
+            if (vendorPoll !== null) return;
+            vendorScript = document.querySelector('script[data-overdrive-ev-card-3d]');
+            var created = !vendorScript;
+            if (created) {
+                vendorScript = document.createElement('script');
+                vendorScript.src = '../shared/ev-card-3d.js?v=3';
+                vendorScript.async = true;
+                vendorScript.setAttribute('data-overdrive-ev-card-3d', '1');
+            }
+            vendorReady = function () {
+                stopVendorWait();
+                if (!lifetime.disposed) {
+                    if (typeof window.OverdriveEvCard3D === 'function') instantiate();
+                    else notifyUnavailable();
+                }
+            };
+            vendorFailed = function () { stopVendorWait(); notifyUnavailable(); };
+            vendorScript.addEventListener('load', vendorReady);
+            vendorScript.addEventListener('error', vendorFailed);
+            var tries = 0;
+            vendorPoll = setInterval(function () {
+                if (lifetime.disposed) { stopVendorWait(); return; }
+                if (typeof window.OverdriveEvCard3D === 'function') vendorReady();
+                else if (++tries > 80) vendorFailed();
+            }, 100);
+            if (created) document.head.appendChild(vendorScript);
         }
 
         // Track this canvas in auxEv3dInstances even when we satisfy it
@@ -1172,25 +1600,28 @@
         // minimum the iteration loop needs (canvas, view, _disposed,
         // setModel/setColor that re-attempt the cache).
         function makeSpriteOnlyAux() {
+            if (lifetime.disposed) return null;
             var aux = {
                 canvas: canvasEl,
                 view: view,
                 _disposed: false,
                 _spriteOnly: true,
+                _mountLifetime: lifetime,
                 setModel: function (m) {
-                    if (!m || !lastEv3dColor) return;
+                    if (lifetime.disposed || aux._disposed || !m || !lastEv3dColor) return;
                     tryPaintFromSpriteCache(canvasEl, m, lastEv3dColor, view, function (hit) {
-                        if (!hit) upgradeToLive(aux);
-                    });
+                        if (!hit && !opts.cacheOnly) upgradeToLive(aux);
+                    }, lifetime);
                 },
                 setColor: function (c) {
-                    if (!c || !lastEv3dModel) return;
+                    if (lifetime.disposed || aux._disposed || !c || !lastEv3dModel) return;
                     tryPaintFromSpriteCache(canvasEl, lastEv3dModel, c, view, function (hit) {
-                        if (!hit) upgradeToLive(aux);
-                    });
+                        if (!hit && !opts.cacheOnly) upgradeToLive(aux);
+                    }, lifetime);
                 }
             };
             auxEv3dInstances.push(aux);
+            spriteAux = aux;
             return aux;
         }
 
@@ -1201,7 +1632,9 @@
         // entry out before mounting (it shares the canvas, and the
         // WebGL context will own it from now on).
         function upgradeToLive(spriteAux) {
+            if (lifetime.disposed || opts.cacheOnly || spriteAux._disposed) return;
             spriteAux._disposed = true;
+            removeAux(spriteAux);
             // Reset the canvas: dropping its parent and reinserting
             // gives us a fresh element. Cheap if simply replaceChildren
             // — but we can't replace the canvas itself without breaking
@@ -1214,35 +1647,22 @@
             var fresh = canvasEl.cloneNode(false);
             if (canvasEl.parentNode) canvasEl.parentNode.replaceChild(fresh, canvasEl);
             canvasEl = fresh;
-            instantiate();
+            loadRenderer();
         }
 
         // Wait for vehicle selection, then try the cache before loading
         // the renderer. This makes warm navigations a sprite-only path.
         function mountResolvedSelection() {
+            if (lifetime.disposed) return;
             tryCache(function (hit) {
+                if (lifetime.disposed) return;
                 if (hit) {
                     makeSpriteOnlyAux();
                     notifyReady('cache');
                     return;
                 }
-                ensureEv3d();
-                if (typeof window.OverdriveEvCard3D === 'function') {
-                    instantiate();
-                    return;
-                }
-                // Vendor still in flight — poll for the global the same way
-                // ensureEv3d() does for its own canvas.
-                var tries = 0;
-                var iv = setInterval(function () {
-                    tries++;
-                    if (typeof window.OverdriveEvCard3D === 'function') {
-                        clearInterval(iv);
-                        instantiate();
-                    } else if (tries > 80) {
-                        clearInterval(iv);
-                    }
-                }, 100);
+                if (opts.cacheOnly) { notifyUnavailable(); return; }
+                loadRenderer();
             });
         }
 
@@ -1252,7 +1672,7 @@
             vehicleSelectionWaiters.push(mountResolvedSelection);
         }
 
-        return null;
+        return handle;
     };
 
     // Battery strip driver. The bar lives at the base of the 3D body

@@ -22,7 +22,8 @@ data class DaemonState(
     val subprocesses: List<SubprocessInfo> = emptyList(),
     val lastUpdated: Long = System.currentTimeMillis(),
     val needsConfiguration: Boolean = false, // True if daemon requires setup (e.g., missing token)
-    val configurationMessage: String? = null // Message to show when configuration is needed
+    val configurationMessage: String? = null, // Message to show when configuration is needed
+    val userEnabled: Boolean = false // Optional daemon switched on by the user; auto-start and health check apply
 ) {
     companion object {
         fun stopped(type: DaemonType) = DaemonState(

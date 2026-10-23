@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">เลเยอร์แผนที่</string>
+    <string name="navmap_google_type_default">แผนที่ Google</string>
+    <string name="navmap_google_type_satellite">ดาวเทียม</string>
+    <string name="navmap_google_type_hybrid">ไฮบริด</string>
+    <string name="navmap_google_type_terrain">ภูมิประเทศ</string>
+    <string name="navmap_google_type_overdrive">แผนที่ OverDrive</string>
+    <string name="navmap_google_traffic">การจราจรแบบเรียลไทม์</string>
+    <string name="navmap_google_traffic_on">เปิดการจราจรแบบเรียลไทม์</string>
+    <string name="navmap_google_traffic_off">ปิดการจราจรแบบเรียลไทม์</string>
+    <string name="navmap_google_traffic_paused">หยุดการจราจรแบบเรียลไทม์ชั่วคราวจนถึง %1$s (ขีดจำกัดรายวันแบบฟรี)</string>
+    <string name="navmap_google_map_paused">หยุดแผนที่ Google ชั่วคราวจนถึง %1$s (ขีดจำกัดรายวันแบบฟรี)</string>
+    <string name="navmap_google_map_unavailable">แผนที่ Google ใช้งานไม่ได้ กำลังแสดงแผนที่ OverDrive</string>
+    <string name="navmap_google_key_problem">คีย์ Google Maps มีปัญหา ตรวจสอบการตั้งค่า RoadSense</string>
+    <string name="navmap_google_route_key_problem">การนำทางของ Google ปฏิเสธคีย์ ตรวจสอบการตั้งค่า RoadSense</string>
+    <string name="navmap_google_route_limit">ถึงขีดจำกัดการนำทางของ Google สำหรับวันนี้แล้ว</string>
+    <string name="navmap_google_arrived">คุณมาถึงจุดหมายแล้ว</string>
+    <string name="navmap_google_traffic_delay">+%1$s จากการจราจร</string>
+    <string name="navmap_google_no_delays">ไม่มีความล่าช้าจากการจราจร</string>
+    <string name="navmap_google_faster_route">พบเส้นทางที่เร็วกว่า ประหยัดเวลา %1$s</string>
+    <string name="navmap_google_faster_route_switch">เปลี่ยน</string>
+    <string name="navmap_google_routes_by_google">เส้นทางโดย Google</string>
+    <string name="navmap_google_routing_provided_by">การนำทางให้บริการโดย %1$s</string>
+    <string name="navmap_google_place_failed">ไม่สามารถเปิดสถานที่นั้นได้</string>
+    <string name="navmap_google_finding_place">กำลังค้นหาสถานที่…</string>
+</resources>

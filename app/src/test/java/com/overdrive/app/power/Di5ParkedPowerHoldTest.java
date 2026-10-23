@@ -39,6 +39,9 @@ public class Di5ParkedPowerHoldTest {
         boolean charging = false;
         int sentryRc = 0;
         int powerHoldRc = 0;
+        int linkStartResult = Di5ParkedPowerHold.PARKED_LINK_RESULT_CONFIRMED;
+        int linkStopResult = Di5ParkedPowerHold.PARKED_LINK_RESULT_CONFIRMED;
+        int linkDetachResult = Di5ParkedPowerHold.PARKED_LINK_RESULT_CONFIRMED;
         int panoramaRc = 0;
         int shellExit = 0;
         String shellOutput = "BEFORE=\nAFTER=ovdrv";
@@ -82,6 +85,18 @@ public class Di5ParkedPowerHoldTest {
         public int writeMcuPowerHold(long generation, boolean hold) {
             calls.add((hold ? "powerHold:" : "powerRelease:") + generation);
             return powerHoldRc;
+        }
+
+        @Override
+        public int writeParkedLink(long generation, boolean start) {
+            calls.add((start ? "linkStart:" : "linkStop:") + generation);
+            return start ? linkStartResult : linkStopResult;
+        }
+
+        @Override
+        public int detachParkedLink(long generation) {
+            calls.add("linkDetach:" + generation);
+            return linkDetachResult;
         }
 
         @Override
@@ -191,11 +206,191 @@ public class Di5ParkedPowerHoldTest {
         assertEquals(0, hw.count("panorama"));
         assertEquals(0, hw.count("shell"));
         assertEquals(0, hw.count("wakeUpMcu"));
+        assertEquals(0, hw.count("link"));
         assertEquals(0, hw.count("volts"));      // not even a voltage read
         assertFalse(marker.exists());
         assertFalse(hold.isActive());
         assertTrue(statusFile.isFile());          // diagnostics still published
         assertFalse(hold.status().getBoolean("active"));
+    }
+
+    // ── parked transport network hold ───────────────────────────────────────
+
+    @Test
+    public void parkedLinkStartIsConfirmedAndReassertedOnCadence()
+            throws Exception {
+        enable();
+        hold.requestForTransition(5L, true);
+        assertEquals(1, hw.count("linkStart:5"));
+        JSONObject link = hold.status().getJSONObject("parkedLink");
+        assertTrue(link.getBoolean("held"));
+        assertTrue(link.getBoolean("confirmed"));
+
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(1, hw.count("linkStart:5"));
+
+        hw.now += 21_000L;
+        hold.tick(5L);
+        assertEquals(2, hw.count("linkStart:5"));
+        assertTrue(hold.status().getJSONObject("parkedLink")
+                .getInt("reasserts") >= 1);
+    }
+
+    @Test
+    public void dispatchedUnconfirmedStartRemainsOwnedUntilParkedStop()
+            throws Exception {
+        surveillance.set(new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false));
+        hw.linkStartResult =
+                Di5ParkedPowerHold.PARKED_LINK_RESULT_DISPATCHED_UNCONFIRMED;
+        hold.requestForTransition(5L, true);
+        assertTrue(hold.isActive());
+        assertFalse(hold.status().getJSONObject("parkedLink")
+                .getBoolean("confirmed"));
+        assertEquals(Collections.singletonList("parkedlink"),
+                marker.read().levers);
+
+        surveillance.set(new JSONObject());
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(1, hw.count("linkStop"));
+        assertFalse(hold.isActive());
+        assertFalse(marker.exists());
+    }
+
+    @Test
+    public void definiteNonDispatchedStartDropsMarkerAndRetriesOnCadence()
+            throws Exception {
+        surveillance.set(new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false));
+        hw.linkStartResult =
+                ParkedLinkContract.RESULT_SERVICE_UNAVAILABLE;
+        hold.requestForTransition(5L, true);
+        assertEquals(1, hw.count("linkStart:5"));
+        assertFalse(hold.isActive());
+        assertFalse(marker.exists());
+
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(1, hw.count("linkStart:5"));
+        assertFalse(marker.exists());
+
+        hw.now += 21_000L;
+        hold.tick(5L);
+        assertEquals(2, hw.count("linkStart:5"));
+        assertFalse(marker.exists());
+
+        surveillance.set(new JSONObject());
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(0, hw.count("linkStop"));
+    }
+
+    @Test
+    public void ambiguousStartRetainsOwnershipUntilAConfirmedParkedStop()
+            throws Exception {
+        surveillance.set(new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false));
+        hw.linkStartResult =
+                ParkedLinkContract.RESULT_TRANSPORT_FAILED;
+        hold.requestForTransition(5L, true);
+        assertEquals(1, hw.count("linkStart:5"));
+        assertFalse(hold.isActive());
+        assertEquals(Collections.singletonList("parkedlink"),
+                marker.read().levers);
+
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(1, hw.count("linkStart:5"));
+        assertTrue(marker.exists());
+
+        surveillance.set(new JSONObject());
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(1, hw.count("linkStop:5"));
+        assertFalse(marker.exists());
+    }
+
+    @Test
+    public void failedParkedStopRetainsMarkerAndRetriesNextTick()
+            throws Exception {
+        surveillance.set(new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false));
+        hold.requestForTransition(5L, true);
+        hw.linkStopResult = -101;
+        surveillance.set(new JSONObject());
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertTrue(hold.isActive());
+        assertEquals(Collections.singletonList("parkedlink"),
+                marker.read().levers);
+        assertEquals(1, hw.count("linkStop"));
+
+        hw.linkStopResult =
+                Di5ParkedPowerHold.PARKED_LINK_RESULT_CONFIRMED;
+        hw.now += 10_000L;
+        hold.tick(5L);
+        assertEquals(2, hw.count("linkStop"));
+        assertFalse(hold.isActive());
+        assertFalse(marker.exists());
+    }
+
+    @Test
+    public void deniedOrIncompatibleTransportDoesNotAcquireNewOwnership()
+            throws Exception {
+        for (int result : new int[]{
+                ParkedLinkContract.RESULT_UNAUTHORIZED,
+                ParkedLinkContract.RESULT_LIBRARY_UNAVAILABLE,
+                ParkedLinkContract.RESULT_LIBRARY_INCOMPATIBLE}) {
+            surveillance.set(new JSONObject()
+                    .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                    .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false));
+            hw.linkStartResult = result;
+            hw.now += 31_000L;
+            hold.requestForTransition(5L, true);
+            assertFalse(hold.isActive());
+            assertFalse(marker.exists());
+            assertTrue(hold.status().getJSONObject("parkedLink")
+                    .getString("status").startsWith("unavailable"));
+            surveillance.set(new JSONObject());
+            hold.tick(5L);
+            assertEquals(0, hw.count("linkStop"));
+        }
+    }
+
+    @Test
+    public void staleLibraryCannotErasePreviouslyRecordedOwnership()
+            throws Exception {
+        surveillance.set(new JSONObject()
+                .put(Di5ParkedKeepAliveSettings.KEY_ENABLED, true)
+                .put(Di5ParkedKeepAliveSettings.KEY_MCU_HOLD, false));
+        assertTrue(marker.record(5L, Collections.singletonList("parkedlink"),
+                hw.now, hw.pid()));
+        hw.linkStartResult = ParkedLinkContract.RESULT_LIBRARY_INCOMPATIBLE;
+        hold.requestForTransition(5L, true);
+        assertTrue(marker.read().has(Di5KeepAliveOwnershipMarker.LEVER_PARKED_LINK));
+        hw.linkStopResult = ParkedLinkContract.RESULT_LIBRARY_INCOMPATIBLE;
+        surveillance.set(new JSONObject());
+        hold.tick(5L);
+        assertTrue(marker.exists());
+        hw.linkStopResult = ParkedLinkContract.RESULT_CONFIRMED;
+        hold.tick(5L);
+        assertFalse(marker.exists());
+    }
+
+    @Test
+    public void diagnosticCompatibilityAliasRetainsTheSameHoldState()
+            throws Exception {
+        enable();
+        hold.requestForTransition(5L, true);
+        JSONObject status = hold.status();
+        assertEquals(status.getJSONObject("parkedLink").toString(),
+                status.getJSONObject(ParkedLinkContract.LEGACY_STATUS_KEY).toString());
     }
 
     // ── MCU hold ───────────────────────────────────────────────────
@@ -212,8 +407,10 @@ public class Di5ParkedPowerHoldTest {
         Di5KeepAliveOwnershipMarker.Record rec = marker.read();
         assertNotNull(rec);
         assertEquals(5L, rec.generation);
-        assertEquals(Arrays.asList("mcu", "mcupower"), rec.levers);
+        assertEquals(Arrays.asList("parkedlink", "mcu", "mcupower"), rec.levers);
         JSONObject st = hold.status();
+        assertTrue(st.getJSONObject("parkedLink").getBoolean("held"));
+        assertTrue(st.getJSONObject("parkedLink").getBoolean("confirmed"));
         assertTrue(st.getJSONObject("mcu").getBoolean("held"));
         assertTrue(st.getJSONObject("mcu").getBoolean("powerHoldAsserted"));
         assertEquals(0, st.getJSONObject("mcu").getInt("powerHoldLastRc"));
@@ -282,7 +479,9 @@ public class Di5ParkedPowerHoldTest {
         hw.powerHoldRc = 7;
         hold.requestForTransition(5L, true);
         assertEquals(1, hw.count("sentryAssert"));
-        assertFalse(hold.isActive());
+        // parked link control is an independent default lever.
+        assertTrue(hold.isActive());
+        assertTrue(hold.status().getJSONObject("parkedLink").getBoolean("held"));
         assertFalse(hold.status().getJSONObject("mcu").getBoolean("powerHoldAsserted"));
         assertTrue(hold.status().getJSONObject("mcu").getString("status").startsWith("rejected"));
         hw.sentryRc = 0;
@@ -308,7 +507,7 @@ public class Di5ParkedPowerHoldTest {
         hold.requestForTransition(5L, true);
         assertEquals(1, hw.count("sentryAssert"));
         assertEquals(0, hw.count("powerHold"));
-        assertEquals(Arrays.asList("mcu"), marker.read().levers);
+        assertEquals(Arrays.asList("parkedlink", "mcu"), marker.read().levers);
         // Release must not write the 0 either — this install never asserted the 1.
         currentGeneration.set(6L);
         hold.requestForTransition(6L, false);
@@ -353,7 +552,7 @@ public class Di5ParkedPowerHoldTest {
     // ── Release paths ──────────────────────────────────────────────
 
     @Test
-    public void accOnReleasesFlagsAndClearsMarker() throws Exception {
+    public void accOnReleasesLocalLeversAndDetachesQnxWithoutStop() throws Exception {
         enable();
         hold.requestForTransition(5L, true);
         assertTrue(marker.exists());
@@ -362,6 +561,8 @@ public class Di5ParkedPowerHoldTest {
         assertEquals(1, hw.count("sentryRelease"));
         // The power hold was asserted, so release writes -1442840502=0 exactly once.
         assertEquals(1, hw.count("powerRelease"));
+        assertEquals(1, hw.count("linkDetach"));
+        assertEquals(0, hw.count("linkStop"));
         assertFalse(marker.exists());
         assertFalse(hold.isActive());
         assertEquals("transition:6", hold.status().getJSONObject("lastStop").getString("reason"));
@@ -380,6 +581,7 @@ public class Di5ParkedPowerHoldTest {
         hold.tick(5L);
         assertFalse(hold.isActive());
         assertEquals(1, hw.count("sentryRelease"));
+        assertEquals(1, hw.count("linkStop"));
         assertFalse(marker.exists());
         assertEquals("disabled in config", hold.status().getJSONObject("lastStop").getString("reason"));
     }
@@ -392,6 +594,7 @@ public class Di5ParkedPowerHoldTest {
         hw.now += 10_000L;
         hold.tick(5L);
         assertFalse(hold.isActive());
+        assertEquals(1, hw.count("linkStop"));
         assertEquals("kill switch", hold.status().getJSONObject("lastStop").getString("reason"));
     }
 
@@ -407,6 +610,8 @@ public class Di5ParkedPowerHoldTest {
         hold.tick(5L);
         assertFalse(hold.isActive());
         assertEquals(1, hw.count("sentryRelease"));
+        assertEquals(1, hw.count("linkDetach"));
+        assertEquals(0, hw.count("linkStop"));
         // Older generations never assert.
         hold.requestForTransition(4L, true);
         assertEquals(1, hw.count("sentryAssert"));
@@ -421,6 +626,8 @@ public class Di5ParkedPowerHoldTest {
         Di5ParkedPowerHold.releaseForProcessExit("test exit again");
         Di5ParkedPowerHold.install(null);
         assertEquals(1, hw.count("sentryRelease"));
+        assertEquals(1, hw.count("linkStop"));
+        assertEquals(0, hw.count("linkDetach"));
         assertFalse(hold.isActive());
         // A subsequent tick must not re-assert: release cleared `desired`.
         hold.tick(5L);
@@ -430,16 +637,16 @@ public class Di5ParkedPowerHoldTest {
     // ── Voltage guard ──────────────────────────────────────────────
 
     @Test
-    public void noVoltageSampleBlocksActivation() throws Exception {
+    public void noVoltageSampleDoesNotBlockExperimentalActivation() throws Exception {
         enable();
         hw.volts = null;
         hold.requestForTransition(5L, true);
-        assertEquals(0, hw.count("sentryAssert"));
-        assertFalse(marker.exists());
-        assertEquals("NO_SAMPLE", hold.status().getJSONObject("voltage").getString("decision"));
-        hw.volts = 12.5;
-        hold.tick(5L);
+        assertEquals(1, hw.count("linkStart:5"));
         assertEquals(1, hw.count("sentryAssert"));
+        assertEquals(1, hw.count("powerHold:5"));
+        assertTrue(marker.exists());
+        assertTrue(hold.isActive());
+        assertEquals("NO_SAMPLE", hold.status().getJSONObject("voltage").getString("decision"));
     }
 
     @Test
@@ -491,15 +698,17 @@ public class Di5ParkedPowerHoldTest {
     }
 
     @Test
-    public void staleSampleKeepsHoldButBlocksReassert() throws Exception {
+    public void staleSampleDoesNotBlockExperimentalReassert() throws Exception {
         enable();
         hold.requestForTransition(5L, true);
         assertEquals(1, hw.count("sentryAssert"));
+        assertEquals(1, hw.count("linkStart:5"));
         hw.volts = null;                        // reads start failing
         hw.now += 200_000L;                     // > 120 s max age, > 30 s cadence
         hold.tick(5L);
-        assertTrue(hold.isActive());            // nothing torn down…
-        assertEquals(1, hw.count("sentryAssert"));   // …but no re-assert either
+        assertTrue(hold.isActive());
+        assertEquals(2, hw.count("sentryAssert"));
+        assertEquals(2, hw.count("linkStart:5"));
         assertEquals("STALE", hold.status().getJSONObject("voltage").getString("decision"));
     }
 
@@ -509,7 +718,8 @@ public class Di5ParkedPowerHoldTest {
     public void cameraHeartbeatWritesOneThenZeroOnRelease() throws Exception {
         enable(Di5ParkedKeepAliveSettings.KEY_CAMERA_HEARTBEAT);
         hold.requestForTransition(5L, true);
-        assertEquals(1, hw.count("panorama:1"));
+        // The accelerated heartbeat can tick before requestForTransition returns.
+        assertTrue(hw.count("panorama:1") >= 1);
         assertTrue(hold.status().getJSONObject("camera").getBoolean("heartbeatRunning"));
         // Let the heartbeat thread tick at least once (fake sleep is ~3 ms).
         long deadline = System.currentTimeMillis() + 2_000L;
@@ -603,6 +813,16 @@ public class Di5ParkedPowerHoldTest {
     }
 
     @Test
+    public void hygieneOnAccOnDetachesRecordedQnxWithoutStop() throws Exception {
+        marker.record(3L, Arrays.asList("parkedlink", "mcu"), 1L, 999);
+        assertTrue(hold.onDaemonStart(true));
+        assertEquals(1, hw.count("linkDetach"));
+        assertEquals(0, hw.count("linkStop"));
+        assertEquals(1, hw.count("sentryRelease"));
+        assertFalse(marker.exists());
+    }
+
+    @Test
     public void hygieneKeepsMarkerWhileAccReadsOff() throws Exception {
         marker.record(3L, Arrays.asList("mcu"), 1L, 999);
         assertFalse(hold.onDaemonStart(false));
@@ -652,6 +872,7 @@ public class Di5ParkedPowerHoldTest {
                 new File(tmp.getRoot(), "status2.json"));
         enable();
         h.requestForTransition(5L, true);
+        assertEquals(0, hw.count("linkStart"));
         assertEquals(0, hw.count("sentryAssert"));
         assertFalse(h.isActive());
         boolean logged = false;

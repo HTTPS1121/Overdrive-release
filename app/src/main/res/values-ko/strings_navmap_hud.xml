@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>계속 주행</item>
+        <item>출발</item>
+        <item>목적지 도착</item>
+        <item>목적지 우측</item>
+        <item>목적지 좌측</item>
+        <item>우측 방향</item>
+        <item>우회전</item>
+        <item>급우회전</item>
+        <item>유턴</item>
+        <item>급좌회전</item>
+        <item>좌회전</item>
+        <item>좌측 방향</item>
+        <item>램프 진입</item>
+        <item>출구로 진출</item>
+        <item>직진</item>
+        <item>우측 유지</item>
+        <item>좌측 유지</item>
+        <item>합류</item>
+        <item>우측으로 합류</item>
+        <item>좌측으로 합류</item>
+        <item>회전교차로 진입</item>
+        <item>회전교차로 진출</item>
+        <item>페리 탑승</item>
+        <item>페리 하선</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>계속 주행:</item>
+        <item>출발 후</item>
+        <item>목적지:</item>
+        <item>목적지 우측:</item>
+        <item>목적지 좌측:</item>
+        <item>우측 방향으로</item>
+        <item>우회전 후</item>
+        <item>급우회전 후</item>
+        <item>유턴 후</item>
+        <item>급좌회전 후</item>
+        <item>좌회전 후</item>
+        <item>좌측 방향으로</item>
+        <item>램프 진입 후</item>
+        <item>출구로 진출 후</item>
+        <item>직진 후</item>
+        <item>우측 도로로</item>
+        <item>좌측 도로로</item>
+        <item>합류 후</item>
+        <item>우측으로 합류 후</item>
+        <item>좌측으로 합류 후</item>
+        <item>회전교차로를 지나</item>
+        <item>회전교차로 진출 후</item>
+        <item>페리 탑승:</item>
+        <item>페리 하선 후</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1번째</item>
+        <item>2번째</item>
+        <item>3번째</item>
+        <item>4번째</item>
+        <item>5번째</item>
+        <item>6번째</item>
+        <item>7번째</item>
+        <item>8번째</item>
+        <item>9번째</item>
+        <item>10번째</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">%1$s 출구로 진출</string>
+    <string name="nav_hud_roundabout_exit_onto">%1$s 출구로 진출 후</string>
+    <string name="nav_hud_towards">방면</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">%1$s번 출구</string>
+    <string name="nav_hud_then">다음</string>
+    <string name="nav_hud_arrive">도착</string>
+    <string name="nav_hud_recenter">현재 위치로</string>
+    <string name="nav_hud_end">종료</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">음성 안내 음소거</string>
+    <string name="nav_hud_cd_unmute">음성 안내 음소거 해제</string>
+    <string name="nav_hud_cd_overview">전체 경로 보기</string>
+    <string name="nav_hud_cd_overview_exit">주행 화면으로 돌아가기</string>
+    <string name="nav_hud_cd_end">내비게이션 종료</string>
+    <string name="nav_hud_cd_recenter">차량 위치로 돌아가기</string>
+    <string name="nav_hud_cd_compass_heading_up">나침반: 진행 방향이 위쪽. 탭하면 북쪽이 위쪽으로 전환됩니다</string>
+    <string name="nav_hud_cd_compass_north_up">나침반: 북쪽이 위쪽. 탭하면 진행 방향이 위쪽으로 전환됩니다</string>
+    <string name="nav_hud_cd_back">지도 나가기</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">그다음 %2$s 앞에서 %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">%1$s 도착 예정, %2$s, %3$s 남음</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">교통 정체로 %1$s 지연</string>
+</resources>

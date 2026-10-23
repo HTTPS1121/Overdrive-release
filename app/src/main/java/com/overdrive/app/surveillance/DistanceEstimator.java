@@ -302,6 +302,46 @@ public final class DistanceEstimator {
         return ProximityEstimate.metric(bestMeters, trend);
     }
 
+    /**
+     * As {@link #fromYoloDetections(List, int, float, Trend)}, but with {@code personsBySize}
+     * (quadrant-space boxes) a PERSON is rated like the actor labels — box height plus the
+     * low-feet rule ({@link ActorTracker#personProximity}) — instead of bbox-height metres,
+     * which on these fisheye tiles read people closer than they are. Other classes keep metres;
+     * the closer tier wins, the metric one on a tie.
+     */
+    public static ProximityEstimate fromYoloDetections(
+            List<Detection> dets, int frameHeightPx, float verticalFovDeg, Trend trend,
+            boolean personsBySize) {
+        if (!personsBySize) return fromYoloDetections(dets, frameHeightPx, verticalFovDeg, trend);
+        if (dets == null || dets.isEmpty() || frameHeightPx <= 0) return null;
+        Tier personTier = Tier.UNKNOWN;
+        List<Detection> others = new java.util.ArrayList<>(dets.size());
+        for (Detection d : dets) {
+            if (d.getClassId() != 0) {
+                others.add(d);
+                continue;
+            }
+            if (d.getH() <= 0 || d.getConfidence() < MIN_CONFIDENCE_FOR_DISTANCE) continue;
+            Tier t = tierFromProximity(ActorTracker.personProximity(
+                    (float) d.getH() / frameHeightPx, (float) (d.getY() + d.getH()) / frameHeightPx));
+            if (t.ordinal() > personTier.ordinal()) personTier = t;
+        }
+        ProximityEstimate metric = fromYoloDetections(others, frameHeightPx, verticalFovDeg, trend);
+        if (personTier == Tier.UNKNOWN) return metric;
+        if (metric != null && metric.tier.ordinal() >= personTier.ordinal()) return metric;
+        return ProximityEstimate.tierOnly(personTier, trend);
+    }
+
+    private static Tier tierFromProximity(Actor.Proximity p) {
+        switch (p) {
+            case VERY_CLOSE:
+            case CLOSE: return Tier.NEAR;
+            case MID:   return Tier.MID;
+            case FAR:   return Tier.FAR;
+            default:    return Tier.UNKNOWN;
+        }
+    }
+
     public static String tierLabel(Tier t) {
         switch (t) {
             case NEAR:    return "near";

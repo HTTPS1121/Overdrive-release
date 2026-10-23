@@ -129,7 +129,7 @@ public final class ClusterMapProjector {
 
     /** True while the map is (being) projected onto the cluster. */
     public static boolean isActive() {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
             return active && com.overdrive.app.launcher.DiLink5ClusterCast.isMapActive();
         }
         return active;
@@ -142,7 +142,7 @@ public final class ClusterMapProjector {
      */
     public static synchronized void start() {
         if (active) {
-            if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+            if (!com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
                     || com.overdrive.app.launcher.DiLink5ClusterCast.isMapActive()) {
                 return;
             }
@@ -154,7 +154,7 @@ public final class ClusterMapProjector {
         // Mark active BEFORE launch so the Activity's first poll sees true and
         // doesn't immediately self-finish on a fast startup.
         publishActiveFlag(true);
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
             if (!com.overdrive.app.launcher.DiLink5ClusterCast.startMap()) {
                 active = false;
                 publishActiveFlag(false);
@@ -168,6 +168,9 @@ public final class ClusterMapProjector {
                     .acquireSustained();
         } catch (Throwable t) {
             logger.warn("acquireSustained failed: " + t.getMessage());
+            // acquireSustained adds the token before work that can throw; never leave it held.
+            try { ClusterProjectionController.getInstance().releaseSustainedUnlessSignalled("map"); }
+            catch (Throwable ignored) {}
         }
         if (!acquired) {
             active = false;
@@ -175,9 +178,19 @@ public final class ClusterMapProjector {
             logger.warn("legacy cluster map projection was not admitted");
             return;
         }
-        launchThread = new Thread(ClusterMapProjector::waitAndLaunch, "ClusterMapLaunch");
-        launchThread.setDaemon(true);
-        launchThread.start();
+        try {
+            launchThread = new Thread(ClusterMapProjector::waitAndLaunch, "ClusterMapLaunch");
+            launchThread.setDaemon(true);
+            launchThread.start();
+        } catch (Throwable t) {
+            // The hold is already taken; drop it so the projection is not pinned without a map.
+            launchThread = null;
+            active = false;
+            publishActiveFlag(false);
+            logger.warn("cluster map launch thread failed: " + t.getMessage());
+            try { ClusterProjectionController.getInstance().releaseSustainedUnlessSignalled("map"); }
+            catch (Throwable ignored) {}
+        }
     }
 
     /** Stop projecting: release the sustained hold (the controller restores gauges)
@@ -192,7 +205,7 @@ public final class ClusterMapProjector {
         // Tell the cluster Activity to finish (it polls navMap.clusterMapActive).
         // Done first so the Activity is dismissed even if releaseSustained throws.
         publishActiveFlag(false);
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) {
             return com.overdrive.app.launcher.DiLink5ClusterCast.stopMap();
         }
         try {
@@ -205,7 +218,7 @@ public final class ClusterMapProjector {
     }
 
     public static void onDiLink5ProjectionFailed() {
-        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return;
+        if (!com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) return;
         synchronized (ClusterMapProjector.class) {
             if (!active
                     || com.overdrive.app.launcher.DiLink5ClusterCast.isMapActive()) {
@@ -224,7 +237,7 @@ public final class ClusterMapProjector {
      * keep-alive identity before the fission display is retired.
      */
     public static void onLegacyProjectionForceClosed() {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return;
+        if (com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()) return;
         boolean wasActive;
         synchronized (ClusterMapProjector.class) {
             wasActive = active || launchThread != null;
@@ -555,6 +568,9 @@ public final class ClusterMapProjector {
     /** Issue one {@code am start --display N}. Returns true iff the command exited 0. */
     private static boolean issueLaunch(int displayId, int attempt) {
         try {
+            // A docked app cast left on this display would resolve the map launch into
+            // split-screen-secondary; no-op when nothing is docked.
+            com.overdrive.app.launcher.ClusterCast.clearStaleClusterDock(displayId);
             String[] cmd = {
                 "am", "start",
                 "--display", String.valueOf(displayId),

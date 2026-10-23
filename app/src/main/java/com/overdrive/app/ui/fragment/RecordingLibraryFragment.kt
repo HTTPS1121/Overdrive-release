@@ -1,6 +1,7 @@
 package com.overdrive.app.ui.fragment
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +23,7 @@ import com.overdrive.app.ui.util.RecordingScanner
 import com.overdrive.app.ui.util.RecordingSectionHeaderDecoration
 import com.overdrive.app.ui.util.RecordingLibraryFilterState
 import com.overdrive.app.ui.util.RecordingsApiClient
+import com.overdrive.app.ui.util.SafeKeepClipClient
 import com.overdrive.app.ui.widget.AppToast
 import com.overdrive.app.ui.widget.Skeleton
 import com.google.android.material.bottomsheet.BottomSheetDialog
@@ -39,6 +41,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -79,6 +82,13 @@ class RecordingLibraryFragment : Fragment() {
         private const val STATE_SELECT_MODE = "recording_library.select_mode"
         private const val STATE_SELECTED_PATHS = "recording_library.selected_paths"
         private const val STATE_SELECT_ALL_PENDING = "recording_library.select_all_pending"
+
+        /** SafeKeep pill refresh cadence while a visible clip is uploading / queued / waiting. */
+        private const val SAFEKEEP_POLL_MS = 4_000L
+        /** Re-read shortly after Upload now / Lock so the pill reflects the action. */
+        private const val SAFEKEEP_ACTION_REFRESH_MS = 800L
+        /** Rows either side of the visible window whose pills are fetched ahead of a scroll. */
+        private const val SAFEKEEP_WINDOW_PAD = 20
 
         /** When true, the fragment hides its internal filter bar — used when a
          *  parent (RecordingsFragment) drives the filter via its own segmented
@@ -208,6 +218,23 @@ class RecordingLibraryFragment : Fragment() {
     private var scanExecutor = Executors.newSingleThreadExecutor()
     private val incidentPackInProgress = AtomicBoolean(false)
 
+    // -------- SafeKeep pills --------
+    // One status check per screen open; while SafeKeep is off nothing else runs.
+    private var safeKeepExecutor: ExecutorService? = null
+    private var safeKeepActive = false
+    private var safeKeepResumed = false
+    private var safeKeepFetchInFlight = false
+    private var safeKeepFetchQueued = false
+    /** Bumped on view teardown so late background results are dropped. */
+    private var safeKeepGeneration = 0
+    private val safeKeepStates = HashMap<String, SafeKeepClipClient.ClipState>()
+    private val safeKeepPoll = Runnable { refreshSafeKeepStates() }
+    private val safeKeepScrollListener = object : RecyclerView.OnScrollListener() {
+        override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
+            if (newState == RecyclerView.SCROLL_STATE_IDLE) refreshSafeKeepStates()
+        }
+    }
+
     // -----------------------------------------------------------------
     // Paging — replaces the legacy "load every row at once" path with
     // 30-row fetches against the daemon's H2-backed /api/recordings.
@@ -333,6 +360,9 @@ class RecordingLibraryFragment : Fragment() {
         // ran out-of-expected-order on configuration change.
         if (scanExecutor.isShutdown || scanExecutor.isTerminated) {
             scanExecutor = Executors.newSingleThreadExecutor()
+        }
+        safeKeepExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "RecordingsSafeKeep").apply { isDaemon = true }
         }
 
         initViews(view)
@@ -904,7 +934,8 @@ class RecordingLibraryFragment : Fragment() {
             onSelectionChanged = { count -> onSelectionChanged(count) },
             onShare = { recording -> shareSingleRecording(recording) },
             onEvidencePack = { recording -> confirmCreateIncidentPack(recording) },
-            landscapeRows = landscape
+            landscapeRows = landscape,
+            onSafeKeepAction = { recording, action -> onSafeKeepAction(recording, action) }
         )
 
         val gridLayoutManager = GridLayoutManager(context, if (landscape) 1 else 2)
@@ -936,6 +967,8 @@ class RecordingLibraryFragment : Fragment() {
             recyclerRecordings.addOnScrollListener(pagingScrollListener)
             pagingScrollListenerAttached = true
         }
+        recyclerRecordings.removeOnScrollListener(safeKeepScrollListener)
+        recyclerRecordings.addOnScrollListener(safeKeepScrollListener)
     }
 
     private fun onSelectionChanged(count: Int) {
@@ -1666,6 +1699,8 @@ class RecordingLibraryFragment : Fragment() {
                 currentList.mapTo(mutableSetOf()) { it.path }
             )
         }
+        // After layout, so the visible window is known.
+        if (safeKeepActive) recyclerRecordings.post { refreshSafeKeepStates() }
     }
 
     private fun showFirstPageLoading() {
@@ -2038,6 +2073,151 @@ class RecordingLibraryFragment : Fragment() {
         // of the wrong list before the parent's apply landed.
         val embedded = arguments?.getBoolean(ARG_HIDE_INTERNAL_FILTERS, false) == true
         if (!embedded) loadRecordingsForSelectedDate()
+        safeKeepResumed = true
+        checkSafeKeep()
+    }
+
+    override fun onPause() {
+        safeKeepResumed = false
+        mainHandler.removeCallbacks(safeKeepPoll)
+        super.onPause()
+    }
+
+    // -----------------------------------------------------------------
+    // SafeKeep pills + actions
+    // -----------------------------------------------------------------
+
+    private fun checkSafeKeep() {
+        val executor = safeKeepExecutor?.takeUnless { it.isShutdown } ?: return
+        val gen = safeKeepGeneration
+        executor.execute {
+            val active = SafeKeepClipClient.isActive() == true
+            mainHandler.post {
+                if (gen != safeKeepGeneration || view == null || !::recordingAdapter.isInitialized) {
+                    return@post
+                }
+                safeKeepActive = active
+                if (active) refreshSafeKeepStates() else clearSafeKeep()
+            }
+        }
+    }
+
+    private fun clearSafeKeep() {
+        mainHandler.removeCallbacks(safeKeepPoll)
+        safeKeepStates.clear()
+        if (::recordingAdapter.isInitialized) recordingAdapter.setSafeKeepStates(false, emptyMap())
+    }
+
+    /** Coalesced: at most one request in flight, one queued behind it. */
+    private fun refreshSafeKeepStates() {
+        mainHandler.removeCallbacks(safeKeepPoll)
+        if (!safeKeepActive || !safeKeepResumed || view == null || !::recordingAdapter.isInitialized) return
+        if (safeKeepFetchInFlight) {
+            safeKeepFetchQueued = true
+            return
+        }
+        val names = safeKeepWindowNames()
+        if (names.isEmpty()) return
+        val executor = safeKeepExecutor?.takeUnless { it.isShutdown } ?: return
+        val gen = safeKeepGeneration
+        safeKeepFetchInFlight = true
+        executor.execute {
+            val result = SafeKeepClipClient.clipStates(names)
+            mainHandler.post {
+                if (gen != safeKeepGeneration) return@post
+                onSafeKeepStates(names, result)
+            }
+        }
+    }
+
+    private fun onSafeKeepStates(asked: List<String>, result: SafeKeepClipClient.StatesResult?) {
+        safeKeepFetchInFlight = false
+        if (view == null || !::recordingAdapter.isInitialized) return
+        if (result?.disabled == true) {
+            safeKeepActive = false
+            clearSafeKeep()
+            return
+        }
+        if (result != null) {
+            asked.forEach { safeKeepStates.remove(it) }
+            safeKeepStates.putAll(result.states)
+            recordingAdapter.setSafeKeepStates(true, HashMap(safeKeepStates))
+        }
+        if (safeKeepFetchQueued) {
+            safeKeepFetchQueued = false
+            refreshSafeKeepStates()
+            return
+        }
+        val busy = asked.any { safeKeepStates[it]?.inFlight == true }
+        if (busy && safeKeepActive && safeKeepResumed) {
+            mainHandler.postDelayed(safeKeepPoll, SAFEKEEP_POLL_MS)
+        }
+    }
+
+    /** File names around the visible rows, capped at the endpoint's per-call limit. */
+    private fun safeKeepWindowNames(): List<String> {
+        val list = recordingAdapter.currentList
+        if (list.isEmpty()) return emptyList()
+        val lm = recyclerRecordings.layoutManager as? GridLayoutManager
+        var first = lm?.findFirstVisibleItemPosition() ?: RecyclerView.NO_POSITION
+        var last = lm?.findLastVisibleItemPosition() ?: RecyclerView.NO_POSITION
+        if (first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION) {
+            first = 0
+            last = 0
+        }
+        val from = (first - SAFEKEEP_WINDOW_PAD).coerceAtLeast(0)
+        val to = (last + SAFEKEEP_WINDOW_PAD).coerceAtMost(list.size - 1)
+        val out = LinkedHashSet<String>()
+        for (i in from..to) {
+            out.add(list[i].file.name)
+            if (out.size >= SafeKeepClipClient.MAX_FILES_PER_CALL) break
+        }
+        return out.toList()
+    }
+
+    private fun onSafeKeepAction(recording: RecordingFile, action: RecordingAdapter.SafeKeepAction) {
+        val name = recording.file.name
+        if (action == RecordingAdapter.SafeKeepAction.OPEN_CLOUD) {
+            val link = recordingAdapter.safeKeepState(name)?.link ?: return
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+            } catch (e: Exception) {
+                appToast?.show(getString(R.string.toast_safekeep_open_failed), AppToast.Kind.ERROR)
+            }
+            return
+        }
+        val executor = safeKeepExecutor?.takeUnless { it.isShutdown } ?: return
+        val gen = safeKeepGeneration
+        executor.execute {
+            val result = when (action) {
+                RecordingAdapter.SafeKeepAction.UPLOAD_NOW -> SafeKeepClipClient.uploadNow(name)
+                RecordingAdapter.SafeKeepAction.LOCK -> SafeKeepClipClient.setLocked(name, true)
+                else -> SafeKeepClipClient.setLocked(name, false)
+            }
+            mainHandler.post {
+                if (gen != safeKeepGeneration || view == null) return@post
+                if (result.ok) {
+                    val msg = when (action) {
+                        RecordingAdapter.SafeKeepAction.UPLOAD_NOW -> R.string.toast_safekeep_upload_queued
+                        RecordingAdapter.SafeKeepAction.LOCK -> R.string.toast_safekeep_locked
+                        else -> R.string.toast_safekeep_unlocked
+                    }
+                    appToast?.show(getString(msg), AppToast.Kind.SUCCESS)
+                } else {
+                    val msg = when (result.error) {
+                        "no_destination" -> getString(R.string.toast_safekeep_no_storage)
+                        "lock_quota", "lock_full" -> getString(R.string.toast_safekeep_lock_full)
+                        else -> getString(
+                            R.string.toast_safekeep_action_failed,
+                            result.message ?: result.error ?: getString(R.string.error_unknown)
+                        )
+                    }
+                    appToast?.show(msg, AppToast.Kind.ERROR)
+                }
+                mainHandler.removeCallbacks(safeKeepPoll)
+                mainHandler.postDelayed(safeKeepPoll, SAFEKEEP_ACTION_REFRESH_MS)
+            }
+        }
     }
 
     override fun onDestroyView() {
@@ -2054,6 +2234,15 @@ class RecordingLibraryFragment : Fragment() {
         }
         warmupPollRunnable?.let { mainHandler.removeCallbacks(it) }
         warmupPollRunnable = null
+        mainHandler.removeCallbacks(safeKeepPoll)
+        recyclerRecordings.removeOnScrollListener(safeKeepScrollListener)
+        safeKeepGeneration += 1
+        safeKeepExecutor?.shutdownNow()
+        safeKeepExecutor = null
+        safeKeepActive = false
+        safeKeepFetchInFlight = false
+        safeKeepFetchQueued = false
+        safeKeepStates.clear()
         appToast?.cancel()
         appToast = null
         skeleton?.cancel()

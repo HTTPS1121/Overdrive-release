@@ -39,7 +39,7 @@ class CloudflaredController(
                     com.overdrive.app.config.UnifiedConfigManager.setCloudflared(resetConfig)
                 }.start()
             }
-            callback.onError("Paid version requires a token")
+            callback.onError(com.overdrive.app.util.AppLocaleContext.of(context).getString(com.overdrive.app.R.string.cloudflared_error_paid_token))
             return
         }
         callback.onStatusChanged(DaemonStatus.STARTING, "Starting cloudflared tunnel...")
@@ -80,7 +80,7 @@ class CloudflaredController(
             }
         })
     }
-
+    
     override fun isRunning(callback: (Boolean) -> Unit) {
         adbLauncher.isTunnelRunning(callback)
     }
@@ -92,6 +92,8 @@ class CloudflaredController(
     fun refreshTunnelUrl(callback: ((String?) -> Unit)? = null) {
         adbLauncher.getTunnelUrl { url ->
             if (url != null) {
+                // Only called while the process runs, so a URL in its live log means it is healthy.
+                com.overdrive.app.launcher.TunnelLauncher.resetAutoStartBackoff()
                 _tunnelUrl.postValue(url)
                 PreferencesManager.setLastTunnelUrl(url)
                 callback?.invoke(url)

@@ -21,15 +21,15 @@ class DaemonLauncher(
     private val logManager: LogManager
 ) {
     companion object {
-        private val TAG = "DaemonLauncher"
+        private const val TAG = "DaemonLauncher"
         
         // Log file paths for daemons
-        private val CAMERA_DAEMON_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cam_daemon.log")
-        private val SENTRY_DAEMON_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/sentry_daemon.log")
-        private val SENTRY_DAEMON_LOG_SYSTEM = "/data/data/com.android.providers.settings/sentry_daemon.log"
-        private val ACC_SENTRY_DAEMON_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.log")
-        private val PROXY_DAEMON_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/proxy_daemon.log")
-        private val TELEGRAM_DAEMON_LOG = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegrambotdaemon.log")
+        private val CAMERA_DAEMON_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("cam_daemon.log")
+        private val SENTRY_DAEMON_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("sentry_daemon.log")
+        private const val SENTRY_DAEMON_LOG_SYSTEM = "/data/data/com.android.providers.settings/sentry_daemon.log"
+        private val ACC_SENTRY_DAEMON_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.log")
+        private val PROXY_DAEMON_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("proxy_daemon.log")
+        private val TELEGRAM_DAEMON_LOG: String get() = com.overdrive.app.util.ScratchRoot.path("telegrambotdaemon.log")
 
         // ==================== LOG ROTATION ====================
         // Hard ceiling for a daemon's stdout-redirect log (the files the UI
@@ -51,20 +51,24 @@ class DaemonLauncher(
         private const val SENTRY_DAEMON_PROCESS = "sentry_daemon"
         private const val ACC_SENTRY_DAEMON_PROCESS = "acc_sentry_daemon"
         private const val PROXY_DAEMON_PROCESS = "sentry_proxy"
-        private val TELEGRAM_DAEMON_PROCESS = "telegram_bot_daemon"
-        private val ZROK_PROCESS = "zrok"
-        private val CAMERA_WATCHDOG_SCRIPT =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_cam_daemon.sh")
-        private val CAMERA_WATCHDOG_PID_FILE =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cam_watchdog.pid")
-        private val CAMERA_WATCHDOG_LOCK_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cam_watchdog.lock")
-        private val ACC_SENTRY_WATCHDOG_SCRIPT =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_acc_sentry.sh")
-        private val ACC_SENTRY_WATCHDOG_PID_FILE =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_watchdog.pid")
-        private val ACC_SENTRY_WATCHDOG_LOCK_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_watchdog.lock")
+        private const val TELEGRAM_DAEMON_PROCESS = "telegram_bot_daemon"
+        private const val ZROK_PROCESS = "zrok"
+        private val CAMERA_WATCHDOG_SCRIPT: String get() = com.overdrive.app.util.ScratchRoot.path("start_cam_daemon.sh")
+        private val CAMERA_WATCHDOG_PID_FILE: String get() = com.overdrive.app.util.ScratchRoot.path("cam_watchdog.pid")
+        // Shark 6 (alternate scratch root) ships no bmmcamera.jar, and app_process aborts on
+        // a missing classpath entry. Legacy text stays byte-identical.
+        private fun cameraClasspathPrefix(): String =
+            if (com.overdrive.app.util.ScratchRoot.usesLegacyDir()
+                || java.io.File(BMM_CAMERA_JAR).isFile) "$BMM_CAMERA_JAR:" else ""
+        private const val BMM_CAMERA_JAR = "/system/framework/bmmcamera.jar"
+        private val CAMERA_WATCHDOG_LOCK_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("cam_watchdog.lock")
+        private val ACC_SENTRY_WATCHDOG_SCRIPT: String get() = com.overdrive.app.util.ScratchRoot.path("start_acc_sentry.sh")
+        private val ACC_SENTRY_WATCHDOG_PID_FILE: String get() = com.overdrive.app.util.ScratchRoot.path("acc_sentry_watchdog.pid")
+        private val ACC_SENTRY_WATCHDOG_LOCK_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("acc_sentry_watchdog.lock")
+        private val TELEGRAM_WATCHDOG_SCRIPT: String get() = com.overdrive.app.util.ScratchRoot.path("start_telegram.sh")
+        private val TELEGRAM_WATCHDOG_PID_FILE: String get() = com.overdrive.app.util.ScratchRoot.path("telegram_watchdog.pid")
+        private val TELEGRAM_WATCHDOG_LOCK_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("telegram_watchdog.lock")
+        private val TELEGRAM_SENTINEL_PATH: String get() = com.overdrive.app.util.ScratchRoot.path("telegram_bot_daemon.disabled")
 
         /**
          * Test one `ps -A -o S,ARGS` snapshot for a live daemon process.
@@ -120,6 +124,9 @@ class DaemonLauncher(
         // respawn, and the loop re-announces "bot ready" on each cycle.
         @Volatile
         private var telegramLaunchStartedAt = 0L
+        // Callers that arrived while a launch was in flight, keyed by that launch's epoch; they
+        // receive its real outcome instead of an immediate, unearned success.
+        private val telegramLaunchJoiners = HashMap<Long, MutableList<LaunchCallback>>()
 
         /** True if a launch guard set at [startedAt] is still active (held + unexpired). */
         private fun guardHeld(startedAt: Long): Boolean {
@@ -158,22 +165,8 @@ class DaemonLauncher(
         const val CLOUDFLARED_STILL_RUNNING = "CLOUDFLARED_STILL_RUNNING"
 
         /**
-         * One-line shell payload that SIGKILLs cloudflared and prints exactly one of
-         * [CLOUDFLARED_STOPPED] / [CLOUDFLARED_STILL_RUNNING]. Callers must treat output with
-         * neither marker as "not verified", never as stopped.
-         *
-         * - Kill by PID ([psAwkKill]): the binary runs as `${nativeLibraryDir}/libcloudflared.so`
-         *   and toybox `killall` matches exact process names only, so `killall -9 cloudflared`
-         *   matched nothing. The patterns are the binary itself (`libcloudflared.so`, or
-         *   `/cloudflared ` for older installs that run `/data/local/tmp/cloudflared`) — NOT a
-         *   bare "cloudflared", which would also SIGKILL concurrent shells that merely mention
-         *   `cloudflared.disabled` / `cloudflared.log` (health-check sentinel probe, URL grep,
-         *   Telegram log tail). Each pattern also catches the `sh -c` launch wrapper.
-         * - Self-exclusion: the `while` subshell is a fork of this `sh -c` (same argv) but is
-         *   dropped by `grep -v grep` because this payload's argv contains "grep".
-         * - Verify by process NAME (this shell is `sh`, never a match) and skip zombie rows: a
-         *   SIGKILLed process can be listed as `Z` until reaped (same rule as
-         *   [processAliveInSnapshot]).
+         * SIGKILLs cloudflared and its `sh -c` wrapper, then prints exactly one of [CLOUDFLARED_STOPPED] /
+         * [CLOUDFLARED_STILL_RUNNING]; output with neither marker is "not verified", never stopped.
          */
         @JvmStatic
         fun killCloudflaredAndVerify(): String =
@@ -182,6 +175,41 @@ class DaemonLauncher(
             "killall -9 cloudflared libcloudflared.so 2>/dev/null; sleep 0.3; " +
             "if ps -A -o S,NAME | grep -v '^ *Z ' | grep -qF cloudflared; " +
             "then echo $CLOUDFLARED_STILL_RUNNING; else echo $CLOUDFLARED_STOPPED; fi"
+
+        /**
+         * Stop the deployed ACC worker/watchdog before replacing its
+         * mode-specific script after a committed vehicle-mode transition.
+         *
+         * Unlike a user start, this never clears the manual-stop sentinel and
+         * it does nothing during an onOnly parked shutdown.
+         */
+        fun buildAccSentryModeSyncCleanupScript(): String {
+            val sentinel = com.overdrive.app.util.ScratchRoot.path(
+                "acc_sentry_daemon.disabled")
+            val parked = com.overdrive.app.util.ScratchRoot.path(
+                "overdrive_parked_shutdown")
+            val watchdogScript = com.overdrive.app.util.ScratchRoot.path(
+                "start_acc_sentry.sh")
+            val daemonLock = com.overdrive.app.util.ScratchRoot.path(
+                "acc_sentry_daemon.lock")
+            val healthFile = com.overdrive.app.util.ScratchRoot.path(
+                com.overdrive.app.power.AccSentryHealthMarker.FILE_NAME)
+            return buildString {
+                append("#!/system/bin/sh\n")
+                append("if [ -f \"$sentinel\" ]; then ")
+                append("echo MODE_SYNC_SKIPPED_DISABLED; exit 0; fi\n")
+                append("if [ -f \"$parked\" ]; then ")
+                append("echo MODE_SYNC_SKIPPED_PARKED; exit 0; fi\n")
+                append("rm -f \"$watchdogScript\" 2>/dev/null\n")
+                append(psAwkKillLine("acc_sentry"))
+                append("sleep 1\n")
+                append("rm -f \"$daemonLock\" ")
+                append("\"$ACC_SENTRY_WATCHDOG_PID_FILE\" ")
+                append("\"$healthFile\" \"$healthFile\".tmp.* 2>/dev/null\n")
+                append("rm -rf \"$ACC_SENTRY_WATCHDOG_LOCK_PATH\" 2>/dev/null\n")
+                append("echo MODE_SYNC_REDEPLOY_READY\n")
+            }
+        }
 
         /**
          * Build the shell lines for a backgrounded log-size poller that bounds
@@ -195,7 +223,7 @@ class DaemonLauncher(
          * daemon that stays up for days. This poller runs in parallel for the
          * lifetime of [daemonPidVar] and truncates on a fixed cadence.
          *
-         * Truncation uses `: > "$LOG_FILE"` (truncate-in-place), NOT rm+recreate:
+         * Truncation is an in-place `true > "$LOG_FILE"`, NOT rm+recreate:
          * the daemon holds an O_APPEND fd to this inode, so an in-place truncate
          * keeps its writes flowing to the same file. An rm would strand the fd
          * on the unlinked inode and the log would silently stop updating.
@@ -239,9 +267,77 @@ class DaemonLauncher(
             "        if [ -f \"\$LOG_FILE\" ]; then",
             "          LOG_SZ=\$(stat -c%s \"\$LOG_FILE\" 2>/dev/null || echo 0)",
             "          if [ \"\$LOG_SZ\" -gt $LOG_MAX_BYTES ]; then",
-            "            : > \"\$LOG_FILE\"",
+            // Not `: >`: a failed redirect on a special builtin would end this poller.
+            "            true 2>/dev/null > \"\$LOG_FILE\"",
             "            echo \"[\$(date)] Log truncated in place (was \${LOG_SZ} bytes)\" >> \"\$LOG_FILE\"",
             "          fi",
+            "        fi",
+            "      fi",
+            "    done",
+            "  ) &",
+            "  $pollerPidVar=\$!"
+        )
+
+        /**
+         * DiLink 5-only progress supervision for AccSentryDaemon.
+         *
+         * The child publishes a PID + monotonic timestamp marker only when its
+         * DiLink 5 ACC heartbeat is running. Until a marker matching the exact
+         * launched PID is observed HEALTH_ARMED remains zero, so legacy modes
+         * have no additional kill path. A long gap in the supervisor's own
+         * monotonic clock is treated as whole-system suspend and grants a fresh
+         * grace window rather than misclassifying resume as a daemon hang.
+         */
+        fun accSentryHealthCoprocessLines(
+            daemonPidVar: String,
+            pollerPidVar: String
+        ): List<String> = listOf(
+            "  (",
+            "    trap 'kill \$HEALTH_SLEEP_PID 2>/dev/null; exit 0' TERM",
+            "    HEALTH_ARMED=0",
+            "    HEALTH_LAST_GOOD=0",
+            "    HEALTH_LAST_MARKER=",
+            "    HEALTH_LAST_CHECK=\$(awk '{print int(\$1)}' /proc/uptime 2>/dev/null)",
+            "    case \"\$HEALTH_LAST_CHECK\" in ''|*[!0-9]*) HEALTH_LAST_CHECK=0 ;; esac",
+            "    while kill -0 \$$daemonPidVar 2>/dev/null; do",
+            "      sleep \$HEALTH_POLL_SEC &",
+            "      HEALTH_SLEEP_PID=\$!",
+            "      wait \$HEALTH_SLEEP_PID",
+            "      kill -0 \$$daemonPidVar 2>/dev/null || exit 0",
+            "      NOW_SEC=\$(awk '{print int(\$1)}' /proc/uptime 2>/dev/null)",
+            "      case \"\$NOW_SEC\" in ''|*[!0-9]*) continue ;; esac",
+            "      if [ \$HEALTH_LAST_CHECK -gt 0 ]; then",
+            "        HEALTH_CHECK_GAP=\$((NOW_SEC - HEALTH_LAST_CHECK))",
+            "        if [ \$HEALTH_CHECK_GAP -gt \$HEALTH_SUSPEND_GAP_SEC ]; then",
+            "          if [ \$HEALTH_ARMED -eq 1 ]; then",
+            "            HEALTH_LAST_GOOD=\$NOW_SEC",
+            "            echo \"[\$(date)] AccSentry health supervisor resumed after \${HEALTH_CHECK_GAP}s gap; granting fresh grace window\" >> \"\$LOG_FILE\"",
+            "          fi",
+            "        fi",
+            "      fi",
+            "      HEALTH_LAST_CHECK=\$NOW_SEC",
+            "      HEALTH_ROW=\$(awk 'NF == 2 && \$1 ~ /^[0-9]+\$/ && \$2 ~ /^[0-9]+\$/ {print \$1 \" \" \$2; exit}' \"\$HEALTH_FILE\" 2>/dev/null)",
+            "      HEALTH_MARKER_PID=\${HEALTH_ROW%% *}",
+            "      HEALTH_MARKER_SEC=\${HEALTH_ROW#* }",
+            "      if [ -n \"\$HEALTH_ROW\" ] && [ \"\$HEALTH_MARKER_PID\" = \"\$$daemonPidVar\" ] && [ \"\$HEALTH_MARKER_SEC\" != \"\$HEALTH_ROW\" ]; then",
+            "        if [ \$HEALTH_ARMED -eq 0 ]; then",
+            "          HEALTH_ARMED=1",
+            "          HEALTH_LAST_MARKER=\$HEALTH_MARKER_SEC",
+            "          HEALTH_LAST_GOOD=\$NOW_SEC",
+            "          echo \"[\$(date)] DiLink 5 AccSentry progress supervision armed for PID \$$daemonPidVar\" >> \"\$LOG_FILE\"",
+            "        elif [ \"\$HEALTH_MARKER_SEC\" != \"\$HEALTH_LAST_MARKER\" ]; then",
+            "          HEALTH_LAST_MARKER=\$HEALTH_MARKER_SEC",
+            "          HEALTH_LAST_GOOD=\$NOW_SEC",
+            "        fi",
+            "      fi",
+            "      if [ \$HEALTH_ARMED -eq 1 ]; then",
+            "        HEALTH_AGE=\$((NOW_SEC - HEALTH_LAST_GOOD))",
+            "        if [ \$HEALTH_AGE -lt 0 ]; then",
+            "          HEALTH_LAST_GOOD=\$NOW_SEC",
+            "        elif [ \$HEALTH_AGE -gt \$HEALTH_STALE_SEC ]; then",
+            "          echo \"[\$(date)] DiLink 5 AccSentry heartbeat stale for \${HEALTH_AGE}s; restarting PID \$$daemonPidVar\" >> \"\$LOG_FILE\"",
+            "          kill -9 \$$daemonPidVar 2>/dev/null",
+            "          exit 0",
             "        fi",
             "      fi",
             "    done",
@@ -254,13 +350,18 @@ class DaemonLauncher(
          * `$LOG_FILE` in place if it is already over [LOG_MAX_BYTES] before the
          * daemon (re)starts. Complements [logRotateCoprocessLines] by catching a
          * log left oversized by a prior run / SIGKILL before the next launch.
-         * Uses in-place truncate for the same O_APPEND-fd safety reason.
+         * Uses in-place truncate for the same O_APPEND-fd safety reason. A log this
+         * user cannot write is removed instead: no daemon of ours can hold it open.
          */
         fun logRotateGuardLines(): List<String> = listOf(
             "  if [ -f \"\$LOG_FILE\" ]; then",
+            // A log this user cannot write (left by another user) fails every daemon start's
+            // `>> $LOG_FILE`; the scratch dir is ours, so replace it.
+            "    [ -w \"\$LOG_FILE\" ] || rm -f \"\$LOG_FILE\" 2>/dev/null",
             "    LOG_SZ=\$(stat -c%s \"\$LOG_FILE\" 2>/dev/null || echo 0)",
             "    if [ \"\$LOG_SZ\" -gt $LOG_MAX_BYTES ]; then",
-            "      : > \"\$LOG_FILE\"",
+            // Not `: >`: a failed redirect on a special builtin exits the whole watchdog.
+            "      true 2>/dev/null > \"\$LOG_FILE\"",
             "      echo \"[\$(date)] Log truncated in place (was \${LOG_SZ} bytes)\" >> \"\$LOG_FILE\"",
             "    fi",
             "  fi"
@@ -275,24 +376,70 @@ class DaemonLauncher(
          * `/proc/<pid>/cmdline`, so an echo-written script can be corrupted
          * before it ever reaches its first log statement. `printf` with a
          * fixed `%s\n` format preserves the escaped argument literally.
+         *
+         * One printf into a per-shell temp file, then an atomic rename: a starting watchdog
+         * reads a complete script, never an interleaved one, and a failed write exits
+         * non-zero and leaves the previous script in place.
          */
         fun buildWatchdogScriptWriteCommand(
             scriptPath: String,
             scriptLines: List<String>
         ): String = buildString {
-            append("rm -f $scriptPath 2>/dev/null; ")
-            scriptLines.forEachIndexed { index, line ->
+            append("T=\"$scriptPath.tmp.\$\$\"; printf '%s\\n'")
+            scriptLines.forEach { line ->
                 val escapedLine = line
                     .replace("\\", "\\\\")
                     .replace("\"", "\\\"")
                     .replace("\$", "\\$")
                     .replace("`", "\\`")
-                append("printf '%s\\n' \"$escapedLine\" ")
-                append(if (index == 0) "> " else ">> ")
-                append("$scriptPath; ")
+                append(" \"$escapedLine\"")
             }
-            append("chmod 755 $scriptPath")
+            append(" > \"\$T\" && chmod 755 \"\$T\" && mv -f \"\$T\" $scriptPath")
+            append(" || { rm -f \"\$T\" 2>/dev/null; exit 1; }")
         }
+
+        /**
+         * Shell condition, true when the Telegram watchdog lock names a live start_telegram.sh
+         * owner. A leftover rotate subshell or a yielding duplicate is not supervision.
+         */
+        fun telegramWatchdogOwnerAlive(): String =
+            "{ O=\$(cat \"$TELEGRAM_WATCHDOG_LOCK_PATH/pid\" 2>/dev/null); [ -n \"\$O\" ] && " +
+            "C=\$(cat \"/proc/\$O/cmdline\" 2>/dev/null | tr '\\000' ' ') && " +
+            "case \"\$C\" in *\" -c \"*) false ;; " +
+            "*\"$TELEGRAM_WATCHDOG_SCRIPT\"*) true ;; *) false ;; esac; }"
+
+        /**
+         * Removes the Telegram disable sentinel unless it records a user stop (the text rule
+         * of DaemonStartupManager.ifNotUserStopped), then prints USER_STOP if one remains.
+         */
+        fun telegramMachineStopClearLine(): String =
+            // A user stop is never moved, so concurrent readers always see it. Only machine text
+            // is moved aside, then re-read: a user stop that raced in is restored, and one
+            // written after the rename lands on a fresh $S that this never touches.
+            "S=\"$TELEGRAM_SENTINEL_PATH\"; R=\$(head -1 \"\$S\" 2>/dev/null); " +
+            "case \"\$R\" in $TELEGRAM_USER_STOP_CASE) ;; " +
+            "*) T=\"\$S.chk.\$\$\"; if mv -f \"\$S\" \"\$T\" 2>/dev/null; then " +
+            "R2=\$(head -1 \"\$T\" 2>/dev/null); " +
+            "case \"\$R2\" in $TELEGRAM_USER_STOP_CASE) " +
+            "[ -f \"\$S\" ] || mv -f \"\$T\" \"\$S\" 2>/dev/null;; esac; " +
+            "rm -f \"\$T\" 2>/dev/null; fi;; esac; " +
+            "[ -f \"\$S\" ] && echo USER_STOP; true\n"
+
+        /** Sentinel texts that record a user stop; an empty (truncated) file counts too. */
+        private const val TELEGRAM_USER_STOP_CASE =
+            "'disabled by ui'*|'disabled by telegram'*|'disabled by user'*|''"
+
+        /**
+         * Launch verification probe. A present sentinel names the stop: USER_STOP for user
+         * text, else MACHINE_STOP:<first line>. Otherwise prints the daemon's ps line, only
+         * while a live watchdog owner supervises it.
+         */
+        fun telegramVerifyProbe(): String =
+            "S=\"$TELEGRAM_SENTINEL_PATH\"; if [ -f \"\$S\" ]; then R=\$(head -1 \"\$S\" 2>/dev/null); " +
+            "case \"\$R\" in $TELEGRAM_USER_STOP_CASE) echo USER_STOP;; " +
+            "*) echo \"MACHINE_STOP:\$R\";; esac; exit 0; fi; " +
+            "D=\$(ps -A -o PID,UID,ARGS | grep $TELEGRAM_DAEMON_PROCESS | grep -v grep | head -1); " +
+            "[ -n \"\$D\" ] && ${telegramWatchdogOwnerAlive()} && echo \"\$D\"; true"
 
         /**
          * Process-safe ownership for a detached shell watchdog.
@@ -307,7 +454,8 @@ class DaemonLauncher(
          * and `/proc/<pid>/cmdline` still names this exact watchdog script.
          * An invalid lock is deliberately not stolen here: deleting a lock
          * after a stale read can race a newer owner. Relaunch/deployment
-         * cleanup removes stale lock files only after killing old wrappers.
+         * cleanup removes stale lock files only after killing old wrappers;
+         * Telegram's launchers never do, its [onLockHeld] takes the lock over.
          *
          * Cleanup is owner-only. The EXIT trap compares the owner and legacy
          * PID files with `$$` before removing the lock directory.
@@ -315,7 +463,8 @@ class DaemonLauncher(
         private fun watchdogOwnershipLines(
             scriptPath: String,
             pidFile: String,
-            lockPath: String
+            lockPath: String,
+            onLockHeld: List<String> = listOf("  exit 0")
         ): List<String> = listOf(
             "WATCHDOG_SCRIPT=\"$scriptPath\"",
             "WATCHDOG_PID_FILE=\"$pidFile\"",
@@ -328,7 +477,11 @@ class DaemonLauncher(
             "  [ -n \"\$CANDIDATE_PID\" ] || return 1",
             "  case \"\$CANDIDATE_PID\" in *[!0-9]*) return 1 ;; esac",
             "  [ -r \"/proc/\$CANDIDATE_PID/cmdline\" ] || return 1",
-            "  tr '\\000' ' ' < \"/proc/\$CANDIDATE_PID/cmdline\" 2>/dev/null | grep -F \"\$WATCHDOG_SCRIPT\" >/dev/null 2>&1",
+            // Not `tr < cmdline`: toybox tr spins forever if the PID exits before its read.
+            "  CANDIDATE_CMD=\$(cat \"/proc/\$CANDIDATE_PID/cmdline\" 2>/dev/null | tr '\\000' ' ')",
+            // A launcher's `sh -c` payload names this script too; only the watchdog runs it.
+            "  case \"\$CANDIDATE_CMD\" in *\" -c \"*) return 1 ;; esac",
+            "  printf '%s' \"\$CANDIDATE_CMD\" | grep -F \"\$WATCHDOG_SCRIPT\" >/dev/null 2>&1",
             "}",
             "",
             "acquire_watchdog_lock() {",
@@ -349,28 +502,8 @@ class DaemonLauncher(
             "  if watchdog_pid_matches \"\$OLD_WPID\"; then",
             "    return 1",
             "  fi",
-            "  # Stale lock: the owner PID is dead or not this watchdog (typically a",
-            "  # lock dir left on persistent storage by a previous boot, which no",
-            "  # launcher cleanup runs to clear after a cold start). Steal it: drop",
-            "  # the stale lock and re-acquire so the watchdog self-heals instead of",
-            "  # looping forever on a lock nobody owns.",
-            "  rm -f \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null",
-            "  rm -f \"\$WATCHDOG_PID_FILE\" 2>/dev/null",
-            "  rmdir \"\$WATCHDOG_LOCK_DIR\" 2>/dev/null",
-            "  if mkdir \"\$WATCHDOG_LOCK_DIR\" 2>/dev/null; then",
-            "    if ! echo \$\$ > \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null; then",
-            "      rmdir \"\$WATCHDOG_LOCK_DIR\" 2>/dev/null",
-            "      return 1",
-            "    fi",
-            "    if ! echo \$\$ > \"\$WATCHDOG_PID_FILE\" 2>/dev/null; then",
-            "      rm -f \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null",
-            "      rmdir \"\$WATCHDOG_LOCK_DIR\" 2>/dev/null",
-            "      return 1",
-            "    fi",
-            "    WATCHDOG_LOCK_OWNED=1",
-            "    return 0",
-            "  fi",
-            "  # Another watchdog won the race to re-acquire; stand down.",
+            "  # Fail closed on an invalid lock. The launcher cleanup path",
+            "  # removes it after old watchdog processes have been killed.",
             "  return 1",
             "}",
             "",
@@ -390,9 +523,59 @@ class DaemonLauncher(
             "",
             "trap 'cleanup_watchdog_lock' EXIT",
             "trap 'exit 0' HUP INT TERM",
-            "if ! acquire_watchdog_lock; then",
-            "  exit 0",
+            "if ! acquire_watchdog_lock; then"
+        ) + onLockHeld + listOf(
             "fi"
+        )
+
+        /**
+         * Telegram-only lock takeover, emitted before [watchdogOwnershipLines]. A lock whose
+         * recorded owner is not a live watchdog (dead, empty, or our own reused PID) is taken
+         * over; this is race-safe only because every copy calls `watchdog_yields` each loop.
+         */
+        private fun watchdogTakeoverLines(): List<String> = listOf(
+            "steal_stale_watchdog_lock() {",
+            "  STALE_WPID=\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)",
+            // An empty owner may be a live copy between mkdir and its PID write.
+            "  if [ -z \"\$STALE_WPID\" ] && [ -d \"\$WATCHDOG_LOCK_DIR\" ]; then",
+            "    sleep 1",
+            "    STALE_WPID=\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)",
+            "  fi",
+            "  [ \"\$STALE_WPID\" != \"\$\$\" ] && watchdog_pid_matches \"\$STALE_WPID\" && return 1",
+            "  [ -d \"\$WATCHDOG_LOCK_DIR\" ] || { acquire_watchdog_lock; return \$?; }",
+            // Replace only the owner record, atomically: deleting the directory would let a
+            // concurrent stealer drop a live owner's lock, leaving the lock naming nobody.
+            "  STEAL_TMP=\"\$WATCHDOG_LOCK_DIR.steal.\$\$\"",
+            "  echo \$\$ > \"\$STEAL_TMP\" 2>/dev/null || { rm -f \"\$STEAL_TMP\" 2>/dev/null; return 1; }",
+            "  mv -f \"\$STEAL_TMP\" \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null || { rm -f \"\$STEAL_TMP\" 2>/dev/null; return 1; }",
+            // Last writer wins; an earlier stealer sees a foreign owner here and stands down.
+            "  [ \"\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)\" = \"\$\$\" ] || return 1",
+            "  echo \$\$ > \"\$WATCHDOG_PID_FILE\" 2>/dev/null",
+            "  WATCHDOG_LOCK_OWNED=1",
+            "  return 0",
+            "}",
+            "",
+            // An owner seen ONCE may be inside its own exit cleanup, which releases the lock.
+            // Standing down to it would leave nobody supervising, so require two sightings.
+            "watchdog_owner_live_twice() {",
+            "  OWNER_WPID=\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)",
+            "  [ \"\$OWNER_WPID\" = \"\$\$\" ] && return 1",
+            "  watchdog_pid_matches \"\$OWNER_WPID\" || return 1",
+            "  sleep 2",
+            "  OWNER_WPID=\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)",
+            "  [ \"\$OWNER_WPID\" = \"\$\$\" ] && return 1",
+            "  watchdog_pid_matches \"\$OWNER_WPID\"",
+            "}",
+            "",
+            "watchdog_yields() {",
+            "  OWNER_WPID=\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)",
+            "  [ \"\$OWNER_WPID\" = \"\$\$\" ] && return 1",
+            "  watchdog_owner_live_twice && return 0",
+            "  steal_stale_watchdog_lock && return 1",
+            "  OWNER_WPID=\$(cat \"\$WATCHDOG_LOCK_OWNER\" 2>/dev/null)",
+            "  [ \"\$OWNER_WPID\" != \"\$\$\" ] && watchdog_pid_matches \"\$OWNER_WPID\"",
+            "}",
+            ""
         )
 
         /**
@@ -400,9 +583,25 @@ class DaemonLauncher(
          * Telegram bot daemon can emit the SAME watchdog the UI uses. The
          * acc-sentry watchdog is intentionally UNCAPPED (no MAX_RETRIES, no
          * backoff) — see [[feedback_acc_sentry_uncapped_immortal]].
+         *
+         * Conservative generator used by tests and any legacy caller that has
+         * not explicitly selected DiLink 5. Its output remains byte-identical
+         * to the pre-health-supervisor watchdog.
          */
-        fun buildAccSentryWatchdogScript(apkPath: String, proxyArgs: String): List<String> {
-            val lockFile = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.lock")
+        fun buildAccSentryWatchdogScript(
+            apkPath: String,
+            proxyArgs: String
+        ): List<String> = buildAccSentryWatchdogScript(
+            apkPath, proxyArgs, false)
+
+        fun buildAccSentryWatchdogScript(
+            apkPath: String,
+            proxyArgs: String,
+            enableDi5HealthSupervision: Boolean
+        ): List<String> {
+            val lockFile = com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.lock")
+            val healthFile = com.overdrive.app.util.ScratchRoot.path(
+                com.overdrive.app.power.AccSentryHealthMarker.FILE_NAME)
             return listOf(
                 "#!/system/bin/sh",
                 "# AccSentryDaemon Watchdog Script",
@@ -411,7 +610,7 @@ class DaemonLauncher(
                 "PROCESS_NAME=\"$ACC_SENTRY_DAEMON_PROCESS\"",
                 "LOG_FILE=\"$ACC_SENTRY_DAEMON_LOG\"",
                 "LOCK_FILE=\"$lockFile\"",
-                "SENTINEL=\"/data/local/tmp/acc_sentry_daemon.disabled\"",
+                "SENTINEL=\"${com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.disabled")}\"",
                 // "Vehicle ON only" parked-shutdown marker (ParkedShutdown.MARKER_PATH).
                 // Unlike every other watchdog, THIS one does NOT exit on it: acc_sentry_daemon
                 // is the parked ACC judge — the park reaper deliberately spares it, it is the
@@ -420,9 +619,15 @@ class DaemonLauncher(
                 // never respawned leaves the car with a dark centre screen and no recovery
                 // except a BYD broadcast or a reboot. So the marker only slows the respawn
                 // cadence (see the sleep at the bottom of the loop) so a crash-looping daemon
-                // cannot keep a parked head unit busy. Never exists in onAndOff mode.
-                "PARKED=\"/data/local/tmp/overdrive_parked_shutdown\"",
+                // cannot keep a parked head unit busy. In onAndOff it exists only after a low-battery cutoff.
+                "PARKED=\"${com.overdrive.app.util.ScratchRoot.path("overdrive_parked_shutdown")}\"",
                 "PARKED_RESPAWNS=0",
+                *(if (enableDi5HealthSupervision) listOf(
+                    "HEALTH_FILE=\"$healthFile\"",
+                    "HEALTH_STALE_SEC=${com.overdrive.app.power.AccSentryHealthMarker.STALE_AFTER_SECONDS}",
+                    "HEALTH_POLL_SEC=${com.overdrive.app.power.AccSentryHealthMarker.WATCHDOG_POLL_SECONDS}",
+                    "HEALTH_SUSPEND_GAP_SEC=${com.overdrive.app.power.AccSentryHealthMarker.SUSPEND_GAP_SECONDS}"
+                ) else emptyList()).toTypedArray(),
                 "PROXY_ARGS=\"$proxyArgs\"",
                 *watchdogOwnershipLines(
                     ACC_SENTRY_WATCHDOG_SCRIPT,
@@ -464,13 +669,24 @@ class DaemonLauncher(
                 "  RESOLVED_APK=\$(pm path com.overdrive.app 2>/dev/null | grep '/base.apk\$' | head -n 1 | sed 's/^package://')",
                 "  if [ -n \"\$RESOLVED_APK\" ] && [ -f \"\$RESOLVED_APK\" ]; then APK_PATH=\"\$RESOLVED_APK\"; fi",
                 "  echo \"[\$(date)] Starting Daemon from \$APK_PATH...\" >> \"\$LOG_FILE\"",
+                *(if (enableDi5HealthSupervision) listOf(
+                    "  rm -f \"\$HEALTH_FILE\" \"\$HEALTH_FILE\".tmp.* 2>/dev/null"
+                ) else emptyList()).toTypedArray(),
                 // Backgrounded so the log poller can supervise it while it runs.
                 "  CLASSPATH=\"\$APK_PATH\" app_process \$PROXY_ARGS /system/bin --nice-name=\"\$PROCESS_NAME\" \"\$CLS\" >> \"\$LOG_FILE\" 2>&1 &",
                 "  DAEMON_PID=\$!",
                 *logRotateCoprocessLines("DAEMON_PID", "ROTATE_PID").toTypedArray(),
+                *(if (enableDi5HealthSupervision)
+                    accSentryHealthCoprocessLines(
+                        "DAEMON_PID", "HEALTH_WATCH_PID")
+                else emptyList()).toTypedArray(),
                 "  wait \$DAEMON_PID",
                 "  EXIT_CODE=\$?",
                 "  kill \$ROTATE_PID 2>/dev/null; wait \$ROTATE_PID 2>/dev/null",
+                *(if (enableDi5HealthSupervision) listOf(
+                    "  kill \$HEALTH_WATCH_PID 2>/dev/null; wait \$HEALTH_WATCH_PID 2>/dev/null",
+                    "  rm -f \"\$HEALTH_FILE\" \"\$HEALTH_FILE\".tmp.* 2>/dev/null"
+                ) else emptyList()).toTypedArray(),
                 "  if [ -f \"\$SENTINEL\" ]; then",
                 "    echo \"[\$(date)] Daemon disabled by user (sentinel written during shutdown). Exiting watchdog.\" >> \"\$LOG_FILE\"",
                 "    exit 0",
@@ -524,33 +740,78 @@ class DaemonLauncher(
          * MainActivity was alive. Worst-case downtime was ~12 minutes
          * (ProcessRevivalReceiver alarm → revive → next health-check tick).
          * With this watchdog, recovery is seconds.
+         *
+         * Single owner: the app and AccSentry can deploy it concurrently, and two live
+         * copies SIGKILL each other's daemon forever, so a non-owner exits.
          */
         fun buildTelegramWatchdogScript(apkPath: String, proxyArgs: String): List<String> {
             // Backgrounded (trailing &) so the log poller can supervise it
             // while it runs; $! is captured into DAEMON_PID below.
             val appProcessLine =
-                "  CLASSPATH=$apkPath app_process " +
+                "  CLASSPATH=\"\$APK_PATH\" app_process " +
                 "${proxyArgs}/system/bin " +
                 "--nice-name=$TELEGRAM_DAEMON_PROCESS " +
                 "com.overdrive.app.daemon.TelegramBotDaemon >> \"\$LOG_FILE\" 2>&1 &"
+            val yieldCheck = listOf(
+                "  if watchdog_yields; then",
+                "    echo \"[\$(date)] Watchdog PID \$OWNER_WPID owns supervision. Exiting duplicate watchdog.\" >> \"\$LOG_FILE\"",
+                "    exit 0",
+                "  fi"
+            )
 
             return listOf(
                 "#!/system/bin/sh",
                 "# TelegramBotDaemon Watchdog Script",
                 "LOG_FILE=\"$TELEGRAM_DAEMON_LOG\"",
-                "LOCK_FILE=\"/data/local/tmp/telegram_bot_daemon.lock\"",
-                "SENTINEL=\"/data/local/tmp/telegram_bot_daemon.disabled\"",
-                "PARKED=\"/data/local/tmp/overdrive_parked_shutdown\"",
+                "LOCK_FILE=\"${com.overdrive.app.util.ScratchRoot.path("telegram_bot_daemon.lock")}\"",
+                "SENTINEL=\"${com.overdrive.app.util.ScratchRoot.path("telegram_bot_daemon.disabled")}\"",
+                "PARKED=\"${com.overdrive.app.util.ScratchRoot.path("overdrive_parked_shutdown")}\"",
+                "APK_PATH=\"$apkPath\"",
                 "RETRY_COUNT=0",
                 "HEALTHY_UPTIME_SEC=300",
+                *watchdogTakeoverLines().toTypedArray(),
+                *watchdogOwnershipLines(
+                    TELEGRAM_WATCHDOG_SCRIPT,
+                    TELEGRAM_WATCHDOG_PID_FILE,
+                    TELEGRAM_WATCHDOG_LOCK_PATH,
+                    // Exit only for a live owner; a takeover lost to a concurrent copy is retried.
+                    onLockHeld = listOf(
+                        "  WATCHDOG_TRIES=0",
+                        "  until steal_stale_watchdog_lock; do",
+                        "    WATCHDOG_TRIES=\$((WATCHDOG_TRIES + 1))",
+                        "    if [ \$WATCHDOG_TRIES -ge 5 ] || watchdog_owner_live_twice; then",
+                        "      echo \"[\$(date)] Watchdog lock not acquired (owner PID \$OWNER_WPID). Exiting watchdog.\" >> \"\$LOG_FILE\"",
+                        "      exit 0",
+                        "    fi",
+                        "    sleep 1",
+                        "  done"
+                    )
+                ).toTypedArray(),
                 "",
                 "while true; do",
+                *yieldCheck.toTypedArray(),
                 // Catch a log left oversized by a previous run before relaunch;
                 // real-time bounding is the poller co-process below.
                 *logRotateGuardLines().toTypedArray(),
                 "  if [ -f \"\$SENTINEL\" ] || [ -f \"\$PARKED\" ]; then",
                 "    echo \"[\$(date)] Daemon disabled by user (sentinel file exists). Exiting watchdog.\" >> \"\$LOG_FILE\"",
                 "    exit 0",
+                "  fi",
+                // An update replaces the APK path; the loop text keeps the one it was deployed with.
+                // Resolve only when the path is gone (an update moved it): the lookup can block on
+                // binder, and this runs while holding the lock, so it is also time-bounded. `cmd`
+                // directly, not `pm`: pm is a non-exec wrapper, so timeout would miss the worker.
+                "  if [ ! -f \"\$APK_PATH\" ]; then",
+                "    RESOLVED_APK=\$(timeout -k 2 10 cmd package path com.overdrive.app 2>/dev/null | grep '/base.apk\$' | head -n 1 | sed 's/^package://')",
+                "    [ -f \"\$RESOLVED_APK\" ] || RESOLVED_APK=\$(ls /data/app/*/com.overdrive.app*/base.apk 2>/dev/null | head -n 1)",
+                "    [ -f \"\$RESOLVED_APK\" ] || RESOLVED_APK=\$(ls /data/app/com.overdrive.app*/base.apk 2>/dev/null | head -n 1)",
+                "    if [ -n \"\$RESOLVED_APK\" ] && [ -f \"\$RESOLVED_APK\" ]; then APK_PATH=\"\$RESOLVED_APK\"; fi",
+                "  fi",
+                // Spawning against a missing classpath only burns a restart per minute.
+                "  if [ ! -f \"\$APK_PATH\" ]; then",
+                "    echo \"[\$(date)] APK \$APK_PATH missing and pm path unavailable; waiting 60s\" >> \"\$LOG_FILE\"",
+                "    sleep 60",
+                "    continue",
                 "  fi",
                 "  echo \"[\$(date)] Starting TelegramBotDaemon...\" >> \"\$LOG_FILE\"",
                 "  START_EPOCH=\$(awk '{print int(\$1)}' /proc/uptime 2>/dev/null || date +%s)",
@@ -561,6 +822,8 @@ class DaemonLauncher(
                 "  wait \$DAEMON_PID",
                 "  EXIT_CODE=\$?",
                 "  kill \$ROTATE_PID 2>/dev/null; wait \$ROTATE_PID 2>/dev/null",
+                // A duplicate's daemon dies to the owner's: leave before touching LOCK_FILE.
+                *yieldCheck.toTypedArray(),
                 "  END_EPOCH=\$(awk '{print int(\$1)}' /proc/uptime 2>/dev/null || date +%s)",
                 "  UPTIME_SEC=\$((END_EPOCH - START_EPOCH))",
                 "  if [ \$UPTIME_SEC -lt 0 ]; then UPTIME_SEC=0; fi",
@@ -608,7 +871,7 @@ class DaemonLauncher(
             // daemon is the highest-volume stdout logger, so real-time
             // bounding of cam_daemon.log (the UI-shown file) matters most here.
             val appProcessLine =
-                "  CLASSPATH=\$([ -f /system/framework/bmmcamera.jar ] && echo /system/framework/bmmcamera.jar:)$apkPath app_process " +
+                "  CLASSPATH=${cameraClasspathPrefix()}$apkPath app_process " +
                 "-Djava.library.path=$nativeLibDir:/system/lib64:/vendor/lib64:/product/lib64:/odm/lib64 " +
                 "${proxyArgs}/system/bin " +
                 "--nice-name=$CAMERA_DAEMON_PROCESS " +
@@ -619,9 +882,9 @@ class DaemonLauncher(
                 "#!/system/bin/sh",
                 "# CameraDaemon Watchdog Script",
                 "LOG_FILE=\"$CAMERA_DAEMON_LOG\"",
-                "LOCK_FILE=\"/data/local/tmp/camera_daemon.lock\"",
-                "SENTINEL=\"/data/local/tmp/camera_daemon.disabled\"",
-                "PARKED=\"/data/local/tmp/overdrive_parked_shutdown\"",
+                "LOCK_FILE=\"${com.overdrive.app.util.ScratchRoot.path("camera_daemon.lock")}\"",
+                "SENTINEL=\"${com.overdrive.app.util.ScratchRoot.path("camera_daemon.disabled")}\"",
+                "PARKED=\"${com.overdrive.app.util.ScratchRoot.path("overdrive_parked_shutdown")}\"",
                 "RETRY_COUNT=0",
                 "HEALTHY_UPTIME_SEC=300",
                 *watchdogOwnershipLines(
@@ -781,7 +1044,7 @@ class DaemonLauncher(
     private fun launchCameraDaemonInternal(outputDir: String, nativeLibDir: String, callback: LaunchCallback) {
         val apkPath = context.applicationInfo.sourceDir
         val proxyArgs = getProxyArgs()
-        val scriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_cam_daemon.sh")
+        val scriptPath = com.overdrive.app.util.ScratchRoot.path("start_cam_daemon.sh")
         
         logManager.debug(TAG, "Deploying CameraDaemon watchdog script...")
         callback.onLog("Deploying watchdog script...")
@@ -875,15 +1138,37 @@ class DaemonLauncher(
     
     /**
      * Fallback: Launch CameraDaemon directly without watchdog (original simple method).
+     * This path has no watchdog ownership lock, so it must not add a second daemon.
      */
     private fun launchCamDaemonFallback(callback: LaunchCallback) {
+        adbShellExecutor.execute(
+            command = "ps -A | grep -w $CAMERA_DAEMON_PROCESS | grep -v grep",
+            callback = object : AdbShellExecutor.ShellCallback {
+                override fun onSuccess(output: String) {
+                    if (output.trim().isNotEmpty()) {
+                        logManager.info(TAG, "CameraDaemon already running: ${output.trim()}")
+                        callback.onLog("CameraDaemon already running")
+                        callback.onLaunched()
+                        return
+                    }
+                    launchCamDaemonFallbackInternal(callback)
+                }
+
+                override fun onError(error: String) {
+                    launchCamDaemonFallbackInternal(callback)
+                }
+            }
+        )
+    }
+
+    private fun launchCamDaemonFallbackInternal(callback: LaunchCallback) {
         val apkPath = context.applicationInfo.sourceDir
         val proxyArgs = getProxyArgs()
         val outputDir = context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         
         val innerCmd = buildString {
-            append("CLASSPATH=\$([ -f /system/framework/bmmcamera.jar ] && echo /system/framework/bmmcamera.jar:)$apkPath ")
+            append("CLASSPATH=${cameraClasspathPrefix()}$apkPath ")
             append("app_process ")
             append("-Djava.library.path=$nativeLibDir:/system/lib64:/vendor/lib64:/product/lib64:/odm/lib64 ")
             append(proxyArgs)
@@ -894,7 +1179,9 @@ class DaemonLauncher(
             append("$nativeLibDir")
         }
         
-        val cmd = "nohup sh -c '$innerCmd' > $CAMERA_DAEMON_LOG 2>&1 &"
+        // Append, not truncate: a live daemon's O_APPEND fd on the same file would
+        // otherwise be left writing past a reset offset.
+        val cmd = "nohup sh -c '$innerCmd' >> $CAMERA_DAEMON_LOG 2>&1 &"
         
         adbShellExecutor.execute(
             command = cmd,
@@ -1207,12 +1494,85 @@ class DaemonLauncher(
             }
         )
     }
+
+    /**
+     * Replace the ACC watchdog after the camera daemon commits a vehicle-mode
+     * transition. The deployed script is mode-specific, so this deliberately
+     * bypasses [launchAccSentryDaemon]'s already-running fast path.
+     *
+     * The caller supplies the committed mode explicitly. This avoids re-reading
+     * a process-local selector after asynchronous cleanup has begun.
+     */
+    fun redeployAccSentryDaemonForVehicleMode(
+        enableDi5HealthSupervision: Boolean,
+        callback: LaunchCallback
+    ) {
+        if (guardHeld(accSentryLaunchStartedAt)) {
+            callback.onError("AccSentryDaemon launch already in progress")
+            return
+        }
+        accSentryLaunchStartedAt = System.currentTimeMillis()
+
+        val selectedMode =
+            if (enableDi5HealthSupervision) "DiLink 5" else "legacy"
+        logManager.info(
+            TAG,
+            "Redeploying AccSentryDaemon watchdog for committed $selectedMode mode")
+        callback.onLog("Reconciling ACC watchdog for $selectedMode mode...")
+
+        adbShellExecutor.executeScript(
+            scriptBody = buildAccSentryModeSyncCleanupScript(),
+            callback = object : AdbShellExecutor.ShellCallback {
+                override fun onSuccess(output: String) {
+                    when {
+                        output.contains("MODE_SYNC_SKIPPED_DISABLED") -> {
+                            accSentryLaunchStartedAt = 0L
+                            callback.onLog(
+                                "ACC watchdog mode sync skipped: daemon manually stopped")
+                            callback.onLaunched()
+                        }
+                        output.contains("MODE_SYNC_SKIPPED_PARKED") -> {
+                            accSentryLaunchStartedAt = 0L
+                            callback.onLog(
+                                "ACC watchdog mode sync skipped: parked shutdown active")
+                            callback.onLaunched()
+                        }
+                        output.contains("MODE_SYNC_REDEPLOY_READY") -> {
+                            val apkPath = context.applicationInfo.sourceDir
+                            val proxyArgs = getProxyArgs()
+                            val scriptPath =
+                                com.overdrive.app.util.ScratchRoot.path(
+                                    "start_acc_sentry.sh")
+                            writeWatchdogScript(
+                                apkPath,
+                                proxyArgs,
+                                scriptPath,
+                                callback,
+                                enableDi5HealthSupervision,
+                                allowBareFallback = false)
+                        }
+                        else -> {
+                            accSentryLaunchStartedAt = 0L
+                            callback.onError(
+                                "ACC watchdog mode-sync cleanup returned no readiness marker")
+                        }
+                    }
+                }
+
+                override fun onError(error: String) {
+                    accSentryLaunchStartedAt = 0L
+                    callback.onError(
+                        "ACC watchdog mode-sync cleanup failed: $error")
+                }
+            }
+        )
+    }
     
     private fun launchAccSentryDaemonInternal(callback: LaunchCallback) {
         val apkPath = context.applicationInfo.sourceDir
         val proxyArgs = getProxyArgs()
-        val watchdogScriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_acc_sentry.sh")
-        val lockFilePath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.lock")
+        val watchdogScriptPath = com.overdrive.app.util.ScratchRoot.path("start_acc_sentry.sh")
+        val lockFilePath = com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.lock")
         
         logManager.debug(TAG, "Deploying Immortal Watchdog Script for AccSentryDaemon...")
         callback.onLog("Deploying watchdog script via ADB (UID 2000)...")
@@ -1251,12 +1611,23 @@ class DaemonLauncher(
     /**
      * Write the watchdog script to /data/local/tmp/ using printf (more reliable than heredoc).
      */
-    private fun writeWatchdogScript(apkPath: String, proxyArgs: String, scriptPath: String, callback: LaunchCallback) {
+    private fun writeWatchdogScript(
+        apkPath: String,
+        proxyArgs: String,
+        scriptPath: String,
+        callback: LaunchCallback,
+        enableDi5HealthSupervision: Boolean =
+            com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected(),
+        allowBareFallback: Boolean = true
+    ) {
         // Single source of truth for the script body lives in the companion
         // (buildAccSentryWatchdogScript) so the Telegram path can emit the
         // same script. Sentinel-gated, uncapped — see
         // [[feedback_acc_sentry_uncapped_immortal]].
-        val scriptLines = buildAccSentryWatchdogScript(apkPath, proxyArgs)
+        val scriptLines = buildAccSentryWatchdogScript(
+            apkPath,
+            proxyArgs,
+            enableDi5HealthSupervision)
         
         val writeCmd = buildWatchdogScriptWriteCommand(scriptPath, scriptLines)
         
@@ -1266,13 +1637,20 @@ class DaemonLauncher(
                 override fun onSuccess(output: String) {
                     logManager.info(TAG, "Watchdog script written successfully")
                     callback.onLog("Watchdog script ready, launching...")
-                    launchWatchdogScript(scriptPath, callback)
+                    launchWatchdogScript(
+                        scriptPath, callback, allowBareFallback)
                 }
                 
                 override fun onError(error: String) {
                     logManager.error(TAG, "Failed to write watchdog script: $error")
-                    callback.onLog("Watchdog script failed, using fallback...")
-                    launchAccSentryDaemonFallback(callback)
+                    if (allowBareFallback) {
+                        callback.onLog("Watchdog script failed, using fallback...")
+                        launchAccSentryDaemonFallback(callback)
+                    } else {
+                        accSentryLaunchStartedAt = 0L
+                        callback.onError(
+                            "Mode-specific ACC watchdog write failed: $error")
+                    }
                 }
             }
         )
@@ -1281,7 +1659,11 @@ class DaemonLauncher(
     /**
      * Launch the watchdog script in background using nohup.
      */
-    private fun launchWatchdogScript(scriptPath: String, callback: LaunchCallback) {
+    private fun launchWatchdogScript(
+        scriptPath: String,
+        callback: LaunchCallback,
+        allowBareFallback: Boolean = true
+    ) {
         val launchCmd = "nohup sh $scriptPath > /dev/null 2>&1 &"
         
         adbShellExecutor.execute(
@@ -1300,8 +1682,14 @@ class DaemonLauncher(
                 
                 override fun onError(error: String) {
                     logManager.error(TAG, "Failed to launch watchdog: $error")
-                    callback.onLog("Watchdog launch failed, using fallback...")
-                    launchAccSentryDaemonFallback(callback)
+                    if (allowBareFallback) {
+                        callback.onLog("Watchdog launch failed, using fallback...")
+                        launchAccSentryDaemonFallback(callback)
+                    } else {
+                        accSentryLaunchStartedAt = 0L
+                        callback.onError(
+                            "Mode-specific ACC watchdog launch failed: $error")
+                    }
                 }
             }
         )
@@ -1451,83 +1839,122 @@ class DaemonLauncher(
         // user tap can otherwise each deploy their own watchdog concurrently
         // (see telegramLaunchStartedAt) and produce a respawn loop that
         // re-announces "bot ready" every cycle.
-        if (guardHeld(telegramLaunchStartedAt)) {
-            logManager.info(TAG, "TelegramBotDaemon launch already in progress, skipping")
-            callback.onLog("Launch already in progress")
-            callback.onLaunched()
-            return
+        val launchEpoch: Long
+        synchronized(telegramLaunchJoiners) {
+            val inFlight = telegramLaunchStartedAt
+            if (guardHeld(inFlight)) {
+                logManager.info(TAG, "TelegramBotDaemon launch already in progress, joining it")
+                callback.onLog("Launch already in progress")
+                telegramLaunchJoiners.getOrPut(inFlight) { ArrayList() }.add(callback)
+                return
+            }
+            launchEpoch = System.currentTimeMillis()
+            telegramLaunchStartedAt = launchEpoch
         }
-        telegramLaunchStartedAt = System.currentTimeMillis()
 
         logManager.info(TAG, "Launching TelegramBotDaemon...")
         callback.onLog("Launching TelegramBotDaemon...")
 
-        // Release the guard on every terminal outcome of the async chain.
+        // Release the guard on every terminal outcome of the async chain, but only while this
+        // chain still owns it: a late callback must not unguard a newer launch. Callers that
+        // joined this launch get the same outcome.
         val guarded = object : LaunchCallback {
+            private fun finish(): List<LaunchCallback> = synchronized(telegramLaunchJoiners) {
+                if (telegramLaunchStartedAt == launchEpoch) telegramLaunchStartedAt = 0L
+                telegramLaunchJoiners.remove(launchEpoch).orEmpty()
+            }
             override fun onLog(message: String) = callback.onLog(message)
+            // try/finally: a throwing first callback must not strand the callers that joined.
             override fun onLaunched() {
-                telegramLaunchStartedAt = 0L
-                callback.onLaunched()
+                val joiners = finish()
+                try { callback.onLaunched() } finally { joiners.forEach { it.onLaunched() } }
             }
             override fun onError(error: String) {
-                telegramLaunchStartedAt = 0L
-                callback.onError(error)
+                val joiners = finish()
+                try { callback.onError(error) } finally { joiners.forEach { it.onError(error) } }
             }
         }
 
-        // Check if already running
+        probeTelegramSupervision(guarded, launchEpoch)
+    }
+
+    /** True while [launchEpoch] still owns the launch guard with at least half its window left. */
+    private fun telegramGuardHasRoom(launchEpoch: Long): Boolean = synchronized(telegramLaunchJoiners) {
+        telegramLaunchStartedAt == launchEpoch &&
+            System.currentTimeMillis() - launchEpoch in 0 until LAUNCH_GUARD_TIMEOUT_MS / 2
+    }
+
+    /**
+     * Supervised = a live watchdog owner; one with no daemon is in backoff, confirmed after 2 s and
+     * left alone. A machine stop is cleared first in the same shell, so the watchdog cannot exit on
+     * it between check and clear; a user stop ends the start. Exits 0 always: onError = transport.
+     */
+    private fun probeTelegramSupervision(
+        guarded: LaunchCallback, launchEpoch: Long, retriesLeft: Int = 1
+    ) {
         adbShellExecutor.execute(
-            command = "ps -A | grep $TELEGRAM_DAEMON_PROCESS | grep -v grep",
+            command = telegramMachineStopClearLine() +
+                "D=\$(ps -A | grep $TELEGRAM_DAEMON_PROCESS | grep -v grep); " +
+                "${telegramWatchdogOwnerAlive()} && " +
+                "{ [ -n \"\$D\" ] || { sleep 2; ${telegramWatchdogOwnerAlive()}; }; } && " +
+                "echo \"SUPERVISED:\${D:-watchdog restarting the daemon}\"; true",
             callback = object : AdbShellExecutor.ShellCallback {
                 override fun onSuccess(output: String) {
-                    if (output.trim().isNotEmpty()) {
-                        logManager.info(TAG, "TelegramBotDaemon already running: ${output.trim()}")
-                        callback.onLog("TelegramBotDaemon already running")
-                        // Clear the disable sentinel before reporting success —
-                        // same handshake the camera path does on its
-                        // already-running short-circuit. We are being asked to
-                        // start, so a leftover sentinel (e.g. the app-update
-                        // sweep's, which is never cleared for optional daemons)
-                        // must not survive: the supervising watchdog gate-exits
-                        // on it at the daemon's next exit, turning a live daemon
-                        // into a permanently-stopped one with no user action.
-                        // Gated in the rm's own callback so onLaunched() only
-                        // fires once the file is actually gone.
-                        adbShellExecutor.execute(
-                            command = "rm -f /data/local/tmp/telegram_bot_daemon.disabled "
-                                + "2>/dev/null; echo done",
-                            callback = object : AdbShellExecutor.ShellCallback {
-                                override fun onSuccess(o: String) { guarded.onLaunched() }
-                                override fun onError(e: String) {
-                                    logManager.warn(TAG,
-                                        "Sentinel rm failed on already-running short-circuit: $e")
-                                    guarded.onLaunched()
-                                }
-                            }
-                        )
+                    if (output.contains("USER_STOP")) {
+                        logManager.info(TAG, "Telegram start aborted: user stop recorded")
+                        guarded.onError("Daemon was stopped by the user")
+                        return
+                    }
+                    if (output.contains("SUPERVISED:")) {
+                        logManager.info(TAG, "TelegramBotDaemon already running: " +
+                            output.substringAfter("SUPERVISED:").trim())
+                        guarded.onLog("TelegramBotDaemon already running")
+                        guarded.onLaunched()
                         return
                     }
                     launchTelegramDaemonInternal(guarded)
                 }
 
                 override fun onError(error: String) {
-                    launchTelegramDaemonInternal(guarded)
+                    // State unknown: never relaunch on it. Look once more only while this launch
+                    // still owns the guard (past it, a newer launch may run), then report.
+                    logManager.warn(TAG, "Telegram supervision probe failed: $error")
+                    val giveUp = { guarded.onError("Could not check the Telegram daemon: $error") }
+                    if (retriesLeft > 0 && telegramGuardHasRoom(launchEpoch)) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            if (telegramGuardHasRoom(launchEpoch)) {
+                                probeTelegramSupervision(guarded, launchEpoch, retriesLeft - 1)
+                            } else {
+                                giveUp()
+                            }
+                        }, 2000)
+                    } else {
+                        giveUp()
+                    }
                 }
             }
         )
     }
-    
+
     private fun launchTelegramDaemonInternal(callback: LaunchCallback) {
         val apkPath = context.applicationInfo.sourceDir
         val proxyArgs = getProxyArgs()
-        val watchdogScriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/start_telegram.sh")
+        val watchdogScriptPath = com.overdrive.app.util.ScratchRoot.path("start_telegram.sh")
 
         // Write output_dir to telegram config so daemon knows where events are stored
         writeOutputDirToTelegramConfig()
 
-        // Step 1: Pre-launch sweep via executeScript (tmpfile path so toybox
+        // Deploy before killing: a failed write leaves the running bot alone.
+        writeTelegramWatchdogScript(apkPath, proxyArgs, watchdogScriptPath, callback) {
+            stopOldTelegramProcesses(watchdogScriptPath, callback)
+        }
+    }
+
+    private fun stopOldTelegramProcesses(watchdogScriptPath: String, callback: LaunchCallback) {
+        // Pre-launch sweep via executeScript (tmpfile path so toybox
         // `pkill -f 'telegram_bot_daemon'` can't self-match the calling
-        // shell). Clear the disable sentinel — user is explicitly starting.
+        // shell). Clear a machine-written disable sentinel; a user stop stays
+        // and the new watchdog exits on it.
         // Lock-rm goes AFTER pkill with a settle to prevent the lockfile
         // resurrection race.
         //
@@ -1541,62 +1968,67 @@ class DaemonLauncher(
         // call launchTelegramDaemon and stack watchdogs, producing the
         // restart-loop symptom (each daemon's killOldInstances kills the
         // others' daemons, those watchdogs respawn instantly, repeat).
+        //
+        // Kill and relaunch in ONE script: a transport drop between two commands would
+        // otherwise leave the bot killed and never restarted. A recorded user stop aborts
+        // before the kill, so a stop racing this launch is not undone.
         val cleanupScript =
-            "rm -f /data/local/tmp/telegram_bot_daemon.disabled 2>/dev/null\n" +
-            "rm -f $watchdogScriptPath 2>/dev/null\n" +
+            // A session hangup between the kills and the nohup would leave the bot dead.
+            "trap '' HUP\n" +
+            telegramMachineStopClearLine() +
+            "if [ -f /data/local/tmp/telegram_bot_daemon.disabled ]; then echo aborted; exit 0; fi\n" +
             psAwkKillLine("start_telegram.sh") +
             psAwkKillLine("telegram_bot_daemon") +
             "sleep 1\n" +
             "rm -f /data/local/tmp/telegram_bot_daemon.lock 2>/dev/null\n" +
-            "echo done\n"
+            "nohup sh $watchdogScriptPath > /dev/null 2>&1 &\n" +
+            "echo launched\n"
 
         adbShellExecutor.executeScript(
             scriptBody = cleanupScript,
             callback = object : AdbShellExecutor.ShellCallback {
                 override fun onSuccess(output: String) {
-                    callback.onLog("Old processes cleaned up, writing watchdog script...")
-                    writeTelegramWatchdogScript(apkPath, proxyArgs, watchdogScriptPath, callback)
+                    if (output.contains("USER_STOP") || output.contains("aborted")) {
+                        logManager.info(TAG, "Telegram launch aborted: user stop recorded")
+                        callback.onError("Daemon was stopped by the user")
+                        return
+                    }
+                    logManager.info(TAG, "TelegramBotDaemon watchdog launched")
+                    callback.onLog("Watchdog active, verifying daemon...")
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        verifyTelegramDaemonRunning(callback)
+                    }, 4000)
                 }
                 override fun onError(error: String) {
-                    callback.onLog("Cleanup error (continuing): $error")
-                    writeTelegramWatchdogScript(apkPath, proxyArgs, watchdogScriptPath, callback)
+                    // The script ignores HUP and may have finished on the device after the
+                    // transport failed, so report the bot's real state rather than this error.
+                    logManager.warn(TAG, "Telegram relaunch script result lost: $error; verifying")
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        verifyTelegramDaemonRunning(callback)
+                    }, 4000)
                 }
             }
         )
     }
 
     private fun writeTelegramWatchdogScript(
-            apkPath: String, proxyArgs: String, scriptPath: String, callback: LaunchCallback) {
+            apkPath: String, proxyArgs: String, scriptPath: String, callback: LaunchCallback,
+            onWritten: () -> Unit) {
         // Single source of truth for the script body lives in the companion
         // (buildTelegramWatchdogScript). Same retry policy as cam_daemon:
         // sentinel-gated, no retry cap, monotonic uptime via /proc/uptime,
         // healthy-uptime reset at 300s, backoff capped at 60s.
         val scriptLines = buildTelegramWatchdogScript(apkPath, proxyArgs)
 
-        val writeCmd = buildString {
-            append("rm -f $scriptPath 2>/dev/null; ")
-            scriptLines.forEachIndexed { index, line ->
-                val escaped = line
-                        .replace("\\", "\\\\")
-                        .replace("\"", "\\\"")
-                        .replace("\$", "\\$")
-                        .replace("`", "\\`")
-                if (index == 0) {
-                    append("echo \"$escaped\" > $scriptPath; ")
-                } else {
-                    append("echo \"$escaped\" >> $scriptPath; ")
-                }
-            }
-            append("chmod 755 $scriptPath")
-        }
+        val writeCmd = buildWatchdogScriptWriteCommand(scriptPath, scriptLines)
 
         adbShellExecutor.execute(
             command = writeCmd,
             callback = object : AdbShellExecutor.ShellCallback {
                 override fun onSuccess(output: String) {
                     logManager.info(TAG, "Telegram watchdog script written")
-                    callback.onLog("Watchdog script ready, launching...")
-                    launchTelegramWatchdogScript(scriptPath, callback)
+                    callback.onLog("Watchdog script ready, replacing old processes...")
+                    onWritten()
                 }
                 override fun onError(error: String) {
                     logManager.error(TAG, "Failed to write Telegram watchdog: $error")
@@ -1606,29 +2038,6 @@ class DaemonLauncher(
         )
     }
 
-    private fun launchTelegramWatchdogScript(scriptPath: String, callback: LaunchCallback) {
-        val launchCmd = "nohup sh $scriptPath > /dev/null 2>&1 &"
-
-        adbShellExecutor.execute(
-            command = launchCmd,
-            callback = object : AdbShellExecutor.ShellCallback {
-                override fun onSuccess(output: String) {
-                    logManager.info(TAG, "TelegramBotDaemon watchdog launched")
-                    callback.onLog("Watchdog active, verifying daemon...")
-
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        verifyTelegramDaemonRunning(callback)
-                    }, 2000)
-                }
-                
-                override fun onError(error: String) {
-                    logManager.error(TAG, "Failed to launch TelegramBotDaemon: $error")
-                    callback.onError("Launch failed: $error")
-                }
-            }
-        )
-    }
-    
     /**
      * Write output_dir and apk_path to the unified telegram config so the
      * daemon can find event recordings and AccSentryDaemon can launch the
@@ -1648,19 +2057,35 @@ class DaemonLauncher(
         }
     }
     
-    private fun verifyTelegramDaemonRunning(callback: LaunchCallback) {
+    // retriesLeft: the watchdog resolves the APK path (and may wait out a stale lock) before
+    // spawning, so a first look can precede the daemon.
+    private fun verifyTelegramDaemonRunning(callback: LaunchCallback, retriesLeft: Int = 1) {
+        // Same bar as the pre-launch probe: a daemon with no live watchdog owner is not a
+        // successful launch, and a recorded stop explains an absent daemon.
         adbShellExecutor.execute(
-            command = "ps -A -o PID,UID,ARGS | grep $TELEGRAM_DAEMON_PROCESS | grep -v grep | head -1",
+            // The probe ends in `; true`: "not up yet" must reach onSuccess("") for the retry.
+            command = telegramVerifyProbe(),
             callback = object : AdbShellExecutor.ShellCallback {
                 override fun onSuccess(output: String) {
-                    if (output.trim().isNotEmpty()) {
+                    if (output.contains("MACHINE_STOP:")) {
+                        val reason = output.substringAfter("MACHINE_STOP:").trim()
+                        logManager.info(TAG, "Telegram launch held by a system stop: $reason")
+                        callback.onError("Daemon was stopped by the system ($reason)")
+                    } else if (output.contains("USER_STOP")) {
+                        logManager.info(TAG, "Telegram launch superseded by a user stop")
+                        callback.onError("Daemon was stopped by the user")
+                    } else if (output.trim().isNotEmpty()) {
                         val parts = output.trim().split(Regex("\\s+"))
                         val pid = parts.getOrNull(0) ?: "?"
                         val uid = parts.getOrNull(1) ?: "?"
-                        
+
                         logManager.info(TAG, "TelegramBotDaemon running with PID: $pid, UID: $uid")
                         callback.onLog("TelegramBotDaemon running with PID: $pid")
                         callback.onLaunched()
+                    } else if (retriesLeft > 0) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            verifyTelegramDaemonRunning(callback, retriesLeft - 1)
+                        }, 3000)
                     } else {
                         // Check logs
                         adbShellExecutor.execute(
@@ -1684,7 +2109,14 @@ class DaemonLauncher(
                 }
                 
                 override fun onError(error: String) {
-                    callback.onError("Failed to verify TelegramBotDaemon: $error")
+                    // The probe ends in `; true`, so this is the transport, not the bot: look again.
+                    if (retriesLeft > 0) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            verifyTelegramDaemonRunning(callback, retriesLeft - 1)
+                        }, 3000)
+                    } else {
+                        callback.onError("Failed to verify TelegramBotDaemon: $error")
+                    }
                 }
             }
         )
@@ -1696,6 +2128,10 @@ class DaemonLauncher(
     fun stopTelegramDaemon(callback: LaunchCallback) {
         logManager.info(TAG, "Stopping TelegramBotDaemon...")
         callback.onLog("Stopping TelegramBotDaemon...")
+
+        // Release the launch guard: an in-flight launch aborts on the sentinel below, and a
+        // Start pressed after this stop must do real work instead of inheriting its guard.
+        synchronized(telegramLaunchJoiners) { telegramLaunchStartedAt = 0L }
 
         // Plant disable sentinel + chmod 666 + rm watchdog script BEFORE
         // pkill, so any orphan watchdog gates out on its next iteration.
@@ -1729,8 +2165,9 @@ class DaemonLauncher(
                 }
 
                 override fun onError(error: String) {
-                    // pkill returns error if process not found, which is fine
-                    callback.onLaunched()
+                    // The script ends in `echo done`, so this means it never ran.
+                    logManager.error(TAG, "TelegramBotDaemon stop failed: $error")
+                    callback.onError(error)
                 }
             }
         )
@@ -1780,7 +2217,7 @@ class DaemonLauncher(
     private fun copySingboxViaPrivilegedShell(callback: LaunchCallback, onComplete: () -> Unit) {
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val srcPath = "$nativeLibDir/libsingbox.so"
-        val destPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/sing-box")
+        val destPath = com.overdrive.app.util.ScratchRoot.path("sing-box")
         
         logManager.info(TAG, "Installing sing-box from $srcPath to $destPath")
         callback.onLog("Installing sing-box binary...")
@@ -2454,13 +2891,6 @@ class DaemonLauncher(
         )
     }
     
-    /**
-     * Format elapsed time from ps output (e.g., "01:23:45" or "1-02:03:04") to human readable.
-     * Input formats:
-     * - MM:SS (e.g., "00:30", "16:49")
-     * - HH:MM:SS (e.g., "01:23:45")
-     * - DD-HH:MM:SS (e.g., "1-02:03:04")
-     */
     /** Short minute mark. English stays glued ("15m"); Hebrew is "דק׳". */
     private fun minuteMark(): String = compactMark(com.overdrive.app.R.string.unit_minute_compact, "m")
 
@@ -2475,6 +2905,13 @@ class DaemonLauncher(
         return if (unit == ascii) ascii else " $unit"
     }
 
+    /**
+     * Format elapsed time from ps output (e.g., "01:23:45" or "1-02:03:04") to human readable.
+     * Input formats:
+     * - MM:SS (e.g., "00:30", "16:49")
+     * - HH:MM:SS (e.g., "01:23:45")
+     * - DD-HH:MM:SS (e.g., "1-02:03:04")
+     */
     private fun formatUptime(etime: String): String {
         return try {
             // Check if it contains a day separator

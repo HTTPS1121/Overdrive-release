@@ -122,6 +122,8 @@
     <string name="camera_mode_current_default">Hiện tại: mặc định</string>
     <string name="camera_mode_current_dilink4">Hiện tại: DiLink 4</string>
     <string name="camera_mode_current_dilink5">Hiện tại: DiLink 5</string>
+    <string name="camera_mode_option_camera2">Camera2 360 — Atto 3 EVO / DiLink 100</string>
+    <string name="camera_mode_current_camera2">Hiện tại: Camera2 360</string>
     <string name="camera_mode_save">Áp dụng &amp; khởi động lại</string>
     <string name="camera_mode_hint">Thay đổi chế độ sẽ khởi động lại daemon camera. Nếu video trông sai (bị bóp méo, thiếu góc phần tư, lớp phủ đỏ), hãy thử chế độ khác.</string>
     <string name="camera_dilink5_mapping_title">Thứ tự camera DiLink 5</string>
@@ -457,7 +459,8 @@
     <string name="toast_soh_reset_failed_with_message">Đặt lại không thành công: %1$s</string>
     <string name="toast_select_at_least_one_category">Chọn ít nhất một danh mục</string>
     <string name="toast_reset_failed_with_error">Đặt lại không thành công: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s giám sát giao thông…</string>
+    <string name="toast_traffic_monitor_enabling">Đang bật Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">Đang tắt Traffic Monitor…</string>
     <string name="dialog_close">Đóng</string>
     <string name="dialog_reset">Đặt lại</string>
     <string name="dialog_delete">Xoá</string>
@@ -476,13 +479,14 @@
     <string name="dialog_traffic_cannot_check_title">Không thể kiểm tra trạng thái</string>
     <string name="dialog_traffic_cannot_check_message">Kết nối ADB vẫn chưa sẵn sàng.\n\n Ứng dụng cần quyền truy cập ADB để quản lý các gói hệ thống. Xin đảm bảo:\n\n• USB Debugging được bật trong Developer Options\n• Đơn xin ủy quyền ADB đã được chấp nhận\n\nHiện trạng sẽ tự động cập nhật một khi kết nối.</string>
     <string name="dialog_traffic_disable_title">Tắt BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) là ứng dụng hệ thống tích hợp liên tục theo dõi tình trạng giao thông trong nền.\n\nTại sao nên tắt nó?\n\n• Tốn dữ liệu di động (ngay cả khi đỗ)\n• Dùng CPU và pin trong nền\n• Không cần nếu bạn dùng ứng dụng dẫn đường riêng\n• Có thể can thiệp vào việc dùng mạng của dashcam\n\nTắt an toàn — nó chỉ ảnh hưởng đến lớp phủ giao thông tích hợp trên bản đồ. Dẫn đường, Bluetooth và mọi chức năng khác của xe không bị ảnh hưởng.\n\nCần khởi động lại cứng sau khi tắt (giữ nút console trung tâm 5 giây).</string>
+    <string name="dialog_traffic_disable_message">BYD Traffic Monitor (com.byd.trafficmonitor) là ứng dụng hệ thống tích hợp sẵn, kiểm soát những ứng dụng nào được phép sử dụng dữ liệu di động. Ứng dụng này chặn không cho các ứng dụng bên thứ ba, bao gồm cả OverDrive, sử dụng SIM tích hợp sẵn của xe.\n\nTại sao nên tắt?\n\n• Cho phép OverDrive và các ứng dụng khác mà bạn cài đặt sử dụng internet qua SIM BYD\n• Cần thiết để truy cập xe của bạn từ xa qua SIM BYD\n\nTính năng dẫn đường, Bluetooth và mọi chức năng khác của xe vẫn không bị ảnh hưởng.\n\nCần khởi động lại cứng sau khi tắt (giữ nút trên console trung tâm trong 5 giây).</string>
     <string name="dialog_traffic_enable_title">Bật lại BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_enable_message">BYD Traffic Monitor hiện đang tắt.\n\nBật lại sẽ khôi phục lớp phủ giao thông tích hợp trên bản đồ dẫn đường. Lưu ý nó sẽ chạy trong nền và tốn dữ liệu di động.\n\nCần khởi động lại cứng sau khi bật (giữ nút console trung tâm 5 giây).</string>
-    <string name="dialog_traffic_status_title">Giám sát giao thông %1$s</string>
+    <string name="dialog_traffic_enable_message">BYD Traffic Monitor hiện đang tắt.\n\nKhi được bật lại, Traffic Monitor sẽ một lần nữa chặn không cho OverDrive và các ứng dụng bên thứ ba khác sử dụng SIM tích hợp sẵn của xe, do đó tính năng truy cập từ xa qua SIM BYD sẽ ngừng hoạt động.\n\nCần khởi động lại cứng sau khi bật (giữ nút trên console trung tâm trong 5 giây).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor đã bật</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor đã tắt</string>
     <string name="dialog_traffic_reboot_message">Thay đổi đã được áp dụng.\n\nVui lòng khởi động lại cứng ngay bây giờ:\nNhấn giữ nút console trung tâm trong 5 giây.</string>
-    <string name="traffic_monitor_loading">Giám sát giao thông: đang kiểm tra…</string>
-    <string name="traffic_monitor_tap_to_check">Giám sát giao thông (chạm để kiểm tra)</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: Đang kiểm tra…</string>
+    <string name="traffic_monitor_tap_to_check">Traffic Monitor (chạm để kiểm tra)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">Chuyến đi</string>
     <string name="reset_label_soc_history">Lịch sử SoC + 12V</string>
@@ -555,6 +559,10 @@
     <string name="dialog_tailscale_proxy_enable_message">Thao tác này định tuyến MQTT qua Tailscale để bạn có thể tiếp cận một broker riêng trên tailnet của bạn mà không cần chuyển tiếp cổng.\n\nKhi bật:\n• MQTT đến một broker trên tailnet hoạt động (ví dụ Mosquitto trên một thiết bị trên tailnet của bạn)\n• MQTT đến các broker công cộng (HiveMQ, AWS IoT, v.v.) sẽ thất bại — Tailscale chỉ định tuyến đến tailnet của bạn\n• Daemon Tailscale sẽ khởi động lại để áp dụng thay đổi\n• Lưu lượng của ứng dụng khác và phần còn lại của thiết bị không bị ảnh hưởng\n\nBạn có thể tắt bất cứ lúc nào.</string>
     <string name="dialog_zrok_reset_title">Đặt lại môi trường Zrok</string>
     <string name="dialog_zrok_reset_message">Thao tác này sẽ:\n• Dừng đường hầm zrok nếu đang chạy\n• Gỡ môi trường zrok khỏi thiết bị này\n• Xóa mã đã lưu\n\nBạn sẽ cần nhập lại mã và bật lại. Việc này dùng một trong 5 khe thiết bị của bạn trên zrok.io.\n\nBạn có chắc không?</string>
+    <string name="dialog_tunnel_conflict_title">Một đường hầm khác đang chạy</string>
+    <string name="dialog_tunnel_conflict_message">%1$s đang chạy. Chuyển sang %2$s (việc này sẽ dừng %1$s), hay chạy cả hai đường hầm cùng lúc?\n\nKhi cả hai cùng chạy:\n• Có thể truy cập bảng điều khiển qua hai liên kết công khai\n• Lượng dữ liệu di động khi không hoạt động tăng nhẹ\n• Cả hai tự động khởi động sau khi khởi động lại</string>
+    <string name="dialog_tunnel_conflict_switch">Chuyển</string>
+    <string name="dialog_tunnel_conflict_run_both">Chạy cả hai</string>
     <string name="toast_resetting_zrok">Đang đặt lại môi trường zrok…</string>
     <string name="toast_zrok_reset_success">Đã đặt lại môi trường Zrok. Nhập mã mới để thiết lập lại.</string>
     <string name="toast_zrok_reset_partial">Cài đặt lại môi trường (tệp mã thông báo có thể cần phải làm sạch thủ công)</string>
@@ -623,7 +631,7 @@
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">Mẹo &amp; giải quyết các vấn đề</string>
     <string name="setup_traffic_title">Tắt BYD Traffic Monitor</string>
-    <string name="setup_traffic_body">BYD Traffic Monitor chặn các ứng dụng bên thứ ba truy cập internet. Tắt nó cho phép OverDrive và bất kỳ ứng dụng nào bạn cài thực sự dùng được mạng. Cần khởi động lại cứng sau đó.</string>
+    <string name="setup_traffic_body">BYD Traffic Monitor chặn không cho các ứng dụng bên thứ ba truy cập internet. Tắt ứng dụng này sẽ cho phép OverDrive và bất kỳ ứng dụng nào khác mà bạn cài đặt thực sự sử dụng được mạng. Cần khởi động lại cứng sau đó.</string>
     <string name="setup_traffic_button">Mở Traffic Monitor</string>
     <string name="setup_camera_fix_title">Camera đen hoặc sai?</string>
     <string name="setup_camera_fix_body">Dò camera, đặt Camera ID thành 0, nhấn Lưu, rồi khởi động lại daemon camera. Nếu khung hình vẫn sai, lặp lại với Camera ID 1. Để nguyên phần ánh xạ.</string>
@@ -708,6 +716,8 @@
     <string name="settings_about_support_share_value">Mỗi liên kết được chia sẻ giúp một chủ sở hữu BYD khác khám phá Overdrive.</string>
     <string name="settings_about_support_share_message">Khám phá Overdrive — giám sát &amp; camera hành trình mã nguồn mở cho BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Chia sẻ Overdrive</string>
+    <string name="settings_about_youtube_title">Đăng ký kênh YouTube</string>
+    <string name="settings_about_youtube_value">Thích, đăng ký và chia sẻ — mỗi lượt xem đều giúp Overdrive phát triển.</string>
     <string name="settings_about_open_link_failed">Không thể mở liên kết.</string>
     <string name="settings_about_open_link_copied">Không tìm thấy trình duyệt. URL sao chép: %1$s</string>
     <string name="settings_about_support_kofi_title">Tiếp sức cho bản phát hành tiếp theo</string>
@@ -746,7 +756,7 @@
     <string name="recordings_preview_placeholder_body">Nhấn bất kỳ mục nào ở bên trái để chơi nó.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">Bảng điều khiển ADB</string>
-    <string name="diagnostics_section_traffic">Kiểm tra giao thông</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Dò camera</string>
     <string name="diagnostics_section_battery">Sức khỏe pin</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -862,6 +872,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Các bộ đệm trước / sau, codec, giới hạn lưu trữ.</string>
     <string name="settings_section_surveillance_subtitle">Khu vực phát hiện, lịch trình, độ nhạy chuyển động.</string>
+    <string name="settings_section_storage_subtitle">Nơi lưu bản ghi, giới hạn dung lượng, dọn dẹp camera hành trình BYD.</string>
     <string name="settings_section_daemons_subtitle">Bộ chạy Cloudflared, Zrok, Telegram, MQTT.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">Về OverDrive</string>
@@ -1238,7 +1249,7 @@
     <string name="onboarding_later">Để sau</string>
     <string name="onboarding_camera_pano_body">Dùng các mũi tên để tìm hình ghép 4 khung. Đọc từ phía DƯỚI: dưới-trái là PHÍA SAU, dưới-phải là phía BÊN TRÁI.</string>
     <string name="onboarding_expert_roadsense_body">RoadSense sử dụng cảm biến chuyển động và GPS của xe để phát hiện các mối nguy trên đường — gờ giảm tốc, ổ gà, gờ chống tốc độ — và cảnh báo bạn trước những mối nguy đã biết. Các tab của nó bao gồm phát hiện, bản đồ mối nguy, chuông cảnh báo và Điểm mù. Bật công tắc chính để sử dụng bất kỳ tính năng nào.</string>
-    <string name="onboarding_expert_traffic_title">Giám sát giao thông — cần thiết cho truy cập từ xa</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — cần thiết cho truy cập từ xa</string>
     <string name="onboarding_expert_daemons_body">Các công tắc này khởi động và dừng các dịch vụ nền. Tắt Camera, Giám sát hoặc ACC Sentry sẽ dừng ghi hình và giữ chúng tắt cho đến khi bạn bật lại — kể cả sau khi khởi động lại.</string>
     <string name="onboarding_camera_verify_repick">Chọn lại</string>
     <string name="onboarding_dash_chips_body">Các chip ở trên cùng hiển thị việc ghi hình, dịch vụ và liên kết từ xa của bạn. Chúng tự cập nhật — chúng không phải là nút bấm.</string>
@@ -1330,7 +1341,7 @@
     <string name="rail_charging">Sạc</string>
     <string name="rail_automations">Tự động hóa</string>
     <string name="onboarding_skip">Bỏ qua</string>
-    <string name="onboarding_expert_traffic_body">Trình giám sát giao thông tích hợp sẵn của BYD chặn các ứng dụng khác sử dụng SIM tích hợp sẵn của xe. Nếu bạn muốn truy cập xe từ xa qua SIM BYD, bạn phải tắt nó tại đây. Head-unit sẽ khởi động lại để áp dụng thay đổi.</string>
+    <string name="onboarding_expert_traffic_body">Traffic Monitor tích hợp sẵn của BYD chặn không cho các ứng dụng khác sử dụng SIM tích hợp sẵn của xe. Nếu bạn muốn truy cập xe từ xa qua SIM BYD, bạn phải tắt Traffic Monitor tại đây. Màn hình trung tâm sẽ khởi động lại để áp dụng thay đổi.</string>
     <string name="onboarding_expert_surveillance_body">Tinh chỉnh phát hiện, chất lượng và bộ nhớ tại đây. Những mục này mở dưới dạng trang cấu hình trong ứng dụng được phục vụ từ xe của bạn — màn hình trống chỉ có nghĩa là trợ lý vẫn đang khởi động.</string>
     <string name="settings_backup_with_trips">Bao gồm hành trình</string>
     <string name="onboarding_expert_roadsense_title">RoadSense</string>
@@ -1383,6 +1394,10 @@
     <string name="projection_autostart_conflict_confirm">Dùng ứng dụng này</string>
     <string name="projection_app_uninstalled">Ứng dụng đó không còn được cài đặt.</string>
     <string name="projection_status_service_down">Dịch vụ phản chiếu chưa sẵn sàng — hãy khởi động lại ứng dụng (hoặc daemon máy ảnh) rồi thử lại.</string>
+    <string name="projection_status_connecting">Đang kết nối với bảng đồng hồ…</string>
+    <string name="projection_status_mirror_unavailable">Không thể phản chiếu</string>
+    <string name="projection_fullscreen_enter">Toàn màn hình</string>
+    <string name="projection_fullscreen_exit">Thoát toàn màn hình</string>
     <string name="cd_replay_status">Trạng thái phát lại tức thì</string>
     <string name="tailscale_enable_adb">Cho phép ADB từ xa qua Tailscale</string>
     <string name="tailscale_adb_explainer">Mở rộng phạm vi tailnet cho ADB (không phải internet công cộng). Bất kỳ thiết bị tailnet nào có khóa ADB được ủy quyền đều có toàn quyền truy cập shell vào màn hình này. Lưu ý ADB vốn đã chấp nhận kết nối từ mạng nội bộ — tắt tùy chọn này không đóng quyền đó.</string>
@@ -1661,4 +1676,17 @@
     <string name="settings_screenshot_privacy_title">Chế độ riêng tư ảnh chụp màn hình</string>
     <string name="settings_screenshot_privacy_body">Thêm lớp che mờ lên địa chỉ IP, URL, tọa độ, vị trí, mã QR, ảnh thu nhỏ bản ghi và bản xem trước camera trong giao diện gốc và web. Đây chỉ là hỗ trợ trực quan; luôn kiểm tra ảnh chụp màn hình trước khi chia sẻ.</string>
     <string name="settings_screenshot_privacy_save_failed">Không thể lưu chế độ riêng tư ảnh chụp màn hình.</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">Đang nghe…</string>
+    <string name="voice_overlay_thinking">Đang suy nghĩ…</string>
+    <string name="voice_overlay_speaking">Đang nói…</string>
+    <string name="voice_overlay_done">Xong</string>
+    <string name="voice_overlay_cancelled">Đã hủy</string>
+    <string name="voice_overlay_not_understood">Xin lỗi, tôi chưa nghe rõ</string>
+    <string name="voice_overlay_offline">Trợ lý AI không khả dụng</string>
+    <string name="voice_overlay_busy">Trợ lý đang được sử dụng</string>
+    <string name="voice_overlay_blocked_moving">Không khả dụng khi đang lái xe</string>
+    <string name="voice_overlay_refused">Không thể làm việc đó bằng giọng nói</string>
+    <string name="voice_overlay_failed">Không thể hoàn tất việc đó</string>
 </resources>

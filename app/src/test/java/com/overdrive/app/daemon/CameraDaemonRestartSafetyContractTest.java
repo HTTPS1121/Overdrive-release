@@ -75,9 +75,10 @@ public class CameraDaemonRestartSafetyContractTest {
         // Legacy stop adds one conservative fallback when initialization is
         // still in flight but no camera handle/open ownership is observable.
         // (The former rejected post-reverse resume site went with the removed
-        // DI5 reverse yield.)
+        // DI5 reverse yield.) DI5 adds one once-per-boot site: a reopen after an
+        // idle source release that the safety guard refused for the process.
         assertTrue(count(source,
-                "requestProcessRestartPreservingTrip(") == 12);
+                "requestProcessRestartPreservingTrip(") == 13);
     }
 
     @Test
@@ -373,8 +374,9 @@ public class CameraDaemonRestartSafetyContractTest {
         assertTrue(camera.contains("\"GL watchdog heartbeat timeout\");"));
         assertTrue(watchdogLog > watchdogUrgent);
 
-        // Eleven urgent sites in the camera layer: helper, GL watchdog, the
-        // stall-recovery legacy HAL open hard bound, the ACC-ON legacy reopen's
+        // Twelve urgent sites in the camera layer: helper, GL watchdog, the
+        // stall-recovery legacy HAL open hard bound, the DiLink 4 HAL open still
+        // blocked past its late-open deadline, the ACC-ON legacy reopen's
         // timeout/interruption bounds, the legacy stop/open ownership fence, a
         // bounded legacy windshield-camera lifecycle helper,
         // DiLink 5 safe-off teardown that cannot reach its owning GL thread, a
@@ -389,7 +391,7 @@ public class CameraDaemonRestartSafetyContractTest {
         // pano has no ownership-handoff escape sites because it keeps its
         // single AVMCamera producer open continuously.
         assertTrue(count(camera,
-                "requestUrgentCameraReleaseRestart(") == 11);
+                "requestUrgentCameraReleaseRestart(") == 12);
 
         // Retiring-stream-encoder wedge in the surveillance pipeline: same
         // gate, same request-before-log ordering, urgent only while held.

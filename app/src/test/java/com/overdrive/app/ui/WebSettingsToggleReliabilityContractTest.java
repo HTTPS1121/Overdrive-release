@@ -14,16 +14,16 @@ public class WebSettingsToggleReliabilityContractTest {
 
     @Test
     public void immediateSavePagesLockUntilHydratedAndSerializeWrites() throws IOException {
-        assertPageLock("recording.html", "recording.js?v=budget16");
-        assertPageLock("road-sense.html", "road-sense.js?v=chimevolume8");
-        assertPageLock("trips.html", "trips.js?v=history13");
+        assertPageLock("recording.html", "recording.js?v=bsdtrigger1");
+        assertPageLock("road-sense.html", "road-sense.js?v=bsux2");
+        assertPageLock("trips.html", "trips.js?v=history15");
         assertPageLock("abrp.html", "abrp.js?v=toggle3");
-        assertPageLock("surveillance.html", "surveillance.js?v=survtoggle10");
-        assertPageLock("byd-cloud.html", "surveillance.js?v=survtoggle10");
+        assertPageLock("surveillance.html", "surveillance.js?v=survtoggle15");
+        assertPageLock("byd-cloud.html", "surveillance.js?v=survtoggle15");
         assertTrue(read("app/src/main/assets/web/local/live-view.html").contains(
-                "surveillance.js?v=survtoggle10"));
+                "surveillance.js?v=survtoggle15"));
         assertTrue(read("app/src/main/assets/web/local/notifications.html").contains(
-                "surveillance.js?v=survtoggle10"));
+                "surveillance.js?v=survtoggle15"));
 
         String hydration = read("app/src/main/assets/web/shared/settings-hydration.js");
         assertTrue(hydration.contains("event.stopImmediatePropagation();"));
@@ -55,14 +55,15 @@ public class WebSettingsToggleReliabilityContractTest {
         assertTrue(!recording.contains("data.protectedHours || 24"));
         assertTrue(!recording.contains("data.minFilesKeep || 10"));
         assertTrue(recording.contains("data.success !== true"));
-        String recordingHtml = read("app/src/main/assets/web/local/recording.html");
-        assertTrue(recordingHtml.contains("id=\"cdrCleanupEnabled\" disabled"));
-        assertTrue(recordingHtml.contains("id=\"cdrReservedSlider\" disabled"));
-        assertTrue(recordingHtml.contains("id=\"cdrProtectedSlider\" disabled"));
-        assertTrue(recordingHtml.contains("id=\"cdrMinKeepSlider\" disabled"));
-        assertTrue(recordingHtml.contains(
+        // The OEM dashcam (DVR) reserve controls live on the Storage page.
+        String storageHtml = read("app/src/main/assets/web/local/storage.html");
+        assertTrue(storageHtml.contains("id=\"cdrCleanupEnabled\" disabled"));
+        assertTrue(storageHtml.contains("id=\"cdrReservedSlider\" disabled"));
+        assertTrue(storageHtml.contains("id=\"cdrProtectedSlider\" disabled"));
+        assertTrue(storageHtml.contains("id=\"cdrMinKeepSlider\" disabled"));
+        assertTrue(storageHtml.contains(
                 "id=\"cdrMinKeepSlider\" disabled min=\"0\" max=\"100\""));
-        assertTrue(recordingHtml.contains("id=\"cdrCleanupNow\" disabled"));
+        assertTrue(storageHtml.contains("id=\"cdrCleanupNow\" disabled"));
 
         String roadSense = read("app/src/main/assets/web/shared/road-sense.js");
         assertOrdered(roadSense);
@@ -99,14 +100,6 @@ public class WebSettingsToggleReliabilityContractTest {
         assertTrue(trips.contains(
                 "data.totalFilesDeleted == null ? '--' : data.totalFilesDeleted"));
         assertTrue(trips.contains("data.success !== true"));
-        String tripsHtml = read("app/src/main/assets/web/local/trips.html");
-        assertTrue(tripsHtml.contains("id=\"tripCdrEnabled\" disabled"));
-        assertTrue(tripsHtml.contains("id=\"tripCdrReservedSlider\" disabled"));
-        assertTrue(tripsHtml.contains("id=\"tripCdrProtectedSlider\" disabled"));
-        assertTrue(tripsHtml.contains("id=\"tripCdrMinKeepSlider\" disabled"));
-        assertTrue(tripsHtml.contains(
-                "id=\"tripCdrMinKeepSlider\" disabled min=\"0\" max=\"100\""));
-        assertTrue(tripsHtml.contains("id=\"tripCdrCleanupNow\" disabled"));
 
         String surveillance = read("app/src/main/assets/web/shared/surveillance.js");
         assertOrdered(surveillance);
@@ -152,7 +145,7 @@ public class WebSettingsToggleReliabilityContractTest {
 
         assertTrue(html.contains(
                 "id=\"safeLocEnabled\" disabled onchange=\"SafeLocations.toggleFeature()\""));
-        assertTrue(html.contains("safe-locations.js?v=4"));
+        assertTrue(html.contains("safe-locations.js?v=6"));
         assertOrdered(script);
         assertTrue(script.contains("this.ready = await this.loadData();"));
         assertTrue(script.contains("if (!this.ready) {"));

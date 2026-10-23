@@ -3,6 +3,7 @@ package com.overdrive.app.server;
 import android.content.Context;
 
 import com.overdrive.app.byd.HazardLightProbe;
+import com.overdrive.app.byd.routing.VehicleCommandRouter;
 import com.overdrive.app.daemon.CameraDaemon;
 import com.overdrive.app.daemon.DaemonBootstrap;
 
@@ -28,9 +29,13 @@ import java.util.Map;
  *       result. Gated by {@code confirm=YES}.</li>
  *   <li>{@code GET /api/debug/light/fire-all?hold=3&confirm=YES} — fire A, B,
  *       then C in sequence. Gated by {@code confirm=YES}.</li>
+ *   <li>{@code GET /api/debug/light/cabin?api=inside|lamps|rearLamps|insideDoor|doorLight&value=0..3&confirm=YES}
+ *       — DI5 cabin-light calibration: one raw write, not self-resetting. {@code api=next}
+ *       runs the next step of a fixed candidate list per reload; {@code api=record} writes
+ *       nothing. All start the DI5 calibration recorder.</li>
  * </ul>
  *
- * <p>Write surface, but light-only and self-resetting (OFF always issued).
+ * <p>The hazard endpoints are light-only and self-resetting (OFF always issued).
  * Returns 503 if the daemon Context isn't available (run inside cam_daemon).
  */
 public final class LightDebugApiHandler {
@@ -38,6 +43,15 @@ public final class LightDebugApiHandler {
     private static final String TAG = "LightDebug";
     private static final long DEFAULT_HOLD_MS = 4000L;
     private static final long MAX_HOLD_MS = 15000L;
+    private static final java.util.List<String> CABIN_PROBE_APIS =
+            java.util.Arrays.asList("inside", "lamps", "rearLamps", "insideDoor", "doorLight");
+    // One write per reload, so each step can be matched to what the cabin did. insideDoor is left
+    // out: it is the cabin tile's own call. doorLight ends on 1, its idle reading.
+    private static final String[][] CABIN_STEPS = {
+            {"lamps", "2"}, {"lamps", "0"}, {"lamps", "3"}, {"inside", "1"}, {"inside", "2"},
+            {"rearLamps", "1"}, {"rearLamps", "2"}, {"doorLight", "2"}, {"doorLight", "1"}};
+    private static final java.util.concurrent.atomic.AtomicInteger cabinStep =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private LightDebugApiHandler() {}
 
@@ -80,6 +94,9 @@ public final class LightDebugApiHandler {
         }
         if (pathOnly.equals("/api/debug/light/fire-all")) {
             return handleFireAll(out, q);
+        }
+        if (pathOnly.equals("/api/debug/light/cabin")) {
+            return handleCabin(out, q);
         }
 
         HttpResponse.sendError(out, 404, "Unknown light debug endpoint");
@@ -157,6 +174,76 @@ public final class LightDebugApiHandler {
         r.put("uid", android.os.Process.myUid());
         r.put("results", results);
         HttpResponse.sendJson(out, r.toString());
+        return true;
+    }
+
+    /** One raw DI5 cabin-light write via the app process; its rc lands in the daemon log. */
+    private static boolean handleCabin(OutputStream out, Map<String, String> q) throws Exception {
+        String api = q.get("api");
+        if ("record".equals(api)) {
+            boolean diLink5 = startDiLink5CalibrationRecorder();
+            HttpResponse.sendJson(out, new JSONObject()
+                    .put("recording", diLink5)
+                    .put("note", diLink5
+                            ? "Toggle the cabin lights by hand within 5 minutes; changes are logged as DI5 cal change"
+                            : "DiLink 5 mode is not selected, or the vehicle context is not ready")
+                    .toString());
+            return true;
+        }
+        if (!"YES".equals(q.get("confirm"))) {
+            HttpResponse.sendJsonError(out, "Refusing to actuate lights without confirm=YES query param");
+            return true;
+        }
+        int step = -1;
+        int value = -1;
+        if ("next".equals(api)) {
+            step = Math.floorMod(cabinStep.getAndIncrement(), CABIN_STEPS.length);
+            api = CABIN_STEPS[step][0];
+            value = Integer.parseInt(CABIN_STEPS[step][1]);
+        } else {
+            try {
+                value = Integer.parseInt(q.getOrDefault("value", "").trim());
+            } catch (NumberFormatException ignore) {}
+        }
+        if (!CABIN_PROBE_APIS.contains(api) || value < 0 || value > 3) {
+            HttpResponse.sendJsonError(out, "Expected api=next|record, or api="
+                    + String.join("|", CABIN_PROBE_APIS) + " and value=0..3");
+            return true;
+        }
+        log("cabin " + (step >= 0 ? "step " + (step + 1) + "/" + CABIN_STEPS.length + " " : "")
+                + "api=" + api + " value=" + value);
+        VehicleCommandRouter.CommandResult r = VehicleCommandRouter.getInstance()
+                .execute(new VehicleCommandRouter.CabinLightProbeCommand(api, value));
+        // After the write: the recorder's reads share the app bridge's single worker.
+        startDiLink5CalibrationRecorder();
+        JSONObject resp = new JSONObject();
+        resp.put("api", api);
+        resp.put("value", value);
+        resp.put("outcome", r.outcome.name());
+        resp.put("message", r.displayMessage);
+        if (step >= 0) {
+            resp.put("step", step + 1);
+            resp.put("of", CABIN_STEPS.length);
+            resp.put("next", step + 1 < CABIN_STEPS.length
+                    ? CABIN_STEPS[step + 1][0] + "=" + CABIN_STEPS[step + 1][1]
+                    : "none; the next reload starts again at step 1");
+            resp.put("note", "Look at the cabin lights, then reload for the next step. "
+                    + "Report every step number that changed a light.");
+        } else {
+            resp.put("note", "Note whether the cabin light changed; the rc is logged as "
+                    + "DI5 app-process 'cabin-light-probe'");
+        }
+        HttpResponse.sendJson(out, resp.toString());
+        return true;
+    }
+
+    private static boolean startDiLink5CalibrationRecorder() {
+        com.overdrive.app.camera.dilink5.DiLink5Platform.refreshActiveMode();
+        Context ctx = com.overdrive.app.byd.BydDataCollector.getInstance().getRuntimeContext();
+        if (ctx == null || !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            return false;
+        }
+        com.overdrive.app.byd.dilink5.Dilink5CalibrationRecorder.start(ctx);
         return true;
     }
 

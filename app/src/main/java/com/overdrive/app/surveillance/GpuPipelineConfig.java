@@ -27,7 +27,21 @@ public class GpuPipelineConfig {
             this.displayName = displayName;
         }
     }
-    
+
+    /** Frame rate the RecordingQuality bitrates are sized for. */
+    public static final int BITRATE_REFERENCE_FPS = 15;
+
+    /**
+     * Scales a 15 fps recording bitrate by fps/15. Never returns less than
+     * {@code baseBps}; never more than the codec's MAX tier (or {@code baseBps} if higher).
+     */
+    public static int scaleBitrateForFps(int baseBps, int fps, VideoCodec codec) {
+        if (baseBps <= 0 || fps <= BITRATE_REFERENCE_FPS) return baseBps;
+        long scaled = (long) baseBps * fps / BITRATE_REFERENCE_FPS;
+        long cap = Math.max(RecordingQuality.MAX.getBitrateForCodec(codec), baseBps);
+        return (int) Math.min(scaled, cap);
+    }
+
     // Recording quality — single user-facing knob that bundles bitrate +
     // user-readable expectations. FPS is configured separately via
     // camera.targetFps so the user can pick e.g. PREMIUM @ 15 fps for
@@ -36,8 +50,8 @@ public class GpuPipelineConfig {
     // Bitrate sizing rationale at 2560×1920 (4.9 megapixels per frame):
     //   - H.265 needs ~0.04 bpp for "good" quality, ~0.10 bpp for "evidence"
     //   - At 15 fps: 0.04 bpp × 5 MP × 15 = 3 Mbps minimum for "good"
-    //   - At 30 fps: encoder spreads bits over 2× frames so per-frame detail
-    //     drops at fixed bitrate — bump tier when going to higher fps
+    //   - Tier bitrates are 15 fps values; scaleBitrateForFps raises them for
+    //     higher fps so per-frame detail holds
     //
     // H.265 / H.264 split: H.265 gets ~50% better compression at same
     // perceived quality, so H.264 columns are ~1.5× the H.265 column.
@@ -68,6 +82,11 @@ public class GpuPipelineConfig {
             return codec == VideoCodec.H265 ? bitrateH265 : bitrateH264;
         }
 
+        /** Resolved bitrate (bps) for the given codec, scaled for {@code fps}. */
+        public int getBitrateForCodec(VideoCodec codec, int fps) {
+            return scaleBitrateForFps(getBitrateForCodec(codec), fps, codec);
+        }
+
         /** Effective-bitrate calibration. Measured on-device with MAX H.265
          *  configured @ 10 Mbps ceiling:
          *    sample 1: 38.4 MB / 30 s = 10.24 Mbps
@@ -84,21 +103,36 @@ public class GpuPipelineConfig {
         /** Effective bitrate (bps) — what the encoder typically produces,
          *  not the KEY_BIT_RATE ceiling. Used for storage estimates. */
         public double effectiveBitrateForCodec(VideoCodec codec) {
-            int ceiling = getBitrateForCodec(codec);
+            return effectiveBitrateForCodec(codec, BITRATE_REFERENCE_FPS);
+        }
+
+        /** {@link #effectiveBitrateForCodec(VideoCodec)} at {@code fps}. */
+        public double effectiveBitrateForCodec(VideoCodec codec, int fps) {
+            int ceiling = getBitrateForCodec(codec, fps);
             double factor = (codec == VideoCodec.H265) ? H265_EFFECTIVE_FACTOR : H264_EFFECTIVE_FACTOR;
             return ceiling * factor;
         }
 
-        /** Estimated size per minute in MB for the given codec. Independent
-         *  of FPS — bitrate is bandwidth-per-second. Uses effective rate so
-         *  the user's storage forecast matches what they'll actually see. */
+        /** Estimated size per minute in MB for the given codec at the 15 fps
+         *  reference rate. Uses effective rate so the user's storage forecast
+         *  matches what they'll actually see. */
         public double estimateMbPerMinute(VideoCodec codec) {
-            return (effectiveBitrateForCodec(codec) * 60.0) / 8.0 / 1024.0 / 1024.0;
+            return estimateMbPerMinute(codec, BITRATE_REFERENCE_FPS);
+        }
+
+        /** Estimated size per minute in MB for the given codec at {@code fps}. */
+        public double estimateMbPerMinute(VideoCodec codec, int fps) {
+            return (effectiveBitrateForCodec(codec, fps) * 60.0) / 8.0 / 1024.0 / 1024.0;
         }
 
         /** Estimated size per hour in MB for the given codec. */
         public double estimateMbPerHour(VideoCodec codec) {
             return estimateMbPerMinute(codec) * 60.0;
+        }
+
+        /** Estimated size per hour in MB for the given codec at {@code fps}. */
+        public double estimateMbPerHour(VideoCodec codec, int fps) {
+            return estimateMbPerMinute(codec, fps) * 60.0;
         }
 
         /** Display string showing tier name + bitrate for the given codec. */
@@ -139,11 +173,11 @@ public class GpuPipelineConfig {
          * capped at "~1440p" — the mosaic is physically incapable of 4K
          * (3840×2160) detail because it's stitched from four 1280×960
          * camera feeds, so any "4K-equivalent" label would be misleading
-         * marketing. Higher fps reduces bpp at fixed bitrate, so the
-         * equivalent shifts down one tier when going from 15 → 30 fps.
+         * marketing. The fps-scaled bitrate keeps bpp flat above 15 fps until
+         * the MAX cap, where the equivalent starts to drop.
          */
         public String getQualityEquivalent(VideoCodec codec, int fps) {
-            int br = getBitrateForCodec(codec);
+            int br = getBitrateForCodec(codec, fps);
             // Frame size: mosaic is 2560×1920 = 4.92 MP per frame.
             double bpp = (double) br / (2560.0 * 1920.0 * Math.max(1, fps));
             if (bpp < 0.012)  return "~SD";
@@ -277,7 +311,7 @@ public class GpuPipelineConfig {
     /** @deprecated mirrors recordingQuality, kept until call sites migrate. */
     @Deprecated
     private BitratePreset bitratePreset = BitratePreset.MEDIUM;
-    private int customBitrate = 0;  // 0 = derive from recordingQuality + codec
+    private int customBitrate = 0;  // 0 = derive from recordingQuality + codec; a 15 fps value like the tiers
     
     // AI configuration
     private boolean aiEnabled = true;
@@ -422,6 +456,11 @@ public class GpuPipelineConfig {
         return getEffectiveBitrateForQuality(recordingQuality);
     }
 
+    /** {@link #getEffectiveBitrate()} scaled for a recording at {@code fps}. */
+    public int getEffectiveBitrate(int fps) {
+        return scaleBitrateForFps(getEffectiveBitrate(), fps, videoCodec);
+    }
+
     /**
      * Gets the effective bitrate (bps) for an EXPLICIT quality tier, applying
      * the same precedence as {@link #getEffectiveBitrate()}:
@@ -443,6 +482,11 @@ public class GpuPipelineConfig {
         }
         RecordingQuality q = (quality != null) ? quality : recordingQuality;
         return q.getBitrateForCodec(videoCodec);
+    }
+
+    /** {@link #getEffectiveBitrateForQuality(RecordingQuality)} scaled for {@code fps}. */
+    public int getEffectiveBitrateForQuality(RecordingQuality quality, int fps) {
+        return scaleBitrateForFps(getEffectiveBitrateForQuality(quality), fps, videoCodec);
     }
     
     /**

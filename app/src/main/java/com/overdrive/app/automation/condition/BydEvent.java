@@ -54,19 +54,10 @@ public class BydEvent {
     // source converges through) so a trigger can fire "when the car locks" and a
     // condition can gate "only while locked". NOT read from the dead BYDAutoDoorLockDevice.
     public static final EventData LOCK = new EventData("lock");
-    /**
-     * How the car was unlocked. The only value published is "fob", from the
-     * BODYWORK_REMOTE_CONTROL_UNLOCK bodywork event (see BydDataCollector#onFobUnlockEvent).
-     * NFC card, app and keyless unlocks have no unambiguous signal yet. The value holds
-     * "fob" from the last fob unlock; there is no reset on lock.
-     */
+    // "fob" for 2 minutes after a key-fob unlock press, and for the rest of a drive started in that
+    // time; otherwise "none". DiLink 3 only (BydDataCollector key fob channel).
     public static final EventData UNLOCK_SOURCE = new EventData("unlockSource");
-    /**
-     * Easy-entry seat motion: idle|moving|settled. Armed ONLY by a fob-button unlock
-     * (BydDataCollector#onFobUnlockEvent) — never reaches "settled" unless the seat
-     * actually moved first, so an unlock with no door open (nobody getting in) stays
-     * idle rather than firing early. See BydDataCollector#armEasyEntryPoll.
-     */
+    // Driver-seat easy-entry motion after a fob unlock: idle, moving, settled (held 1 minute).
     public static final EventData EASY_ENTRY = new EventData("easyEntry");
     // Energy-recuperation / regen-braking strength (standard/high/max), read locally via
     // BYDAutoSettingDevice.getEnergyFeedback (app-level 0/1/2) on the telemetry snapshot.
@@ -124,6 +115,8 @@ public class BydEvent {
     // warnings cannot fire a saved blind-spot automation.
     public static final EventData BLIND_SPOT_LEFT = new EventData("blindSpot", Map.of("side", "left"));
     public static final EventData BLIND_SPOT_RIGHT = new EventData("blindSpot", Map.of("side", "right"));
+    // either side: also what a car that doesn't report the side (DiLink 3.0's BSD state) can say
+    public static final EventData BLIND_SPOT_ANY = new EventData("blindSpot", Map.of("side", "any"));
     public static final EventData REAR_CROSS_TRAFFIC_LEFT =
             new EventData("rearCrossTraffic", Map.of("side", "left"));
     public static final EventData REAR_CROSS_TRAFFIC_RIGHT =
@@ -182,6 +175,12 @@ public class BydEvent {
     // surveillanceArmed: on when the sentry is armed/watching, off when disarmed —
     // lets a rule gate on "while the car is being guarded".
     public static final EventData SURVEILLANCE_ARMED = new EventData("surveillanceArmed");
+    // SafeKeep (own-storage backup) state, published by safekeep/SafeKeepSignals only while
+    // SafeKeep is on: engine state, queue size, last error class, and each saved clip.
+    public static final EventData SAFEKEEP_STATE = new EventData("safeKeepState");
+    public static final EventData SAFEKEEP_BACKLOG = new EventData("safeKeepBacklog");
+    public static final EventData SAFEKEEP_LAST_ERROR = new EventData("safeKeepLastError");
+    public static final EventData SAFEKEEP_CLIP_SAVED = new EventData("safeKeepClipSaved");
     // surveillanceThreat: the worst severity classified in the just-recorded event —
     // notice / alert / critical. Fires once per event as the .mp4 finalizes.
     public static final EventData SURVEILLANCE_THREAT = new EventData("surveillanceThreat");
@@ -214,6 +213,14 @@ public class BydEvent {
     // always charted (BatteryPowerMonitor → BatteryPowerData.voltageVolts). Exposing volts
     // also enables the rule the enum cannot express: "12V below 12.2 → warn me".
     public static final EventData AUX_BATTERY_12V_VOLTS = new EventData("aux12vVoltage");
+    /** Resolved charging power into the pack, whole kW; 0 when not charging. */
+    public static final EventData CHARGING_POWER = new EventData("chargingPower");
+    /** Minutes the vehicle reports until charging completes. Published only while charging. */
+    public static final EventData CHARGE_TIME_TO_FULL = new EventData("chargeTimeToFull");
+    /** Lowest valid tyre pressure across the four corners, kPa. */
+    public static final EventData TYRE_PRESSURE_LOWEST = new EventData("tyrePressureLowest");
+    /** AC blower level as reported by the climate device. */
+    public static final EventData AC_FAN_LEVEL = new EventData("acFanLevel");
     // ── Fuel (PHEV) ───────────────────────────────────────────────────────
     public static final EventData FUEL_LEVEL = new EventData("fuelLevel");
     // ── Air quality (PM2.5, µg/m³) inside + outside ───────────────────────
@@ -297,7 +304,8 @@ public class BydEvent {
             AUTO_WIPER, WIPER_ACTIVE,              // ClimateEvent    (500ms)
             AC, AC_SETPOINT,                       // ClimateEvent    (500ms)
             SPEED_KMPH, SPEED_MPH,                 // DynamicsEvent   (250ms)
-            ACCELERATOR, BRAKE, STEERING_ANGLE);   // DynamicsEvent   (250ms)
+            ACCELERATOR, BRAKE, STEERING_ANGLE,    // DynamicsEvent   (250ms)
+            CHARGING_POWER);                       // ChargingPowerEvent (10s)
 
     /** Whether a fast poller owns this key, so the snapshot path must not republish it. */
     private static boolean ownedByFastPoll(EventData key) {
@@ -801,7 +809,19 @@ public class BydEvent {
         try {
             boolean charging = com.overdrive.app.monitor.ChargingDetector.getInstance().isCharging();
             Automations.update(CHARGING_STATE, charging ? "on" : "off");
+            // Rest time can stay latched after the gun comes out, so it is only a reading
+            // while the fused verdict says a charge is actually running.
+            if (charging) {
+                int minutes = chargeRestMinutes(data);
+                if (minutes >= 0) publishFromSnapshot(CHARGE_TIME_TO_FULL, minutes);
+            }
         } catch (Throwable ignored) { /* detector not ready — skip this tick */ }
+        int lowestKpa = lowestTyreKpa(data.tyrePressure);
+        if (lowestKpa > 0) publishFromSnapshot(TYRE_PRESSURE_LOWEST, lowestKpa);
+        if (data.acFanLevel != BydVehicleData.UNAVAILABLE
+                && data.acFanLevel >= 0 && data.acFanLevel <= 7) {
+            publishFromSnapshot(AC_FAN_LEVEL, data.acFanLevel);
+        }
         // Gun connected: BYD gun states 2..5 are physically plugged (3=DC fast, 5=V2L).
         // UNAVAILABLE until reported → leave unseeded.
         if (data.chargingGunState != BydVehicleData.UNAVAILABLE) {
@@ -809,18 +829,18 @@ public class BydEvent {
             Automations.update(CHARGE_GUN, connected ? "connected" : "disconnected");
         }
         // ── Battery health + auxiliary batteries (percent) ──
-        // Use the same canonical OEM-first resolver as every UI/API/integration. During
-        // the first collector build the new snapshot is not published until after this
-        // callback, so fall back to this build's validated OEM field for that one tick.
-        double canonicalSoh = -1;
-        try {
-            com.overdrive.app.abrp.SohEstimator estimator =
-                com.overdrive.app.monitor.SocHistoryDatabase.getInstance().getSohEstimator();
-            if (estimator != null) canonicalSoh = estimator.getDisplaySoh();
-        } catch (Throwable ignored) {}
-        if (canonicalSoh <= 0 && !Double.isNaN(data.sohPercent)
-                && data.sohPercent > 0 && data.sohPercent <= 100) {
-            canonicalSoh = data.sohPercent;
+        // Prefer this snapshot's validated vehicle reading, including during collector startup.
+        // The canonical resolver supplies the retained estimate fallback when it is unavailable.
+        double canonicalSoh = Double.isFinite(data.sohPercent)
+                && data.sohPercent > 0 && data.sohPercent <= 100 ? data.sohPercent : -1;
+        if (canonicalSoh <= 0) {
+            try {
+                com.overdrive.app.monitor.SocHistoryDatabase socDb =
+                    com.overdrive.app.monitor.SocHistoryDatabase.getInstance();
+                com.overdrive.app.abrp.SohEstimator estimator =
+                    socDb != null ? socDb.getSohEstimator() : null;
+                canonicalSoh = com.overdrive.app.abrp.SohEstimator.getDisplaySohOrOem(estimator);
+            } catch (Throwable ignored) {}
         }
         if (canonicalSoh > 0) {
             Automations.update(BATTERY_SOH, (int) Math.round(canonicalSoh));
@@ -965,6 +985,57 @@ public class BydEvent {
         double v = read12vVolts();
         if (Double.isNaN(v)) return;
         Automations.update(AUX_BATTERY_12V_VOLTS, (int) Math.round(v * 10.0));
+    }
+
+    /** Hours + minutes the vehicle reports to full, or -1 when neither half is a reading. */
+    static int chargeRestMinutes(BydVehicleData data) {
+        int h = data.chargingRestTimeHours, m = data.chargingRestTimeMinutes;
+        boolean hOk = h != BydVehicleData.UNAVAILABLE && h >= 0;
+        boolean mOk = m != BydVehicleData.UNAVAILABLE && m >= 0 && m <= 59;
+        if (!hOk && !mOk) return -1;
+        return (hOk ? h * 60 : 0) + (mOk ? m : 0);
+    }
+
+    /** Minimum plausible corner pressure (same 1..600 kPa band MQTT publishes), or -1. */
+    static int lowestTyreKpa(int[] kpa) {
+        if (kpa == null) return -1;
+        int lowest = -1;
+        for (int i = 0; i < kpa.length && i < 4; i++) {
+            int p = kpa[i];
+            if (p > 0 && p <= 600 && (lowest < 0 || p < lowest)) lowest = p;
+        }
+        return lowest;
+    }
+
+    /**
+     * Publish the resolved charging power for {@link ChargingPowerEvent}. Uses the same
+     * detector-stable snapshot and the same trust gates as MQTT's {@code charge_power}: an
+     * estimated placeholder or out-of-domain figure is not a reading, and V2L is not charging.
+     * While a charge runs without a trustworthy figure nothing is published, so a threshold
+     * rule never sees a manufactured drop to 0.
+     */
+    public static void pollChargingPower() {
+        if (Automations.isDisabled() && !Automations.editorSeedActive()) return;
+        com.overdrive.app.monitor.VehicleDataMonitor monitor =
+                com.overdrive.app.monitor.VehicleDataMonitor.getInstance();
+        if (monitor == null) return;
+        com.overdrive.app.monitor.VehicleDataMonitor.ChargingSnapshot snap =
+                monitor.getChargingSnapshot();
+        if (snap == null) return;
+        com.overdrive.app.monitor.ChargingStateData cs = snap.getChargingState();
+        BydVehicleData vd = snap.getVehicleData();
+        if (cs == null) return;
+        boolean v2l = vd != null && vd.chargingGunState == 5;
+        boolean charging = !v2l
+                && (cs.status == com.overdrive.app.monitor.ChargingStateData.ChargingStatus.CHARGING
+                    || cs.isTaperCharging);
+        if (!charging) {
+            Automations.update(CHARGING_POWER, 0);
+            return;
+        }
+        double kw = cs.chargingPowerKW;
+        if (cs.isEstimated || !Double.isFinite(kw) || kw <= 0.1 || kw > 500.0) return;
+        Automations.update(CHARGING_POWER, (int) Math.round(kw));
     }
 
     /**

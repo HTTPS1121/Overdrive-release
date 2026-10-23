@@ -55,7 +55,8 @@
     // by the wrong bucket and re-painting them stretches the car —
     // bumping the version evicts those poisoned entries. The next live
     // 3D render after this ships writes a clean v3 sprite.
-    var SPRITE_VERSION = 4;
+    // v5: side-view fit accounts for perspective (bumpers were cropped on wide cards).
+    var SPRITE_VERSION = 5;
 
     // Keep the cache from growing unbounded as the user tries paint
     // colours. The realistic upper bound is:

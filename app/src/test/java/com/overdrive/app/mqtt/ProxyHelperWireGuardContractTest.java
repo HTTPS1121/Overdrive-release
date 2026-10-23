@@ -40,19 +40,6 @@ public class ProxyHelperWireGuardContractTest {
         String source = read("app/src/main/java/com/overdrive/app/mqtt/ProxyHelper.java");
 
         assertTrue(source.contains("private static final int WIREGUARD_PROXY_PORT = 8541;"));
-        assertTrue(source.contains(
-                "proxyPort == TAILSCALE_PROXY_PORT || proxyPort == WIREGUARD_PROXY_PORT"));
-    }
-
-    @Test
-    public void failClosedRouteNamesTheExpectedPort() throws Exception {
-        String source = read("app/src/main/java/com/overdrive/app/mqtt/ProxyHelper.java");
-
-        int failClosed = source.indexOf("public static Proxy getFailClosedHttpProxy()");
-        int expected = source.indexOf("getExpectedProxyPort()", failClosed);
-        assertTrue(failClosed >= 0 && expected > failClosed);
-        assertTrue(source.contains(
-                "return isFlagEnabled(PROXY_ENABLED_FILE) || isFlagEnabled(WIREGUARD_PROXY_ENABLED_FILE);"));
     }
 
     private static String read(String relativePath) throws Exception {

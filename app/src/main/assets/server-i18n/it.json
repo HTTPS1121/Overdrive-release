@@ -236,7 +236,9 @@
       "check_update": "⬆️ Controlla Aggiornamento",
       "backup": "💾 Backup",
       "stop": "⛔ Ferma",
-      "start": "✅ Avvia"
+      "start": "✅ Avvia",
+      "tunnel_switch": "🔁 Passa a {0}",
+      "tunnel_run_both": "➕ Usa entrambi"
     },
     "daemons": {
       "title": "🤖 *Daemon*\n\n"
@@ -281,7 +283,8 @@
       "status_running": "{0}: ✅ Esecuzione",
       "status_stopped": "{0}: ⛔ Fermato",
       "action_usage": "Uso: stato /daemon {0} start<unk> stop<unk>",
-      "tunnel_url": "🌐 *URL Tunnel*\n{0}"
+      "tunnel_url": "🌐 *URL Tunnel*\n{0}",
+      "tunnel_conflict": "⚠️ {0} è già attivo.\n\nPassare a {1} ({0} verrà arrestato) o usare entrambi i tunnel in parallelo?"
     },
     "events": {
       "invalid_hours": "⚠️ Valore ora non valido. Uso: `/events [hours] [page]`\nEsempio: `/events 12 2`",
@@ -671,9 +674,9 @@
     "toggle": "Attiva/disattiva",
     "speed_mph_opt": "Velocità (mph)",
     "open_app": "Apri App",
-    "open_app_description": "Avvia un'app installata quando questa automazione si incendia.",
+    "open_app_description": "Avvia un'app installata quando questa automazione si attiva.",
     "open_app_split": "Apri App (Split Screen)",
-    "open_app_split_description": "Avvia un'app installata agganciata a metà dello schermo (schermo diviso) quando questa automazione spara.",
+    "open_app_split_description": "Avvia un'app installata ancorata a una metà dello schermo (schermo diviso) quando questa automazione si attiva.",
     "show_camera_view": "Mostra Vista Fotocamera",
     "show_camera_view_description": "Mostra una vista fotocamera (anteriore/posteriore/sinistro/destra/tutto) sull'unità di testa o sul gruppo di driver nella posizione scelta. Condivide il display punto cieco; il punto cieco ha la priorità mentre è attivo.",
     "hide_camera_view": "Nascondi Vista Fotocamera",
@@ -685,7 +688,7 @@
     "camera_left": "Sinistra",
     "camera_right": "Destra",
     "display": "Visualizzazione",
-    "display_headunit": "Unità di testa",
+    "display_headunit": "Unità principale",
     "display_cluster": "Cluster driver",
     "position": "Posizione",
     "pos_center": "Centro",
@@ -765,6 +768,7 @@
     "blind_spot_description": "Indica se l'avviso radar dell'angolo cieco è attivo per un lato. Copre gli avvisi di angolo cieco, cambio di corsia e traffico trasversale. Gli avvisi sono brevi, quindi il segnale resta attivo per alcuni secondi dopo l'ultimo avviso.",
     "side_left": "Sinistra",
     "side_right": "Destra",
+    "side_any": "Qualsiasi lato",
     "time": "Tempo",
     "time_description": "L'ora locale del vostro veicolo. Confronti considereranno la mezzanotte come il più piccolo tempo e 23:59 essere il più grande.",
     "wifi_state": "Stato WiFi",
@@ -799,9 +803,9 @@
     "battery_soh": "Salute Batteria (SOH)",
     "battery_soh_description": "Lo stato di salute della batteria ad alta tensione, come percentuale.",
     "key_battery": "Batteria Fob Chiave",
-    "key_battery_description": "Lo stato della batteria fob smart-key — spara quando segnala basso o normale.",
+    "key_battery_description": "Lo stato della batteria della chiave intelligente — si attiva quando segnala un livello basso o normale.",
     "aux_12v_battery": "Batteria 12V",
-    "aux_12v_battery_description": "Lo stato ausiliario della batteria 12V — spara quando segnala basso o normale.",
+    "aux_12v_battery_description": "Lo stato della batteria ausiliaria a 12V — si attiva quando segnala un livello basso o normale.",
     "battery_low_state": "Basso",
     "battery_normal_state": "Normale",
     "fuel_level": "Livello Carburante",
@@ -816,7 +820,7 @@
     "radar_nearest": "Ostacolo Più Vicino",
     "radar_nearest_description": "La distanza dall'ostacolo più vicino a qualsiasi sensore di parcheggio-radar vede, in centimetri, attiva solo a bassa velocità mentre il radar è acceso.",
     "centimetres": "Centimetri",
-    "seatbelt": "Cintura Di Seduta",
+    "seatbelt": "Cintura di sicurezza",
     "seatbelt_description": "Incendi quando una cintura di sicurezza è fibbia o staccata. Scegliere il sedile del conducente o del passeggero anteriore.",
     "buckled": "Sbattuto",
     "unbuckled": "Sbuckled",

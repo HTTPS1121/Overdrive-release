@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_layers_cd">Harita katmanları</string>
+    <string name="navmap_google_type_default">Google haritası</string>
+    <string name="navmap_google_type_satellite">Uydu</string>
+    <string name="navmap_google_type_hybrid">Hibrit</string>
+    <string name="navmap_google_type_terrain">Arazi</string>
+    <string name="navmap_google_type_overdrive">OverDrive haritası</string>
+    <string name="navmap_google_traffic">Canlı trafik</string>
+    <string name="navmap_google_traffic_on">Canlı trafik açık</string>
+    <string name="navmap_google_traffic_off">Canlı trafik kapalı</string>
+    <string name="navmap_google_traffic_paused">Canlı trafik %1$s saatine kadar duraklatıldı (ücretsiz günlük limit)</string>
+    <string name="navmap_google_map_paused">Google haritası %1$s saatine kadar duraklatıldı (ücretsiz günlük limit)</string>
+    <string name="navmap_google_map_unavailable">Google haritası kullanılamıyor, OverDrive haritası gösteriliyor</string>
+    <string name="navmap_google_key_problem">Google Maps anahtarında sorun var. RoadSense ayarlarını kontrol edin.</string>
+    <string name="navmap_google_route_key_problem">Google rota hizmeti anahtarı reddetti. RoadSense ayarlarını kontrol edin.</string>
+    <string name="navmap_google_route_limit">Bugünkü Google rota limitine ulaşıldı</string>
+    <string name="navmap_google_arrived">Hedefinize ulaştınız</string>
+    <string name="navmap_google_traffic_delay">Trafik: +%1$s</string>
+    <string name="navmap_google_no_delays">Trafik gecikmesi yok</string>
+    <string name="navmap_google_faster_route">Daha hızlı bir rota bulundu, %1$s kazandırıyor</string>
+    <string name="navmap_google_faster_route_switch">Değiştir</string>
+    <string name="navmap_google_routes_by_google">Rotaları Google sağlar</string>
+    <string name="navmap_google_routing_provided_by">Rota hizmeti: %1$s</string>
+    <string name="navmap_google_place_failed">Bu yer açılamadı</string>
+    <string name="navmap_google_finding_place">Yer bulunuyor…</string>
+</resources>

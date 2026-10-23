@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>繼續行駛</item>
+        <item>出發</item>
+        <item>抵達目的地</item>
+        <item>目的地在右側</item>
+        <item>目的地在左側</item>
+        <item>向右前方行駛</item>
+        <item>右轉</item>
+        <item>向右後方行駛</item>
+        <item>迴轉</item>
+        <item>向左後方行駛</item>
+        <item>左轉</item>
+        <item>向左前方行駛</item>
+        <item>進入匝道</item>
+        <item>從出口駛出</item>
+        <item>保持直行</item>
+        <item>靠右行駛</item>
+        <item>靠左行駛</item>
+        <item>匯入主線</item>
+        <item>向右匯入</item>
+        <item>向左匯入</item>
+        <item>進入圓環</item>
+        <item>駛出圓環</item>
+        <item>搭乘渡輪</item>
+        <item>駛離渡輪</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>繼續沿</item>
+        <item>出發，沿</item>
+        <item>抵達</item>
+        <item>目的地在右側：</item>
+        <item>目的地在左側：</item>
+        <item>向右前方進入</item>
+        <item>右轉進入</item>
+        <item>向右後方進入</item>
+        <item>迴轉進入</item>
+        <item>向左後方進入</item>
+        <item>左轉進入</item>
+        <item>向左前方進入</item>
+        <item>經匝道進入</item>
+        <item>經出口進入</item>
+        <item>直行進入</item>
+        <item>靠右進入</item>
+        <item>靠左進入</item>
+        <item>匯入</item>
+        <item>向右匯入</item>
+        <item>向左匯入</item>
+        <item>經圓環進入</item>
+        <item>駛出圓環進入</item>
+        <item>搭乘渡輪：</item>
+        <item>駛離渡輪進入</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>第1個</item>
+        <item>第2個</item>
+        <item>第3個</item>
+        <item>第4個</item>
+        <item>第5個</item>
+        <item>第6個</item>
+        <item>第7個</item>
+        <item>第8個</item>
+        <item>第9個</item>
+        <item>第10個</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">從%1$s出口駛出</string>
+    <string name="nav_hud_roundabout_exit_onto">從%1$s出口駛出進入</string>
+    <string name="nav_hud_towards">往</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">出口 %1$s</string>
+    <string name="nav_hud_then">然後</string>
+    <string name="nav_hud_arrive">抵達</string>
+    <string name="nav_hud_recenter">重新置中</string>
+    <string name="nav_hud_end">結束</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">公尺</string>
+    <string name="nav_hud_unit_km">公里</string>
+    <string name="nav_hud_unit_ft">英尺</string>
+    <string name="nav_hud_unit_mi">英里</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">語音導航靜音</string>
+    <string name="nav_hud_cd_unmute">取消語音導航靜音</string>
+    <string name="nav_hud_cd_overview">顯示完整路線</string>
+    <string name="nav_hud_cd_overview_exit">返回駕駛畫面</string>
+    <string name="nav_hud_cd_end">結束導航</string>
+    <string name="nav_hud_cd_recenter">重新置中於車輛位置</string>
+    <string name="nav_hud_cd_compass_heading_up">指南針：車頭朝上。輕觸即可切換為北方朝上</string>
+    <string name="nav_hud_cd_compass_north_up">指南針：北方朝上。輕觸即可切換為車頭朝上</string>
+    <string name="nav_hud_cd_back">離開地圖</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">然後，%2$s後%1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">預計 %1$s 抵達，剩餘 %2$s，%3$s</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">塞車延誤 %1$s</string>
+</resources>

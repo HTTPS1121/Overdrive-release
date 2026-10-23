@@ -61,6 +61,7 @@ class IntegrationsFragment : Fragment() {
     private var abrpConnected: Boolean = false
     private var mqttConnected: Boolean = false
     private var bydCloudConfigured: Boolean = false
+    private var safeKeepOn: Boolean = false
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -70,17 +71,21 @@ class IntegrationsFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        view.findViewById<View>(R.id.cardTelegram).setOnClickListener {
+        // Null-safe: a layout variant without one of the cards must not crash the screen.
+        view.findViewById<View>(R.id.cardTelegram)?.setOnClickListener {
             findNavController().navigateDrillDown(R.id.telegramSettingsFragment)
         }
-        view.findViewById<View>(R.id.cardAbrp).setOnClickListener {
+        view.findViewById<View>(R.id.cardAbrp)?.setOnClickListener {
             findNavController().navigateDrillDown(R.id.abrpSettingsFragment)
         }
-        view.findViewById<View>(R.id.cardMqtt).setOnClickListener {
+        view.findViewById<View>(R.id.cardMqtt)?.setOnClickListener {
             findNavController().navigateDrillDown(R.id.mqttFragment)
         }
-        view.findViewById<View>(R.id.cardBydCloud).setOnClickListener {
+        view.findViewById<View>(R.id.cardBydCloud)?.setOnClickListener {
             findNavController().navigateDrillDown(R.id.bydCloudFragment)
+        }
+        view.findViewById<View>(R.id.cardSafeKeep)?.setOnClickListener {
+            findNavController().navigateDrillDown(R.id.safeKeepFragment)
         }
     }
 
@@ -124,16 +129,19 @@ class IntegrationsFragment : Fragment() {
             val abrp = fetchAbrpRunning()
             val mqtt = fetchMqttAnyConnected()
             val bydCloud = fetchBydCloudConfigured()
+            val safeKeep = fetchSafeKeepOn()
             mainHandler.post {
                 val v = view ?: return@post
                 telegramConfigured = telegram
                 abrpConnected = abrp
                 mqttConnected = mqtt
                 bydCloudConfigured = bydCloud
+                safeKeepOn = safeKeep
                 bindStatus(v, R.id.dotTelegram, R.id.tvTelegramStatus, telegramConfigured)
                 bindStatus(v, R.id.dotAbrp, R.id.tvAbrpStatus, abrpConnected)
                 bindStatus(v, R.id.dotMqtt, R.id.tvMqttStatus, mqttConnected)
                 bindStatus(v, R.id.dotBydCloud, R.id.tvBydCloudStatus, bydCloudConfigured)
+                bindStatus(v, R.id.dotSafeKeep, R.id.tvSafeKeepStatus, safeKeepOn)
                 bindHero(v)
             }
         }
@@ -195,6 +203,14 @@ class IntegrationsFragment : Fragment() {
         if (!json.optBoolean("success", false)) return false
         val status = json.optJSONObject("status") ?: return false
         return status.optBoolean("configured", false)
+    }
+
+    /** SafeKeep is "configured" when its master toggle is on and at least one storage is linked. */
+    private fun fetchSafeKeepOn(): Boolean {
+        val json = fetchDaemonJson("/api/safekeep/status") ?: return false
+        if (!json.optBoolean("enabled", false)) return false
+        val dests = json.optJSONArray("destinations") ?: return false
+        return dests.length() > 0
     }
 
     private fun fetchDaemonJson(path: String): JSONObject? {

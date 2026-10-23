@@ -29,7 +29,8 @@ BYD.recording = {
         proximityGuard: {
             triggerLevel: 'RED',
             preRecordSeconds: 5,
-            postRecordSeconds: 10
+            postRecordSeconds: 10,
+            blindSpotTrigger: false
         },
         // OEM dashcam recording mode mirror — 'off' | 'continuous' | 'smart'.
         // Hydrated by loadOemDashcam() and committed via the oem-tab branch
@@ -140,6 +141,8 @@ BYD.recording = {
         if (BYD.utils && BYD.utils.unlockSettingsHydration) {
             BYD.utils.unlockSettingsHydration();
         }
+        // The hero line is composed from option labels; rebuild it once they are re-translated.
+        if (BYD.i18n && BYD.i18n.onChange) BYD.i18n.onChange(() => this.renderHeroSummary());
 
         // CDR status can recursively scan a slow or unhealthy SD card. Keep
         // its controls gated by _cdrReady instead of holding the whole page.
@@ -230,6 +233,7 @@ BYD.recording = {
                     this.config.cameraFpsActual = data.cameraFpsActual || null;
                     this.config.cameraFpsClampNote = data.cameraFpsClampNote || null;
                     this.config.recordingQualityOptions = data.recordingQualityOptions || {};
+                    this.config.qualityOptionsByFps = data.qualityOptionsByFps || null;
                     this.config.activeRecordingEstimate = data.activeRecordingEstimate || null;
                     this.config.nativeResolution = data.nativeResolution || null;
                     if (typeof data.segmentDurationMinutes === 'number') {
@@ -245,12 +249,14 @@ BYD.recording = {
             console.warn('Failed to reload config:', e);
         }
         
-        // Reload recording mode
+        // Reload recording mode. Collected first and applied once below (unified wins), so the
+        // live value never sits in config on its own while the unified read is awaited.
+        let reloadedMode = null;
         try {
             const modeResp = await fetch('/api/recording/mode');
             const modeData = await modeResp.json();
             if (modeData.status === 'ok') {
-                this.config.recordingMode = modeData.mode || 'NONE';
+                reloadedMode = modeData.mode || 'NONE';
             }
         } catch (e) {}
         
@@ -261,7 +267,7 @@ BYD.recording = {
             if (proxData.success && proxData.config) {
                 // Load recording mode from unified config if available (overrides /api/recording/mode)
                 if (proxData.config.recording && proxData.config.recording.mode) {
-                    this.config.recordingMode = proxData.config.recording.mode;
+                    reloadedMode = proxData.config.recording.mode;
                 }
                 // Lens-dewarp slider (shared with surveillance page).
                 // The initial loadConfig() reads this; the periodic reload
@@ -282,6 +288,7 @@ BYD.recording = {
                     if (rsRefresh < 0) rsRefresh = 0;
                     if (rsRefresh > 100) rsRefresh = 100;
                     this.config.rectifyStrength = rsRefresh;
+                    if (this.savedConfig) this.savedConfig.rectifyStrength = rsRefresh;
                 }
                 // Shared clip duration (same key feeds both axes). The quality
                 // endpoint above is timestamp-gated and may miss a same-second
@@ -315,17 +322,26 @@ BYD.recording = {
                     if (cardRefresh) cardRefresh.style.display = (modeRefresh === 'dilink4') ? 'none' : '';
                 } catch (_) {}
 
-                // Merge proximity guard with defaults
-                if (proxData.config.proximityGuard) {
+                // Merge proximity guard with defaults. Skipped while dirty, like the blocks
+                // above, so an edit made during the awaits is not reverted to the server value.
+                if (!this.hasUnsavedChanges && proxData.config.proximityGuard) {
                     const serverConfig = proxData.config.proximityGuard;
                     this.config.proximityGuard = {
                         triggerLevel: serverConfig.triggerLevel || this.config.proximityGuard.triggerLevel || 'RED',
                         preRecordSeconds: serverConfig.preRecordSeconds || this.config.proximityGuard.preRecordSeconds || 5,
-                        postRecordSeconds: serverConfig.postRecordSeconds || this.config.proximityGuard.postRecordSeconds || 10
+                        postRecordSeconds: serverConfig.postRecordSeconds || this.config.proximityGuard.postRecordSeconds || 10,
+                        blindSpotTrigger: serverConfig.blindSpotTrigger === true
                     };
+                    if (this.savedConfig) {
+                        this.savedConfig.proximityGuard = JSON.parse(JSON.stringify(this.config.proximityGuard));
+                    }
                 }
             }
         } catch (e) {}
+        if (reloadedMode && !this.hasUnsavedChanges) {
+            this.config.recordingMode = reloadedMode;
+            if (this.savedConfig) this.savedConfig.recordingMode = reloadedMode;
+        }
         
         // Also reload storage settings
         await this.loadStorageSettings();
@@ -370,6 +386,7 @@ BYD.recording = {
                 this.config.cameraFpsActual = data.cameraFpsActual || null;
                 this.config.cameraFpsClampNote = data.cameraFpsClampNote || null;
                 this.config.recordingQualityOptions = data.recordingQualityOptions || {};
+                this.config.qualityOptionsByFps = data.qualityOptionsByFps || null;
                 this.config.activeRecordingEstimate = data.activeRecordingEstimate || null;
                 this.config.nativeResolution = data.nativeResolution || null;
                 if (typeof data.segmentDurationMinutes === 'number') {
@@ -435,7 +452,8 @@ BYD.recording = {
                     this.config.proximityGuard = {
                         triggerLevel: serverConfig.triggerLevel || this.config.proximityGuard.triggerLevel || 'RED',
                         preRecordSeconds: serverConfig.preRecordSeconds || this.config.proximityGuard.preRecordSeconds || 5,
-                        postRecordSeconds: serverConfig.postRecordSeconds || this.config.proximityGuard.postRecordSeconds || 10
+                        postRecordSeconds: serverConfig.postRecordSeconds || this.config.proximityGuard.postRecordSeconds || 10,
+                        blindSpotTrigger: serverConfig.blindSpotTrigger === true
                     };
                     console.log('Loaded proximity guard config:', this.config.proximityGuard);
                 }
@@ -683,7 +701,7 @@ BYD.recording = {
      * value in this.config is what the banner renders against either way.
      */
     async refreshBudgetOnly() {
-        if (!BYD.storageBudget) return;
+        if (!BYD.storageBudget || !document.getElementById('recBudgetBanner')) return;
         try {
             const resp = await fetch('/api/settings/storage');
             const data = await resp.json();
@@ -835,6 +853,8 @@ BYD.recording = {
     },
     
     async loadCdrConfig() {
+        // The cleanup card moved to storage.html; skip the slow CDR scan when it is not on this page.
+        if (!document.getElementById('cdrCleanupCard')) return false;
         if (this._cdrWritesPending > 0) return false;
         const writeVersion = this._cdrWriteVersion;
         try {
@@ -1171,7 +1191,8 @@ BYD.recording = {
     updateRecLimit(value) {
         this.config.recordingsLimitMb = parseInt(value);
         const v = parseInt(value);
-        document.getElementById('recLimitValue').textContent = v >= 1000 ? BYD.i18n.t('recording.unit_gb', {n: (v / 1000)}) : BYD.i18n.t('recording.unit_mb', {n: v});
+        const limitLabel = document.getElementById('recLimitValue');
+        if (limitLabel) limitLabel.textContent = v >= 1000 ? BYD.i18n.t('recording.unit_gb', {n: (v / 1000)}) : BYD.i18n.t('recording.unit_mb', {n: v});
         // Live advisory while dragging — the point at which the user crosses the
         // volume's capacity is exactly when they need to know.
         this.updateBudgetBanner();
@@ -1223,16 +1244,17 @@ BYD.recording = {
      * Per-tab dirty diff. Recording page tabs:
      *   capture  — recordingMode, proximityGuard
      *   quality  — recordingQuality, recordingCodec, cameraFps
-     *   storage  — recordingsLimitMb, recordingsStorageType
+     *   oem      — oemRecordingMode
      *   status   — read-only
+     * Storage moved to storage.html: its fields still load here but are not
+     * edited, so they must not mark this page dirty.
      * (recordingBitrate field removed; tier-based recordingQuality replaces it.
      *  streamingQuality moved to the camera controller dropdown in index.html.)
      */
     _recTabFieldMap: {
         capture: ['recordingMode', 'proximityGuard'],
         quality: ['recordingQuality', 'recordingCodec', 'cameraFps', 'rectifyStrength', 'segmentDurationMinutes'],
-        oem:     ['oemRecordingMode'],
-        storage: ['recordingsLimitMb', 'recordingsStorageType']
+        oem:     ['oemRecordingMode']
     },
 
     _tabDirty: function () {
@@ -1268,6 +1290,29 @@ BYD.recording = {
             btn.disabled = !activeIsDirty;
             btn.classList.toggle('has-changes', activeIsDirty);
         }
+        this.renderHeroSummary();
+    },
+
+    // Hero sub-line: the applied mode, tier, codec and clip length, using the option labels shown on the page.
+    renderHeroSummary() {
+        const sub = document.getElementById('recHeroSub');
+        if (!sub || !this.savedConfig) return;
+        const c = this.savedConfig;
+        const label = (selector) => {
+            try {
+                const el = document.querySelector(selector);
+                return el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+            } catch (e) { return ''; }
+        };
+        const parts = c.recordingMode === 'NONE'
+            ? [BYD.i18n.t('recording.select_mode_desc')]
+            : [
+                label('input[name="recordingMode"][value="' + c.recordingMode + '"] + .mode-card .mode-name'),
+                label('#recQualityBtns .btn-toggle[data-value="' + c.recordingQuality + '"]'),
+                label('#codecBtns .btn-toggle[data-value="' + c.recordingCodec + '"]'),
+                label('#clipDurationBtns .btn-toggle[data-value="' + c.segmentDurationMinutes + '"]')
+            ];
+        sub.textContent = parts.filter(Boolean).join(' · ');
     },
 
     updateUI() {
@@ -1298,6 +1343,9 @@ BYD.recording = {
         // Update proximity guard settings
         const triggerLevel = document.getElementById('triggerLevel');
         if (triggerLevel) triggerLevel.value = this.config.proximityGuard.triggerLevel || 'RED';
+        this.syncTriggerLevelBtns();
+        const bsdTrigger = document.getElementById('bsdTriggerToggle');
+        if (bsdTrigger) bsdTrigger.checked = this.config.proximityGuard.blindSpotTrigger === true;
         
         const preSlider = document.getElementById('preRecordSlider');
         const preValue = document.getElementById('preRecordValue');
@@ -1347,6 +1395,7 @@ BYD.recording = {
         if (btn) {
             btn.disabled = true;
         }
+        this.renderHeroSummary();
     },
     
     onModeChange(mode) {
@@ -1376,6 +1425,29 @@ BYD.recording = {
         this.markChanged();
     },
     
+    setBlindSpotTrigger(enabled) {
+        this.config.proximityGuard.blindSpotTrigger = enabled === true;
+        this.markChanged();
+    },
+
+    setTriggerLevel(value) {
+        const sel = document.getElementById('triggerLevel');
+        if (!sel || sel.value === value) return;
+        sel.value = value;
+        this.syncTriggerLevelBtns();
+        this.markDirty();
+    },
+
+    syncTriggerLevelBtns() {
+        const sel = document.getElementById('triggerLevel');
+        const value = sel ? sel.value : 'RED';
+        document.querySelectorAll('#triggerLevelBtns [data-value]').forEach((btn) => {
+            const on = btn.getAttribute('data-value') === value;
+            btn.classList.toggle('active', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    },
+
     markDirty() {
         // Update triggerLevel from select when called
         const triggerLevel = document.getElementById('triggerLevel');
@@ -1431,8 +1503,9 @@ BYD.recording = {
      *  All math (bitrate, MB/2min, qualityEquivalent for the active codec+fps)
      *  is precomputed there; we just look it up. Returns null if the tier
      *  isn't loaded yet. */
-    estimateForTier(tier) {
-        const opts = this.config.recordingQualityOptions || {};
+    estimateForTier(tier, fps) {
+        const byFps = this.config.qualityOptionsByFps;
+        const opts = (byFps && byFps[String(fps)]) || this.config.recordingQualityOptions || {};
         return opts[tier] || null;
     },
 
@@ -1445,6 +1518,7 @@ BYD.recording = {
             const data = await r.json();
             if (data && data.recordingQualityOptions) {
                 this.config.recordingQualityOptions = data.recordingQualityOptions;
+                this.config.qualityOptionsByFps = data.qualityOptionsByFps || null;
                 this.renderActiveEstimate();
             }
         } catch (e) { /* best-effort */ }
@@ -1468,12 +1542,14 @@ BYD.recording = {
         // table is keyed by tier name and already accounts for codec+fps.
         const currentTier = this.config.recordingQuality;
         const savedTier = this.savedConfig ? this.savedConfig.recordingQuality : currentTier;
-        const currentEst = this.estimateForTier(currentTier);
-        const savedEst = this.estimateForTier(savedTier);
+        const currentFps = this.config.cameraFps;
+        const savedFps = this.savedConfig ? this.savedConfig.cameraFps : currentFps;
+        const currentEst = this.estimateForTier(currentTier, currentFps);
+        const savedEst = this.estimateForTier(savedTier, savedFps);
 
-        // If the tier hasn't changed since save, show one line.
-        // If it has, show "saved → pending" so the user sees what changes.
-        if (currentTier === savedTier || !savedEst) {
+        // If neither tier nor fps changed since save, show one line.
+        // Otherwise show "saved → pending" so the user sees what changes.
+        if ((currentTier === savedTier && currentFps === savedFps) || !savedEst) {
             el.textContent = this.formatEstimate(currentEst);
         } else {
             el.textContent = this.formatEstimate(savedEst)
@@ -1507,7 +1583,7 @@ BYD.recording = {
     },
 
     /**
-     * Look up the active bottom-tab id (status / capture / quality / storage).
+     * Look up the active bottom-tab id (status / capture / quality / oem).
      * Mirrors the helper on SurvSettings — kept inline here to avoid a hard
      * cross-module dependency between recording.js and surveillance.js.
      */
@@ -1517,7 +1593,11 @@ BYD.recording = {
             var idx = path.lastIndexOf('/');
             var page = idx >= 0 ? path.substring(idx + 1) : (path || 'index');
             var stored = window.localStorage.getItem('ot-active-tab-' + page);
-            if (stored) return stored;
+            // A tab dropped from the manifest (Storage) can linger here; app-tabs.js then shows the first tab.
+            var tabs = window.OT_TABS || [];
+            for (var i = 0; stored && i < tabs.length; i++) {
+                if (tabs[i] && tabs[i].id === stored) return stored;
+            }
         } catch (e) {}
         var visible = document.querySelector('.bottom-tab.is-active');
         if (visible) return visible.getAttribute('data-tab-target') || 'capture';
@@ -1535,7 +1615,7 @@ BYD.recording = {
             ? JSON.parse(JSON.stringify(this.savedConfig)) : null;
         if (btn) {
             btn.disabled = true;
-            btn.innerHTML = BYD.i18n.t('common.saving') || 'Saving…';
+            btn.innerHTML = '<span class="r-btn-spinner" aria-hidden="true"></span>' + (BYD.i18n.t('common.saving') || 'Saving…');
         }
         try {
             const activeTab = this._activeTabId();
@@ -1701,8 +1781,10 @@ BYD.recording = {
                 // actual mode (whether the POST succeeded or not). Without
                 // this, a rejected mode change leaves the picker showing a
                 // value the server refused to accept.
+                // A rejected pick is dropped, so no later load can keep showing it.
+                if (oemErr && this.savedConfig) this.config.oemRecordingMode = this.savedConfig.oemRecordingMode;
                 if (!oemErr && oemMode !== 'off') this._pollOemDashcamUntilSettled();
-                else { try { await this.loadOemDashcam(); } catch (_) {} }
+                else { try { await this.loadOemDashcam(true); } catch (_) {} }
                 if (oemErr) throw oemErr;
             } else {
                 // Status tab is read-only (declared readOnly: true in the
@@ -1710,7 +1792,19 @@ BYD.recording = {
                 // there. Defensive: nothing to save → no-op.
             }
 
+            // Only this tab was posted, so other tabs' edits keep their baseline and stay pending.
+            const baselineBefore = this.savedConfig;
             this.savedConfig = JSON.parse(JSON.stringify(this.config));
+            if (baselineBefore) {
+                Object.keys(this._recTabFieldMap).forEach(tabId => {
+                    if (tabId === activeTab) return;
+                    this._recTabFieldMap[tabId].forEach(field => {
+                        if (!Object.prototype.hasOwnProperty.call(baselineBefore, field)) return;
+                        const v = baselineBefore[field];
+                        this.savedConfig[field] = (v === undefined) ? v : JSON.parse(JSON.stringify(v));
+                    });
+                });
+            }
             if (activeTab === 'quality' && savedBefore) {
                 qualityRejectedFields.forEach(field => {
                     if (Object.prototype.hasOwnProperty.call(savedBefore, field)) {
@@ -2231,7 +2325,7 @@ BYD.recording = {
      * persists config and shows a "pipeline not yet available" hint so the
      * user knows the recorder isn't actually running yet.
      */
-    async loadOemDashcam() {
+    async loadOemDashcam(forceServerMode) {
         // Token-based dedup so concurrent loads (visibilitychange +
         // 10s reload + post-toggle poll's terminal refresh) can't
         // race: only the most-recently-started load mutates DOM.
@@ -2303,8 +2397,17 @@ BYD.recording = {
             // Mirror onto this.config so the dirty diff has a stable key
             // to compare against. The savedConfig snapshot is updated too
             // so a fresh load doesn't immediately mark the OEM tab dirty.
-            this.config.oemRecordingMode = mode;
-            if (this.savedConfig) this.savedConfig.oemRecordingMode = mode;
+            // An unsaved pick survives: this load re-runs on every reload and OEM-tab activation.
+            const oemPickPending = !forceServerMode && !!this.savedConfig
+                && this.config.oemRecordingMode !== this.savedConfig.oemRecordingMode;
+            if (oemPickPending) {
+                this.savedConfig.oemRecordingMode = mode;
+                mode = this.config.oemRecordingMode;
+                this.markChanged();
+            } else {
+                this.config.oemRecordingMode = mode;
+                if (this.savedConfig) this.savedConfig.oemRecordingMode = mode;
+            }
             // Clear any prior checked state so we don't end up with two
             // radios pretending to be selected (paranoia — radio groups
             // already enforce one-of, but explicit reset survives DOM
@@ -2796,6 +2899,10 @@ BYD.recording = {
             // Configured continuous/drive mode but standby (parked / ACC off).
             cls = 'inactive'; badgeKey = 'recording.status_idle'; stateKey = 'common.idle';
         }
+
+        // Summary tile: shared off look when no mode is set or on a fault (the fault also turns its chip red).
+        var hero = document.getElementById('recHero');
+        if (hero) hero.classList.toggle('is-off', off || cls === 'errored');
 
         if (badge) {
             badge.classList.remove('active', 'inactive', 'errored');

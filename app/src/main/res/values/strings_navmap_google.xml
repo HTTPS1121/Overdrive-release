@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RoadSense map: Google Maps bring-your-own-key provider -->
+    <string name="navmap_google_maps_cd" translatable="false">Google Maps</string>
+    <string name="navmap_google_layers_cd">Map layers</string>
+    <string name="navmap_google_type_default">Google map</string>
+    <string name="navmap_google_type_satellite">Satellite</string>
+    <string name="navmap_google_type_hybrid">Hybrid</string>
+    <string name="navmap_google_type_terrain">Terrain</string>
+    <string name="navmap_google_type_overdrive">OverDrive map</string>
+    <string name="navmap_google_traffic">Live traffic</string>
+    <string name="navmap_google_traffic_on">Live traffic on</string>
+    <string name="navmap_google_traffic_off">Live traffic off</string>
+    <string name="navmap_google_traffic_paused">Live traffic paused until %1$s (free daily limit)</string>
+    <string name="navmap_google_map_paused">Google map paused until %1$s (free daily limit)</string>
+    <string name="navmap_google_map_unavailable">Google map unavailable, showing the OverDrive map</string>
+    <string name="navmap_google_key_problem">Google Maps key problem. Check RoadSense settings.</string>
+    <string name="navmap_google_route_key_problem">Google routing rejected the key. Check RoadSense settings.</string>
+    <string name="navmap_google_route_limit">Google routing limit reached for today</string>
+    <string name="navmap_google_arrived">You have arrived at your destination</string>
+    <string name="navmap_google_traffic_delay">+%1$s traffic</string>
+    <string name="navmap_google_no_delays">No traffic delays</string>
+    <string name="navmap_google_faster_route">Faster route found, saves %1$s</string>
+    <string name="navmap_google_faster_route_switch">Switch</string>
+    <string name="navmap_google_routes_by_google">Routes by Google</string>
+    <string name="navmap_google_routing_provided_by">Routing provided by %1$s</string>
+    <string name="navmap_google_place_failed">Couldn\'t open that place</string>
+    <string name="navmap_google_finding_place">Finding place…</string>
+</resources>

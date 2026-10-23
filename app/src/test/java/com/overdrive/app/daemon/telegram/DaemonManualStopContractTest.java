@@ -99,8 +99,8 @@ public class DaemonManualStopContractTest {
         String acc = read(
                 "app/src/main/java/com/overdrive/app/daemon/AccSentryDaemon.java");
 
-        assertTrue(handler.contains("stopDaemon(\"zrok\", ctx);"));
-        assertTrue(handler.contains("stopDaemon(\"cloudflared\", ctx);"));
+        assertTrue(handler.contains("stopDaemon(findDaemon(sibling)[1], ctx);"));
+        assertTrue(handler.contains("saveDaemonState(sibling, false, ctx);"));
         assertFalse(handler.contains("writeSentinel"));
         assertTrue(handler.contains("startDaemon(daemon[2], processName, ctx)"));
         assertFalse(handler.contains("className.toLowerCase()"));
@@ -109,8 +109,11 @@ public class DaemonManualStopContractTest {
                 "DaemonCommandHandler.processMatcher(processName)"));
         assertTrue(surveillance.contains(
                 "DaemonCommandHandler.processMatcher(processName)"));
-        assertTrue(handler.indexOf("stopDaemon(\"zrok\", ctx);")
-                < handler.indexOf("if (isRunning)"));
+        int switchCase = handler.indexOf("case \"switch\":");
+        int siblingStop = handler.indexOf("stopDaemon(findDaemon(sibling)[1], ctx);", switchCase);
+        int switchStart = handler.indexOf(
+                "startRequested(chatId, name, daemon, isRunning, ctx);", switchCase);
+        assertTrue(switchCase >= 0 && siblingStop > switchCase && switchStart > siblingStop);
         assertTrue(lifecycle.contains(
                 "[ -f /data/local/tmp/camera_daemon.disabled ] || "));
         assertTrue(updater.contains(
@@ -131,8 +134,9 @@ public class DaemonManualStopContractTest {
                 .contains("disabled by ui"));
         assertFalse(launcher.substring(bothKill)
                 .contains("disabled by ui"));
+        // The ACC-on stop only creates the sentinel (set -C), so any manual stop survives it.
         assertTrue(acc.contains(
-                "'disabled by ui'*|'disabled by telegram'*|'disabled by user'*"));
+                "set -C; printf 'disabled by ACC-on at"));
     }
 
     @Test

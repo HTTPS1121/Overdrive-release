@@ -124,7 +124,7 @@
                             android:gravity="end"
                             android:maxWidth="176dp"
                             android:maxLines="2"
-                            android:text="@string/dashboard_vehicle_tap_to_set"
+                            android:text="@string/placeholder_dash"
                             android:textAppearance="@style/TextAppearance.Material3.LabelLarge"
                             android:textColor="?attr/colorPrimary" />
 

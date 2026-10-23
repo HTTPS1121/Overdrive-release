@@ -23,8 +23,9 @@ import java.util.concurrent.TimeUnit;
  * radio rule the flag stays false (default) and keep-alive is unchanged. Mobile data
  * gained the same parked keep-alive (AccSentryDaemon.ensureMobileDataEnabled, issue
  * #209), so it carries the analogous flag
- * ({@link UnifiedConfigManager#setDataKeepAliveSuppressed}). Bluetooth has no
- * keep-alive and toggles directly with no flag.
+ * ({@link UnifiedConfigManager#setDataKeepAliveSuppressed}). Bluetooth writes the
+ * canonical Surveillance preference before dispatch, so proximity and the parked
+ * watchdog honor the same explicit radio intent.
  *
  * <p>Ordering matters for WiFi-off: the flag is committed BEFORE {@code svc wifi disable}
  * runs, so the next keep-alive tick already sees the suppression and won't race the
@@ -55,7 +56,19 @@ public final class RadioControl {
         // intent. Set it BEFORE disabling so the ~10s keep-alive tick already sees
         // "user wants off" and does not race our disable; clear it when enabling so
         // keep-alive resumes. (Data gained a parked keep-alive with issue #209, so it
-        // now needs the same flag WiFi always had. Bluetooth has no keep-alive.)
+        // now needs the same flag WiFi always had.)
+        if (radio == Radio.BLUETOOTH) {
+            try {
+                if (!UnifiedConfigManager.setBluetoothKeepAliveEnabled(enable)) {
+                    logger.warn("RadioControl: could not save shared Bluetooth intent");
+                    return false;
+                }
+            } catch (Throwable t) {
+                logger.warn("RadioControl: could not save shared Bluetooth intent: "
+                        + t.getMessage());
+                return false;
+            }
+        }
         if (radio == Radio.WIFI || radio == Radio.DATA) {
             try {
                 if (radio == Radio.WIFI) {
@@ -75,6 +88,7 @@ public final class RadioControl {
                 ? "am start-foreground-service -n "
                     + "com.overdrive.app/.services.VehicleActuatorService"
                     + " --es action bluetooth --ez enabled " + enable
+                    + " --ez bluetooth_intent_persisted true"
                 : "svc " + svc + " " + (enable ? "enable" : "disable");
         boolean ok = runShell(cmd);
         logger.info("RadioControl " + svc + " " + (enable ? "enable" : "disable")
@@ -112,7 +126,7 @@ public final class RadioControl {
     private static boolean runShell(String cmd) {
         Process p = null;
         try {
-            p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             final java.io.InputStream is = p.getInputStream();
             Thread drain = new Thread(() -> {
                 byte[] buf = new byte[1024];

@@ -40,8 +40,8 @@ public class QualitySettingsApiHandler {
     private static String recordingBitrate = "STANDARD";
     private static String recordingCodec = "H264";      // H264 or H265
     
-    private static final String UNIFIED_CONFIG_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json");
-    private static final String LEGACY_SETTINGS_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/camera_settings.json");
+    private static final String UNIFIED_CONFIG_FILE = com.overdrive.app.util.ScratchRoot.path("overdrive_config.json");
+    private static final String LEGACY_SETTINGS_FILE = com.overdrive.app.util.ScratchRoot.path("camera_settings.json");
     
     /**
      * Handle quality settings API requests.
@@ -253,18 +253,18 @@ public class QualitySettingsApiHandler {
     private static void sendStorageSettings(OutputStream out) throws Exception {
         StorageManager storage = StorageManager.getInstance();
 
-        // Refresh SD/USB detection only when BOTH are missing (handles
-        // post-boot inserts) AND not too recently. Previously this fired
-        // on every poll for any user who didn't have a USB stick inserted —
-        // since `!isUsbAvailable()` is true forever in that config — driving
-        // a discoverVolumes cycle every ~10s. Narrowing the trigger to
-        // genuinely-degraded state + a 30s throttle eliminates the spam.
+        // Refresh SD/USB detection when either is missing (handles post-boot
+        // inserts), at most every 30s: a USB-less install has `!isUsbAvailable()`
+        // true forever and the UI polls this every ~10s. Off the request thread —
+        // the refresh can take seconds (sm list-volumes, mountLock) and the
+        // settings pages stay locked until this GET answers; the next poll
+        // reports the refreshed state.
         boolean sdMissing = !storage.isSdCardAvailable();
         boolean usbMissing = !storage.isUsbAvailable();
         long now = System.currentTimeMillis();
         if ((sdMissing || usbMissing) && (now - lastAutoRefreshMs) > AUTO_REFRESH_MIN_INTERVAL_MS) {
             lastAutoRefreshMs = now;
-            storage.refreshSdCard();  // refreshes both SD and USB
+            storage.refreshSdCardAsync();  // refreshes both SD and USB
         }
 
         JSONObject response = new JSONObject();
@@ -584,6 +584,53 @@ public class QualitySettingsApiHandler {
                 return;
             }
 
+            // PRE-EXISTING HAZARDS, not introduced by the shell gate below. This endpoint
+            // forwards BOTH the section name and the data object to updateSection verbatim,
+            // and UnifiedConfigManager treats several names/keys as internal control
+            // signals rather than data:
+            //
+            //   • It DISPATCHES ON THE SECTION NAME before any merge: the section
+            //     "__overdriveRootPromotion" routes to applyRootPromotion, a whole-FILE
+            //     replace whose only staleness guard is a `configSeq` the caller also
+            //     supplies. One request could therefore replace the ENTIRE config — wiping
+            //     auth, bindings and automations, and setting any flag it liked (including
+            //     the two the gate below protects).
+            //   • "__overdriveReplaceSection" turns the merge into a whole-SECTION replace,
+            //     so an otherwise-empty payload wipes every key binding.
+            //   • A caller-supplied "__overdriveMutationOrigin"/"...Sequence" stamp is
+            //     honoured verbatim, so a forged high sequence poisons the mutation clock
+            //     and makes later genuine writes silently no-op while reporting success.
+            //
+            // Every real section is a plain identifier and every internal marker shares the
+            // "__overdrive" prefix, so a shape check plus a prefix strip costs nothing
+            // legitimate — no client has ever sent either.
+            if (!section.matches("[A-Za-z][A-Za-z0-9_]{0,63}")) {
+                HttpResponse.sendJsonError(out, "Invalid config section");
+                return;
+            }
+            // Collect first: removing during keys() iteration would throw.
+            java.util.List<String> internalKeys = new java.util.ArrayList<>();
+            java.util.Iterator<String> dataKeys = data.keys();
+            while (dataKeys.hasNext()) {
+                String k = dataKeys.next();
+                if (k.startsWith("__overdrive")) internalKeys.add(k);
+            }
+            for (String k : internalKeys) data.remove(k);
+
+            // This is a GENERIC section writer, so without this it is a way straight around
+            // the shell-execution gates in KeymapApiHandler.handleSaveConfig and
+            // AutomationApiHandler.saveSettings — POST {"section":"keymap","data":
+            // {"allowAdvanced":true}} would arm arbitrary shell from a tunnel. Drop only
+            // those two keys when the caller isn't trusted: updateSection MERGES, so the
+            // stored value survives and every other key in the request still writes. No
+            // shipped client sets them here (the UI uses /api/keymap/config and
+            // /api/automations/settings), so nothing legitimate loses a write.
+            if (!HttpServer.canGrantShellAccess()) {
+                // Shared helper, so the flag names live in exactly one place alongside the
+                // other strip sites (backup import, SafeKeep restore) and cannot drift.
+                com.overdrive.app.config.ConfigBackupService.stripShellGateKeys(section, data);
+            }
+
             // Blind-spot speed bounds: REJECT out-of-range / non-numeric input rather
             // than persisting it. The daemon gate clamps defensively too, but silently
             // storing e.g. 900 would show "900" back in the UI while the gate treated it
@@ -730,7 +777,8 @@ public class QualitySettingsApiHandler {
             // No-op when the lane isn't up (next enable re-applies it).
             if ("blindspot".equals(section) && (data.has("rotation") || data.has("rotationBase")
                     || data.has("rotationLeft") || data.has("rotationRight")
-                    || data.has("rotationBaseLeft") || data.has("rotationBaseRight"))) {
+                    || data.has("rotationBaseLeft") || data.has("rotationBaseRight")
+                    || hasBsFramingKey(data))) {
                 try {
                     com.overdrive.app.surveillance.GpuSurveillancePipeline p = CameraDaemon.getGpuPipeline();
                     if (p != null) p.refreshBlindSpotRotation();
@@ -908,6 +956,15 @@ public class QualitySettingsApiHandler {
         return null;
     }
 
+    /** True when a blindspot write carries a per-side 40°/310° framing adjustment. */
+    private static boolean hasBsFramingKey(JSONObject data) {
+        java.util.Iterator<String> keys = data.keys();
+        while (keys.hasNext()) {
+            if (keys.next().startsWith("framing")) return true;
+        }
+        return false;
+    }
+
     /**
      * Validate and canonicalize RoadSense audio values before updateSection persists
      * them. Package-visible for focused JVM tests of the unified-settings boundary.
@@ -966,6 +1023,27 @@ public class QualitySettingsApiHandler {
             String eldest = roadSenseVolumeSequences.keySet().iterator().next();
             roadSenseVolumeSequences.remove(eldest);
         }
+    }
+
+    /** Per-tier bitrate, size and perceptual-equivalent table at {@code fps}. */
+    private static JSONObject buildQualityOptions(
+            com.overdrive.app.surveillance.GpuPipelineConfig.VideoCodec codec, int fps)
+            throws org.json.JSONException {
+        JSONObject qualityInfo = new JSONObject();
+        for (com.overdrive.app.surveillance.GpuPipelineConfig.RecordingQuality q :
+                com.overdrive.app.surveillance.GpuPipelineConfig.RecordingQuality.values()) {
+            JSONObject entry = new JSONObject();
+            int br = q.getBitrateForCodec(codec, fps);
+            entry.put("displayName", q.displayName);
+            entry.put("bitrateBps", br);
+            entry.put("bitrateMbps", Math.round(br / 100_000.0) / 10.0);
+            entry.put("mbPerMinute", Math.round(q.estimateMbPerMinute(codec, fps) * 10) / 10.0);
+            entry.put("gbPerHour", Math.round(q.estimateMbPerHour(codec, fps) / 102.4) / 10.0);
+            // Approximate — native resolution is fixed at 2560×1920 regardless of tier.
+            entry.put("qualityEquivalent", q.getQualityEquivalent(codec, fps));
+            qualityInfo.put(q.name(), entry);
+        }
+        return qualityInfo;
     }
 
     private static void sendQualitySettings(OutputStream out) throws Exception {
@@ -1128,42 +1206,34 @@ public class QualitySettingsApiHandler {
         } catch (Exception ignored) {}
 
         // Recording quality tiers — single user-facing knob.
-        // Includes per-tier bitrate (resolved against current codec) and
+        // Includes per-tier bitrate (resolved against current codec and fps) and
         // size estimate so the UI can show "X MB/min, ~Y GB/hour".
-        // Note: bitrate is bandwidth-per-second, FPS does not change file
-        // size at fixed bitrate (higher fps just spreads bits over more
-        // frames, reducing per-frame detail).
         com.overdrive.app.surveillance.GpuPipelineConfig.VideoCodec codecForEstimate =
             "H265".equalsIgnoreCase(currentCodec)
                 ? com.overdrive.app.surveillance.GpuPipelineConfig.VideoCodec.H265
                 : com.overdrive.app.surveillance.GpuPipelineConfig.VideoCodec.H264;
 
-        JSONObject qualityInfo = new JSONObject();
-        for (com.overdrive.app.surveillance.GpuPipelineConfig.RecordingQuality q :
-                com.overdrive.app.surveillance.GpuPipelineConfig.RecordingQuality.values()) {
-            JSONObject entry = new JSONObject();
-            int br = q.getBitrateForCodec(codecForEstimate);
-            entry.put("displayName", q.displayName);
-            entry.put("bitrateBps", br);
-            entry.put("bitrateMbps", Math.round(br / 100_000.0) / 10.0);
-            entry.put("mbPerMinute", Math.round(q.estimateMbPerMinute(codecForEstimate) * 10) / 10.0);
-            entry.put("gbPerHour", Math.round(q.estimateMbPerHour(codecForEstimate) / 102.4) / 10.0);
-            // Perceptual equivalent at the user's current fps. Drops one tier
-            // at 30 fps vs 15 fps because the encoder spreads bits over more
-            // frames. UI should label this as approximate — native resolution
-            // is fixed at 2560×1920 regardless of tier.
-            entry.put("qualityEquivalent", q.getQualityEquivalent(codecForEstimate, currentFps));
-            qualityInfo.put(q.name(), entry);
+        response.put("recordingQualityOptions", buildQualityOptions(codecForEstimate, currentFps));
+        // Bitrate scales with fps, so the parked picker needs its own table.
+        response.put("surveillanceQualityOptions",
+            buildQualityOptions(codecForEstimate, currentSurveillanceFps));
+        // One table per selectable fps so both pickers can preview an unsaved fps.
+        JSONObject optionsByFps = new JSONObject();
+        for (int f : new int[] {10, 15, 20, 25, 30, currentFps, currentSurveillanceFps}) {
+            String key = String.valueOf(f);
+            if (!optionsByFps.has(key)) {
+                optionsByFps.put(key, buildQualityOptions(codecForEstimate, f));
+            }
         }
-        response.put("recordingQualityOptions", qualityInfo);
+        response.put("qualityOptionsByFps", optionsByFps);
         response.put("nativeResolution", "2560×1920 mosaic · 4 × 1280×960 cameras");
 
         // Currently-active size estimate so the UI can render
         // "uses ~X GB/hour at your current settings" without iterating the
         // options dict. Recomputed from active tier + active codec each call.
         JSONObject activeEstimate = new JSONObject();
-        double mbPerMin = activeTier.estimateMbPerMinute(codecForEstimate);
-        activeEstimate.put("bitrateMbps", Math.round(activeTier.getBitrateForCodec(codecForEstimate) / 100_000.0) / 10.0);
+        double mbPerMin = activeTier.estimateMbPerMinute(codecForEstimate, currentFps);
+        activeEstimate.put("bitrateMbps", Math.round(activeTier.getBitrateForCodec(codecForEstimate, currentFps) / 100_000.0) / 10.0);
         activeEstimate.put("mbPerMinute", Math.round(mbPerMin * 10) / 10.0);
         activeEstimate.put("mbPer2Min", Math.round(mbPerMin * 2 * 10) / 10.0);
         activeEstimate.put("gbPerHour", Math.round(mbPerMin * 60 / 102.4) / 10.0);
@@ -1192,7 +1262,7 @@ public class QualitySettingsApiHandler {
             int concurrent = cam == null ? -1 : cam.optInt("concurrentAvmSupported", -1);
             int budget = com.overdrive.app.config.UnifiedConfigManager
                 .getOemDashcam().optInt("bitrateBudget", 10_000_000);
-            int panoBps = activeTier.getBitrateForCodec(codecForEstimate);
+            int panoBps = activeTier.getBitrateForCodec(codecForEstimate, currentFps);
             int headroom = Math.max(2_000_000, budget - panoBps);
             oem.put("oemDashcamCameraId", oemId);
             oem.put("concurrentAvmSupported", concurrent);
@@ -2421,13 +2491,8 @@ public class QualitySettingsApiHandler {
 
             // The read-merge-write below MUST be atomic w.r.t.
             // NominatimRateLimiter.writeCooldownUntilMs running on a
-            // worker thread. UnifiedConfigManager.updateSection serializes
-            // disk writes on `synchronized(this)` — Kotlin object's `this`
-            // is the singleton INSTANCE field, NOT the Class object. We
-            // MUST lock on UnifiedConfigManager.INSTANCE to share the
-            // same monitor as the internal critical section. Locking on
-            // .class would create a separate monitor and the TOCTOU race
-            // would still be open.
+            // worker thread, the only other geocoding.advanced writer; both
+            // lock UnifiedConfigManager.INSTANCE.
             JSONObject merged = new JSONObject();
             boolean ok;
             JSONObject readBack;

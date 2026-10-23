@@ -34,6 +34,8 @@ public class AccMonitor {
     // it stays unrecorded for the rest of the drive.
     private static volatile boolean accOnAuthoritative = false;
     private static volatile long accStateUpdatedAtElapsedMs;
+    private static volatile long lastAccOnElapsedMs;
+    private static volatile long lastAccOffEdgeElapsedMs;
     private static final long DILINK5_SAFETY_STATE_MAX_AGE_MS = 15_000L;
 
     // DiLink 5 car_service power-mode dump source: ACC-OFF admission dampener.
@@ -77,6 +79,14 @@ public class AccMonitor {
     // IPC and probeAccState refresh the value repeatedly without a real change).
     // -1 = no edge dispatched yet (first authoritative read is treated as an edge).
     private static volatile int lastEdgeState = -1;
+
+    // Set only in the camera daemon, which runs legacy cluster boot recovery and holds its
+    // in-memory admission state; other processes that observe an ACC edge do not.
+    private static volatile boolean clusterRecoveryOwner;
+
+    public static void markClusterRecoveryOwner() {
+        clusterRecoveryOwner = true;
+    }
 
     // Track the last sentinel state we logged (FAKE_OK=4, INVALID=255, or
     // out-of-range value), so we log only on transitions. Without this,
@@ -128,6 +138,16 @@ public class AccMonitor {
 
     public static boolean isAccOn() {
         return accOn;
+    }
+
+    /** elapsedRealtime of the latest ACC-on report (0 = none this process); marks a new drive. */
+    public static long lastAccOnElapsedMs() {
+        return lastAccOnElapsedMs;
+    }
+
+    /** elapsedRealtime of the latest genuine ON→OFF edge (0 = none this process). */
+    public static long lastAccOffEdgeElapsedMs() {
+        return lastAccOffEdgeElapsedMs;
     }
 
     /** Fail-safe guard used immediately before any full-screen deterrent render. */
@@ -185,6 +205,28 @@ public class AccMonitor {
                 DILINK5_SAFETY_STATE_MAX_AGE_MS);
     }
 
+    /**
+     * DiLink 5 movement gate: re-stamps safety freshness when a fresh read agrees with the
+     * published state. Never changes the published state or dispatches an edge.
+     */
+    public static void confirmDiLink5StateForSafety() {
+        if (!accOnAuthoritative || isAccStateFreshForSafety()) return;
+        try {
+            boolean published = accOn;
+            long observedAtElapsedMs = android.os.SystemClock.elapsedRealtime();
+            Boolean observed = probeDiLink5AccOnForTransition(null, published);
+            if (observed == null || observed.booleanValue() != published) return;
+            synchronized (AccMonitor.class) {
+                if (accOnAuthoritative && accOn == published
+                        && observedAtElapsedMs > accStateUpdatedAtElapsedMs) {
+                    accStateUpdatedAtElapsedMs = observedAtElapsedMs;
+                }
+            }
+        } catch (Throwable ignored) {
+            // Stale state stays stale; the gate fails closed.
+        }
+    }
+
     static long stateFreshUntil(long updatedAtElapsedMs, long maxAgeMs) {
         if (updatedAtElapsedMs <= 0L || maxAgeMs <= 0L
                 || updatedAtElapsedMs > Long.MAX_VALUE - maxAgeMs) {
@@ -211,6 +253,7 @@ public class AccMonitor {
             // the value).
             accOnAuthoritative = true;
             accStateUpdatedAtElapsedMs = android.os.SystemClock.elapsedRealtime();
+            if (isAccOn) lastAccOnElapsedMs = accStateUpdatedAtElapsedMs;
         }
         CameraDaemon.log("ACC state updated via IPC: accOn=" + isAccOn + ", sentryMode=" + inSentryMode);
         notifyAccEdge(isAccOn);
@@ -244,8 +287,15 @@ public class AccMonitor {
      * controller singleton on a head-unit-only daemon. Never throws.
      */
     private static void notifyAccEdge(boolean isAccOn) {
-        if (lastEdgeState == (isAccOn ? 1 : 0)) return;  // no real transition
+        int previousEdgeState = lastEdgeState;
+        if (previousEdgeState == (isAccOn ? 1 : 0)) return;  // no real transition
         lastEdgeState = isAccOn ? 1 : 0;
+        if (!isAccOn && previousEdgeState == 1) {
+            lastAccOffEdgeElapsedMs = android.os.SystemClock.elapsedRealtime();
+        }
+        try {
+            ParkedPosition.get().onAccEdge(isAccOn);
+        } catch (Throwable ignored) {}
         if (!isAccOn) {
             // Load-bearing ordering for BOTH legacy and DI5: every map/app stop
             // below may physically retire the OEM projection source. Detach
@@ -378,6 +428,16 @@ public class AccMonitor {
                         + "enabled — map wins");
                 projAuto = false;
             }
+            if ((mapAuto || (projAuto && projPkg != null && !projPkg.isEmpty()))
+                    && !clusterRecoveryOwner
+                    && !com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5()
+                    && com.overdrive.app.surveillance.ClusterProjectionController
+                            .isLegacyCommandUnresolvedThisBoot(
+                                    cfg.optJSONObject("surveillance"))) {
+                CameraDaemon.log(reason + ": cluster auto-start skipped — a legacy "
+                        + "cluster command from this boot is still unresolved");
+                return;
+            }
             if (mapAuto) {
                 CameraDaemon.log(reason
                         + ": auto-projecting map to cluster");
@@ -414,7 +474,15 @@ public class AccMonitor {
                 return publishDiLink5State(isOn, "local power probe");
             }
             lastProbeTrustworthy = false;
-            return false;
+            // UNKNOWN/weak IVI-awake is not an ACC-ON edge. Preserve a state
+            // already established by AccSentryDaemon instead of returning the
+            // generic "unknown => ON" safety default. The old behavior made
+            // RecordingModeManager report hwAcc=true while CameraDaemon was
+            // still authoritatively parked, leaving two DiLink 5 consumers in
+            // opposite states. A cold process with no authoritative IPC still
+            // defaults to ON, so recording is never suppressed on uncertainty.
+            return diLink5UndecidedAccOffFallback(
+                    accOnAuthoritative, accOn);
         }
 
         // 2. LEGACY DILINK 3.0 / 4.0 BYDAutoBodyworkDevice PROBE (Preserved 100% untouched)
@@ -593,6 +661,29 @@ public class AccMonitor {
     }
 
     /**
+     * Property-only DiLink 5 ignition read for processes that do not run the full probe: no
+     * car_service dump, no telemetry, no state or logging. A weak IVI-awake reading counts only
+     * with a fresh ACC_ON/IGN_ON broadcast hint.
+     */
+    public static boolean isDiLink5IgnitionOnFromProperties() {
+        try {
+            int power = classifyDiLink5PowerModeKind(
+                    getSystemProperty("sys.byd.power_mode", ""));
+            DiLink5AccObservation observation = resolveDiLink5AccObservation(
+                    classifyAccAnim(getSystemProperty("sys.accanim.status", "")),
+                    power == DILINK5_POWER_MODE_STARTUP,
+                    power == DILINK5_POWER_MODE_IVI_AWAKE,
+                    power == DILINK5_POWER_MODE_OFF,
+                    "");
+            return Boolean.TRUE.equals(admitDiLink5AccObservation(
+                    observation,
+                    com.overdrive.app.power.IgnitionBroadcastHint.isFresh(0L)));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
      * Source-aware DiLink 5 power observation. This method is side-effect-free
      * with respect to the published ACC state; only the existing dump-source
      * OFF confirmation bookkeeping and diagnostic snapshot are updated.
@@ -737,6 +828,19 @@ public class AccMonitor {
         return null;
     }
 
+    /**
+     * Boolean compatibility result for callers of {@link #probeAccState} when
+     * the DiLink 5 transition probe is undecided.
+     *
+     * @return true only when an earlier authoritative state already established
+     *         ACC OFF; a cold/unknown process stays on the fail-drive-safe ON
+     *         default.
+     */
+    static boolean diLink5UndecidedAccOffFallback(
+            boolean authoritative, boolean currentAccOn) {
+        return authoritative && !currentAccOn;
+    }
+
     public static String describeLastDiLink5AccObservation() {
         return lastDiLink5ObservationSummary;
     }
@@ -868,6 +972,7 @@ public class AccMonitor {
             lastProbeTrustworthy = true;
             accOnAuthoritative = true;
             accStateUpdatedAtElapsedMs = android.os.SystemClock.elapsedRealtime();
+            if (isOn) lastAccOnElapsedMs = accStateUpdatedAtElapsedMs;
         }
         notifyAccEdge(isOn);
         CameraDaemon.log("AccMonitor [DiLink5]: " + source + " -> accOn=" + isOn);
@@ -965,7 +1070,7 @@ public class AccMonitor {
         StringBuilder output = new StringBuilder();
         Process process = null;
         try {
-            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(command)});
             if (!process.waitFor(1500L, java.util.concurrent.TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
                 return "";

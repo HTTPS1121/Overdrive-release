@@ -30,7 +30,8 @@ public class AutomationLatencyContractTest {
         String wait = source("automation/action/WaitUntilAction.java");
         String waitState = source("automation/action/WaitUntilStateAction.java");
 
-        assertTrue(automations.contains("RUN_DEPTH.get() != 1"));
+        assertTrue(automations.contains("!queuedYieldAllowed()"));
+        assertTrue(automations.contains("commitQueuedYield(cursor, action, actionCompleted);"));
         assertTrue(automations.contains("cursor.beginAttempt()"));
         assertTrue(queue.contains("item.startTime = Math.max(System.nanoTime(), resumeAtNanos)"));
         assertTrue(pause.indexOf("if (Automations.deferQueuedAction")

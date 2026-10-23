@@ -41,6 +41,11 @@ public class AvcHalWarmup {
         return com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
     }
 
+    // Camera2 360 mode never uses the BYD AVC app as a camera-HAL warmup.
+    private static boolean isCamera2Selected() {
+        return com.overdrive.app.camera.camera2.Camera2Platform.isSelected();
+    }
+
     /** Time to wait after launching com.byd.avc before opening our camera. */
     private static final long HAL_WARMUP_DELAY_MS = 4000;
 
@@ -240,6 +245,9 @@ public class AvcHalWarmup {
             logger.info("DiLink 5: skipping legacy AVC warmup");
             return true;
         }
+        if (isCamera2Selected()) {
+            return true;
+        }
         boolean dilink4 = isDilink4Mode();
         if (dilink4) {
             // OEM-PARITY: oem does NOT launch com.byd.avc anywhere in its
@@ -413,6 +421,12 @@ public class AvcHalWarmup {
      */
     public synchronized void startKeepAlive() {
         if (isDiLink5Selected()) {
+            keepAliveDesired = false;
+            keepAliveGeneration++;
+            if (keepAliveThread != null) keepAliveThread.interrupt();
+            return;
+        }
+        if (isCamera2Selected()) {
             keepAliveDesired = false;
             keepAliveGeneration++;
             if (keepAliveThread != null) keepAliveThread.interrupt();
@@ -844,7 +858,7 @@ public class AvcHalWarmup {
         Process forceStop = null;
         try {
             forceStop = Runtime.getRuntime().exec(
-                new String[]{"sh", "-c", "am force-stop com.byd.avc"});
+                new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap("am force-stop com.byd.avc")});
             if (!forceStop.waitFor(
                     AVC_PROBE_TIMEOUT_SECONDS,
                     java.util.concurrent.TimeUnit.SECONDS)) {
@@ -907,7 +921,7 @@ public class AvcHalWarmup {
         Process forceStop = null;
         try {
             forceStop = Runtime.getRuntime().exec(
-                new String[]{"sh", "-c", "am force-stop com.byd.avc"});
+                new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap("am force-stop com.byd.avc")});
             if (!forceStop.waitFor(
                     AVC_PROBE_TIMEOUT_SECONDS,
                     java.util.concurrent.TimeUnit.SECONDS)) {
@@ -1106,6 +1120,7 @@ public class AvcHalWarmup {
      */
     public static boolean ensureAvcAlive() {
         if (isDiLink5Selected()) return false;
+        if (isCamera2Selected()) return false;
         synchronized (AVC_PROCESS_LANE) {
         if (isDiLink5Selected()) return false;
         // OEM-PARITY: oem never launches com.byd.avc. On dilink4 we make

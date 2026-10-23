@@ -125,12 +125,32 @@
         copyBtn.style.cssText = 'padding:10px 18px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-weight:600;font-size:13px;cursor:pointer;margin-right:8px;font-family:inherit;';
         copyBtn.textContent = t('logs.copy_code', 'Copy code');
         copyBtn.onclick = function () {
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(code);
-                    toast(t('common.copied', 'Copied'), 'success');
-                }
-            } catch (e) {}
+            function done() { toast(t('common.copied', 'Copied'), 'success'); }
+            // navigator.clipboard is absent over plain HTTP (LAN / in-car WebView).
+            function fallback() {
+                var ta = document.createElement('textarea');
+                ta.value = code;
+                ta.setAttribute('readonly', '');
+                ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+                card.appendChild(ta);
+                ta.select();
+                ta.setSelectionRange(0, code.length);
+                var ok = false;
+                try { ok = document.execCommand('copy'); } catch (e) {}
+                card.removeChild(ta);
+                if (ok) { done(); return; }
+                // Last resort: select the code so the user can long-press copy it.
+                var range = document.createRange();
+                range.selectNodeContents(codeEl);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(code).then(done, fallback);
+            } else {
+                fallback();
+            }
         };
         var closeBtn = document.createElement('button');
         closeBtn.style.cssText = 'padding:10px 18px;border-radius:8px;border:0;background:transparent;color:#cdd6e0;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;';

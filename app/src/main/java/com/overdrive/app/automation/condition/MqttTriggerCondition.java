@@ -20,7 +20,8 @@ import org.json.JSONObject;
  * "front_door == open" works as written.
  */
 public class MqttTriggerCondition extends EventCondition {
-    // Same bounded charset the publish seam validates against (Automations.isValidMqttChannel).
+    // Length-bound only so older configs still load; the charset is enforced on save
+    // (Automations.hasInvalidMqttChannel).
     private static final StringType CHANNEL_TYPE =
             new StringType(new Label("channel", "automation.mqtt_channel"), 64);
 

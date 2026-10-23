@@ -31,6 +31,18 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Google Maps logo + data copyright, shown only while the Google basemap is up.
+         Margins are set at runtime next to MapLibre's own chrome (applyMapChromeInsets). -->
+    <com.overdrive.app.navmap.google.GoogleAttributionView
+        android:id="@+id/googleAttribution"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:visibility="gone" />
+
+    <!-- Glass navigation HUD (maneuver card, lanes, trip bar, compass, re-centre); shown while navigating. -->
+    <include layout="@layout/nav_hud" />
+
     <com.google.android.material.appbar.AppBarLayout
         android:id="@+id/mapAppBar"
         android:layout_width="match_parent"
@@ -360,6 +372,23 @@
             android:stateListAnimator="@null"
             tools:ignore="ImageContrastCheck" />
 
+        <!-- Google map type + live traffic picker; shown only when a Google key is usable. -->
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabMapLayers"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:contentDescription="@string/navmap_google_layers_cd"
+            android:src="@drawable/ic_map_layers"
+            android:visibility="gone"
+            app:fabSize="mini"
+            app:backgroundTint="?attr/colorSurfaceContainerHighest"
+            app:tint="?attr/colorOnSurface"
+            app:elevation="0dp"
+            app:pressedTranslationZ="0dp"
+            android:stateListAnimator="@null"
+            tools:ignore="ImageContrastCheck" />
+
         <!-- Map day/night override (Auto → Light → Dark). Lets the user pin the
              basemap scheme directly from the map; AUTO (default) follows the
              Overdrive app theme. Icon reflects the current mode (auto/sun/moon)
@@ -591,6 +620,19 @@
 
                 </LinearLayout>
             </androidx.core.widget.NestedScrollView>
+
+            <!-- Routing provider credit; set by showRouteOptionsSheet, gone without Google. -->
+            <TextView
+                android:id="@+id/tvRouteProvider"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="20dp"
+                android:layout_marginTop="10dp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="12sp"
+                android:visibility="gone"
+                tools:text="Routes by Google"
+                tools:visibility="visible" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnRouteStart"

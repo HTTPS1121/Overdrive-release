@@ -161,14 +161,52 @@ public final class CameraPreviewHelper {
         // Preferred: direct GL render at full output resolution. Passive
         // mode returns the whole native frame because no four-camera map is
         // assumed; mapped layouts return the requested camera tile.
+        // DiLink 5: while the source is released or reopening, the engine's mosaic is not current.
+        boolean diLink5Reopening = isDiLink5IdleSourceUnavailable();
         byte[] hiRes = highResSliceJpeg(slice);
         if (hiRes != null && hiRes.length > 0) return hiRes;
+        if (diLink5Reopening || isDiLink5IdleSourceUnavailable()) return null;
         // Fallback: crop the engine's pre-encoded 640×480 mosaic. Smaller
         // and lower-quality but free when the engine is publishing.
         byte[] mosaicJpeg = engineMosaicJpeg();
         if (mosaicJpeg == null || mosaicJpeg.length == 0) return null;
         if (CameraConfigResolver.isPassiveApaModeEnabled()) return mosaicJpeg;
+        if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            return cropMosaicJpegToSlice(mosaicJpeg, camera2MosaicQuadrant(slice));
+        }
         return cropMosaicJpegToSlice(mosaicJpeg, slice);
+    }
+
+    private static boolean isDiLink5IdleSourceUnavailable() {
+        try {
+            com.overdrive.app.surveillance.GpuSurveillancePipeline p =
+                com.overdrive.app.daemon.CameraDaemon.getGpuPipeline();
+            com.overdrive.app.camera.PanoramicCameraGpu cam = p == null ? null : p.getCamera();
+            return cam != null && cam.isDiLink5IdleSourceUnavailable();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * The mosaic places views by role (front TL, right TR, rear BL, left BR); camera2
+     * slices carry other roles, so map to the legacy slice that owns that quadrant.
+     */
+    private static PanoramicSlice camera2MosaicQuadrant(PanoramicSlice slice) {
+        java.util.EnumMap<CameraRole, CameraSourceRef> mappings = CameraProfiles.camera2Avm(
+                com.overdrive.app.camera.camera2.Camera2AvmBackend.cachedSliceRoles())
+                .getDefaultRoleMappings();
+        for (java.util.Map.Entry<CameraRole, CameraSourceRef> entry : mappings.entrySet()) {
+            if (entry.getValue().getPanoramicSlice() != slice) continue;
+            switch (entry.getKey()) {
+                case PANO_FRONT: return PanoramicSlice.SLICE_4;
+                case PANO_RIGHT: return PanoramicSlice.SLICE_3;
+                case PANO_REAR: return PanoramicSlice.SLICE_1;
+                case PANO_LEFT: return PanoramicSlice.SLICE_2;
+                default: return slice;
+            }
+        }
+        return slice;
     }
 
     /** Direct GL render of one slice at full per-camera resolution.
@@ -184,7 +222,9 @@ public final class CameraPreviewHelper {
             if (com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()) {
                 return cam.samplePerQuadrantJpeg(
                     slice.getStripOffsetX(),
-                    slice.getCornerX(), slice.getCornerY(), 0.0f, 0.0f);
+                    slice.getCornerX(),
+                    com.overdrive.app.camera.dilink5.DiLink5MosaicLayout.tileV(slice.getCornerY()),
+                    0.0f, 0.0f);
             }
             if (cam.getCameraLayoutMode() == 3) {
                 // 2x2-native HAL on DiLink 4. Slice → role → Variant A
@@ -239,7 +279,27 @@ public final class CameraPreviewHelper {
      */
     public static byte[] capturePanoramicViewJpeg(CameraVirtualView view) {
         if (view == null) return null;
+        if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            return capturePanoramicSliceJpeg(camera2SliceForView(view));
+        }
         return capturePanoramicSliceJpeg(PanoramicSlice.fromLegacyView(view));
+    }
+
+    /** camera2: the physical slice that holds this view under the run's tile order. */
+    private static PanoramicSlice camera2SliceForView(CameraVirtualView view) {
+        CameraRole role;
+        switch (view) {
+            case RIGHT: role = CameraRole.PANO_RIGHT; break;
+            case REAR: role = CameraRole.PANO_REAR; break;
+            case LEFT: role = CameraRole.PANO_LEFT; break;
+            case FRONT:
+            default: role = CameraRole.PANO_FRONT; break;
+        }
+        CameraSourceRef ref = CameraProfiles.camera2Avm(
+                com.overdrive.app.camera.camera2.Camera2AvmBackend.cachedSliceRoles())
+                .getDefaultRoleMappings().get(role);
+        PanoramicSlice slice = ref != null ? ref.getPanoramicSlice() : null;
+        return slice != null ? slice : PanoramicSlice.fromLegacyView(view);
     }
 
     /** Volatile read of the engine's pre-encoded mosaic JPEG. */
@@ -296,6 +356,10 @@ public final class CameraPreviewHelper {
     private static byte[] captureWithSize(int cameraId, int width, int height, int fps, int timeoutMs) {
         if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
             logger.warn("Direct camera previews are unavailable in DiLink 5 mode");
+            return null;
+        }
+        if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            logger.warn("Direct camera previews are unavailable in camera2 mode");
             return null;
         }
         if (directPreviewTerminalRestart.get()

@@ -28,8 +28,8 @@ public class CloudCommandConfirmationContractTest {
     @Test
     public void testEndpointUsesRouterAndReportsTerminalResultOnly() throws Exception {
         String source = readSource("server/BydCloudApiHandler.java");
-        assertTrue(source.contains("new VehicleCommandRouter.FindCarCommand()"));
-        assertTrue(source.contains("new VehicleCommandRouter.FlashLightsCommand()"));
+        assertTrue(source.contains("new VehicleCommandRouter.FindCarCommand(true)"));
+        assertTrue(source.contains("new VehicleCommandRouter.FlashLightsCommand(true)"));
         assertTrue(source.contains("VehicleCommandRouter.getInstance().execute(command)"));
         assertTrue(source.contains("response.put(\"success\", confirmed);"));
         assertTrue(source.contains("response.put(\"confirmed\", confirmed);"));

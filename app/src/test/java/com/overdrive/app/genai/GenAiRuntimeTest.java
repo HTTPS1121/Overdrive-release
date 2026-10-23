@@ -8,6 +8,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 public class GenAiRuntimeTest {
 
     @Test
@@ -210,5 +217,59 @@ public class GenAiRuntimeTest {
 
         assertFalse(message.contains(key));
         assertTrue(message.contains("[REDACTED]"));
+    }
+
+    @Test
+    public void describesEveryRouteShape() {
+        assertEquals("direct", GenAiRuntime.describe(null));
+        assertEquals("direct", GenAiRuntime.describe(Proxy.NO_PROXY));
+        assertEquals("http-proxy 127.0.0.1:8119", GenAiRuntime.describe(
+                new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", 8119))));
+        assertEquals("socks 127.0.0.1:8539", GenAiRuntime.describe(
+                new Proxy(Proxy.Type.SOCKS, new InetSocketAddress("127.0.0.1", 8539))));
+    }
+
+    /**
+     * The direct dial exists only for the opt-in realtime voice retry: exactly one
+     * {@code .proxy(Proxy.NO_PROXY)} in the file, inside the 3-arg openRealtimeWebSocket, and the
+     * kill switch drops the direct client with the proxied one.
+     */
+    @Test
+    public void onlyTheRealtimeSocketMayDialDirect() throws Exception {
+        String src = readProjectFile("src/main/java/com/overdrive/app/genai/GenAiRuntime.java");
+        assertEquals(1, count(src, ".proxy(Proxy.NO_PROXY)"));
+        int open = src.indexOf(
+                "public WebSocket openRealtimeWebSocket(String url, WebSocketListener listener, boolean direct)");
+        assertTrue(open >= 0);
+        int end = src.indexOf("\n    }\n", open);
+        int direct = src.indexOf(".proxy(Proxy.NO_PROXY)");
+        assertTrue(direct > open);
+        assertTrue(direct < end);
+        int stop = src.indexOf("private void stopTransportNow() {");
+        assertTrue(stop >= 0);
+        String body = src.substring(stop, src.indexOf("\n    }\n", stop));
+        assertTrue(body.contains("client = null;"));
+        assertTrue(body.contains("directClient = null;"));
+    }
+
+    private static int count(String text, String needle) {
+        int n = 0;
+        int at = text.indexOf(needle);
+        while (at >= 0) {
+            n++;
+            at = text.indexOf(needle, at + needle.length());
+        }
+        return n;
+    }
+
+    private static String readProjectFile(String relativePath) throws Exception {
+        Path current = Paths.get("").toAbsolutePath();
+        Path direct = current.resolve(relativePath);
+        Path file = Files.exists(direct)
+                ? direct : current.resolve("app").resolve(relativePath);
+        if (!Files.exists(file)) {
+            throw new AssertionError("Could not locate project file: " + relativePath);
+        }
+        return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
     }
 }

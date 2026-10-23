@@ -25,7 +25,7 @@
 
   Preserved IDs (Kotlin references in SettingsFragment.kt):
     cardLanguage, tvLanguageValue
-    cardSectionRecording, cardSectionSurveillance, cardSectionDaemons
+    cardSectionRecording, cardSectionSurveillance, cardSectionStorage, cardSectionDaemons
     cardCheckUpdate (now mapped to "About" row), cardResetData
 
   Note on theme picker: the portrait page no longer hosts the theme picker
@@ -207,7 +207,7 @@
                     android:layout_width="@dimen/card_icon_standard"
                     android:layout_height="@dimen/card_icon_standard"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_recording"
+                    android:src="@drawable/ic_recording_settings"
                     app:tint="?attr/colorPrimary" />
 
                 <LinearLayout
@@ -287,6 +287,64 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:text="@string/settings_section_surveillance_subtitle"
+                        android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                        android:textColor="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_chevron_right"
+                    app:tint="?attr/colorOnSurfaceVariant" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Storage -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardSectionStorage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/card_gap_vertical"
+            android:clickable="true"
+            android:focusable="true"
+            app:cardBackgroundColor="?attr/colorSurfaceContainer"
+            app:cardCornerRadius="@dimen/card_radius_standard"
+            app:cardElevation="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="@dimen/card_padding_standard">
+
+                <ImageView
+                    android:layout_width="@dimen/card_icon_standard"
+                    android:layout_height="@dimen/card_icon_standard"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_recording_storage"
+                    app:tint="?attr/colorPrimary" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/recording_lib_filter_section_storage"
+                        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+                        android:textColor="?attr/colorOnSurface" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/settings_section_storage_subtitle"
                         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
                         android:textColor="?attr/colorOnSurfaceVariant" />
                 </LinearLayout>

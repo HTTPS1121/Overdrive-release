@@ -282,8 +282,8 @@
     <string name="onboarding_expert_surveillance_body">Rilevamento, qualità e conservazione raffinati qui. Questi aprono come in-app config pagine servite dalla vostra auto — uno schermo vuoto significa solo che l\'aiutante è ancora avviato.</string>
     <string name="onboarding_expert_camprobe_title">Sonda della telecamera — attenta</string>
     <string name="onboarding_expert_camprobe_body">Questo ri-mappa che la fotocamera fisica alimenta ogni ruolo e riavvia le telecamere. Cambialo solo se un feed sembra sbagliato — hai impostato questo in precedenza nella guida.</string>
-    <string name="onboarding_expert_traffic_title">Monitoraggio del traffico — necessario per l\'accesso remoto</string>
-    <string name="onboarding_expert_traffic_body">Il Traffic Monitor integrato di BYD blocca altre app dall\'utilizzo della SIM integrata dell\'auto. Se vuoi raggiungere la tua auto da remoto sulla BYD SIM, devi disabilitarla qui. La testa riavvia per applicare la modifica.</string>
+    <string name="onboarding_expert_traffic_title">Traffic Monitor — necessario per l\'accesso remoto</string>
+    <string name="onboarding_expert_traffic_body">Il Traffic Monitor integrato di BYD impedisce alle altre app di usare la SIM integrata dell\'auto. Se vuoi raggiungere la tua auto da remoto tramite la SIM BYD, devi disattivarlo qui. L\'unità principale si riavvia per applicare la modifica.</string>
     <string name="onboarding_expert_daemons_title">Servizi — maneggiare con cura</string>
     <string name="onboarding_expert_daemons_body">Questi interruttori avviano e fermano i servizi in background. Disattivando Fotocamera, Sorveglianza o ACC Sentry si interrompe la registrazione e la si spegne fino a quando non li riavvii — anche dopo un riavvio.</string>
     <string name="onboarding_expert_security_title">Blocca con un PIN</string>
@@ -551,7 +551,8 @@
     <string name="toast_soh_reset_failed_with_message">Fallito ripristino: %1$s</string>
     <string name="toast_select_at_least_one_category">Seleziona almeno una categoria</string>
     <string name="toast_reset_failed_with_error">Fallito ripristino: %1$s</string>
-    <string name="toast_traffic_monitor_changing">Il monitor del traffico %1$s...</string>
+    <string name="toast_traffic_monitor_enabling">Attivazione del Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">Disattivazione del Traffic Monitor…</string>
     <string name="dialog_close">Chiudi</string>
     <string name="dialog_reset">Ripristina</string>
     <string name="dialog_delete">Elimina</string>
@@ -570,12 +571,13 @@
     <string name="dialog_traffic_cannot_check_title">Impossibile controllare lo stato</string>
     <string name="dialog_traffic_cannot_check_message">La connessione ADB non è ancora pronta.\n\nL\'app ha bisogno di accesso ADB per gestire i pacchetti di sistema. Si prega di assicurarsi che:\n\n• USB Debugging sia abilitato nelle Opzioni per gli sviluppatori\n• L\'invito di autorizzazione ADB è stato accettato\n\nLo stato verrà aggiornato automaticamente una volta collegato.</string>
     <string name="dialog_traffic_disable_title">Disattivare BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_disable_message">Il Traffic Monitor BYD (com.byd.trafficmonitor) è un\'applicazione di sistema integrata che monitora continuamente le condizioni del traffico stradale in background.\n\n️ Perché disattivarlo?\n\n• Consuma dati mobili (anche quando parcheggiato)\n• Utilizza CPU e batteria in background\n• Non è necessario se si utilizza un\'app di navigazione separata\n• Può interferire con l\'utilizzo della rete della dashcam\n\nQuesto è sicuro da disattivare influisce solo sulla sovrapposizione del traffico integrato sulla mappa. La navigazione, ZBluetooth e tutte le altre funzioni dell\'auto rimangono invisibili.\n\nUn reboot duro è richiesto dopo la disattivazione (con</string>
+    <string name="dialog_traffic_disable_message">Il Traffic Monitor di BYD (com.byd.trafficmonitor) è un\'app di sistema integrata che controlla quali app possono usare i dati mobili. Impedisce alle app di terze parti, tra cui OverDrive, di usare la SIM integrata dell\'auto.\n\nPerché disattivarlo?\n\n• Permette a OverDrive e alle altre app che installi di usare internet tramite la SIM BYD\n• Necessario per raggiungere la tua auto da remoto tramite la SIM BYD\n\nLa navigazione, il Bluetooth e tutte le altre funzioni dell\'auto non ne risentono.\n\nDopo la disattivazione è necessario un riavvio forzato (tieni premuto il pulsante della console centrale per 5 secondi).</string>
     <string name="dialog_traffic_enable_title">Riattivare BYD Traffic Monitor?</string>
-    <string name="dialog_traffic_enable_message">Il Traffic Monitor BYD è attualmente disabilitato.\n\nRiattivarlo ripristinerà la sovrapposizione del traffico integrata sulla mappa di navigazione. Si noti che eseguirà in background e consumerà dati mobili.\n\nÈ necessario un reboot duro dopo l\'attivazione (tenere il pulsante della console centrale 5 secondi).</string>
-    <string name="dialog_traffic_status_title">Traffic Monitor %1$s</string>
+    <string name="dialog_traffic_enable_message">Il Traffic Monitor di BYD è attualmente disattivato.\n\nRiattivarlo impedirà di nuovo a OverDrive e alle altre app di terze parti di usare la SIM integrata dell\'auto, quindi l\'accesso remoto tramite la SIM BYD smetterà di funzionare.\n\nDopo l\'attivazione è necessario un riavvio forzato (tieni premuto il pulsante della console centrale per 5 secondi).</string>
+    <string name="dialog_traffic_status_enabled">Traffic Monitor attivato</string>
+    <string name="dialog_traffic_status_disabled">Traffic Monitor disattivato</string>
     <string name="dialog_traffic_reboot_message">Il cambiamento è stato applicato. Per favore eseguite un riavvio duro ora:</string>
-    <string name="traffic_monitor_loading">Traffic Monitor: controllo...</string>
+    <string name="traffic_monitor_loading">Traffic Monitor: controllo in corso…</string>
     <string name="traffic_monitor_tap_to_check">Traffic Monitor (tocca per controllare)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">Viaggi</string>
@@ -633,6 +635,10 @@ Puoi ottenerne uno su: zrok.io</string>
     <string name="dialog_tailscale_proxy_enable_message">Questo percorre MQTT attraverso Tailscale in modo da poter raggiungere un broker privato sulla tua rete di coda senza invio di porta.\n\n Mentre è abilitato:\n• MQTT a un broker di coda funziona (ad esempio Mosquitto su un dispositivo sulla tua rete di coda)\n• MQTT a broker pubblici (HiveMQ, AWS IoT, ecc.) fallirà Tailscale solo percorsi alla tua rete di coda\n• Il daemon Tailscale riavvierà l\'applicazione del cambiamento\n• Altri app e il resto del traffico del dispositivo non sono interessati\n\nPuoi spegnere questo in qualsiasi momento.</string>
     <string name="dialog_zrok_reset_title">Ripristinare ambiente Zrok</string>
     <string name="dialog_zrok_reset_message">Questo:\n• fermarà il tunnel zrok se eseguito\n• rimuovere l\'ambiente zrok da questo dispositivo\n• rimuovere il token salvato\n\nDovrai riinserire il tuo token e riabilitarlo. Questo utilizza uno dei tuoi 5 slot per dispositivi su zrok.io.\n\nSei sicuro?</string>
+    <string name="dialog_tunnel_conflict_title">Un altro tunnel è attivo</string>
+    <string name="dialog_tunnel_conflict_message">%1$s è già attivo. Passare a %2$s (%1$s verrà arrestato) o usare entrambi i tunnel in parallelo?\n\nCon entrambi attivi:\n• La dashboard è raggiungibile da due link pubblici\n• Il consumo di dati mobili a riposo aumenta leggermente\n• Entrambi si avviano automaticamente dopo un riavvio</string>
+    <string name="dialog_tunnel_conflict_switch">Cambia</string>
+    <string name="dialog_tunnel_conflict_run_both">Usa entrambi</string>
     <string name="toast_resetting_zrok">Reimpostazione ambiente Zrok...</string>
     <string name="toast_zrok_reset_success">Ambiente Zrok reimpostato. Inserisci un nuovo token per configurarlo di nuovo.</string>
     <string name="toast_zrok_reset_partial">Ripristino dell\'ambiente (il file di token potrebbe richiedere una pulizia manuale)</string>
@@ -694,9 +700,9 @@ Questa azione non puo essere annullata.</string>
     <string name="setup_overlay_already_granted">Gia concesso</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">Suggerimenti e risoluzione dei problemi</string>
-    <string name="setup_traffic_title">Disattivare il monitor del traffico BYD</string>
-    <string name="setup_traffic_body">Il Traffic Monitor BYD blocca le app di terze parti dall\'accesso a Internet. Disattivarlo consente a OverDrive e a tutte le altre app installate di utilizzare effettivamente la rete.</string>
-    <string name="setup_traffic_button">Monitore di traffico aperto</string>
+    <string name="setup_traffic_title">Disattiva BYD Traffic Monitor</string>
+    <string name="setup_traffic_body">Il Traffic Monitor di BYD impedisce alle app di terze parti di accedere a internet. Disattivarlo permette a OverDrive e a qualsiasi altra app che installi di usare effettivamente la rete. Dopodiché è necessario un riavvio forzato.</string>
+    <string name="setup_traffic_button">Apri Traffic Monitor</string>
     <string name="setup_camera_fix_title">La fotocamera è nera o sbagliata?</string>
     <string name="setup_camera_fix_body">Camera probe, impostare l\'ID della fotocamera a 0, toccare Salvare, quindi riavviare il daemon della fotocamera. Se i feed sono ancora sbagliati, ripetere con l\'ID della fotocamera 1. Lasciare la sezione di mappatura intatta.</string>
     <!-- Recording storage path -->
@@ -810,6 +816,8 @@ Questa azione non puo essere annullata.</string>
     <string name="settings_about_support_share_value">Ogni link condiviso aiuta un altro proprietario BYD a scoprire Overdrive.</string>
     <string name="settings_about_support_share_message">Controlla Overdrive monitoraggio open source e dashcam per BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Condividi Overdrive</string>
+    <string name="settings_about_youtube_title">Iscriviti su YouTube</string>
+    <string name="settings_about_youtube_value">Metti mi piace, iscriviti e condividi: ogni visualizzazione aiuta Overdrive a crescere.</string>
     <string name="settings_about_open_link_failed">Impossibile aprire il link.</string>
     <string name="settings_about_open_link_copied">Nessun browser trovato. URL copiato: %1$s</string>
     <string name="settings_about_support_kofi_title">Fuel il prossimo rilascio</string>
@@ -848,7 +856,7 @@ Questa azione non puo essere annullata.</string>
     <string name="recordings_preview_placeholder_body">Tocca un elemento a sinistra per riprodurlo.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">Console ADB</string>
-    <string name="diagnostics_section_traffic">Monitor traffico</string>
+    <string name="diagnostics_section_traffic">Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">Sonda telecamera</string>
     <string name="diagnostics_section_battery">Salute batteria</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -964,6 +972,7 @@ Questa azione non puo essere annullata.</string>
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Buffer pre/post, codec, limiti storage.</string>
     <string name="settings_section_surveillance_subtitle">Zone rilevamento, programma, sensibilita movimento.</string>
+    <string name="settings_section_storage_subtitle">Dove vanno le registrazioni, limiti di spazio, pulizia della dashcam BYD.</string>
     <string name="settings_section_daemons_subtitle">Runner Cloudflared, Zrok, Telegram, MQTT.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">Info su OverDrive</string>
@@ -1355,6 +1364,10 @@ Questa azione non puo essere annullata.</string>
     <string name="projection_autostart_conflict_confirm">Usa questa app</string>
     <string name="projection_app_uninstalled">Quell\'app non è più installata.</string>
     <string name="projection_status_service_down">Il servizio di mirroring non è pronto — riavvia l\'app (o il daemon della fotocamera) e riprova.</string>
+    <string name="projection_status_connecting">Connessione al cluster…</string>
+    <string name="projection_status_mirror_unavailable">Specchio non disponibile</string>
+    <string name="projection_fullscreen_enter">Schermo intero</string>
+    <string name="projection_fullscreen_exit">Esci da schermo intero</string>
     <string name="cd_replay_status">Stato replay istantaneo</string>
     <string name="recording_lib_type_replay">REPLAY</string>
     <string name="settings_overlay_replay_title">Indicatore di replay istantaneo</string>
@@ -1380,4 +1393,17 @@ Questa azione non puo essere annullata.</string>
     <string name="rail_section_automation">Automazione</string>
     <string name="rail_section_system">Sistema</string>
     <string name="rail_collapse_label">Comprimi</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">In ascolto…</string>
+    <string name="voice_overlay_thinking">Sto pensando…</string>
+    <string name="voice_overlay_speaking">Sto parlando…</string>
+    <string name="voice_overlay_done">Fatto</string>
+    <string name="voice_overlay_cancelled">Annullato</string>
+    <string name="voice_overlay_not_understood">Scusa, non ho capito</string>
+    <string name="voice_overlay_offline">L\'assistente IA non è disponibile</string>
+    <string name="voice_overlay_busy">L\'assistente è già in uso</string>
+    <string name="voice_overlay_blocked_moving">Non disponibile durante la guida</string>
+    <string name="voice_overlay_refused">Non si può fare con la voce</string>
+    <string name="voice_overlay_failed">Impossibile completare l\'operazione</string>
 </resources>

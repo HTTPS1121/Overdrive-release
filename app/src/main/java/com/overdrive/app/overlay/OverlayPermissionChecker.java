@@ -85,17 +85,32 @@ public final class OverlayPermissionChecker {
         return null;
     }
 
+    /**
+     * Translate the raw SYSTEM_ALERT_WINDOW AppOp mode into a decision, or {@code null} when
+     * the mode does not settle the question and {@code Settings.canDrawOverlays()} must.
+     *
+     * <p>Only an EXPLICIT verdict wins over the framework: ALLOWED, or IGNORED/ERRORED (the
+     * "some BYD builds report canDrawOverlays()=true while the op is explicitly denied" case
+     * this checker exists for — see {@link OverlayPermissionDecision}).
+     *
+     * <p>{@code MODE_DEFAULT} is NOT a denial. It is what AppOps reports when nobody has ever
+     * toggled the op — the state of every install whose grant came from {@code pm grant}
+     * (the daemon's PermissionGranter) rather than the Settings toggle. The platform itself
+     * resolves DEFAULT by falling back to the static permission grant, both in
+     * {@code Settings.canDrawOverlays()} and in the window manager's own add-window check, so
+     * a window we refused here would have been accepted by the OS. Treating DEFAULT as denied
+     * (v40.2–49.7 on non-DiLink5 cars) is what silently killed every "Show toast" automation
+     * on such installs: MessageOverlayService exited before addView and the daemon, dispatching
+     * fire-and-forget, logged success (2026-09-23 field log).
+     */
     static Boolean appOpsDecision(
             int mode, boolean diLink5, int targetSdkVersion) {
         if (mode == AppOpsManager.MODE_ALLOWED) return Boolean.TRUE;
         if (mode == AppOpsManager.MODE_IGNORED) return Boolean.FALSE;
         if (mode == AppOpsManager.MODE_ERRORED) return Boolean.FALSE;
-        if (!diLink5) {
-            if (mode == AppOpsManager.MODE_DEFAULT) return Boolean.FALSE;
-            if (mode == AppOpsManager.MODE_FOREGROUND) return Boolean.TRUE;
-        }
-        // On DiLink 5, DEFAULT and FOREGROUND do not settle this special
-        // permission; the framework check evaluates the current grant.
+        if (!diLink5 && mode == AppOpsManager.MODE_FOREGROUND) return Boolean.TRUE;
+        // MODE_DEFAULT everywhere, and FOREGROUND on DiLink 5: the op does not settle this
+        // special permission; the framework check evaluates the current static grant.
         return null;
     }
 }

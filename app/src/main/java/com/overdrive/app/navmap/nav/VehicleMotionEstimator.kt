@@ -200,7 +200,10 @@ class VehicleMotionEstimator {
         if (tsMs + MAX_OUT_OF_ORDER_FIX_AGE_MS < cur.timestampMs) return cur
 
         val prev = prevTruth
-        val moved = haversine(cur.lat, cur.lng, lat, lng)
+        // Blend against the state predicted to this fix's instant, so the weights judge the
+        // prediction error rather than the distance driven since the previous fix.
+        val pred = estimate(tsMs, tsMs) ?: cur
+        val moved = haversine(pred.lat, pred.lng, lat, lng)
 
         // --- Bearing source: prefer position-delta when clearly moving (stabler than
         //     raw GPS bearing); else raw when fast; else hold the last filtered. ---
@@ -247,7 +250,7 @@ class VehicleMotionEstimator {
             else -> 0.22
         }
 
-        val (nlat, nlng) = interpolate(cur.lat, cur.lng, lat, lng, posAlpha)
+        val (nlat, nlng) = interpolate(pred.lat, pred.lng, lat, lng, posAlpha)
         var nspeed = cur.speedMps + (speedMps - cur.speedMps) * speedAlpha
         if (speedMps < STATIONARY_SPEED_MPS && nspeed < STATIONARY_SPEED_MPS) nspeed = 0.0
         val nbearing = normalize(cur.bearingDeg + shortestArc(cur.bearingDeg, bearing) * bearingAlpha)

@@ -46,7 +46,7 @@ public class Di4PreviewBootstrapContractTest {
         assertOrdered(dims,
                 "halDeclaredDimsKnown = false;",
                 "if (shouldUseDi4PreviewBootstrap())",
-                "DIPlus beta18 always uses callback-first startup",
+                "pre-API-32 always uses callback-first startup",
                 "return;");
 
         String bootstrap = method(source,

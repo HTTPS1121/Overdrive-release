@@ -36,6 +36,8 @@ public class TripTelemetryRecorder {
 
     private static final long SAMPLE_INTERVAL_MS = 200;       // 5Hz
     private static final long FLUSH_INTERVAL_MS = 60_000;     // 60s
+    // DI5 has no odometer: rows a process death loses can only be bridged by one straight line.
+    private static final long DILINK5_FLUSH_INTERVAL_MS = 15_000;
     /** Delay before the FIRST flush. Short on purpose — see startRecording:
      *  until a flush lands there is no on-disk trace of the trip, so a process
      *  death before it is unrecoverable. 5s ≈ 25 samples: cheap, and it closes
@@ -50,6 +52,10 @@ public class TripTelemetryRecorder {
     // Floor below which a GPS fallback segment is treated as stationary jitter
     // rather than travel (~2 m random walk at the typical fix noise level).
     private static final double MIN_GPS_SEGMENT_KM = 0.002;
+    // DI5: a GPS 0 is a stop when the positions agree; parked jitter stays under it.
+    private static final double DILINK5_GPS_STOP_MAX_KMH = 20.0;
+    // DI5: under this a GPS speed is a standstill's Doppler noise.
+    private static final int DILINK5_GPS_NOISE_KMH = 3;
     // Cap dt for speed integration so a scheduler stall / process resume can't
     // turn one tick into a kilometre. Normal cadence is 200 ms.
     private static final long MAX_INTEGRATION_DT_MS = 2_000;
@@ -73,11 +79,13 @@ public class TripTelemetryRecorder {
 
     // Trip state
     private volatile boolean recording = false;
-    private long currentTripId = -1;
+    // volatile: the live trip readout checks it from the HTTP thread (see getStatsTripKey);
+    // beginRecording sets it only once the stats are reset
+    private volatile long currentTripId = -1;
     private File outputFile;
 
-    // Stats tracking
-    private int maxSpeedKmh = 0;
+    // Stats tracking (maxSpeedKmh is also read by the live readout's HTTP thread)
+    private volatile int maxSpeedKmh = 0;
     private long speedSumKmh = 0;
     private long speedSampleCount = 0;
     
@@ -114,6 +122,42 @@ public class TripTelemetryRecorder {
     // channel only after that proof; until then GPS carries the distance. Reset
     // per trip in startRecording so one bad trip can't poison the next.
     private boolean speedChannelEverLive = false;
+    // DI5 only: the latest distinct GPS fix: its own trusted speed, position and checked speed (-1 unknown).
+    private long diLink5FixId = 0L;
+    private int diLink5FixRawKmh = -1;
+    private double diLink5FixLat = 0, diLink5FixLon = 0;
+    private int diLink5FixCheckedKmh = -1;
+    // DI5 only: the speed the current fix contributes to distance (its own, unless it jumped).
+    private int diLink5FixDistanceKmh = -1;
+    // DI5 only: recent live fixes, oldest first, spanning at most 5 s.
+    private final java.util.ArrayDeque<RecentFix> diLink5RecentFixes = new java.util.ArrayDeque<>();
+    // DI5 only: where a GPS-only stretch under 10 km/h began (its fix and accuracy), and Doppler km since.
+    private boolean diLink5SlowAnchored = false;
+    private double diLink5SlowLat = 0, diLink5SlowLon = 0;
+    private float diLink5SlowAccuracyM = 0f;
+    private double diLink5SlowDopplerKm = 0;
+    // DI5 only: what position-measured closes already added during the slow stretch.
+    private double diLink5SlowCountedKm = 0;
+    // DI5 only: distance a slow stretch lands at this tick's new fix (0 if none).
+    private double diLink5LandKm = 0;
+    // DI5 only: restart gaps [from, to] no live fix could measure (their distance is missing), and
+    // those in the interval still open. Finalize reads them once the sampler has stopped.
+    private final Object diLink5GapLock = new Object();
+    private final ArrayList<long[]> diLink5UnmeasuredGaps = new ArrayList<>();
+    private final ArrayList<long[]> diLink5PendingGaps = new ArrayList<>();
+    // DI5 only: a resume's restart gap, which ends at the first live tick as the journal's next row does.
+    private long[] diLink5SeedGap = null;
+    // DI5 only: distance integrated since the GPS anchor (a live fix) and when it was taken; whether
+    // a tick since then had no speed, so the move to the next live fix is measured by position.
+    private double diLink5KmSinceAnchor = 0;
+    private long diLink5AnchorAtMs = 0L;
+    private boolean diLink5AnchorUnmeasured = false;
+    private boolean diLink5AnchorStill = false;
+    private boolean diLink5AnchorParked = false;
+    private float diLink5AnchorAccuracyM = 0f;
+    // DI5 only: the open interval waited at its anchor for a move the car's state could not explain.
+    private boolean diLink5AnchorHeld = false;
+    private boolean diLink5PrevParked = false;
 
     // GPS coverage tracking — how many samples landed valid lat/lon. Logged
     // at trip end so the daemon log alone tells us why a trip's map is blank
@@ -177,7 +221,7 @@ public class TripTelemetryRecorder {
             File journal = StorageManager.getInstance().getTripJournalDir();
             if (journal != null) return journal;
         } catch (Throwable ignored) {}
-        return StorageManager.getInstance().getTripsDir();
+        return StorageManager.getInstance().getTripsWriteDir();
     }
 
     private void beginRecording(long tripId, File file, List<TelemetrySample> history) {
@@ -186,7 +230,6 @@ public class TripTelemetryRecorder {
             return;
         }
 
-        this.currentTripId = tripId;
         this.outputFile = file;
         this.maxSpeedKmh = 0;
         this.speedSumKmh = 0;
@@ -199,6 +242,25 @@ public class TripTelemetryRecorder {
         this.sampleCountTotal = 0;
         this.sampleCountWithGps = 0;
         this.speedChannelEverLive = false;
+        this.diLink5FixId = 0L;
+        this.diLink5FixRawKmh = -1;
+        this.diLink5FixCheckedKmh = -1;
+        this.diLink5RecentFixes.clear();
+        this.diLink5SlowAnchored = false;
+        synchronized (diLink5GapLock) {
+            diLink5UnmeasuredGaps.clear();
+            diLink5PendingGaps.clear();
+            diLink5SeedGap = null;
+        }
+        this.diLink5KmSinceAnchor = 0;
+        this.diLink5AnchorAtMs = 0L;
+        this.diLink5AnchorUnmeasured = false;
+        this.diLink5AnchorStill = false;
+        this.diLink5AnchorParked = false;
+        this.diLink5AnchorAccuracyM = 0f;
+        this.diLink5AnchorHeld = false;
+        this.diLink5PrevParked = false;
+        this.diLink5FixDistanceKmh = -1;
 
         synchronized (bufferLock) {
             buffer.clear();
@@ -212,6 +274,8 @@ public class TripTelemetryRecorder {
             seedFromHistory(history);
         }
 
+        // set after the reset and the seed: the live readout trusts the stats once this names its trip
+        this.currentTripId = tripId;
         recording = true;
 
         // Mark this file as in-flight so StorageManager.ensureTripsSpace
@@ -245,7 +309,9 @@ public class TripTelemetryRecorder {
         // Steady-state cadence is unchanged, so there is no extra I/O on a
         // long drive beyond one early small write.
         flushFuture = executor.scheduleAtFixedRate(
-                this::flushBuffer, FIRST_FLUSH_DELAY_MS, FLUSH_INTERVAL_MS, TimeUnit.MILLISECONDS);
+                this::flushBuffer, FIRST_FLUSH_DELAY_MS,
+                com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                        ? DILINK5_FLUSH_INTERVAL_MS : FLUSH_INTERVAL_MS, TimeUnit.MILLISECONDS);
 
         logger.info((history != null && !history.isEmpty() ? "Resumed" : "Started")
                 + " recording trip " + tripId + " → " + outputFile.getAbsolutePath()
@@ -259,12 +325,14 @@ public class TripTelemetryRecorder {
      * Seed the live accumulators from already-journaled samples (same-session
      * resume). Distance is GPS-integrated with the recovery path's plausibility
      * gate — the journal has no dt-integrated CAN distance — and stats mirror
-     * {@link #sample}'s rules as far as the 1 Hz file allows: synthetic
-     * stale-zero samples are indistinguishable on disk, so a resumed trip's
-     * average speed may read marginally low. The hardware odometer delta still
+     * {@link #sample}'s rules as far as the 1 Hz file allows: DI5 flags its
+     * rows without a vehicle speed, but elsewhere synthetic stale-zero samples
+     * are indistinguishable on disk, so a resumed trip's average speed may read
+     * marginally low. The hardware odometer delta still
      * overrides this distance at finalize whenever both edges are available.
      */
     private void seedFromHistory(List<TelemetrySample> history) {
+        final boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
         double prevLat = 0, prevLon = 0;
         long prevTs = 0;
         boolean havePrev = false;
@@ -285,10 +353,22 @@ public class TripTelemetryRecorder {
                 }
                 prevLat = s.lat; prevLon = s.lon; prevTs = s.timestampMs; havePrev = true;
             }
+            // DI5 rows without a vehicle speed: a GPS speed only feeds the peak, as it did live; an
+            // older DI5 journal's unreported zero is no reading at all.
+            if (!s.hasVehicleSpeed() || (diLink5 && !s.hasDiLink5Speed())) {
+                if (s.speedSource == TelemetrySample.SPEED_GPS && s.peakKmh() > maxSpeedKmh
+                        && !s.isDiLink5Parked()) {
+                    maxSpeedKmh = s.peakKmh();
+                }
+                continue;
+            }
             if (s.speedKmh > 0) speedChannelEverLive = true;
-            if (s.speedKmh > maxSpeedKmh) maxSpeedKmh = s.speedKmh;
-            speedSumKmh += s.speedKmh;
-            speedSampleCount++;
+            // DI5: a parked row's speed (frozen, or GPS noise) is not the trip's peak.
+            if (s.speedKmh > maxSpeedKmh && !(diLink5 && s.isDiLink5Parked())) maxSpeedKmh = s.speedKmh;
+            // DI5: a 1 Hz row stands for the five 5 Hz ticks live adds to the running mean.
+            int weight = diLink5 ? 5 : 1;
+            speedSumKmh += (long) s.speedKmh * weight;
+            speedSampleCount += weight;
         }
         totalDistanceKm = dist;
         if (havePrev) {
@@ -296,10 +376,44 @@ public class TripTelemetryRecorder {
             lastLon = prevLon;
             hasLastGps = true;
         }
+        // DI5 has no odometer: measure the journal exactly as live does, then carry its open interval
+        // on; this restart's gap stays unmeasured until the first live fix closes it.
+        if (diLink5) {
+            JournalDistance d = diLink5JournalDistance(history);
+            totalDistanceKm = d.km;
+            hasLastGps = d.anchorAtMs > 0L;
+            lastLat = d.anchorLat;
+            lastLon = d.anchorLon;
+            diLink5AnchorAtMs = d.anchorAtMs;
+            diLink5KmSinceAnchor = d.kmSinceAnchor;
+            diLink5AnchorStill = d.anchorStill;
+            diLink5AnchorParked = d.anchorParked;
+            diLink5AnchorAccuracyM = d.anchorAccuracyM;
+            diLink5AnchorHeld = d.anchorHeld;
+            diLink5AnchorUnmeasured = true;
+            synchronized (diLink5GapLock) {
+                diLink5UnmeasuredGaps.addAll(d.unmeasuredGaps);
+                diLink5PendingGaps.addAll(d.pendingGaps);
+                diLink5SeedGap = new long[] {
+                        history.get(history.size() - 1).timestampMs, System.currentTimeMillis()};
+                diLink5PendingGaps.add(diLink5SeedGap);
+            }
+        }
         // lastSampleMs stays 0 so the first live tick integrates no dt across
         // the restart gap.
         synchronized (allSamplesLock) {
-            allSamples.addAll(history);
+            if (diLink5) {
+                // Journal rows are 1 Hz; the score engine counts 5 Hz samples, as live ticks are.
+                List<TelemetrySample> eligible = new ArrayList<>();
+                for (TelemetrySample s : history) {
+                    if (s.isDiLink5ScoringEligible()) eligible.add(s);
+                }
+                allSamples.addAll(TripScoreEngine.diLink5At5Hz(eligible));
+            } else {
+                for (TelemetrySample s : history) {
+                    if (s.isScoringEligible()) allSamples.add(s);
+                }
+            }
         }
     }
 
@@ -385,7 +499,7 @@ public class TripTelemetryRecorder {
      * Returns the file path for a given trip ID.
      */
     public String getTelemetryFilePath(long tripId) {
-        return new File(StorageManager.getInstance().getTripsDir(),
+        return new File(StorageManager.getInstance().getTripsWriteDir(),
                 tripId + ".jsonl.gz").getAbsolutePath();
     }
 
@@ -396,6 +510,14 @@ public class TripTelemetryRecorder {
         synchronized (allSamplesLock) {
             return new ArrayList<>(allSamples);
         }
+    }
+
+    /**
+     * Key (start time) of the trip the stats belong to. They outlive a stop until the next start,
+     * so at a trip's start, before recording begins, they are still the last trip's. -1 before any.
+     */
+    public long getStatsTripKey() {
+        return currentTripId;
     }
 
     /**
@@ -410,6 +532,14 @@ public class TripTelemetryRecorder {
      */
     public double getAvgSpeedKmh() {
         return speedSampleCount > 0 ? (double) speedSumKmh / speedSampleCount : 0.0;
+    }
+
+    /** DI5: time within [fromMs, toMs] of a restart gap no live fix measured (its distance is missing). */
+    public long getUnmeasuredGapMs(long fromMs, long toMs) {
+        synchronized (diLink5GapLock) {
+            return gapOverlapMs(diLink5UnmeasuredGaps, fromMs, toMs)
+                    + gapOverlapMs(diLink5PendingGaps, fromMs, toMs);
+        }
     }
 
     /**
@@ -434,6 +564,307 @@ public class TripTelemetryRecorder {
                    Math.sin(dLon / 2) * Math.sin(dLon / 2);
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return R * c;
+    }
+
+    private static final class RecentFix {
+        final long id;
+        final double lat, lon;
+
+        RecentFix(long id, double lat, double lon) {
+            this.id = id;
+            this.lat = lat;
+            this.lon = lon;
+        }
+    }
+
+    /** A journal's DI5 distance; its restart gaps no fix measured; and the interval still open at its
+     *  end: anchor fix, when, km integrated since, and the restart gaps inside it. */
+    static final class JournalDistance {
+        double km;
+        double anchorLat, anchorLon;
+        long anchorAtMs;
+        boolean anchorStill;
+        boolean anchorParked;
+        float anchorAccuracyM;
+        boolean anchorHeld;
+        double kmSinceAnchor;
+        final List<long[]> unmeasuredGaps = new ArrayList<>();
+        final List<long[]> pendingGaps = new ArrayList<>();
+
+        /** Time within [fromMs, toMs] of restart gaps no fix measured, as the live trip leaves out of its average. */
+        long unmeasuredMs(long fromMs, long toMs) {
+            return gapOverlapMs(unmeasuredGaps, fromMs, toMs) + gapOverlapMs(pendingGaps, fromMs, toMs);
+        }
+    }
+
+    static long gapOverlapMs(List<long[]> gaps, long fromMs, long toMs) {
+        long total = 0L;
+        long until = toMs > 0 ? toMs : Long.MAX_VALUE;
+        for (long[] gap : gaps) {
+            long start = Math.max(gap[0], fromMs);
+            long end = Math.min(gap[1], until);
+            if (end > start) total += end - start;
+        }
+        return total;
+    }
+
+    /**
+     * DI5: a journal measured as live measures it. Rows' speeds (vehicle or checked GPS) are
+     * integrated over steps of up to 2 s, nothing in P. An interval between live fixes that had a
+     * row without a speed, a longer step, or a gap over 5 s (a restart, whatever the gear) is
+     * measured by position when the next live fix lands, less what was integrated, under a 250 km/h
+     * gate; standing at both ends, a move within the two fixes' accuracies is their jitter, and a gap
+     * waits (up to 10 s) for a row where the car's state is known while its move could be jitter.
+     */
+    private static boolean diLink5Parked(TelemetrySample s) {
+        return s.isDiLink5Parked();
+    }
+
+    private static boolean diLink5Still(TelemetrySample s) {
+        return diLink5Parked(s) || s.isDiLink5Stopped();
+    }
+
+    /** Standing at both ends: a move within the jitter bound is the fixes' jitter, not a drive. */
+    private static boolean isStandingJitter(boolean fromStill, boolean toStill, boolean bothParked,
+                                            double segKm, float fromAccuracyM, float toAccuracyM) {
+        return fromStill && toStill && segKm < jitterBoundKm(bothParked, fromAccuracyM, toAccuracyM);
+    }
+
+    /**
+     * Two fixes' combined accuracy in km (an unreported one counts as the 50 m gate). Parked in P at
+     * both ends, any move within two gates is jitter: multipath in a car park is far likelier than a
+     * re-park during a gap.
+     */
+    private static double jitterBoundKm(boolean bothParked, float fromAccuracyM, float toAccuracyM) {
+        float a = fromAccuracyM > 0 ? fromAccuracyM : GPS_ACCURACY_GATE_M;
+        float b = toAccuracyM > 0 ? toAccuracyM : GPS_ACCURACY_GATE_M;
+        double km = (a + b) / 1000.0;
+        return bothParked ? Math.max(km, 2 * GPS_ACCURACY_GATE_M / 1000.0) : km;
+    }
+
+    /** A fix's accuracy as the journal keeps it: whole metres, at least 1 (0 = unreported). */
+    private static float wholeMetres(float accuracyM) {
+        return accuracyM > 0 ? Math.max(1f, (float) Math.ceil(accuracyM)) : 0f;
+    }
+
+    static JournalDistance diLink5JournalDistance(List<TelemetrySample> rows) {
+        JournalDistance d = new JournalDistance();
+        boolean unmeasured = false;
+        TelemetrySample prev = null;
+        for (TelemetrySample s : rows) {
+            if (prev != null) {
+                long dtMs = s.timestampMs - prev.timestampMs;
+                if (dtMs > 5_000L) {
+                    unmeasured = true;
+                    d.pendingGaps.add(new long[] {prev.timestampMs, s.timestampMs});
+                } else if (dtMs > 0) {
+                    if (!s.hasDiLink5Speed() || !prev.hasDiLink5Speed()) {
+                        // No speed, in P too (the gear is unchecked): the next live fix measures the move.
+                        unmeasured = true;
+                    } else if (!diLink5Parked(s) && !diLink5Parked(prev)) {
+                        double km = (prev.speedKmh + s.speedKmh) / 2.0
+                                * (Math.min(dtMs, MAX_INTEGRATION_DT_MS) / 3_600_000.0);
+                        d.km += km;
+                        d.kmSinceAnchor += km;
+                        if (dtMs > MAX_INTEGRATION_DT_MS) unmeasured = true;
+                    }
+                }
+            }
+            // A slow GPS stretch's distance, landed live at this row.
+            if (s.distanceLandedM > 0) {
+                d.km += s.distanceLandedM / 1000.0;
+                d.kmSinceAnchor += s.distanceLandedM / 1000.0;
+            }
+            boolean liveFix = (s.lat != 0 || s.lon != 0) && !s.gpsNotLive;
+            boolean moved = d.anchorAtMs == 0L || s.lat != d.anchorLat || s.lon != d.anchorLon;
+            long sinceGapMs = d.pendingGaps.isEmpty() ? -1L
+                    : s.timestampMs - d.pendingGaps.get(d.pendingGaps.size() - 1)[1];
+            double boundKm = jitterBoundKm(d.anchorParked && diLink5Parked(s), d.anchorAccuracyM,
+                    s.horizontalAccuracyM);
+            boolean hold = unmeasured && !s.hasDiLink5Speed() && d.anchorAtMs > 0L
+                    && haversineKm(d.anchorLat, d.anchorLon, s.lat, s.lon) < 2 * boundKm;
+            if (hold && liveFix) {
+                d.anchorHeld = true;
+                if (sinceGapMs >= 10_000L) d.pendingGaps.clear();
+            }
+            if (liveFix && !moved) {
+                d.anchorStill |= diLink5Still(s);
+                d.anchorParked |= diLink5Parked(s);
+                // As live: known to stand where the interval began, it had no move.
+                if (unmeasured && s.hasDiLink5Speed() && diLink5Still(s)) {
+                    d.pendingGaps.clear();
+                    unmeasured = false;
+                    d.anchorHeld = false;
+                    d.kmSinceAnchor = 0;
+                    d.anchorAtMs = s.timestampMs;
+                }
+            }
+            if (liveFix && moved && !hold) {
+                double hr = (s.timestampMs - d.anchorAtMs) / 3_600_000.0;
+                boolean measured = !unmeasured;
+                if (unmeasured && d.anchorAtMs > 0L && hr > 0) {
+                    double seg = haversineKm(d.anchorLat, d.anchorLon, s.lat, s.lon);
+                    if (seg / hr <= 250.0) {
+                        if (seg - d.kmSinceAnchor >= MIN_GPS_SEGMENT_KM
+                                && !(d.anchorHeld && diLink5Still(s)
+                                        && seg < (d.anchorParked && diLink5Parked(s) ? 1 : 2) * boundKm)
+                                && !isStandingJitter(d.anchorStill, diLink5Still(s),
+                                        d.anchorParked && diLink5Parked(s), seg,
+                                        d.anchorAccuracyM, s.horizontalAccuracyM)) {
+                            d.km += seg - d.kmSinceAnchor;
+                        }
+                        measured = true;
+                    }
+                }
+                if (!measured) d.unmeasuredGaps.addAll(d.pendingGaps);
+                d.pendingGaps.clear();
+                unmeasured = false;
+                d.anchorHeld = false;
+                d.kmSinceAnchor = 0;
+                d.anchorLat = s.lat;
+                d.anchorLon = s.lon;
+                d.anchorAtMs = s.timestampMs;
+                d.anchorStill = diLink5Still(s);
+                d.anchorParked = diLink5Parked(s);
+                d.anchorAccuracyM = s.horizontalAccuracyM;
+            }
+            prev = s;
+        }
+        return d;
+    }
+
+    /**
+     * DI5: speed of the current GPS fix in km/h, or -1. A live fix counts only next to the fix
+     * before it (at most 5 s older, as long as a fix is trusted): the lower of the two is taken, so
+     * a one-fix spike never lands, and a 0 must agree with the positions, as the sidecar also
+     * reports 0 for a fix without speed.
+     */
+    private int checkedDiLink5GpsSpeedKmh(GpsMonitor.GpsFixSnapshot fix, long nowEpochMs) {
+        diLink5LandKm = 0;
+        long fixId = fix.fixElapsedMs > 0L ? fix.fixElapsedMs : fix.lastUpdate;
+        // GpsMonitor keeps the last fix when GPS goes quiet: its speed stands for 2.5 s, not the 5 s a
+        // position stays live, so braking as GPS drops is measured by position instead.
+        if (fixId == diLink5FixId) {
+            return trustworthyGpsSpeedKmh(fix, nowEpochMs) >= 0 && fixAgeMs(fix, nowEpochMs) <= 2_500L
+                    ? diLink5FixCheckedKmh : -1;
+        }
+        int raw = trustworthyGpsSpeedKmh(fix, nowEpochMs);
+        if (raw > 0 && raw < DILINK5_GPS_NOISE_KMH) raw = 0;
+        long dtMs = fixId - diLink5FixId;
+        int checked = -1;
+        int forDistance = -1;
+        if (raw >= 0 && diLink5FixRawKmh >= 0 && diLink5FixId > 0L && dtMs > 0L && dtMs <= 5_000L) {
+            // Positions over the longest span back to a recent live fix: jitter shrinks as it grows.
+            RecentFix from = null;
+            for (RecentFix r : diLink5RecentFixes) {
+                if (r.id < fixId && fixId - r.id <= 5_000L) {
+                    from = r;
+                    break;
+                }
+            }
+            long spanMs = from != null ? fixId - from.id : dtMs;
+            double impliedKmh = (from != null
+                    ? haversineKm(from.lat, from.lon, fix.latitude, fix.longitude)
+                    : haversineKm(diLink5FixLat, diLink5FixLon, fix.latitude, fix.longitude))
+                    / (spanMs / 3_600_000.0);
+            if (raw > 0 && diLink5FixRawKmh > 0) {
+                checked = Math.min(raw, diLink5FixRawKmh);
+                // Distance takes this fix's own speed unless it changed faster than a car can (20 km/h/s).
+                forDistance = Math.abs(raw - diLink5FixRawKmh) <= Math.max(10.0, 20.0 * dtMs / 1000.0)
+                        ? raw : checked;
+                // Multipath reports motion at a standstill: positions over 3 s or more must show half of
+                // it (jitter swamps a shorter span). Under 10 km/h what fails is a stop.
+                if (impliedKmh < checked / 2.0 || (checked >= 10 && spanMs < 3_000L)) {
+                    if (checked >= 10) {
+                        checked = -1;
+                        forDistance = -1;
+                    } else if (spanMs >= 3_000L) {
+                        checked = 0;
+                        forDistance = 0;
+                    }
+                }
+            } else if (impliedKmh < (spanMs >= 3_000L ? 10.0 : DILINK5_GPS_STOP_MAX_KMH)) {
+                checked = 0;
+                forDistance = 0;
+            }
+        }
+        while (!diLink5RecentFixes.isEmpty() && diLink5RecentFixes.peekLast().id >= fixId) {
+            diLink5RecentFixes.pollLast();
+        }
+        while (!diLink5RecentFixes.isEmpty() && fixId - diLink5RecentFixes.peekFirst().id > 5_000L) {
+            diLink5RecentFixes.pollFirst();
+        }
+        if (raw >= 0) diLink5RecentFixes.addLast(new RecentFix(fixId, fix.latitude, fix.longitude));
+        // Under 10 km/h Doppler and fix-to-fix moves are noise-level, so distance waits until the car is
+        // clear of jitter from where the slow stretch began: 4x the fixes' accuracy (40 m at least) by
+        // positions alone, or 2x (20 m) with the stretch's Doppler backing half of it. It then lands at
+        // once; a stretch that ends at a checked 10+ lands what it moved so far.
+        float accuracyM = wholeMetres(fix.accuracy);
+        if (diLink5SlowAnchored && checked < 10 && raw >= DILINK5_GPS_NOISE_KMH && dtMs > 0L && dtMs <= 5_000L) {
+            diLink5SlowDopplerKm += raw * (dtMs / 3_600_000.0);
+        }
+        if (checked >= 0 && checked < 10) {
+            if (diLink5SlowAnchored) {
+                double movedKm = haversineKm(diLink5SlowLat, diLink5SlowLon, fix.latitude, fix.longitude);
+                double boundKm = jitterBoundKm(false, diLink5SlowAccuracyM, accuracyM);
+                if (movedKm >= Math.max(4 * boundKm, 0.040)
+                        || (movedKm >= Math.max(2 * boundKm, 0.020) && diLink5SlowDopplerKm >= movedKm / 2.0)) {
+                    diLink5LandKm = Math.max(0, movedKm - diLink5SlowCountedKm);
+                    diLink5SlowAnchored = false;
+                }
+            }
+            if (!diLink5SlowAnchored) {
+                diLink5SlowAnchored = true;
+                diLink5SlowLat = fix.latitude;
+                diLink5SlowLon = fix.longitude;
+                diLink5SlowAccuracyM = accuracyM;
+                diLink5SlowDopplerKm = 0;
+                diLink5SlowCountedKm = 0;
+            }
+            forDistance = 0;
+        } else if (checked >= 10) {
+            if (diLink5SlowAnchored) {
+                diLink5LandKm = Math.max(0, haversineKm(diLink5SlowLat, diLink5SlowLon,
+                        fix.latitude, fix.longitude) - diLink5SlowCountedKm);
+            }
+            diLink5SlowAnchored = false;
+        }
+        diLink5FixId = fixId;
+        diLink5FixRawKmh = raw;
+        diLink5FixLat = fix.latitude;
+        diLink5FixLon = fix.longitude;
+        diLink5FixCheckedKmh = checked;
+        diLink5FixDistanceKmh = forDistance;
+        return checked;
+    }
+
+    /** DI5: live GPS speed in km/h, or -1; the same accuracy gate as GPS distance. */
+    private static int trustworthyGpsSpeedKmh(GpsMonitor.GpsFixSnapshot fix, long nowEpochMs) {
+        if (!isLiveFix(fix, nowEpochMs, GPS_ACCURACY_GATE_M)
+                || !(fix.speed >= 0f) || Float.isInfinite(fix.speed)) {
+            return -1;
+        }
+        double kmh = fix.speed * 3.6;
+        return kmh <= 300.0 ? (int) Math.round(kmh) : -1;
+    }
+
+    /** How old a fix is, or -1 when it carries no time. */
+    private static long fixAgeMs(GpsMonitor.GpsFixSnapshot fix, long nowEpochMs) {
+        return fix.fixElapsedMs > 0L
+                ? android.os.SystemClock.elapsedRealtime() - fix.fixElapsedMs
+                : fix.lastUpdate > 0L ? nowEpochMs - fix.lastUpdate : -1L;
+    }
+
+    /** A fix from the live sidecar, not the disk cache, at most 5 s old and within the accuracy gate. */
+    private static boolean isLiveFix(GpsMonitor.GpsFixSnapshot fix, long nowEpochMs, float maxAccuracyM) {
+        if (fix == null || fix.loadedFromCache
+                || !(fix.accuracy > 0f) || fix.accuracy > maxAccuracyM) {
+            return false;
+        }
+        long ageMs = fix.fixElapsedMs > 0L
+                ? android.os.SystemClock.elapsedRealtime() - fix.fixElapsedMs
+                : fix.lastUpdate > 0L ? nowEpochMs - fix.lastUpdate : -1L;
+        return ageMs >= 0L && ageMs <= 5_000L;
     }
 
     // ==================== PRIVATE: Sampling ====================
@@ -461,15 +892,22 @@ public class TripTelemetryRecorder {
             // manufacture a phantom stop / launch / coast and dilute the jerk and
             // consistency windows.
             boolean dynamicsStale = true;
+            boolean diLink5PedalsUnknown = false;
+            final boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
             if (snapshot != null) {
                 // Check if snapshot is stale (older than 2 seconds means poller may have died)
                 long snapshotAge = now - snapshot.timestampMs;
                 if (snapshotAge < 2000) {
-                    speedKmh = snapshot.speedKmh;
-                    accelPedal = snapshot.accelPedalPercent;
-                    brakePedal = snapshot.brakePedalPercent;
-                    brakePedalPressed = snapshot.brakePedalPressed;
-                    dynamicsStale = false;
+                    boolean pedalsValid = snapshot.accelPedalValid && snapshot.brakePedalValid;
+                    // DI5: a snapshot without a valid speed is no reading, nor are pedals it marks invalid.
+                    if (!diLink5 || snapshot.speedValid) {
+                        speedKmh = snapshot.speedKmh;
+                        accelPedal = snapshot.accelPedalPercent;
+                        brakePedal = snapshot.brakePedalPercent;
+                        brakePedalPressed = snapshot.brakePedalPressed;
+                        dynamicsStale = false;
+                        diLink5PedalsUnknown = diLink5 && !pedalsValid;
+                    }
                 } else {
                     // Stale snapshot — record zeros instead of frozen values
                     if (snapshotAge < 5000) {
@@ -492,17 +930,73 @@ public class TripTelemetryRecorder {
             // Read gear from GearMonitor
             int gearMode = GearMonitor.getInstance().getCurrentGear();
 
+            // DI5 without a vehicle speed: the timeline and the trip's peak take live GPS speed,
+            // flagged so stats, scoring and a resume never count it as a reading.
+            int recordedSpeedKmh = speedKmh;
+            int speedSource = TelemetrySample.SPEED_VEHICLE;
+            int peakSpeedKmh = -1;
+            int diLink5GpsKmh = -1;
+            if (diLink5) {
+                diLink5GpsKmh = checkedDiLink5GpsSpeedKmh(fix, now);
+                // A slow GPS stretch only spans ticks without a vehicle speed, or it would re-count CAN km;
+                // one the returning speed shows the car moving through was motion, not jitter.
+                if (!dynamicsStale) {
+                    if (diLink5SlowAnchored && speedKmh > 0 && isLiveFix(fix, now, GPS_ACCURACY_GATE_M)) {
+                        diLink5LandKm += Math.max(0, haversineKm(diLink5SlowLat, diLink5SlowLon, lat, lon)
+                                - diLink5SlowCountedKm);
+                    }
+                    diLink5SlowAnchored = false;
+                }
+                if (dynamicsStale) {
+                    // The row keeps the speed distance integrates, and the peak's when it differs.
+                    recordedSpeedKmh = diLink5GpsKmh >= 0 ? diLink5FixDistanceKmh : 0;
+                    if (diLink5GpsKmh >= 0 && diLink5GpsKmh != recordedSpeedKmh) peakSpeedKmh = diLink5GpsKmh;
+                    speedSource = diLink5GpsKmh >= 0 ? TelemetrySample.SPEED_GPS : TelemetrySample.SPEED_NONE;
+                }
+            }
+
+            // DI5: in P the car is parked unless a speed shows it moving: any valid vehicle speed (the
+            // collector quarantines one frozen in P), or 10+ km/h of checked GPS. The gear signal is not
+            // status-checked, so an error can read as P.
+            boolean diLink5Moving = !dynamicsStale ? speedKmh > 0 : diLink5GpsKmh >= 10;
+            boolean diLink5Parked = diLink5 && gearMode == 1 && !diLink5Moving;
+            // DI5: a step is parked if either end is, as the journal reads its rows.
+            boolean diLink5StepParked = diLink5Parked || (diLink5 && diLink5PrevParked);
+            // A slow stretch's landed distance counts unless the car is parked now (moving at the landing
+            // fix, it really moved, whatever the tick before read); the row carries it.
+            float landedM = 0f;
+            if (diLink5LandKm > 0 && !diLink5Parked) {
+                totalDistanceKm += diLink5LandKm;
+                diLink5KmSinceAnchor += diLink5LandKm;
+                landedM = (float) (diLink5LandKm * 1000.0);
+            }
+            diLink5LandKm = 0;
+
             TelemetrySample sample = new TelemetrySample(
-                    now, speedKmh, accelPedal, brakePedal,
+                    now, recordedSpeedKmh, accelPedal, brakePedal,
                     brakePedalPressed, gearMode, lat, lon, altitude,
-                    fix.verticalAccuracy, fix.altitudeIsMsl);
+                    fix.verticalAccuracy, fix.altitudeIsMsl,
+                    speedSource, diLink5PedalsUnknown,
+                    diLink5 && (lat != 0 || lon != 0) && !isLiveFix(fix, now, GPS_ACCURACY_GATE_M),
+                    diLink5 && !dynamicsStale && speedKmh == 0, peakSpeedKmh,
+                    diLink5 && (lat != 0 || lon != 0) ? wholeMetres(fix.accuracy) : 0f, landedM);
 
             // ── Distance fusion (CAN-speed primary, accuracy-gated GPS fallback) ──
             // dt since the previous sample, clamped so a scheduler stall or a
             // process resume can't integrate one tick into a huge jump.
             long dtMs = lastSampleMs > 0 ? (now - lastSampleMs) : 0;
             if (dtMs < 0) dtMs = 0;
-            if (dtMs > MAX_INTEGRATION_DT_MS) dtMs = MAX_INTEGRATION_DT_MS;
+            // DI5: a stall over 5 s is a gap as a restart's is, the same as the journal reads it:
+            // nothing integrated across it, its move measured by position at the next live fix.
+            boolean diLink5StallGap = diLink5 && dtMs > 5_000L;
+            if (diLink5StallGap) {
+                synchronized (diLink5GapLock) {
+                    diLink5PendingGaps.add(new long[] {lastSampleMs, now});
+                }
+                dtMs = 0;
+            }
+            boolean dtCapped = dtMs > MAX_INTEGRATION_DT_MS;
+            if (dtCapped) dtMs = MAX_INTEGRATION_DT_MS;
 
             sampleCountTotal++;
             boolean haveGps = lat != 0 && lon != 0;
@@ -537,13 +1031,36 @@ public class TripTelemetryRecorder {
             // `!dynamicsStale` test prevented that by accident; this preserves the
             // protection deliberately while still rescuing a dead speed channel.
             if (!dynamicsStale && speedKmh > 0) speedChannelEverLive = true;
-            boolean speedUsable = !dynamicsStale && speedChannelEverLive;
-            if (speedUsable && dtMs > 0) {
+            // DI5 reports validity, so a valid 0 is a reading from the first tick (a stuck 0 is quarantined).
+            boolean speedUsable = !dynamicsStale && (speedChannelEverLive || diLink5);
+            // Known to be standing: parked, a valid vehicle 0, a GPS 0 the positions confirmed.
+            boolean diLink5Still = diLink5Parked || (!dynamicsStale ? speedKmh == 0 : diLink5GpsKmh == 0);
+            // A parked tick's speed (frozen, or GPS noise) is not the trip's peak.
+            if (diLink5 && dynamicsStale && diLink5GpsKmh > maxSpeedKmh && !diLink5Parked) {
+                maxSpeedKmh = diLink5GpsKmh;
+            }
+            boolean diLink5GpsSpeedUsable = diLink5 && dynamicsStale && diLink5GpsKmh >= 0;
+            if (speedUsable && dtMs > 0 && !diLink5StepParked) {
                 // PRIMARY: integrate wheel/CAN speed. Reads ~0 km/h when stopped,
                 // so idle dwell adds nothing and GPS jitter is irrelevant. Robust
                 // through tunnels/garages where GPS drops out entirely.
                 //   km = (km/h) × (hours)
-                totalDistanceKm += speedKmh * (dtMs / 3_600_000.0);
+                double km = speedKmh * (dtMs / 3_600_000.0);
+                totalDistanceKm += km;
+                if (diLink5) diLink5KmSinceAnchor += km;
+            } else if (diLink5GpsSpeedUsable) {
+                // DI5 without a vehicle speed: integrate the checked GPS speed, which, unlike
+                // fix-to-fix positions, reads 0 at a stop instead of accreting jitter.
+                if (dtMs > 0 && !diLink5StepParked) {
+                    double km = diLink5FixDistanceKmh * (dtMs / 3_600_000.0);
+                    totalDistanceKm += km;
+                    diLink5KmSinceAnchor += km;
+                }
+            } else if (diLink5) {
+                // DI5 with no speed at all: the move to the next live fix is measured when it lands.
+                // In P too: the gear is unchecked, so the next live fix measures the move (parked jitter
+                // stays under the parked bound).
+                if (!speedUsable && dtMs > 0) diLink5AnchorUnmeasured = true;
             } else if (haveGps && hasLastGps && lastLat != 0 && lastLon != 0) {
                 // FALLBACK: no fresh dynamics this tick (speed unknown). Use GPS
                 // haversine, but only when the fix is trustworthy and the segment
@@ -579,20 +1096,108 @@ public class TripTelemetryRecorder {
                 }
             }
 
+            // DI5: a stall past the cap leaves the rest of its move to the interval's positions.
+            if (diLink5 && ((dtCapped && !diLink5StepParked) || diLink5StallGap)) diLink5AnchorUnmeasured = true;
+
             // Always advance the GPS anchor on a valid fix so the next fallback
             // segment measures from here, even on ticks where CAN speed drove the
             // accumulation (keeps the fallback honest if dynamics later go stale).
-            if (haveGps) {
+            if (diLink5) {
+                // DI5 anchors on live fixes only. A new one closes the interval since the last: what the
+                // speed integration did not cover is measured by position, under the seed's 250 km/h gate.
+                // A gap (restart or stall) closes only at a fix where the car's state is known, so jitter
+                // at a standstill is told from a drive.
+                // A gap waits for a known state only while its move could be jitter, for 10 s at most.
+                boolean liveFix = haveGps && isLiveFix(fix, now, GPS_ACCURACY_GATE_M);
+                double boundKm = jitterBoundKm(diLink5AnchorParked && diLink5Parked, diLink5AnchorAccuracyM,
+                        wholeMetres(fix.accuracy));
+                boolean holdAnchor;
+                synchronized (diLink5GapLock) {
+                    if (diLink5SeedGap != null) {
+                        diLink5SeedGap[1] = now;
+                        diLink5SeedGap = null;
+                    }
+                    long sinceGapMs = diLink5PendingGaps.isEmpty() ? -1L
+                            : now - diLink5PendingGaps.get(diLink5PendingGaps.size() - 1)[1];
+                    // An unmeasured move without any speed to explain it (in P too: the gear is unchecked)
+                    // waits at the anchor while within twice the fixes' jitter: jitter never adds up, a slow
+                    // move lands once clear of it, and a restart gap held 10 s that way is measured.
+                    holdAnchor = diLink5AnchorUnmeasured && dynamicsStale && diLink5GpsKmh < 0 && hasLastGps
+                            && haversineKm(lastLat, lastLon, lat, lon) < 2 * boundKm;
+                    if (holdAnchor && liveFix) {
+                        diLink5AnchorHeld = true;
+                        if (sinceGapMs >= 10_000L) diLink5PendingGaps.clear();
+                    }
+                }
+                if (liveFix && !holdAnchor) {
+                    if (!hasLastGps || lat != lastLat || lon != lastLon) {
+                        double hr = (now - diLink5AnchorAtMs) / 3_600_000.0;
+                        boolean measured = !diLink5AnchorUnmeasured;
+                        synchronized (diLink5GapLock) {
+                            if (diLink5AnchorUnmeasured && hasLastGps && hr > 0) {
+                                double seg = haversineKm(lastLat, lastLon, lat, lon);
+                                if (seg / hr <= 250.0) {
+                                    // Held for jitter and now known to stand: still jitter (parked at both
+                                    // ends, the parked bound already allows for it).
+                                    boolean bothParked = diLink5AnchorParked && diLink5Parked;
+                                    if (seg - diLink5KmSinceAnchor >= MIN_GPS_SEGMENT_KM
+                                            && !(diLink5AnchorHeld && diLink5Still
+                                                    && seg < (bothParked ? 1 : 2) * boundKm)
+                                            && !isStandingJitter(diLink5AnchorStill, diLink5Still,
+                                                    diLink5AnchorParked && diLink5Parked, seg,
+                                                    diLink5AnchorAccuracyM, wholeMetres(fix.accuracy))) {
+                                        totalDistanceKm += seg - diLink5KmSinceAnchor;
+                                        // An open slow stretch's later landing leaves this part out (not
+                                        // one opened at this fix: the move before it is not its own).
+                                        if (diLink5SlowAnchored && (diLink5SlowLat != lat || diLink5SlowLon != lon)) {
+                                            diLink5SlowCountedKm += seg - diLink5KmSinceAnchor;
+                                        }
+                                    }
+                                    measured = true;
+                                }
+                            }
+                            // A restart gap's time leaves the average only if no fix could measure it.
+                            if (!measured) diLink5UnmeasuredGaps.addAll(diLink5PendingGaps);
+                            diLink5PendingGaps.clear();
+                        }
+                        diLink5KmSinceAnchor = 0;
+                        diLink5AnchorUnmeasured = false;
+                        diLink5AnchorHeld = false;
+                        diLink5AnchorAtMs = now;
+                        diLink5AnchorStill = diLink5Still;
+                        diLink5AnchorParked = diLink5Parked;
+                        diLink5AnchorAccuracyM = wholeMetres(fix.accuracy);
+                    } else {
+                        // Standing (or parked) at any moment at the anchor's position makes it such a point.
+                        diLink5AnchorStill |= diLink5Still;
+                        diLink5AnchorParked |= diLink5Parked;
+                        // Known to stand where the interval began: it had no move, whatever it lacked a speed for.
+                        if (diLink5AnchorUnmeasured && diLink5Still && (!dynamicsStale || diLink5GpsKmh >= 0)) {
+                            synchronized (diLink5GapLock) {
+                                diLink5PendingGaps.clear();
+                            }
+                            diLink5AnchorUnmeasured = false;
+                            diLink5AnchorHeld = false;
+                            diLink5KmSinceAnchor = 0;
+                            diLink5AnchorAtMs = now;
+                        }
+                    }
+                    lastLat = lat;
+                    lastLon = lon;
+                    hasLastGps = true;
+                }
+            } else if (haveGps) {
                 lastLat = lat;
                 lastLon = lon;
                 hasLastGps = true;
             }
             lastSampleMs = now;
+            diLink5PrevParked = diLink5Parked;
 
             // Track stats — only from real readings; synthetic stale zeros would
             // drag the average down and never affect max anyway.
             if (!dynamicsStale) {
-                if (speedKmh > maxSpeedKmh) {
+                if (speedKmh > maxSpeedKmh && !diLink5Parked) {
                     maxSpeedKmh = speedKmh;
                 }
                 speedSumKmh += speedKmh;
@@ -603,7 +1208,8 @@ public class TripTelemetryRecorder {
             // synthetic-zero samples are still written to the flush buffer below
             // for raw-timeline continuity, but are kept out of the single-pass
             // scoring stream so they can't fabricate stop/launch/coast events.
-            if (!dynamicsStale) {
+            // On DI5 the same holds for a tick whose pedals it marks invalid.
+            if (!dynamicsStale && !diLink5PedalsUnknown) {
                 synchronized (allSamplesLock) {
                     allSamples.add(sample);
                 }
@@ -708,7 +1314,10 @@ public class TripTelemetryRecorder {
                 }
             }
             if (closest != null) {
-                result.add(closest);
+                // A landed distance is an event, not a state: the second's kept row carries all of it.
+                float landedM = 0f;
+                for (TelemetrySample s : group) landedM += s.distanceLandedM;
+                result.add(landedM != closest.distanceLandedM ? closest.withDistanceLandedM(landedM) : closest);
             }
         }
 
@@ -719,7 +1328,7 @@ public class TripTelemetryRecorder {
      * Write a list of 1Hz samples as a gzipped JSON-lines chunk appended to the output file.
      * Per-chunk approach: each flush creates a temp buffer, gzips it, and appends to the file.
      *
-     * <p>Re-resolves the output directory against StorageManager.getTripsDir() on each
+     * <p>Re-resolves the output directory against StorageManager.getTripsWriteDir() on each
      * flush. The directory pointer can flip mid-trip when the SD card unmounts/remounts
      * (the watchdog rebinds tripsDir to internal storage and back). Without re-resolution,
      * we'd keep appending to a path under a now-absent volume, every flush would IOException,
@@ -756,7 +1365,7 @@ public class TripTelemetryRecorder {
     }
 
     /**
-     * Re-resolve the output file against the live {@link StorageManager#getTripsDir()}
+     * Re-resolve the output file against the live {@link StorageManager#getTripsWriteDir()}
      * before each flush. Two distinct cases trigger a migration:
      * <ol>
      *   <li>The original parent volume is gone (SD unmounted mid-trip).</li>
@@ -786,7 +1395,7 @@ public class TripTelemetryRecorder {
                 return outputFile;
             }
         } catch (Throwable ignored) {}
-        File liveDir = StorageManager.getInstance().getTripsDir();
+        File liveDir = StorageManager.getInstance().getTripsWriteDir();
         if (liveDir == null) return outputFile;
 
         // Same volume: nothing to do. The canWrite() check covers the rare

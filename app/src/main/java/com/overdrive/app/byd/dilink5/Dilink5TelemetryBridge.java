@@ -43,6 +43,7 @@ public final class Dilink5TelemetryBridge {
             new AtomicReference<>();
     private static final LinkedBlockingDeque<JSONObject> pendingEvents =
             new LinkedBlockingDeque<>(128);
+    private static final Object eventEnqueueLock = new Object();
     private static final AtomicBoolean drainScheduled = new AtomicBoolean();
     private static final ScheduledExecutorService io =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
@@ -65,7 +66,59 @@ public final class Dilink5TelemetryBridge {
             boolean charging,
             int energyFeedback,
             int doorLockState,
+            long doorLockObservedAtElapsedMs,
             int[] doorStates) {
+        publish(data, dynamicsObservedAtElapsedMs, charging, energyFeedback,
+                doorLockState, doorLockObservedAtElapsedMs, doorStates, null);
+    }
+
+    public static void publish(
+            BydVehicleData data,
+            long dynamicsObservedAtElapsedMs,
+            boolean charging,
+            int energyFeedback,
+            int doorLockState,
+            long doorLockObservedAtElapsedMs,
+            int[] doorStates,
+            long[] doorStatesObservedAtElapsedMs) {
+        publish(data, dynamicsObservedAtElapsedMs, charging, energyFeedback,
+                doorLockState, doorLockObservedAtElapsedMs, doorStates,
+                doorStatesObservedAtElapsedMs, null);
+    }
+
+    /** {@code lockDiag} is the producer's latest "DI5 lock rails:" line; no per-rail readings. */
+    public static void publish(
+            BydVehicleData data,
+            long dynamicsObservedAtElapsedMs,
+            boolean charging,
+            int energyFeedback,
+            int doorLockState,
+            long doorLockObservedAtElapsedMs,
+            int[] doorStates,
+            long[] doorStatesObservedAtElapsedMs,
+            String lockDiag) {
+        publish(data, dynamicsObservedAtElapsedMs, charging, energyFeedback,
+                doorLockState, doorLockObservedAtElapsedMs, doorStates,
+                doorStatesObservedAtElapsedMs, lockDiag, null);
+    }
+
+    /**
+     * Longest overload; {@code lockReadings} is the additive per-rail array
+     * ({@code [{rail,state,raw,observedElapsedMs}]}, built by the collector's pure encoder). The
+     * legacy {@code doorLockState}/{@code doorLockObservedElapsedMs} pair is still written unchanged,
+     * so an older daemon keeps working; a newer daemon prefers the array when it is present.
+     */
+    public static void publish(
+            BydVehicleData data,
+            long dynamicsObservedAtElapsedMs,
+            boolean charging,
+            int energyFeedback,
+            int doorLockState,
+            long doorLockObservedAtElapsedMs,
+            int[] doorStates,
+            long[] doorStatesObservedAtElapsedMs,
+            String lockDiag,
+            JSONArray lockReadings) {
         if (data == null || !isActiveProcess()) return;
         try {
             JSONObject request = baseRequest(
@@ -79,11 +132,26 @@ public final class Dilink5TelemetryBridge {
             if (energyFeedback >= 0 && energyFeedback <= 2) {
                 request.put("energyFeedback", energyFeedback);
             }
-            if (doorLockState == 1 || doorLockState == 2) {
+            if (doorLockState >= 0 && doorLockState <= 2) {
                 request.put("doorLockState", doorLockState);
+                if (doorLockObservedAtElapsedMs > 0L) {
+                    request.put("doorLockObservedElapsedMs", doorLockObservedAtElapsedMs);
+                }
+            }
+            // Additive diagnostic only (protocol stays 1; an older daemon ignores the key).
+            if (lockDiag != null) {
+                request.put("lockDiag", sanitizeLockDiag(lockDiag));
+            }
+            // Additive per-rail lock readings (protocol stays 1; signed with the whole object).
+            if (lockReadings != null && lockReadings.length() > 0) {
+                request.put("lockReadings", lockReadings);
             }
             if (doorStates != null) {
                 request.put("doorStates", new JSONArray(doorStates));
+            }
+            if (doorStatesObservedAtElapsedMs != null) {
+                request.put("doorStatesObservedElapsedMs",
+                        new JSONArray(doorStatesObservedAtElapsedMs));
             }
             request.put("data", data.toBridgeJson());
             active = true;
@@ -94,19 +162,44 @@ public final class Dilink5TelemetryBridge {
         }
     }
 
+    static String sanitizeLockDiag(String lockDiag) {
+        return LockDiagSanitizer.sanitize(lockDiag);
+    }
+
+    /**
+     * Pure helper (own class initialisation, so JVM tests can exercise it without touching the
+     * bridge's {@code SystemClock}-backed statics): one line, at most
+     * {@value #MAX_CHARS} chars, CR/LF stripped before signing.
+     */
+    static final class LockDiagSanitizer {
+        static final int MAX_CHARS = 200;
+
+        private LockDiagSanitizer() {}
+
+        static String sanitize(String lockDiag) {
+            if (lockDiag == null) return null;
+            String flat = lockDiag.replace("\r", "").replace("\n", " ").trim();
+            return flat.length() > MAX_CHARS ? flat.substring(0, MAX_CHARS) : flat;
+        }
+    }
+
     public static void publishEvent(String event, int area, int value) {
         if (event == null || event.isEmpty() || !isActiveProcess()) return;
         try {
-            JSONObject request = baseRequest(
-                    EVENT_COMMAND, eventSequence.incrementAndGet());
-            request.put("event", event);
-            request.put("area", area);
-            request.put("value", value);
-            active = true;
-            if (!pendingEvents.offerLast(request)) {
-                pendingEvents.pollFirst();
-                pendingEvents.offerLast(request);
-                logger.warn("Vehicle event queue full; dropped oldest event");
+            // The daemon rejects any event older than the last one it accepted, so numbering and
+            // queueing must be one step or a concurrent publisher's event erases this one.
+            synchronized (eventEnqueueLock) {
+                JSONObject request = baseRequest(
+                        EVENT_COMMAND, eventSequence.incrementAndGet());
+                request.put("event", event);
+                request.put("area", area);
+                request.put("value", value);
+                active = true;
+                if (!pendingEvents.offerLast(request)) {
+                    pendingEvents.pollFirst();
+                    pendingEvents.offerLast(request);
+                    logger.warn("Vehicle event queue full; dropped oldest event");
+                }
             }
             scheduleDrain(0L);
         } catch (Exception e) {

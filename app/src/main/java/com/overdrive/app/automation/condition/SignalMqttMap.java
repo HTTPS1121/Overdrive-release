@@ -27,14 +27,14 @@ import java.util.Map;
  *   <li>{@code temperature} maps to {@code inside_temp} ({@code insideTempC}, the field the
  *       signal reads), not the similarly-named {@code cabin_temp} ({@code insideTempCelsius},
  *       a different reader).</li>
- *   <li>{@code batterySoh} maps to {@code soh_oem} ({@code sohPercent}, what the signal
- *       publishes); MQTT {@code soh} is the SohEstimator display value.</li>
+ *   <li>{@code batterySoh} maps to {@code soh}, the same vehicle-first value both
+ *       publish; {@code soh_oem} separately exposes the raw vehicle reading.</li>
  *   <li>{@code chargingState} maps to {@code is_charging} (the fused verdict both use); the
  *       near-identically-named MQTT {@code charging_state} is a raw BMS enum.</li>
  * </ul>
  *
  * <p>A signal with NO twin is deliberately absent rather than mapped to a near-miss: e.g.
- * {@code lock}, {@code energyRegen}, {@code autoWiper}, {@code autoLights}, and every
+ * {@code energyRegen}, {@code autoWiper}, {@code autoLights}, and every
  * non-vehicle signal (time, wifi, bt, location, surveillance, variable, mqttTrigger) publish
  * nothing comparable. {@code doorState} is the sharpest near-miss and is documented inline
  * below: {@code door_lock} is lock state, not open/closed, and is all-UNAVAILABLE on this HAL.
@@ -69,7 +69,7 @@ public final class SignalMqttMap {
         // ── Charging / batteries ──
         MQTT.put("chargingState", "is_charging");
         MQTT.put("chargeGun", "charging_gun");
-        MQTT.put("batterySoh", "soh_oem");
+        MQTT.put("batterySoh", "soh");
         MQTT.put("keyBattery", "key_battery");
         MQTT.put("aux12vBattery", "batt_12v_level");
         // The SAME 12V rail as a number. The signal is DECIVOLTS (135 = 13.5V) so it can be
@@ -96,7 +96,10 @@ public final class SignalMqttMap {
         // doorState is deliberately NOT mapped to door_lock: that key is LOCK state, a
         // different fact from open/closed — and on this HAL it is published all-UNAVAILABLE
         // (see BydDataCollector.collectDoorLocks; lock state comes from the cloud path). A
-        // twin pointing at a permanently-null key would be worse than no twin.
+        // twin pointing at a permanently-null key would be worse than no twin. Nor to
+        // door_open: that is one doors+hood+trunk aggregate, not a per-area twin.
+        // Same central-lock fact (OTA driver-door read + cloud): locked/unlocked vs 1/0.
+        MQTT.put("lock", "locked");
         // Per-seat heat/cool level. The signal's `type` attribute picks which key.
         MQTT.put("seatClimate", "seat_heat / seat_cool");
         // ── ADAS / safety ──

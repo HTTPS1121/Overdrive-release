@@ -483,6 +483,33 @@ public class TelegramNotifier {
     }
 
     /**
+     * Explicitly opted-in proximity access events use the existing priority
+     * lane. Keep their revision metadata through IPC/spool for delivery checks.
+     */
+    public static void sendRemoteAccess(String text, JSONObject eventData) {
+        if (eventData == null) return;
+        final JSONObject data;
+        try { data = new JSONObject(eventData.toString()); }
+        catch (Exception invalid) { return; }
+        criticalExecutor.execute(() -> {
+            try {
+                if (!com.overdrive.app.remoteaccess.RemoteAccessNotifications
+                        .canDeliver(data, "telegram")
+                        || !UnifiedTelegramConfig.shouldStartOnAccOff()
+                        || !UnifiedTelegramConfig.hasOwner()) return;
+                JSONObject cmd = new JSONObject()
+                        .put("cmd", "sendMessage").put("text", text)
+                        .put("category",
+                                com.overdrive.app.remoteaccess.RemoteAccessNotifications.TELEGRAM_CATEGORY)
+                        .put("remoteAccess", data);
+                sendIpc(cmd, /*spoolOnDaemonDown=*/true);
+            } catch (Exception unavailable) {
+                Log.w(TAG, "Proximity access notification failed: " + unavailable.getMessage());
+            }
+        });
+    }
+
+    /**
      * Notify proximity alert (Proximity Guard recording started).
      *
      * @param timestamp Event timestamp in milliseconds

@@ -31,8 +31,15 @@ public final class ParkingHooks {
     public interface Listener {
         void onAccOff(long transitionGeneration);
         void onAccOn(long transitionGeneration);
-        /** Doors unlocked while parked (lock arm mode; owner returning). */
+        /** Doors unlocked while parked (lock arm mode; owner probably returning). */
         void onUnlockWhileParked();
+        /**
+         * Doors locked again while parked (lock arm mode). An unlock that is
+         * followed by a re-lock without anyone getting in was not a return —
+         * proximity/walk-away locking and a lagging cloud lock state both
+         * produce such unlock/lock churn for hours at a time.
+         */
+        default void onLockWhileParked() {}
         /**
          * A sentry event segment was finalized and its sidecar write dispatched.
          *
@@ -78,6 +85,12 @@ public final class ParkingHooks {
         Listener l = listener;
         if (l == null) return;
         try { l.onUnlockWhileParked(); } catch (Throwable ignored) {}
+    }
+
+    public static void onLockWhileParked() {
+        Listener l = listener;
+        if (l == null) return;
+        try { l.onLockWhileParked(); } catch (Throwable ignored) {}
     }
 
     public static void onEventFinalized(File mp4, List<Actor> actors,

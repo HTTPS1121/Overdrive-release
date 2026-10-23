@@ -40,6 +40,9 @@
          install-time. BYDAUTO_BLUETOOTH_GET/SET (below) cover the OEM HAL. -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <!-- Native connection/RSSI reads and the discovery-state guard on Android 12+. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.READ_LOGS" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
@@ -505,6 +508,13 @@
             android:exported="false"
             android:directBootAware="true" />
 
+        <!-- Permission-protected app-process adapter for the shell daemon. -->
+        <receiver
+            android:name="com.overdrive.app.power.ParkedLinkReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
         <!-- Location Boot Receiver - Auto-start Location service after device reboot -->
         <receiver
             android:name="com.overdrive.app.receiver.LocationBootReceiver"
@@ -552,6 +562,13 @@
             android:foregroundServiceType="dataSync"
             android:exported="true" />
 
+        <!-- Parked impact watch. Same launch path as the RoadSense sidecar; runs only while
+             the car is off, sentry is armed and the opt-in setting is on. -->
+        <service
+            android:name="com.overdrive.app.surveillance.impact.ParkedImpactSensorService"
+            android:foregroundServiceType="dataSync"
+            android:exported="true" />
+
         <!-- RoadSense floating overlay (app-side renderer, D-024). Reads
              daemon-published roadSense.overlayState from UCM and draws the
              pill/card. specialUse FGS like StatusOverlayService.
@@ -562,6 +579,15 @@
              permission in onStartCommand, so an am launch without it cleanly no-ops. -->
         <service
             android:name="com.overdrive.app.roadsense.overlay.RoadSenseOverlayService"
+            android:foregroundServiceType="specialUse|dataSync"
+            android:exported="true" />
+
+        <!-- Glass widgets overlay: a transparent WebView of the user's chosen widgets over
+             the home screen or every app. exported=true so the daemon can start/stop it
+             via `am` when the web settings page saves; it self-checks the master toggle and
+             the overlay permission in onStartCommand. -->
+        <service
+            android:name="com.overdrive.app.overlay.GlassWidgetsOverlayService"
             android:foregroundServiceType="specialUse|dataSync"
             android:exported="true" />
 

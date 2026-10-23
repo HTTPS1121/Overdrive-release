@@ -447,7 +447,8 @@
     <string name="toast_soh_reset_failed_with_message">فشلت إعادة الضبط: %1$s</string>
     <string name="toast_select_at_least_one_category">حدد فئة واحدة على الأقل</string>
     <string name="toast_reset_failed_with_error">فشلت إعادة الضبط: %1$s</string>
-    <string name="toast_traffic_monitor_changing">%1$s مراقبة حركة المرور…</string>
+    <string name="toast_traffic_monitor_enabling">جارٍ تفعيل Traffic Monitor…</string>
+    <string name="toast_traffic_monitor_disabling">جارٍ تعطيل Traffic Monitor…</string>
     <string name="dialog_close">أغلق</string>
     <string name="dialog_reset">Reset</string>
     <string name="dialog_delete">حذف</string>
@@ -465,14 +466,15 @@
     <string name="dialog_reset_complete_title">Reset complete</string>
     <string name="dialog_traffic_cannot_check_title">لا يمكن التحقق من الحالة</string>
     <string name="dialog_traffic_cannot_check_message">اتصال ADB غير جاهز بعد.\n\nيحتاج التطبيق إلى الوصول إلى ADB لإدارة حزم النظام. الرجاء ضمان:\n\n• تم تمكين تصحيح أخطاء USB في خيارات المطور\n• تم قبول طلب تفويض ADB\n\nسيتم تحديث الحالة تلقائياً بمجرد الاتصال.</string>
-    <string name="dialog_traffic_disable_title">تعطيل مراقب بيانات BYD؟</string>
-    <string name="dialog_traffic_disable_message">مرصد حركة المرور BYD (com.byd.trafficmonitor) هو تطبيق نظام داخلي يرصد باستمرار ظروف حركة المرور على الطرق في الخلفية.\n\nلماذا تعطيله؟\n\n• يستهلك بيانات الجوال (حتى عند وقوفها)\n• يستخدم وحدة المعالجة المركزية والبطارية في الخلفية\n• لا حاجة إليها إذا كنت تستخدم تطبيق تنقل منفصل\n• يمكن أن يتداخل مع استخدام شبكة DashCam\'s\n\nهذا آمن لتعطيله - فإنه يؤثر فقط على تراكب حركة المرور المدمج على الخريطة. لا يتأثر تصفحك و البلوتوث و جميع وظائف السيارة الأخرى.\n\nمطلوب إعادة تشغيل صلبة بعد التعطيل (الضغط على زر وحدة التحكم للمركز 5 ثوان).</string>
-    <string name="dialog_traffic_enable_title">إعادة تمكين مراقب بيانات BYD؟</string>
-    <string name="dialog_traffic_enable_message">مراقب حركة البيانات BYD معطل حاليا.\n\nإعادة تمكينه سوف يستعيد تراكب حركة المرور المدمج على خريطة التنقل. لاحظ أنه سيتم تشغيله في الخلفية ويستهلك بيانات الجوال.\n\nمطلوب إعادة تشغيل صلبة بعد التمكين (الضغط على زر وحدة التحكم المركزية 5 ثوان).</string>
-    <string name="dialog_traffic_status_title">مراقبة حركة المرور %1$s</string>
+    <string name="dialog_traffic_disable_title">تعطيل Traffic Monitor من BYD؟</string>
+    <string name="dialog_traffic_disable_message">يُعد Traffic Monitor من BYD (com.byd.trafficmonitor) تطبيق نظام مدمجًا يحدد التطبيقات التي يُسمح لها باستخدام بيانات الجوال. وهو يمنع تطبيقات الجهات الخارجية، بما فيها OverDrive، من استخدام شريحة SIM المدمجة في السيارة.\n\nلماذا تعطيله؟\n\n• يتيح لـ OverDrive وللتطبيقات الأخرى التي تثبّتها استخدام الإنترنت عبر شريحة SIM من BYD\n• مطلوب للوصول إلى سيارتك عن بعد عبر شريحة SIM من BYD\n\nلن تتأثر الملاحة والبلوتوث وجميع وظائف السيارة الأخرى.\n\nيلزم إجراء إعادة تشغيل إجبارية بعد التعطيل (اضغط مع الاستمرار على زر الكونسول الوسطي لمدة 5 ثوانٍ).</string>
+    <string name="dialog_traffic_enable_title">إعادة تفعيل Traffic Monitor من BYD؟</string>
+    <string name="dialog_traffic_enable_message">تطبيق Traffic Monitor من BYD معطّل حاليًا.\n\nستؤدي إعادة تفعيله إلى منع OverDrive وتطبيقات الجهات الخارجية الأخرى من استخدام شريحة SIM المدمجة في السيارة مجددًا، وبالتالي سيتوقف الوصول عن بعد عبر شريحة SIM من BYD عن العمل.\n\nيلزم إجراء إعادة تشغيل إجبارية بعد التفعيل (اضغط مع الاستمرار على زر الكونسول الوسطي لمدة 5 ثوانٍ).</string>
+    <string name="dialog_traffic_status_enabled">تطبيق Traffic Monitor مفعّل</string>
+    <string name="dialog_traffic_status_disabled">تطبيق Traffic Monitor معطّل</string>
     <string name="dialog_traffic_reboot_message">The change has been applied.\n\nPlease perform a hard reboot now:\nPress and hold the central console button for 5 seconds.</string>
-    <string name="traffic_monitor_loading">مراقبة البيانات: التحقق…</string>
-    <string name="traffic_monitor_tap_to_check">مراقبة حركة المرور (انقر للتحقق من)</string>
+    <string name="traffic_monitor_loading">تطبيق Traffic Monitor: جارٍ التحقق…</string>
+    <string name="traffic_monitor_tap_to_check">تطبيق Traffic Monitor (انقر للتحقق)</string>
     <!-- Reset categories -->
     <string name="reset_label_trips">رحلات</string>
     <string name="reset_label_soc_history">تاريخ SoC + 12V</string>
@@ -528,6 +530,10 @@
     <string name="dialog_tailscale_proxy_enable_message">هذا الطريق MQTT من خلال تايلباس حتى تتمكن من الوصول إلى وسيط خاص على شبكة الذيل الخاصة بك بدون شحن المنفذ.\n\nأثناء التفعيل:\n• MQTT لعمل وسيط لشبكة الذيل (على سبيل المثال البعوض على جهاز على شبكة الذيل الخاصة بك)\n• MQTT للسماسرة العموميين (HiveMQ، AWS IoT، إلخ. سوف تفشل - فقط الطرق المجدولة إلى شبكة الذيل\n• سيتم إعادة تشغيل Demon Tailscale لتطبيق التغيير\n• حركة مرور التطبيقات الأخرى وبقية الجهاز غير متأثرة\n\nيمكنك إيقاف تشغيل هذا في أي وقت.</string>
     <string name="dialog_zrok_reset_title">إعادة تعيين بيئة Zrok</string>
     <string name="dialog_zrok_reset_message">سيؤدي هذا إلى:\n• أوقف نفق الزروك إذا تم تشغيله\n• إزالة بيئة الزروك من هذا الجهاز\n• حذف الرمز المميز المحفوظ\n\nستحتاج إلى إعادة إدخال الرمز المميز الخاص بك وإعادة تمكينه. هذا يستخدم واحدة من خانات جهازك الخمسة على zrok.io.\n\nهل أنت متأكد؟</string>
+    <string name="dialog_tunnel_conflict_title">نفق آخر قيد التشغيل</string>
+    <string name="dialog_tunnel_conflict_message">%1$s قيد التشغيل بالفعل. هل تريد التبديل إلى %2$s (سيؤدي ذلك إلى إيقاف %1$s)، أم تشغيل النفقين معًا؟\n\nعند تشغيل النفقين معًا:\n• يمكن الوصول إلى لوحة التحكم عبر رابطين عامين\n• يزداد استهلاك بيانات الجوال قليلًا أثناء الخمول\n• يبدأ النفقان تلقائيًا بعد إعادة التشغيل</string>
+    <string name="dialog_tunnel_conflict_switch">تبديل</string>
+    <string name="dialog_tunnel_conflict_run_both">تشغيل الاثنين</string>
     <string name="toast_resetting_zrok">جارٍ إعادة تعيين بيئة Zrok…</string>
     <string name="toast_zrok_reset_success">تمت إعادة تعيين بيئة Zrok. أدخل رمزًا جديدًا للإعداد مرة أخرى.</string>
     <string name="toast_zrok_reset_partial">إعادة تعيين البيئة (قد يحتاج ملف الرمز المميز إلى تنظيف يدوي)</string>
@@ -588,9 +594,9 @@
     <string name="setup_overlay_already_granted">مُنحت بالفعل</string>
     <!-- Setup guide — post-setup tips section -->
     <string name="setup_tips_header">نصائح &amp; استكشاف الأخطاء</string>
-    <string name="setup_traffic_title">تعطيل مراقب بيانات BYD</string>
-    <string name="setup_traffic_body">يمنع مراقب حركة المرور BYD تطبيقات الطرف الثالث من الوصول إلى الإنترنت. تعطيل هذا يسمح لـ OverDrive وأي تطبيقات أخرى تثبيتها في الواقع تستخدم الشبكة. مطلوب إعادة تشغيل صلبة بعد ذلك.</string>
-    <string name="setup_traffic_button">فتح مراقبة حركة البيانات</string>
+    <string name="setup_traffic_title">تعطيل Traffic Monitor من BYD</string>
+    <string name="setup_traffic_body">يمنع تطبيق Traffic Monitor من BYD تطبيقات الجهات الخارجية من الوصول إلى الإنترنت. ويتيح تعطيله لـ OverDrive ولأي تطبيقات أخرى تثبّتها استخدام الشبكة فعليًا. يلزم إجراء إعادة تشغيل إجبارية بعد ذلك.</string>
+    <string name="setup_traffic_button">فتح Traffic Monitor</string>
     <string name="setup_camera_fix_title">تغذية الكاميرا سوداء أو غير صحيحة؟</string>
     <string name="setup_camera_fix_body">مسبار الكاميرا، عيّن معرف الكاميرا على 0، انقر على الحفظ، ثم أعد تشغيل مسبار الكاميرا. إذا كانت الخلاصات لا تزال خاطئة، قم بتكرارها مع معرف الكاميرا 1. اترك قسم رسم الخرائط دون أن يمس.</string>
     <!-- Recording storage path -->
@@ -673,6 +679,8 @@
     <string name="settings_about_support_share_value">كل رابط مشترك يساعد مالك BYD آخر على اكتشاف الزحف المفرط.</string>
     <string name="settings_about_support_share_message">تحقق من فائقة القيادة - مراقبة مفتوحة المصدر &amp; Dashcam لـ BYD: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">شارك فوق القرص</string>
+    <string name="settings_about_youtube_title">اشترك في قناتنا على YouTube</string>
+    <string name="settings_about_youtube_value">سجّل إعجابك واشترك وشارك — كل مشاهدة تساعد Overdrive على النمو.</string>
     <string name="settings_about_open_link_failed">تعذر فتح الرابط.</string>
     <string name="settings_about_open_link_copied">لم يتم العثور على المتصفح. تم نسخ الرابط: %1$s</string>
     <string name="settings_about_support_kofi_title">وقود الإصدار التالي</string>
@@ -711,7 +719,7 @@
     <string name="recordings_preview_placeholder_body">اضغط على أي عنصر على اليسار لتشغيله.</string>
     <!-- Diagnostics page -->
     <string name="diagnostics_section_adb_console">وحدة تحكم ADB</string>
-    <string name="diagnostics_section_traffic">مراقبة حركة المرور</string>
+    <string name="diagnostics_section_traffic">تطبيق Traffic Monitor</string>
     <string name="diagnostics_section_camera_probe">مسبار الكاميرا</string>
     <string name="diagnostics_section_battery">صحة البطارية</string>
     <!-- Sub-label used on diagnostics utility cards in landscape (hint to tap). -->
@@ -827,6 +835,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">المخازن المؤقتة/المنشور، الترميز، حدود التخزين.</string>
     <string name="settings_section_surveillance_subtitle">اكتشاف المناطق، الجدول، حساسية الحركة.</string>
+    <string name="settings_section_storage_subtitle">مكان حفظ التسجيلات، حدود المساحة، تنظيف كاميرا BYD.</string>
     <string name="settings_section_daemons_subtitle">خدمات Cloudflared و Zrok و Telegram و MQTT.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">حول OverDrive</string>
@@ -1294,8 +1303,8 @@
     <string name="onboarding_expert_security_title">قفل برمز PIN</string>
     <string name="onboarding_expert_surveillance_body">اضبط الاكتشاف والجودة والتخزين هنا. تفتح هذه الصفحات كإعدادات داخل التطبيق — الشاشة الفارغة تعني فقط أن الأداة المساعدة لا تزال تبدأ.</string>
     <string name="onboarding_expert_surveillance_title">المراقبة والتسجيل</string>
-    <string name="onboarding_expert_traffic_body">يقيد مراقب حركة BYD تطبيقات أخرى من استخدام SIM المدمجة. إذا أردت الوصول إلى سيارتك عن بُعد عبر SIM BYD، يجب تعطيله هنا. سيعيد جهاز الرأس التشغيل لتطبيق التغيير.</string>
-    <string name="onboarding_expert_traffic_title">مراقبة الحركة — مطلوب للوصول عن بُعد</string>
+    <string name="onboarding_expert_traffic_body">يمنع تطبيق Traffic Monitor المدمج من BYD التطبيقات الأخرى من استخدام شريحة SIM المدمجة في السيارة. إذا أردت الوصول إلى سيارتك عن بعد عبر شريحة SIM من BYD، فيجب عليك تعطيله هنا. يُعاد تشغيل وحدة الرأس لتطبيق التغيير.</string>
+    <string name="onboarding_expert_traffic_title">تطبيق Traffic Monitor — مطلوب للوصول عن بعد</string>
     <string name="onboarding_expert_trips_body">تسجل Trips كل رحلة — المسار، المسافة، المدة واستهلاك الطاقة — حتى تتمكن من مراجعة أين كانت السيارة.</string>
     <string name="onboarding_expert_trips_title">سجل الرحلات</string>
     <string name="onboarding_expert_vehicle_body">اضغط بطاقة Vehicle لتعيين حجم البطارية والطراز — هذا يوفر تقديرات مدى وصحة دقيقة. يمكنك تخطيها وتعيينها لاحقًا.</string>
@@ -1381,6 +1390,10 @@
     <string name="projection_status_none">لا يوجد شيء مسقط حتى الآن - اختر تطبيقا و صندوقا.</string>
     <string name="projection_status_unsupported">مرآة حية غير مدعومة على هذه السيارة. لا يزال التطبيق يعرض على المجموعة.</string>
     <string name="projection_status_service_down">خدمة المرآة غير جاهزة - أعد تشغيل التطبيق (أو كاميرا دايمون) وحاول مرة أخرى.</string>
+    <string name="projection_status_connecting">جارٍ الاتصال بالمجموعة…</string>
+    <string name="projection_status_mirror_unavailable">المرآة غير متاحة</string>
+    <string name="projection_fullscreen_enter">ملء الشاشة</string>
+    <string name="projection_fullscreen_exit">الخروج من ملء الشاشة</string>
     <string name="projection_note_single_app">يمكن عرض تطبيق واحد في المجموعة في وقت واحد.</string>
     <string name="projection_done_adjusting">تم</string>
     <string name="projection_window_title">نافذة المجموعة</string>
@@ -1411,4 +1424,17 @@
     <string name="rail_section_automation">التشغيل الآلي</string>
     <string name="rail_section_system">النظام</string>
     <string name="rail_collapse_label">طيّ</string>
+
+    <!-- Voice assistant overlay -->
+    <string name="voice_overlay_listening">أستمع…</string>
+    <string name="voice_overlay_thinking">أفكر…</string>
+    <string name="voice_overlay_speaking">أتحدث…</string>
+    <string name="voice_overlay_done">تم</string>
+    <string name="voice_overlay_cancelled">أُلغي</string>
+    <string name="voice_overlay_not_understood">عذرًا، لم أفهم ذلك</string>
+    <string name="voice_overlay_offline">مساعد الذكاء الاصطناعي غير متاح</string>
+    <string name="voice_overlay_busy">المساعد قيد الاستخدام بالفعل</string>
+    <string name="voice_overlay_blocked_moving">غير متاح أثناء القيادة</string>
+    <string name="voice_overlay_refused">لا يمكن تنفيذ ذلك بالصوت</string>
+    <string name="voice_overlay_failed">تعذّر إكمال ذلك</string>
 </resources>

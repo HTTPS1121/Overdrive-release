@@ -37,7 +37,10 @@ public class SurveillanceCommandHandler implements TelegramCommandHandler {
         JSONObject response = sendSurveillanceCommand("START", ctx);
         if (response != null && response.optBoolean("success", false)) {
             String[][][] buttons = {{{ctx.tr("buttons.stop"), "cmd:/stop"}, {ctx.tr("buttons.status"), "cmd:/status"}}};
-            ctx.sendMessageWithButtons(chatId, ctx.tr("surveillance.started"), buttons);
+            // deferred: saved while the car is on (or ACC not yet known) — nothing armed yet.
+            String message = response.optBoolean("deferred", false)
+                    ? "surveillance.start_deferred" : "surveillance.started";
+            ctx.sendMessageWithButtons(chatId, ctx.tr(message), buttons);
         } else {
             ctx.sendMessage(chatId, ctx.tr("surveillance.start_failed"));
         }

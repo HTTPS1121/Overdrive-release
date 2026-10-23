@@ -81,7 +81,7 @@ public final class RecordingsIndex {
     private static final String TAG = "RecordingsIndex";
     private static final DaemonLogger logger = DaemonLogger.getInstance(TAG);
 
-    private static final String DB_PATH = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_recordings_h2");
+    private static final String DB_PATH = com.overdrive.app.util.ScratchRoot.path("overdrive_recordings_h2");
     // DB_CLOSE_ON_EXIT=FALSE to avoid H2's JVM shutdown hook racing the
     // daemon close path. Same justification as TripDatabase — the orphaned
     // lock file would otherwise block the next CameraDaemon boot with
@@ -92,9 +92,11 @@ public final class RecordingsIndex {
     // directly; it reads via /api/recordings.
     // AUTO_COMPACT_FILL_RATE=50: idle-CPU tuning shared by all seven H2 stores
     // (see SocHistoryDatabase.JDBC_URL for the full rationale).
+    // WRITE_DELAY=5000: H2 housekeeps every WRITE_DELAY/10 ms; rows lost to a kill are
+    // rebuilt from the files by the boot warmup and the reconcile.
     private static final String JDBC_URL = "jdbc:h2:file:" + DB_PATH +
             ";FILE_LOCK=SOCKET;TRACE_LEVEL_FILE=0;DB_CLOSE_ON_EXIT=FALSE" +
-            ";AUTO_COMPACT_FILL_RATE=50";
+            ";AUTO_COMPACT_FILL_RATE=50;WRITE_DELAY=5000";
 
     // Filename patterns mirror RecordingsApiHandler exactly. Kept in sync
     // there too because the parser is the single point of truth — any
@@ -180,10 +182,14 @@ public final class RecordingsIndex {
     private Stats cachedStats = null;
     private long cachedStatsTodayStart = 0L;
 
-    /** Drop the {@link #queryStats()} memo. Call from every path that changes
-     *  the recordings table. Cheap — one field write. */
-    private void invalidateStatsCache() {
+    // queryDates() memo, same exact-invalidation contract as cachedStats.
+    private List<DateBucket> cachedDates = null;
+
+    /** Drop the {@link #queryStats()} and {@link #queryDates()} memos. Call from
+     *  every path that changes the recordings table. Cheap — two field writes. */
+    private void invalidateQueryMemos() {
         cachedStats = null;
+        cachedDates = null;
     }
 
     // ---------------- removal tombstones ----------------
@@ -327,7 +333,9 @@ public final class RecordingsIndex {
         // previous daemon can leave a stale .lock.db that blocks reopen.
         int maxRetries = 3;
         int retryDelayMs = 1000;
+        boolean wiped = false;
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            boolean storeOpened = false;
             try {
                 connection = DriverManager.getConnection(JDBC_URL, "sa", "");
                 logger.info("H2 recordings connection established");
@@ -338,6 +346,7 @@ public final class RecordingsIndex {
                     // mainly absorbs index pages.
                     stmt.execute("SET CACHE_SIZE 8192");
                 }
+                storeOpened = true;
                 createSchema();
                 initialized = true;
                 everInitialized = true;
@@ -367,6 +376,9 @@ public final class RecordingsIndex {
                                 || msg.contains("Corrupt")
                                 || msg.contains("Unable to read")
                                 || msg.contains("MVStoreException"));
+                // A store that opens but cannot be migrated fails identically on every boot
+                // (e.g. a duplicate recording_id when H2's ADD COLUMN copy re-adds the PK).
+                boolean unmigratable = storeOpened && !wiped;
                 if (lockErr && attempt < maxRetries) {
                     logger.warn("Index DB locked (attempt " + attempt + "/" + maxRetries + "), cleaning stale locks");
                     cleanupStaleLocks();
@@ -375,14 +387,16 @@ public final class RecordingsIndex {
                         Thread.currentThread().interrupt();
                         return false;
                     }
-                } else if (corruptErr && attempt < maxRetries) {
-                    logger.error("Index DB corrupted (attempt " + attempt + "/" + maxRetries
+                } else if ((corruptErr || unmigratable) && attempt < maxRetries) {
+                    logger.error("Index DB " + (corruptErr ? "corrupted" : "schema migration failed")
+                            + " (attempt " + attempt + "/" + maxRetries
                             + "), wiping store to rebuild from filesystem: " + msg, e);
                     // A partially-opened connection can hold an OS handle on the
                     // file — close it before deleting so the unlink actually frees
                     // the inode and the reopen sees a clean directory.
                     closeQuietly();
                     wipeCorruptStore();
+                    wiped = true;
                     // No sleep needed — this isn't a transient contention error.
                 } else {
                     logger.error("Failed to init RecordingsIndex: " + msg, e);
@@ -759,7 +773,31 @@ public final class RecordingsIndex {
 
     private void createSchema() throws Exception {
         RecordingsIndexSchema.ensure(connection);
-        invalidateStatsCache();
+        sortIndexAvailable = RecordingsIndexSchema.sortIndexExists(connection);
+        invalidateQueryMemos();
+    }
+
+    // The USE INDEX hint is SQL error 42112 when the index is absent, which withRetry
+    // would serve as an empty library — so it is only emitted once the index is seen.
+    private volatile boolean sortIndexAvailable = false;
+
+    /**
+     * Force the sort index unless the filter is a date or parking session: those have
+     * their own index and select a contiguous, possibly old, slice of time.
+     */
+    private boolean useSortIndex(Filter f) {
+        if (!sortIndexAvailable) return false;
+        if (f == null) return true;
+        boolean dateNarrowed = f.date != null && !f.date.isEmpty();
+        boolean sessionNarrowed = f.parkingSessionId != null && !f.parkingSessionId.isEmpty();
+        return !dateNarrowed && !sessionNarrowed;
+    }
+
+    /** {@code FROM recordings} with the sort hint appended when {@link #useSortIndex} allows. */
+    private String fromRecordings(Filter f) {
+        return useSortIndex(f)
+                ? " FROM recordings USE INDEX (" + RecordingsIndexSchema.SORT_INDEX + ")"
+                : " FROM recordings";
     }
 
     // =================================================================
@@ -892,7 +930,7 @@ public final class RecordingsIndex {
                 setNullableString(ps, 34, r.eventCameras);
                 setNullableDouble(ps, 35, r.peakConfidence);
                 ps.executeUpdate();
-                invalidateStatsCache();   // row counts/bytes changed
+                invalidateQueryMemos();   // row counts/bytes changed
                 return Boolean.TRUE;
             }
         });
@@ -1002,7 +1040,7 @@ public final class RecordingsIndex {
                     "DELETE FROM recordings WHERE recording_id = ?")) {
                 ps.setString(1, id);
                 boolean deleted = ps.executeUpdate() > 0;
-                if (deleted) invalidateStatsCache();
+                if (deleted) invalidateQueryMemos();
                 return deleted;
             }
         });
@@ -1653,23 +1691,37 @@ public final class RecordingsIndex {
         return scans;
     }
 
+    /** Publish per-root availability + rank, writing only rows whose values change. */
     private synchronized void applyRootAvailability(List<RootScan> scans) {
+        List<String> availableRoots = new ArrayList<>();
+        for (RootScan scan : scans) {
+            if (scan.available) availableRoots.add(scan.rootId);
+        }
         withRetry("reconcile: root availability", Boolean.FALSE, () -> {
-            try (PreparedStatement offline = connection.prepareStatement(
-                    "UPDATE recordings SET is_available = FALSE")) {
-                offline.executeUpdate();
+            int changed = 0;
+            // NOT IN () is invalid SQL, so an empty available set takes every row offline.
+            String offlineSql = availableRoots.isEmpty()
+                    ? "UPDATE recordings SET is_available = FALSE WHERE is_available = TRUE"
+                    : "UPDATE recordings SET is_available = FALSE WHERE is_available = TRUE"
+                            + " AND root_id NOT IN " + inList(availableRoots.size());
+            try (PreparedStatement offline = connection.prepareStatement(offlineSql)) {
+                for (int i = 0; i < availableRoots.size(); i++) {
+                    offline.setString(i + 1, availableRoots.get(i));
+                }
+                changed += offline.executeUpdate();
             }
             try (PreparedStatement online = connection.prepareStatement(
-                    "UPDATE recordings SET is_available = TRUE, root_rank = ? WHERE root_id = ?")) {
+                    "UPDATE recordings SET is_available = TRUE, root_rank = ?"
+                            + " WHERE root_id = ? AND (is_available = FALSE OR root_rank <> ?)")) {
                 for (RootScan scan : scans) {
                     if (!scan.available) continue;
                     online.setInt(1, scan.rank);
                     online.setString(2, scan.rootId);
-                    online.addBatch();
+                    online.setInt(3, scan.rank);
+                    changed += online.executeUpdate();
                 }
-                online.executeBatch();
             }
-            invalidateStatsCache();
+            if (changed > 0) invalidateQueryMemos();
             return Boolean.TRUE;
         });
     }
@@ -1775,7 +1827,7 @@ public final class RecordingsIndex {
         List<Object> args = new ArrayList<>();
         buildWhere(f, where, args);
 
-        String sql = "SELECT * FROM recordings"
+        String sql = "SELECT *" + fromRecordings(f)
                 + (where.length() > 0 ? " WHERE " + where : "")
             + " ORDER BY ts_ms DESC, root_rank ASC"
                 + " LIMIT ? OFFSET ?";
@@ -1863,11 +1915,13 @@ public final class RecordingsIndex {
      * flag for the calendar dot decoration.
      */
     public synchronized List<DateBucket> queryDates() {
+        if (cachedDates != null) return copyDates(cachedDates);
         String sql =
             "SELECT ymd, COUNT(*) AS c, "
             + " MAX(CASE WHEN type = 'sentry' THEN 1 ELSE 0 END) AS hasSentry"
             + " FROM recordings WHERE is_available = TRUE AND ymd IS NOT NULL GROUP BY ymd";
-        return withRetry("queryDates", new ArrayList<DateBucket>(), () -> {
+        // null on failure, so a store outage is never memoized as "no dates".
+        List<DateBucket> fresh = withRetry("queryDates", null, () -> {
             List<DateBucket> out = new ArrayList<>();
             try (PreparedStatement ps = connection.prepareStatement(sql);
                  ResultSet rs = ps.executeQuery()) {
@@ -1881,6 +1935,22 @@ public final class RecordingsIndex {
             }
             return out;
         });
+        if (fresh == null) return new ArrayList<>();
+        cachedDates = fresh;
+        return copyDates(fresh);
+    }
+
+    /** DateBucket fields are public and mutable, so callers never see the memo itself. */
+    private static List<DateBucket> copyDates(List<DateBucket> src) {
+        List<DateBucket> out = new ArrayList<>(src.size());
+        for (DateBucket b : src) {
+            DateBucket copy = new DateBucket();
+            copy.date = b.date;
+            copy.count = b.count;
+            copy.hasSentry = b.hasSentry;
+            out.add(copy);
+        }
+        return out;
     }
 
     // Package-visible for RecordingsIndexStatsDedupTest.

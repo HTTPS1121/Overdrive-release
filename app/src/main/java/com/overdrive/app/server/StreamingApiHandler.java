@@ -342,48 +342,56 @@ public class StreamingApiHandler {
         // cold-start deferral never reaches) and kill this request on pass 1.
         final boolean autoHideAtStart = camViewAutoHideLatched();
         Thread t = new Thread(() -> {
-            // elapsedRealtime, NOT currentTimeMillis: the head unit syncs wall clock from
-            // GPS/network after boot, and a backward jump would extend this loop by the
-            // size of the correction — thousands of extra passes re-driving the camera
-            // cold start. Every other deadline in this feature uses the monotonic clock.
-            long deadline = android.os.SystemClock.elapsedRealtime() + CAMVIEW_ARM_DEADLINE_MS;
-            long delay = 300L;
-            while (android.os.SystemClock.elapsedRealtime() < deadline) {
-                try { Thread.sleep(delay); }
-                catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
-                delay = Math.min(delay * 2, CAMVIEW_ARM_BACKOFF_MAX_MS);
-                GpuSurveillancePipeline p = CameraDaemon.getGpuPipeline();
-                if (!camViewArmStillWanted(p, showSession, autoHideAtStart)) return;
-                // Keep driving the pano cold start ONLY while it is legitimately coming up.
-                // ensurePanoStartedNonBlocking is async + deduped, so re-calling is cheap;
-                // without it the loop would spin against a pipeline nobody is starting.
-                if (!ensurePanoStartedNonBlocking(p)) continue;
-                // FINAL re-check immediately before arming. The gate above is separated
-                // from the arm by ensurePanoStartedNonBlocking, and a hide/newer-show
-                // landing in that window would otherwise be overridden — resurrecting a
-                // view the user just dismissed, or arming the PREVIOUS camera. Cheap
-                // (volatile reads), so re-checking costs nothing.
-                if (!camViewArmStillWanted(p, showSession, autoHideAtStart)) return;
-                try {
-                    // Session-validated arm — the ONLY safe entry point here. The
-                    // unlocked still-wanted check above is best-effort; the session
-                    // check inside (under bsLifecycleLock) is the authoritative gate.
-                    if (p.enableCamView(mode, target, autoHide, showSession)) {
-                        CameraDaemon.log("camview arm retry: armed after deferral");
-                    } else {
-                        CameraDaemon.log("camview arm retry: superseded by a hide or"
-                            + " newer show — cancelled");
+            final boolean[] armed = {false};
+            try {
+                // elapsedRealtime, NOT currentTimeMillis: the head unit syncs wall clock from
+                // GPS/network after boot, and a backward jump would extend this loop by the
+                // size of the correction — thousands of extra passes re-driving the camera
+                // cold start. Every other deadline in this feature uses the monotonic clock.
+                long deadline = android.os.SystemClock.elapsedRealtime() + CAMVIEW_ARM_DEADLINE_MS;
+                long delay = 300L;
+                while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                    try { Thread.sleep(delay); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+                    delay = Math.min(delay * 2, CAMVIEW_ARM_BACKOFF_MAX_MS);
+                    GpuSurveillancePipeline p = CameraDaemon.getGpuPipeline();
+                    if (!camViewArmStillWanted(p, showSession, autoHideAtStart)) return;
+                    // Keep driving the pano cold start ONLY while it is legitimately coming up.
+                    // ensurePanoStartedNonBlocking is async + deduped, so re-calling is cheap;
+                    // without it the loop would spin against a pipeline nobody is starting.
+                    if (!ensurePanoStartedNonBlocking(p)) continue;
+                    // FINAL re-check immediately before arming. The gate above is separated
+                    // from the arm by ensurePanoStartedNonBlocking, and a hide/newer-show
+                    // landing in that window would otherwise be overridden — resurrecting a
+                    // view the user just dismissed, or arming the PREVIOUS camera. Cheap
+                    // (volatile reads), so re-checking costs nothing.
+                    if (!camViewArmStillWanted(p, showSession, autoHideAtStart)) return;
+                    try {
+                        // Session-validated arm — the ONLY safe entry point here. The
+                        // unlocked still-wanted check above is best-effort; the session
+                        // check inside (under bsLifecycleLock) is the authoritative gate.
+                        if (p.enableCamView(mode, target, autoHide, showSession)) {
+                            armed[0] = true;
+                            CameraDaemon.log("camview arm retry: armed after deferral");
+                        } else {
+                            CameraDaemon.log("camview arm retry: superseded by a hide or"
+                                + " newer show — cancelled");
+                        }
+                        return;
+                    } catch (GpuSurveillancePipeline.BlindSpotNotReadyException nr) {
+                        // still not ready — keep trying until the deadline
+                    } catch (Throwable other) {
+                        CameraDaemon.log("camview arm retry aborted: " + other.getMessage());
+                        return;
                     }
-                    return;
-                } catch (GpuSurveillancePipeline.BlindSpotNotReadyException nr) {
-                    // still not ready — keep trying until the deadline
-                } catch (Throwable other) {
-                    CameraDaemon.log("camview arm retry aborted: " + other.getMessage());
-                    return;
                 }
+                CameraDaemon.log("camview arm retry: gave up after "
+                    + CAMVIEW_ARM_DEADLINE_MS + "ms (lane never became armable)");
+            } finally {
+                // A request that never armed must not keep owning the current view.
+                GpuSurveillancePipeline owner = CameraDaemon.getGpuPipeline();
+                if (!armed[0] && owner != null) owner.abandonCamViewShowRequest(showSession);
             }
-            CameraDaemon.log("camview arm retry: gave up after "
-                + CAMVIEW_ARM_DEADLINE_MS + "ms (lane never became armable)");
         }, "CamViewArmRetry");
         t.setDaemon(true);
         t.start();
@@ -755,6 +763,10 @@ public class StreamingApiHandler {
             handleBsTweak(out, path);
             return true;
         }
+        if (path.equals("/api/bs/live") || path.startsWith("/api/bs/live?")) {
+            handleBsLive(out, path);
+            return true;
+        }
         // ── Camera-view (shares the BS lane; blind-spot priority) ──────────────
         if (path.startsWith("/api/camview/")) {
             return handleCamView(path, out);
@@ -807,15 +819,32 @@ public class StreamingApiHandler {
             return true;
         }
         if (clean.equals("/api/camview/hide")) {
-            // v40 contract: every hide source closes the current camera view.
+            // v40 contract: every hide source closes the current camera view, except an
+            // automation that showed a view while a different, still-enabled automation
+            // owns the current one.
             // hideCamView (NOT the lenient disableCamView) — it invalidates the show
             // SESSION even when the view never armed, so a straight-through show still
             // in flight outside the mutation lock rejects itself instead of arming
             // after this hide and reopening the camera behind the success we report.
             // The session bump is ALSO what stops any deferred-arm retry loop: retry
             // validity is session-scoped (see startCamViewArmRetry) — there is no
-            // separate cancellation token to race with.
-            pipeline.hideCamView();
+            // separate cancellation token to race with. An allowed tokened hide takes
+            // the same session-invalidating path.
+            String hideOwner =
+                    com.overdrive.app.automation.Automations.currentExecutionAutomationId();
+            pipeline.setCamViewOwnerLiveness(
+                    com.overdrive.app.automation.Automations::isAutomaticallyEnabled);
+            if (hideOwner == null) {
+                pipeline.hideCamView();
+            } else if (pipeline.hideCamViewIfAllowed(hideOwner)
+                    == GpuSurveillancePipeline.CAMVIEW_HIDE_NOT_OWNER) {
+                JSONObject r = new JSONObject();
+                r.put("success", true);
+                r.put("active", pipeline.isCamViewActive());
+                r.put("superseded", true);
+                HttpResponse.sendJson(out, r.toString());
+                return true;
+            }
             // Same false-return contract as the geometry persist: a failed write here
             // means a daemon restart re-shows the view the user just dismissed. The
             // hide itself already happened (session invalidated), so log — don't fail
@@ -862,8 +891,11 @@ public class StreamingApiHandler {
             final long showSession;
             int autoHide = 0;
             JSONObject failedGeo = null;
+            // The requesting automation owns the view; null (manual) stays ownerless.
+            final String showOwner =
+                    com.overdrive.app.automation.Automations.currentExecutionAutomationId();
             synchronized (camViewShowMutationLock) {
-                showSession = pipeline.noteCamViewShowRequest(null);
+                showSession = pipeline.noteCamViewShowRequest(showOwner);
                 // Fall back to the PERSISTED autoHideSec when the caller doesn't pass
                 // one. The automation action and every key-mapping binding build their
                 // URL without an autoHide param, so an explicit-query-only read meant
@@ -941,6 +973,9 @@ public class StreamingApiHandler {
                 pending.put("retrying", true);
                 HttpResponse.sendJson(out, pending.toString());
                 return true;
+            } catch (Throwable failed) {
+                pipeline.abandonCamViewShowRequest(showSession);
+                throw failed;
             }
             if (!armed) {
                 // This request's session was superseded between the mint above and the
@@ -1254,6 +1289,67 @@ public class StreamingApiHandler {
         HttpResponse.sendJson(out, response.toString());
     }
 
+    private static final java.util.regex.Pattern BS_LIVE_FRAMING_KEY = java.util.regex.Pattern.compile(
+            "framing(Cam)?(Mirror|Angle|Zoom|PanX|PanY)(Left|Right)");
+
+    /**
+     * POST /api/bs/live?framingAngleLeft=12&rectifyStrength=40 — show unsaved framing or
+     * fisheye values on the calibration preview while a slider is dragged; nothing is
+     * persisted. With no parameters the card goes back to the saved calibration. Rejects
+     * the whole call on any unknown key or bad value.
+     */
+    private static void handleBsLive(OutputStream out, String path) throws Exception {
+        GpuSurveillancePipeline pipeline = CameraDaemon.getGpuPipeline();
+        if (pipeline == null) {
+            HttpResponse.sendJsonError(out, Messages.get("errors.streaming_pipeline_not_available"));
+            return;
+        }
+        int q = path.indexOf('?');
+        java.util.Map<String, String> p = parseQuery(q >= 0 ? path.substring(q + 1) : "");
+        JSONObject overrides = new JSONObject();
+        for (java.util.Map.Entry<String, String> e : p.entrySet()) {
+            String key = e.getKey();
+            String raw = e.getValue().trim();
+            if ("rectifyStrength".equals(key)) {
+                int n;
+                try { n = Integer.parseInt(raw); }
+                catch (NumberFormatException ex) { n = -1; }
+                if (n < 0 || n > 100) {
+                    HttpResponse.sendJsonError(out, "rectifyStrength must be 0-100");
+                    return;
+                }
+                overrides.put(key, n);
+            } else if (BS_LIVE_FRAMING_KEY.matcher(key).matches()) {
+                if (key.contains("Mirror")) {
+                    if (!"true".equalsIgnoreCase(raw) && !"false".equalsIgnoreCase(raw)) {
+                        HttpResponse.sendJsonError(out, "mirror must be true or false");
+                        return;
+                    }
+                    overrides.put(key, "true".equalsIgnoreCase(raw));
+                } else {
+                    double v;
+                    try { v = Double.parseDouble(raw); }
+                    catch (NumberFormatException ex) { v = Double.NaN; }
+                    if (!Double.isFinite(v)) {
+                        HttpResponse.sendJsonError(out, "framing values must be numbers");
+                        return;
+                    }
+                    overrides.put(key, v);
+                }
+            } else {
+                HttpResponse.sendJsonError(out, "unknown parameter");
+                return;
+            }
+        }
+        boolean applied = overrides.length() == 0
+                ? pipeline.revertBlindSpotPreview()
+                : pipeline.previewBlindSpotTuning(overrides);
+        JSONObject response = new JSONObject();
+        response.put("success", true);
+        response.put("applied", applied);
+        HttpResponse.sendJson(out, response.toString());
+    }
+
     /**
      * POST /api/bs/tweak?fisheye=40&cameras=side&rotation=90&side=left — adjust the
      * blind-spot card's view knobs from an automation or a hardware key.
@@ -1393,19 +1489,25 @@ public class StreamingApiHandler {
         final Integer[] resolvedFisheye = new Integer[1];
         boolean saved;
         if (stepDir != 0) {
-            saved = Boolean.TRUE.equals(
-                com.overdrive.app.config.UnifiedConfigManager.runUnderConfigLock(() -> {
-                    int cur = 0;
-                    try {
-                        cur = com.overdrive.app.config.UnifiedConfigManager.getBlindSpot()
-                                .optInt("rectifyStrength", 0);
-                    } catch (Throwable ignored) {}
-                    int stepped = Math.max(0, Math.min(100,
-                        cur + stepDir * BS_FISHEYE_STEP));
-                    resolvedFisheye[0] = stepped;
-                    delta.put("rectifyStrength", stepped);
-                    return com.overdrive.app.config.UnifiedConfigManager.setBlindSpotValues(delta);
-                }));
+            try {
+                saved = Boolean.TRUE.equals(
+                    com.overdrive.app.config.UnifiedConfigManager.runUnderConfigLock(() -> {
+                        int cur = 0;
+                        try {
+                            cur = com.overdrive.app.config.UnifiedConfigManager.getBlindSpot()
+                                    .optInt("rectifyStrength", 0);
+                        } catch (Throwable ignored) {}
+                        int stepped = Math.max(0, Math.min(100,
+                            cur + stepDir * BS_FISHEYE_STEP));
+                        resolvedFisheye[0] = stepped;
+                        delta.put("rectifyStrength", stepped);
+                        return com.overdrive.app.config.UnifiedConfigManager.setBlindSpotValues(delta);
+                    }));
+            } catch (Exception e) {
+                // Config lock unavailable: answer with the JSON error below, never a dropped socket.
+                CameraDaemon.log("handleBsTweak fisheye step not persisted: " + e.getMessage());
+                saved = false;
+            }
         } else {
             saved = com.overdrive.app.config.UnifiedConfigManager.setBlindSpotValues(delta);
         }

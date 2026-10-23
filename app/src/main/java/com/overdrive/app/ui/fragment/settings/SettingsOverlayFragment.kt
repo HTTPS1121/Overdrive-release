@@ -122,18 +122,6 @@ class SettingsOverlayFragment : Fragment() {
         super.onDestroyView()
     }
 
-    /**
-     * Persist the flag OFF the UI thread ([StatusOverlayUiWriter] — the write
-     * is a blocking IPC round-trip and updateSection is documented
-     * off-looper-only), then nudge the overlay service so the toggle takes
-     * effect now instead of on the next 3-10s poll tick.
-     * StatusOverlayService.onStartCommand re-uses the existing instance and
-     * cancels any in-flight delayed poll, firing one synchronously.
-     *
-     * On a failed write (daemon down and no local write possible) the switch
-     * reverts, mirroring the RoadSense switch below — the control never lies
-     * about the stored value.
-     */
     private fun bindIconSliders(view: View, cfg: org.json.JSONObject) {
         val opacity = view.findViewById<Slider>(R.id.sliderOverlayIconOpacity) ?: return
         val size = view.findViewById<Slider>(R.id.sliderOverlayIconSize) ?: return
@@ -147,8 +135,9 @@ class SettingsOverlayFragment : Fragment() {
         persistedOpacity = opacityPct
         persistedSize = sizeDp
         applyingStatusOverlayConfig = true
-        opacity.value = (100 - opacityPct).toFloat()
-        size.value = sizeDp.toFloat()
+        // Material Slider throws on an off-step value; snap whatever is stored.
+        opacity.value = ((100 - opacityPct) / 5 * 5).toFloat()
+        size.value = (12 + (sizeDp - 12) / 2 * 2).toFloat()
         applyingStatusOverlayConfig = false
         renderOpacity(100 - opacityPct)
         renderSize(sizeDp)
@@ -209,6 +198,19 @@ class SettingsOverlayFragment : Fragment() {
         }
     }
 
+
+    /**
+     * Persist the flag OFF the UI thread ([StatusOverlayUiWriter] — the write
+     * is a blocking IPC round-trip and updateSection is documented
+     * off-looper-only), then nudge the overlay service so the toggle takes
+     * effect now instead of on the next 3-10s poll tick.
+     * StatusOverlayService.onStartCommand re-uses the existing instance and
+     * cancels any in-flight delayed poll, firing one synchronously.
+     *
+     * On a failed write (daemon down and no local write possible) the switch
+     * reverts, mirroring the RoadSense switch below — the control never lies
+     * about the stored value.
+     */
     private fun persist(key: String, value: Boolean, button: android.widget.CompoundButton) {
         val appContext = context?.applicationContext
         StatusOverlayUiWriter.write(key, value) { ok ->

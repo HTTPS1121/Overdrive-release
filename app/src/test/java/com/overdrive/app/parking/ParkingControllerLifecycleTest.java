@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import com.overdrive.app.notifications.NotificationEvent;
 import com.overdrive.app.parking.signage.TextOcrBackend;
@@ -96,10 +97,22 @@ public class ParkingControllerLifecycleTest {
             return Double.isNaN(nominalKwh) || socPercent <= 0 ? Double.NaN : socPercent / 100.0 * nominalKwh;
         }
         @Override public List<Actor> lastActors() { return actors; }
+        /** Scripted sampler cold start: the first N calls return null (reply window missed). */
+        int coldStartMisses;
+        /** Scripted black render: the first N calls return a frame the image ops call blank. */
+        int blankFirst;
+        /** A camera that never delivers (-1 = none). */
+        int deadQuadrant = -1;
         @Override public byte[] captureQuadrantJpeg(int quadrant) {
             captures++;
+            if (quadrant == deadQuadrant) return null;
+            if (coldStartMisses > 0) { coldStartMisses--; return null; }
+            if (blankFirst > 0) { blankFirst--; return "BLANK".getBytes(); }
             return ("jpeg-q" + quadrant).getBytes();
         }
+        /** Null by default (pure-JVM); tests that need blank detection install one. */
+        ImageOps ops;
+        @Override public ImageOps imageOps() { return ops; }
         @Override public int rectifyStrength() { return 40; }
         @Override public File parkingBaseDir() { return base; }
         @Override public void setDoorListener(DoorListener l) { doorListener = l; }
@@ -112,7 +125,6 @@ public class ParkingControllerLifecycleTest {
             return criticalOnly ? criticalEvents : sentryEvents;
         }
         @Override public String signAssetToken(String subject, long ttlSec) { return "tok-" + subject.hashCode(); }
-        @Override public ImageOps imageOps() { return null; }
         @Override public void log(String message) { logs.add(message); }
         /** Text the scripted OCR "sees" in every frame; null = models not installed. */
         String ocrText;
@@ -146,6 +158,10 @@ public class ParkingControllerLifecycleTest {
         env = new FakeEnv(tmp);
         final String url = "jdbc:h2:mem:ctl_" + System.nanoTime() + ";DB_CLOSE_DELAY=-1";
         controller = new ParkingController(source, env, () -> new ParkingStore(url));
+        // An ACC-on close waits for the line to hold (ACC_ON_SETTLE_MS); keep the
+        // real scheduling but make it near-instant so hook-driven tests can
+        // await the close. Flap tests set it long and drive settleAccOn by hand.
+        controller.accOnSettleMs = 20L;
     }
 
     @After
@@ -337,7 +353,7 @@ public class ParkingControllerLifecycleTest {
     }
 
     @Test
-    public void accOnClosesTheSessionAndAShortStopNeverNotifiesLate() throws Exception {
+    public void accOnClosesTheSessionAndAStopTooShortForParkedEndsInSilence() throws Exception {
         startEnabled();
         ParkingHooks.onAccOff(5);
         await(() -> controller.currentSession() != null, 3000);
@@ -348,12 +364,114 @@ public class ParkingControllerLifecycleTest {
         ParkingSession closed = controller.store().getSession(s.sessionId);
         assertEquals(ParkingSession.END_ACC_ON, closed.endTrigger);
         assertTrue("the late 'Parked' is suppressed", closed.notifiedStarted);
-        assertTrue(closed.notifiedEnded);
-        assertEquals("only 'Back at car'", 1, env.published.size());
-        assertEquals(ParkingNotifier.CATEGORY_ENDED, env.published.get(0).category);
+        assertFalse("no 'Parked' went out, so no 'Back at car' either", closed.notifiedEnded);
+        assertTrue("a 40 s stop is not a park: nothing is announced", env.published.isEmpty());
         // The stale timer firing afterwards is harmless.
         controller.arrivedAttempt(s.sessionId, 1);
-        assertEquals(1, env.published.size());
+        assertTrue(env.published.isEmpty());
+    }
+
+    // ==================== ACC FLAPS ====================
+
+    /**
+     * Field log 2026-10-02: the low-SoC cutoff restarted acc_sentry every 68 s
+     * and each restart probed ACC ON for ~3 s before the hardware answered OFF.
+     * Every flap used to close the session, send "Back at car · Away 1 m" and
+     * open a fresh row — 14 junk parks and 14 notifications in 15 minutes.
+     */
+    @Test
+    public void aThreeSecondAccFlapWithNobodyAtTheCarIsIgnored() throws Exception {
+        startEnabled();
+        controller.accOnSettleMs = ParkingController.ACC_ON_SETTLE_MS;   // real window: drive by hand
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        assertEquals(1, env.published.size());                            // "Parked"
+
+        for (int flap = 0; flap < 5; flap++) {
+            env.now += 60_000;
+            env.accOn = true;
+            controller.handleAccOn(2 + flap * 2);
+            assertEquals("close is pending, not done", s, controller.currentSession());
+            env.now += 3_200;                                             // acc_sentry's probe settles to OFF
+            env.accOn = false;
+            controller.handleAccOff(3 + flap * 2);
+            assertEquals("same park, same session", s, controller.currentSession());
+            assertTrue(controller.store().getSession(s.sessionId).isOpen());
+        }
+        assertEquals("five flaps, still one row", 1, controller.store().countSessions());
+        assertEquals("…and no 'Back at car' storm", 1, env.published.size());
+        assertFalse("the flap's returned stills were discarded", s.returnedSnapshotOk);
+        assertTrue(env.logs.stream().anyMatch(l -> l.contains("ACC flapped on/off")));
+
+        // The real return hours later: ACC-on that HOLDS.
+        env.now += 3 * 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(20);
+        env.now += ParkingController.ACC_ON_SETTLE_MS;
+        controller.settleAccOn(s.sessionId, 20);
+        assertNull(controller.currentSession());
+        assertEquals(ParkingSession.END_ACC_ON, controller.store().getSession(s.sessionId).endTrigger);
+        assertEquals(2, env.published.size());
+        assertTrue(env.published.get(1).body, env.published.get(1).body.contains("Away 3 h"));
+    }
+
+    @Test
+    public void anAccFlapAfterADoorOpenedIsARealReturnAndANewPark() throws Exception {
+        // power_on mode: a door open refreshes the stills but never closes, so
+        // the ACC edges are what decide — the case where human evidence matters.
+        source.set("endTrigger", "power_on");
+        startEnabled();
+        controller.accOnSettleMs = ParkingController.ACC_ON_SETTLE_MS;
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession first = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(first.sessionId, 1);
+
+        // Owner back after 2 h: a door opens, the car is powered on for 20 s
+        // and switched off again — the owner is leaving it parked here.
+        env.now += 2 * 3_600_000L;
+        controller.handleDoorEvent(true);
+        assertEquals(first, controller.currentSession());
+        env.now += 10_000;
+        env.accOn = true;
+        controller.handleAccOn(2);
+        env.now += 20_000;
+        env.accOn = false;
+        controller.handleAccOff(3);
+        ParkingSession second = controller.currentSession();
+        assertNotNull(second);
+        assertFalse("somebody was at the car: the flap was the return", first.sessionId.equals(second.sessionId));
+        assertEquals(ParkingSession.END_ACC_ON, controller.store().getSession(first.sessionId).endTrigger);
+        assertEquals(2, controller.store().countSessions());
+        assertEquals("Parked + Back at car for the first park", 2, env.published.size());
+    }
+
+    @Test
+    public void anAccOnThatHoldsClosesAfterTheSettleWindow() throws Exception {
+        startEnabled();
+        controller.accOnSettleMs = ParkingController.ACC_ON_SETTLE_MS;
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        env.now += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(2);
+        assertEquals("not yet", s, controller.currentSession());
+        assertTrue("returned stills are taken on the edge, not after the settle", s.returnedSnapshotOk);
+        env.now += ParkingController.ACC_ON_SETTLE_MS;
+        controller.settleAccOn(s.sessionId, 2);
+        assertNull(controller.currentSession());
+        assertTrue(controller.store().getSession(s.sessionId).returnedSnapshotOk);
+        assertEquals(2, env.published.size());
+        // A stale settle for a generation that was superseded is a no-op.
+        controller.settleAccOn(s.sessionId, 2);
+        assertEquals(2, env.published.size());
     }
 
     /** Simulates a daemon restart: detach() leaves the row open, attach() recovers it. */
@@ -486,6 +604,102 @@ public class ParkingControllerLifecycleTest {
         assertEquals(600_000L, s.durationMs(env.now));
         assertNull(controller.currentSession());
         assertTrue(env.published.isEmpty());
+    }
+
+    // ==================== STILLS: COLD SAMPLER / BLACK TILE ====================
+
+    @Test
+    public void frontTileMissedOnTheSamplersColdStartIsRetriedNotLeftBlack() throws Exception {
+        env.coldStartMisses = 1;                    // first sample (front) misses the 1.5 s reply window
+        startEnabled();
+        ParkingHooks.onAccOff(61);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        File dir = controller.sessionDir(s.sessionId);
+        assertTrue("front re-sampled once the sampler was warm", new File(dir, "arrived_front.jpg").isFile());
+        assertTrue(new File(dir, "arrived_right.jpg").isFile());
+        assertTrue(new File(dir, "arrived_rear.jpg").isFile());
+        assertTrue(new File(dir, "arrived_left.jpg").isFile());
+        assertEquals("one miss + four good samples", 5, env.captures);
+        assertTrue(s.arrivedSnapshotOk);
+    }
+
+    @Test
+    public void blackFirstRenderIsDetectedAndResampled() throws Exception {
+        env.blankFirst = 1;                         // sampler drew before the texture was valid
+        env.ops = new ParkingEnvironment.ImageOps() {
+            @Override public byte[] composeMosaic(byte[][] q, int w, int h, int quality) { return null; }
+            @Override public double frameScore(byte[] jpeg, float[] r) { return 1.0; }
+            @Override public boolean isBlank(byte[] jpeg) { return "BLANK".equals(new String(jpeg)); }
+        };
+        startEnabled();
+        ParkingHooks.onAccOff(62);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        File front = new File(controller.sessionDir(s.sessionId), "arrived_front.jpg");
+        assertTrue(front.isFile());
+        assertEquals("the black frame was never written", "jpeg-q0", new String(Files.readAllBytes(front.toPath())));
+        assertTrue(env.logs.stream().anyMatch(l -> l.contains("q0 blank on pass 0")));
+    }
+
+    @Test
+    public void aCameraThatNeverDeliversIsLoggedAndTheOthersStillShip() throws Exception {
+        env.deadQuadrant = 0;                       // front never delivers, on any pass
+        startEnabled();
+        ParkingHooks.onAccOff(63);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        File dir = controller.sessionDir(s.sessionId);
+        assertFalse(new File(dir, "arrived_front.jpg").isFile());
+        assertTrue(new File(dir, "arrived_right.jpg").isFile());
+        assertTrue(s.arrivedSnapshotOk);
+        assertTrue(env.logs.stream().anyMatch(l -> l.contains("no frame for front after 3 attempts")));
+        // The banner falls back to a tile that exists, not to the absent front.
+        assertTrue(env.published.get(0).data.getString("snapshot").contains("arrived_right.jpg"));
+    }
+
+    // ==================== STALE / COARSE FIXES ====================
+
+    @Test
+    public void sidecarCacheReplayIsNeverAnnouncedAsAFreshFix() throws Exception {
+        // Head unit rebooted in the garage: the sidecar replays its disk cache
+        // every second (fixElapsedMs=0, send time = now). The daemon's monitor
+        // hands that over as a normal IPC fix, not a cache-loaded one.
+        env.fix = new ParkingEnvironment.GpsFix(3.10, 101.60, 9f, 0L, env.now - 500L, false);
+        startEnabled();
+        ParkingHooks.onAccOff(51);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        assertTrue("the last-known position is still worth a map pin", s.hasFix());
+        assertEquals(ParkingSession.GPS_STALE, s.gpsQuality);
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        String body = env.published.get(0).body;
+        assertFalse(body, body.contains("GPS fresh"));
+        assertTrue(body, body.contains("GPS stale"));
+        assertTrue("map button still offered on the honest label",
+                env.published.get(0).data.getJSONArray("telegramButtons").length() > 0);
+    }
+
+    @Test
+    public void coarseNetworkFixSpellsOutItsRadius() throws Exception {
+        // GPS died underground; the sidecar fell back to a 150 m Wi-Fi fix.
+        env.fix = new ParkingEnvironment.GpsFix(3.10, 101.60, 150f, 490_000L, 0L, false);
+        startEnabled();
+        ParkingHooks.onAccOff(52);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        assertEquals(ParkingSession.GPS_FRESH, s.gpsQuality);
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);
+        String body = env.published.get(0).body;
+        assertTrue(body, body.contains("GPS fresh (±150 m)"));
     }
 
     // ==================== ADDRESS LOOKUP ====================
@@ -654,6 +868,8 @@ public class ParkingControllerLifecycleTest {
         env.now += 10_000;  controller.handleDoorEvent(false);    // t = 250 s
         assertTrue(s.isOpen());
         assertEquals(s, controller.currentSession());
+        controller.arrivedAttempt(s.sessionId, 1);                // the (late) "Parked"
+        assertEquals(1, env.published.size());
 
         // Three hours of silence, then a door opens: the owner is back.
         env.now += 3 * 3_600_000L;
@@ -662,9 +878,9 @@ public class ParkingControllerLifecycleTest {
         ParkingSession closed = controller.store().getSession(s.sessionId);
         assertEquals(ParkingSession.END_DOOR_OPEN, closed.endTrigger);
         // A door closing never ends anything.
-        assertEquals(1, env.published.size());
+        assertEquals(2, env.published.size());
         controller.handleDoorEvent(false);
-        assertEquals(1, env.published.size());
+        assertEquals(2, env.published.size());
     }
 
     @Test
@@ -822,11 +1038,11 @@ public class ParkingControllerLifecycleTest {
         assertTrue("still open after door + unlock", row.isOpen());
         assertTrue("returned stills taken on the walk-up", row.returnedSnapshotOk);
 
-        // Power-on is the configured close.
+        // Power-on is the configured close — once the ACC-on has held.
         env.now += 4 * 60_000L;
         env.accOn = true;
         controller.handleAccOn(8);
-        assertNull(controller.currentSession());
+        await(() -> controller.currentSession() == null, 3000);
         ParkingSession closed = controller.store().getSession(s.sessionId);
         assertFalse(closed.isOpen());
         assertEquals(ParkingSession.END_ACC_ON, closed.endTrigger);
@@ -880,28 +1096,270 @@ public class ParkingControllerLifecycleTest {
                 controller.store().getSession(s.sessionId).endTrigger);
     }
 
+    /** Field log 2026-09-25: powered on 8 min in P, off; on 46 s, off — must stay ONE session. */
     @Test
-    public void driveAwaySessionSupersededByNextSwitchOffInP() throws Exception {
+    public void driveAwayResumesSessionWhenPoweredOnWithoutDriving() throws Exception {
         source.set("endTrigger", "drive_away");
         startEnabled();
         ParkingHooks.onAccOff(1);
         await(() -> controller.currentSession() != null, 3000);
         ParkingSession first = controller.currentSession();
 
-        env.now += 60_000;
+        // Power-on, sitting in P for eight minutes: more polls than the no-feed
+        // cap, but every one of them is a real P reading — no acc_on fallback.
+        env.now += 10 * 3_600_000L;
         env.accOn = true;
-        controller.handleAccOn(2);                     // sat in the car with it on…
+        controller.handleAccOn(2);
+        env.gearInPark = Boolean.TRUE;
+        for (int i = 1; i <= ParkingController.GEAR_WATCH_MAX_ATTEMPTS + 120; i++) {
+            controller.gearWatchAttempt(first.sessionId, i);
+        }
+        assertEquals("a fresh P reading is knowledge, not a timeout", first, controller.currentSession());
+        assertTrue(controller.store().getSession(first.sessionId).isOpen());
+
+        // Off again without ever leaving P: same park, same session.
+        env.now += 8 * 60_000L;
+        env.accOn = false;
+        env.gearInPark = null;
+        controller.handleAccOff(3);
+        assertEquals(first, controller.currentSession());
+        assertEquals(1, controller.store().countSessions());
+        ParkingSession row = controller.store().getSession(first.sessionId);
+        assertTrue(row.isOpen());
+        assertEquals(3L, row.transitionGeneration);
+        assertFalse("false-start stills are discarded", row.returnedSnapshotOk);
+
+        // Second short power cycle (46 s) — still the same session.
+        env.now += 35 * 60_000L;
+        env.accOn = true;
+        controller.handleAccOn(4);
+        env.gearInPark = Boolean.TRUE;
+        controller.gearWatchAttempt(first.sessionId, 1);
+        env.now += 46_000L;
+        env.accOn = false;
+        controller.handleAccOff(5);
+        assertEquals(first, controller.currentSession());
+        assertEquals(1, controller.store().countSessions());
+
+        // Getting out again right after the resume is NOT a "return".
+        env.now += 20_000L;
+        controller.handleDoorEvent(true);
         assertEquals(first, controller.currentSession());
 
-        env.now += 300_000;
+        // The real departure closes the ORIGINAL session as drive_away.
+        env.now += 2 * 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(6);
+        env.gearInPark = Boolean.FALSE;
+        controller.gearWatchAttempt(first.sessionId, 1);
+        assertNull(controller.currentSession());
+        ParkingSession closed = controller.store().getSession(first.sessionId);
+        assertEquals(ParkingSession.END_DRIVE_AWAY, closed.endTrigger);
+        assertEquals(1, controller.store().countSessions());
+    }
+
+    @Test
+    public void driveAwayWithoutGearFeedUsesGpsToTellResumeFromSupersede() throws Exception {
+        source.set("endTrigger", "drive_away");
+        startEnabled();
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession first = controller.currentSession();
+
+        // No gear feed at all; a short power cycle with the car still at the
+        // same spot (fresh fix a few metres off): resume.
+        env.now += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(2);
+        controller.gearWatchAttempt(first.sessionId, 1);          // null reading
+        env.now += 60_000L; env.elapsed += 60_000L;
+        env.fix = new ParkingEnvironment.GpsFix(3.1001, 101.6001, 12f, env.elapsed - 5_000L, 0L, false);
         env.accOn = false;
-        controller.handleAccOff(3);                    // …switched off without leaving P
-        ParkingSession again = controller.store().getSession(first.sessionId);
-        assertFalse(again.isOpen());
-        assertEquals(ParkingSession.END_SUPERSEDED, again.endTrigger);
+        controller.handleAccOff(3);
+        assertEquals("a few metres of drift is not a drive", first, controller.currentSession());
+        assertEquals(1, controller.store().countSessions());
+
+        // Same, but the fresh fix is 2 km away: the car did move → new session.
+        env.now += 3_600_000L; env.elapsed += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(4);
+        controller.gearWatchAttempt(first.sessionId, 1);
+        env.now += 90_000L; env.elapsed += 90_000L;
+        env.fix = new ParkingEnvironment.GpsFix(3.1180, 101.6000, 9f, env.elapsed - 5_000L, 0L, false);
+        env.accOn = false;
+        controller.handleAccOff(5);
         ParkingSession next = controller.currentSession();
-        assertNotNull("a fresh session carries the park onward", next);
+        assertNotNull(next);
         assertFalse(first.sessionId.equals(next.sessionId));
+        assertEquals(ParkingSession.END_SUPERSEDED,
+                controller.store().getSession(first.sessionId).endTrigger);
+        assertEquals(2, controller.store().countSessions());
+    }
+
+    @Test
+    public void driveAwayGearFeedGapHandsTheDecisionToGps() throws Exception {
+        source.set("endTrigger", "drive_away");
+        startEnabled();
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession first = controller.currentSession();
+
+        // P seen, then the feed dies for the rest of the drive (bridge lost):
+        // the P must NOT be taken as "never moved" — the car did drive off.
+        env.now += 3_600_000L; env.elapsed += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(2);
+        env.gearInPark = Boolean.TRUE;
+        controller.gearWatchAttempt(first.sessionId, 1);
+        env.gearInPark = null;
+        for (int i = 2; i <= ParkingController.GEAR_WATCH_GAP_POLLS + 5; i++) {
+            controller.gearWatchAttempt(first.sessionId, i);
+        }
+        assertEquals("a silent feed never closes an armed watch", first, controller.currentSession());
+
+        env.now += 25 * 60_000L; env.elapsed += 25 * 60_000L;
+        env.fix = new ParkingEnvironment.GpsFix(3.1400, 101.6000, 8f, env.elapsed - 3_000L, 0L, false);
+        env.accOn = false;
+        controller.handleAccOff(3);                    // parked 4 km away
+        assertEquals(ParkingSession.END_SUPERSEDED, controller.store().getSession(first.sessionId).endTrigger);
+        assertEquals(2, controller.store().countSessions());
+
+        // A brief blip under the gap threshold keeps the gear evidence intact.
+        ParkingSession second = controller.currentSession();
+        env.now += 3_600_000L; env.elapsed += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(4);
+        env.gearInPark = Boolean.TRUE;
+        controller.gearWatchAttempt(second.sessionId, 1);
+        env.gearInPark = null;
+        for (int i = 2; i < ParkingController.GEAR_WATCH_GAP_POLLS; i++) {
+            controller.gearWatchAttempt(second.sessionId, i);
+        }
+        env.fix = new ParkingEnvironment.GpsFix(3.1000, 101.6000, 8f, env.elapsed - 3_000L, 0L, false);
+        env.accOn = false;
+        controller.handleAccOff(5);                    // GPS says 4 km, but gear said P throughout
+        assertEquals("continuous gear evidence outranks the fix", second, controller.currentSession());
+        assertEquals(2, controller.store().countSessions());
+    }
+
+    @Test
+    public void driveAwayDaemonRestartWhileOnAdoptsInsteadOfDuplicating() throws Exception {
+        source.set("endTrigger", "drive_away");
+        startEnabled();
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        String sid = controller.currentSession().sessionId;
+
+        env.now += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(2);                     // sitting in the car, watch armed…
+        restartDaemon();                               // …and the daemon restarts meanwhile
+        await(() -> controller.currentSession() != null, 5000);
+        ParkingSession adopted = controller.currentSession();
+        assertEquals("the open row is this park, not a leftover", sid, adopted.sessionId);
+        assertTrue(controller.store().getSession(sid).isOpen());
+
+        env.gearInPark = Boolean.TRUE;
+        controller.gearWatchAttempt(sid, 1);
+        env.now += 120_000L;
+        env.accOn = false;
+        controller.handleAccOff(3);                    // off again, never left P
+        assertEquals(sid, controller.currentSession().sessionId);
+        assertEquals(1, controller.store().countSessions());
+    }
+
+    @Test
+    public void driveAwayStaleGpsWithoutGearReadsAsStayed() throws Exception {
+        source.set("endTrigger", "drive_away");
+        startEnabled();
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession first = controller.currentSession();
+
+        env.now += 3_600_000L; env.elapsed += 3_600_000L;
+        env.accOn = true;
+        controller.handleAccOn(2);
+        controller.gearWatchAttempt(first.sessionId, 1);
+        // Garage: the only fix is 40 minutes old, so it cannot vote.
+        env.fix = new ParkingEnvironment.GpsFix(3.1180, 101.6000, 9f, env.elapsed - 40 * 60_000L, 0L, false);
+        env.accOn = false;
+        controller.handleAccOff(3);
+        assertEquals(first, controller.currentSession());
+        assertEquals(1, controller.store().countSessions());
+    }
+
+    // ==================== UNLOCK / LOCK CHURN ====================
+
+    /**
+     * Field report: a storm of "Back at car" messages. Proximity / cloud lock
+     * churn on an untouched car: every unlock closed the session (one message),
+     * every re-lock re-armed sentry and silently opened the next one.
+     */
+    @Test
+    public void unlockRelockChurnNeverNotifies() throws Exception {
+        startEnabled();
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+        env.now += 90_000;
+        controller.arrivedAttempt(s.sessionId, 1);              // "Parked" goes out
+        assertEquals(1, env.published.size());
+
+        // Twenty unlock → lock cycles over the evening with nobody getting in.
+        for (int i = 0; i < 20; i++) {
+            env.now += 4 * 60_000L;
+            controller.handleUnlock();
+            assertEquals("an unlock alone is not a return", s, controller.currentSession());
+            env.now += 30_000L;
+            controller.handleLock();
+            if (controller.currentSession() == null) {
+                // (would only happen with the old close-on-unlock behaviour)
+                fail("session closed by lock churn");
+            }
+            // A sentry re-arm on the re-lock must not spawn a duplicate session.
+            controller.onEntrySeeded(0, Collections.emptyList());
+        }
+        Thread.sleep(200);
+        assertEquals(s, controller.currentSession());
+        assertEquals("one row, still open", 1, controller.store().countSessions());
+        assertEquals("no 'Back at car' for lock churn", 1, env.published.size());
+
+        // The real return: unlock, then a door opens → one close, one message.
+        env.now += 2 * 3_600_000L;
+        controller.handleUnlock();
+        env.now += 8_000L;
+        controller.handleDoorEvent(true);
+        assertNull(controller.currentSession());
+        ParkingSession closed = controller.store().getSession(s.sessionId);
+        assertEquals(ParkingSession.END_UNLOCK, closed.endTrigger);
+        assertTrue("returned stills taken at the unlock", closed.returnedSnapshotOk);
+        assertEquals(2, env.published.size());
+        assertEquals(ParkingNotifier.CATEGORY_ENDED, env.published.get(1).category);
+    }
+
+    @Test
+    public void unlockConfirmationWindowAndLeavingGuard() throws Exception {
+        startEnabled();
+        ParkingHooks.onAccOff(1);
+        await(() -> controller.currentSession() != null, 3000);
+        ParkingSession s = controller.currentSession();
+
+        // Locked, then back for the phone within the leaving window: ignored.
+        env.now += 60_000L;
+        controller.handleUnlock();
+        env.now += 5_000L;
+        controller.handleDoorEvent(true);
+        assertEquals(s, controller.currentSession());
+
+        // Hours later: an unlock whose door comes AFTER the confirmation window
+        // is no longer tied to it — the door then needs its own quiet period.
+        env.now += 5 * 3_600_000L;
+        controller.handleUnlock();
+        env.now += ParkingController.UNLOCK_CONFIRM_MS + 1_000L;
+        controller.handleDoorEvent(true);                        // quiet → guarded door return
+        assertNull(controller.currentSession());
+        assertEquals(ParkingSession.END_DOOR_OPEN,
+                controller.store().getSession(s.sessionId).endTrigger);
     }
 
     // ==================== ENERGY BOOKENDS ====================
@@ -915,6 +1373,9 @@ public class ParkingControllerLifecycleTest {
         ParkingSession s = controller.currentSession();
         assertEquals(78.0, s.startSocPercent, 1e-9);
         assertEquals(61.42, s.startRemainKwh, 1e-9);
+
+        env.now += 90_000L;
+        controller.arrivedAttempt(s.sessionId, 1);              // "Parked" went out
 
         // Integer gauge did not move, but the BMS energy did: a real figure, not "0%".
         env.now += 90 * 60_000L;

@@ -434,6 +434,20 @@ public final class McuPowerHal {
         return v instanceof Number ? ((Number) v).intValue() : -1;
     }
 
+    /**
+     * {@code BYDAutoPowerDevice.getMcuStatus()} as a plain read-only probe — no lease, no token.
+     * Reading status writes nothing to the HAL, so it is safe on every platform (the remote-key
+     * readiness gate uses it to decide whether a door/power frame needs an MCU wake first).
+     * {@link #ensureAppContext} must have been called. Returns -1 when the device or status is
+     * unavailable, matching the lease variant.
+     */
+    public static int readMcuStatus() {
+        Object device = resolvePowerDevice();
+        if (device == null) return -1;
+        Object v = BydDeviceHelper.callGetter(device, "getMcuStatus");
+        return v instanceof Number ? ((Number) v).intValue() : -1;
+    }
+
     /** {@code BYDAutoPowerDevice.wakeUpMcu()} for the lease; true when the HAL returned 0. */
     public static boolean wakeUpMcuForLease(Di5LeaseToken token) {
         if (!leaseAuthorized(token, true)) return false;

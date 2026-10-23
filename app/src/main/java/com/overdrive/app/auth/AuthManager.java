@@ -61,12 +61,12 @@ public class AuthManager {
     // Legacy single-purpose auth file. Read-only at this point — kept
     // around purely so existing installs can be migrated forward into
     // the unified config without forcing the user to re-pair.
-    private static final String LEGACY_AUTH_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.byd_auth.json");
+    private static final String LEGACY_AUTH_FILE = com.overdrive.app.util.ScratchRoot.path(".byd_auth.json");
 
     // Device ID file — written via ADB shell from MainActivity, survives
     // app reinstall. Consulted only when the unified config has no
     // deviceId yet (cold-start before MainActivity has synced).
-    private static final String DEVICE_ID_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.overdrive_device_id");
+    private static final String DEVICE_ID_FILE = com.overdrive.app.util.ScratchRoot.path(".overdrive_device_id");
 
     // JWT settings.
     //
@@ -89,6 +89,14 @@ public class AuthManager {
     // instead of hardcoding its own copy that could drift from this one.
     public static final long JWT_EXPIRY_SECONDS = JWT_EXPIRY_MS / 1000;
     private static final String JWT_ALGORITHM = "HS256";
+
+    // Device-secret length, in characters from the 36-symbol lowercase+digit alphabet.
+    // This secret is BOTH the typed login credential and the HMAC key every JWT and thumb
+    // token is signed with, so its entropy also bounds how hard a captured token is to
+    // crack offline — the old 8 chars (~41 bits) was within reach of a single GPU. 20 gives
+    // ~103 bits and stays typeable. Only affects newly minted secrets: existing pairings
+    // keep whatever is already persisted, so no device has to be re-paired.
+    private static final int DEVICE_SECRET_LENGTH = 20;
 
     // In-memory cache. UnifiedConfigManager already mtime-invalidates its
     // own cache, but a tiny per-instance cache lets us hand out the same
@@ -214,7 +222,7 @@ public class AuthManager {
             if (state.deviceId == null || state.deviceId.isEmpty()) {
                 state.deviceId = loadDeviceId();
             }
-            String candidateSecret = generateSecret(8);
+            String candidateSecret = generateSecret(DEVICE_SECRET_LENGTH);
             state.deviceSecret = candidateSecret;
             boolean persisted = writeToConfig(state)
                     && unifiedConfigContainsSecret(candidateSecret);
@@ -294,7 +302,18 @@ public class AuthManager {
         if (state == null) {
             return false;
         }
-        return token.equals(state.getDeviceToken());
+        return constantTimeEquals(token, state.getDeviceToken());
+    }
+
+    /**
+     * Compare two credential strings without an early-exit on the first differing byte.
+     * Length still leaks, which is fine — the token's shape is public.
+     */
+    private static boolean constantTimeEquals(String a, String b) {
+        if (a == null || b == null) return a == b;
+        return java.security.MessageDigest.isEqual(
+                a.getBytes(StandardCharsets.UTF_8),
+                b.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -323,7 +342,7 @@ public class AuthManager {
             state = fresh;
         }
 
-        String candidate = generateSecret(8);
+        String candidate = generateSecret(DEVICE_SECRET_LENGTH);
         state.deviceSecret = candidate;
 
         boolean persisted = writeToConfig(state)
@@ -337,7 +356,10 @@ public class AuthManager {
         cachedConfigMtime = UnifiedConfigManager.getLastModified();
         stateVersion++;
 
-        log("Token regenerated. New token: " + state.getDeviceToken());
+        // Never log the token itself — the caller (DashboardFragment) already shows the
+        // new value to the user, and this line used to put a working credential in the
+        // daemon log file, which the log uploader can ship off-device.
+        log("Token regenerated for device: " + state.deviceId);
         return state.getDeviceToken();
     }
 
@@ -430,7 +452,7 @@ public class AuthManager {
         try {
             String content = parts[0] + "." + parts[1];
             String expectedSig = hmacSha256(content, state.deviceSecret);
-            if (!expectedSig.equals(parts[2])) return false;
+            if (!constantTimeEquals(expectedSig, parts[2])) return false;
             String headerJson = new String(base64UrlDecode(parts[0]), StandardCharsets.UTF_8);
             JSONObject header = new JSONObject(headerJson);
             if (!"THM".equals(header.optString("typ"))) return false;
@@ -492,7 +514,7 @@ public class AuthManager {
             String content = parts[0] + "." + parts[1];
             String expectedSig = hmacSha256(content, state.deviceSecret);
 
-            if (!expectedSig.equals(parts[2])) {
+            if (!constantTimeEquals(expectedSig, parts[2])) {
                 log("JWT signature mismatch - token may have been regenerated");
                 return JwtValidation.failure("Invalid signature");
             }
@@ -582,7 +604,7 @@ public class AuthManager {
      */
     private static boolean unifiedConfigContainsSecret(String expectedSecret) {
         try {
-            File file = new File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_config.json"));
+            File file = new File(com.overdrive.app.util.ScratchRoot.path("overdrive_config.json"));
             if (!file.exists() || !file.canRead()) return false;
             StringBuilder sb = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(new FileReader(file))) {

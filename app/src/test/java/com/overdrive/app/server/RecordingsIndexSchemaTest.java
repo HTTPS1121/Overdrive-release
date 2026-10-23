@@ -23,7 +23,7 @@ public class RecordingsIndexSchemaTest {
             assertTrue(hasColumn(connection, "VOLUME_ID"));
             assertTrue(hasColumn(connection, "RELATIVE_PATH"));
             assertTrue(hasColumn(connection, "IS_AVAILABLE"));
-            assertEquals("5", metaValue(connection, "schema_version"));
+            assertEquals(String.valueOf(RecordingsIndexSchema.VERSION), metaValue(connection, "schema_version"));
             // v5 additive columns (Parking Intelligence)
             assertTrue(hasColumn(connection, "PARKING_SESSION_ID"));
             assertTrue(hasColumn(connection, "EVENT_CAMERAS"));
@@ -93,7 +93,7 @@ public class RecordingsIndexSchemaTest {
         try (Connection connection = open("idempotent")) {
             RecordingsIndexSchema.ensure(connection);
             RecordingsIndexSchema.ensure(connection);
-            assertEquals("5", metaValue(connection, "schema_version"));
+            assertEquals(String.valueOf(RecordingsIndexSchema.VERSION), metaValue(connection, "schema_version"));
         }
     }
 

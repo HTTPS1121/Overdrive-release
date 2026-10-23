@@ -10,8 +10,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest. Three task-based tabs:
         Bot          — token + connect / test
@@ -25,60 +25,114 @@
             { id: 'preferences', label: 'Preferences', i18n: 'telegram.tab_preferences', svg: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' }
         ];
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
-        /* Big legible PIN block — JetBrains Mono with primary tint + soft
-           background, sized so a phone in a car cradle is readable from the
-           driver's seat. */
+        /* Connected bot = Bot-tab summary tile (shared .r-hero). JS owns its inline
+           display; [hidden] comes from app-tabs and must beat .r-hero's grid. */
+        .tg-bot-info[hidden] { display: none; }
+        /* Gap rides on the hero so the token card sits flush when it is hidden. */
+        .tg-bot-info { margin-bottom: var(--card-gap); }
+        .tg-bot-info + .card { margin-top: 0; }
+        .tg-bot-info .tg-bot-handle { font-family: 'JetBrains Mono', monospace; }
+        .tg-bot-info .tg-bot-handle:empty { display: none; }
+        /* @handles stay "@name" in RTL instead of "name@". */
+        [dir="rtl"] .tg-bot-info .tg-bot-handle,
+        [dir="rtl"] #tgOwnerHandle { direction: ltr; }
+        [dir="rtl"] .tg-bot-info .tg-bot-handle { text-align: right; }
+
+        /* Status line under Connect / Generate PIN; JS owns its colour and display. */
+        .tg-status-msg {
+            margin-top: var(--sp-3);
+            padding: var(--sp-3) var(--sp-4);
+            border-radius: var(--radius-sm);
+            background-color: var(--well);
+            font-size: var(--fs-label);
+            line-height: 1.45;
+            overflow-wrap: break-word;
+        }
+
+        /* Pair empty state. */
+        .tg-empty {
+            padding: var(--sp-8) var(--sp-4);
+            text-align: center;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-body);
+            line-height: 1.5;
+            overflow-wrap: break-word;
+        }
+        .tg-empty > svg {
+            display: block;
+            width: 56px;
+            height: 56px;
+            margin: 0 auto var(--sp-4);
+            padding: 14px;
+            border-radius: var(--radius-full);
+            background-color: var(--primary-soft);
+            color: var(--primary);
+        }
+        .tg-empty > div { max-width: 30em; margin: 0 auto; }
+
+        /* Pairing PIN: big mono digits on a soft primary well, readable from a
+           cradle. The span's left padding pays back the trailing letter-space. */
         .tg-pin-display {
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 6px;
-            margin: 16px 0 8px;
-            padding: 18px 16px;
-            border: 1px dashed var(--brand-primary);
-            border-radius: 14px;
-            background: rgba(0, 212, 170, 0.06);
+            margin: var(--sp-4) 0 var(--sp-2);
+            padding: var(--sp-5) var(--sp-4);
+            border-radius: var(--radius-lg);
+            background-color: var(--primary-soft);
+            color: var(--primary);
             font-family: 'JetBrains Mono', monospace;
-            font-size: 36px;
+            font-size: var(--fs-display);
             font-weight: 700;
-            color: var(--brand-primary);
-            letter-spacing: 8px;
+            line-height: 1.15;
+            letter-spacing: 0.2em;
+            font-variant-numeric: tabular-nums;
+        }
+        .tg-pin-display > span { min-width: 0; padding-left: 0.2em; overflow-wrap: break-word; }
+        @media (min-width: 480px) {
+            .tg-pin-display { font-size: var(--fs-hero); }
         }
         .tg-pin-countdown {
+            margin-bottom: var(--sp-3);
             text-align: center;
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-bottom: 10px;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-label);
+            font-variant-numeric: tabular-nums;
         }
-        .tg-bot-info {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-top: 10px;
-            padding: 12px 14px;
-            background: var(--bg-elevated);
-            border-radius: 12px;
+
+        /* Paired account: label/value rows on one well, hairline-separated. */
+        .info-box {
+            margin-top: 0;
+            padding: var(--sp-1) var(--sp-4);
+            border-radius: var(--radius-md);
+            background-color: var(--well);
         }
-        /* Ellipsize the name + monospace @handle: a long bot handle would
-           otherwise blow the row's width past a ~360px phone. The wrapping
-           <div> already carries flex:1;min-width:0, so a nowrap+ellipsis
-           here clips cleanly within the available width. */
-        .tg-bot-info .tg-bot-name { font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .tg-bot-info .tg-bot-handle { font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .tg-empty {
-            text-align: center;
-            padding: 28px 16px;
-            color: var(--text-muted);
-            font-size: 13px;
-            line-height: 1.55;
+        .info-row { align-items: baseline; padding: var(--sp-3) 0; font-size: var(--fs-label); }
+        .info-row + .info-row { margin-top: 0; border-top: 1px solid var(--hairline); }
+        .info-row .label { flex-shrink: 0; margin-right: var(--sp-4); color: var(--on-surface-variant); }
+        .info-row .value {
+            min-width: 0;
+            color: var(--on-surface);
+            font-size: var(--fs-body);
+            font-weight: 600;
+            text-align: right;
+            overflow-wrap: break-word;
+            font-variant-numeric: tabular-nums;
         }
-        .tg-empty svg { width: 36px; height: 36px; opacity: 0.45; margin-bottom: 10px; }
+        [dir="rtl"] .info-row .label { margin-right: 0; margin-left: var(--sp-4); }
+        [dir="rtl"] .info-row .value { text-align: left; }
+
+        /* Pointer notes. */
+        .info-box-note { color: var(--on-surface-variant); font-size: var(--fs-label); line-height: 1.5; }
+        .info-box-note > div { overflow-wrap: break-word; }
+        .card-body > .info-box-note:first-child { margin-top: 0; padding-top: 0; }
     </style>
 </head>
-<body>
+<body class="r-settings">
     <div class="app-layout">
         <div id="app-shell-mount"></div>
         <main class="main-content">
@@ -99,8 +153,20 @@
                 </div>
             </header>
 
+            <div id="tgBotInfo" class="r-hero tg-bot-info" style="display:none;">
+                <div class="r-hero-icon">
+                    <svg class="tg-bot-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                </div>
+                <div class="r-hero-text" style="flex:1;min-width:0;">
+                    <div class="r-hero-title tg-bot-name" id="tgBotName">—</div>
+                    <div class="r-hero-sub tg-bot-handle" id="tgBotHandle">—</div>
+                </div>
+            </div>
+
             <div class="page-body">
                 <!-- ===== BOT TAB ===== -->
+                <!-- Connected bot: summary tile; TG.paint() toggles its display. -->
+
                 <div class="card" data-tab="bot">
                     <div class="card-header">
                         <div class="card-title">
@@ -133,15 +199,7 @@
                             </button>
                         </div>
 
-                        <div id="tgBotInfo" class="tg-bot-info" style="display:none;">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:24px;height:24px;color:var(--brand-primary);"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                            <div style="flex:1;min-width:0;">
-                                <div class="tg-bot-name" id="tgBotName">—</div>
-                                <div class="tg-bot-handle" id="tgBotHandle">—</div>
-                            </div>
-                        </div>
-
-                        <div id="tgBotStatus" style="display:none; margin-top:12px; padding:10px 14px; border-radius:10px; font-size:13px;"></div>
+                        <div id="tgBotStatus" class="tg-status-msg" style="display:none;"></div>
                     </div>
                 </div>
 
@@ -177,7 +235,7 @@
                             <span data-i18n="telegram.generate_pin">Generate PIN</span>
                         </button>
 
-                        <div id="tgPairStatus" style="display:none; margin-top:12px; padding:10px 14px; border-radius:10px; font-size:13px;"></div>
+                        <div id="tgPairStatus" class="tg-status-msg" style="display:none;"></div>
                     </div>
                 </div>
 
@@ -262,8 +320,8 @@
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');

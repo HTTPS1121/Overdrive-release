@@ -55,6 +55,8 @@ public class RecordingModeManager {
     private final ProximityGuardController proximityController;
     private final AvcHalWarmup avcWarmup;
     
+    // User selection loaded from persisted config. DiLink 5 ACC/gear lifecycle
+    // transitions change modeActive only; they must not overwrite this value.
     private volatile Mode currentMode = Mode.NONE;  // Default: no recording
     private volatile boolean accIsOn = false;  // Default: ACC OFF — wait for AccSentryDaemon to confirm
     private volatile int currentGear = GEAR_P;  // Default: Park
@@ -1343,6 +1345,41 @@ public class RecordingModeManager {
     }
 
     /**
+     * Finalize the DiLink 5 ACC-ON recording session without changing the
+     * user's configured recording mode.
+     *
+     * <p>ACC OFF is a runtime lifecycle edge, not a request to select
+     * {@link Mode#NONE}. Serializing on {@link #activationLock} also prevents
+     * an in-flight warmup/activation from restarting recording after the OFF
+     * edge. The normal deactivation path clears {@link #modeActive}, stops the
+     * relevant controller/recorder, and keeps the pipeline alive because
+     * {@link #accIsOn} is already false. The explicit NONE case preserves the
+     * old unconditional finalization of a manual recording that may exist even
+     * when no managed recording mode is selected.
+     */
+    private void runDiLink5AccOffFinalizeGuarded(Mode configuredMode) {
+        if (shuttingDown) {
+            return;
+        }
+        synchronized (activationLock) {
+            if (shuttingDown) {
+                return;
+            }
+            if (configuredMode == Mode.NONE) {
+                modeActive = false;
+                recordingWedged = false;
+                try {
+                    pipeline.stopRecording();
+                } finally {
+                    reconcileCameraProfile();
+                }
+                return;
+            }
+            deactivateMode(configuredMode);
+        }
+    }
+
+    /**
      * Run the AVC HAL warmup on a background thread, then call
      * {@link #activateMode} under {@link #activationLock} (NOT the manager
      * monitor). Mirrors the warmup-then-activate path used by
@@ -1884,6 +1921,10 @@ public class RecordingModeManager {
                 + ", modeActive=" + modeActive + ")");
 
             accIsOn = isOn;
+            // DiLink 5: a source released while parked reopens before any ACC-on consumer.
+            if (isOn && diLink5CameraEnabled()) {
+                pipeline.resumeIdleCameraSource("ACC on");
+            }
 
             if (isOn) {
                 if (wasOn && modeActive) {
@@ -1999,8 +2040,11 @@ public class RecordingModeManager {
             // Legacy mode (non-dilink4) keeps the original teardown
             // behaviour — the close+reopen race is dilink4-firmware-
             // specific.
+            boolean diLink5Selected = false;
             boolean dilinkKeepAlive = false;
             try {
+                diLink5Selected =
+                        com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
                 dilinkKeepAlive = com.overdrive.app.daemon.CameraDaemon.isDilink4ModeActiveStatic()
                         || com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled();
             } catch (Throwable t) {
@@ -2008,8 +2052,21 @@ public class RecordingModeManager {
             }
 
             if (dilinkKeepAlive) {
+                if (diLink5Selected) {
+                    Mode configuredMode;
+                    synchronized (this) {
+                        configuredMode = currentMode;
+                    }
+                    logger.info("ACC OFF (DiLink 5) — finalizing runtime recording while "
+                        + "preserving configured mode=" + configuredMode);
+                    runDiLink5AccOffFinalizeGuarded(configuredMode);
+                    return;
+                }
+
+                // Preserve the existing DiLink 4 behavior. DiLink 5 must not
+                // enter this branch: its configured mode is restored on ACC ON.
                 if (pipeline.isRunning()) {
-                    logger.info("ACC OFF (DiLink) — finalize recording, keep camera alive (oem-parity, unconditional)");
+                    logger.info("ACC OFF (dilink4) — finalize recording, keep camera alive (oem-parity, unconditional)");
                     try {
                         pipeline.stopRecording();
                     } catch (Throwable t) {
@@ -2780,9 +2837,15 @@ public class RecordingModeManager {
                                          // false = leave them to whoever owns them
                                          // (ProximityGuardController, or nobody for BS-only)
         final String why;            // for the log line
+        final boolean idle;          // rung 4: no consumer needs the camera
         CameraIntent(boolean laneEnabled, int fps, boolean ownStrideBitrate, String why) {
+            this(laneEnabled, fps, ownStrideBitrate, why, false);
+        }
+        CameraIntent(boolean laneEnabled, int fps, boolean ownStrideBitrate, String why,
+                boolean idle) {
             this.laneEnabled = laneEnabled; this.fps = fps;
             this.ownStrideBitrate = ownStrideBitrate; this.why = why;
+            this.idle = idle;
         }
     }
 
@@ -3001,7 +3064,45 @@ public class RecordingModeManager {
         // appropriate higher rung re-profiles the camera. Idle = cheapest safe
         // state for "nobody needs it."
         return new CameraIntent(false, UnifiedConfigManager.getBlindSpotIdleFps(), false,
-                "no active consumer (idle)");
+                "no active consumer (idle)", true);
+    }
+
+    // DiLink 5 parked idle: fast_cam_capture streams every camera at its launch fps whatever
+    // the profile says, so after this long with ACC off and no consumer its source is closed.
+    private static final long DILINK5_IDLE_SOURCE_RELEASE_MS = 5L * 60_000L;
+    private long diLink5IdleSinceElapsedMs = 0L;   // guarded by reconcileLock
+    private long diLink5IdleLifecycleGeneration = Long.MIN_VALUE;
+
+    private static boolean diLink5CameraEnabled() {
+        try {
+            return com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** DiLink 5 only, under reconcileLock: releases the camera source after a parked idle spell. */
+    private void reconcileDiLink5IdleSource(CameraIntent want) {
+        if (!diLink5CameraEnabled()) return;
+        // An on-screen view counts as a consumer even if the ladder did not rank it.
+        if (!want.idle || accIsOn || pipeline.isCamViewActive()
+                || pipeline.isBlindSpotLayerVisible()) {
+            diLink5IdleSinceElapsedMs = 0L;
+            pipeline.resumeIdleCameraSource(want.why);
+            return;
+        }
+        long now = android.os.SystemClock.elapsedRealtime();
+        long generation = pipeline.getLifecycleGeneration();
+        if (diLink5IdleSinceElapsedMs == 0L || generation != diLink5IdleLifecycleGeneration) {
+            diLink5IdleSinceElapsedMs = now;
+            diLink5IdleLifecycleGeneration = generation;
+            return;
+        }
+        long idleMs = now - diLink5IdleSinceElapsedMs;
+        if (idleMs >= DILINK5_IDLE_SOURCE_RELEASE_MS) {
+            pipeline.releaseIdleCameraSource("no camera consumer for " + (idleMs / 1000L)
+                    + " s with ACC off", DILINK5_IDLE_SOURCE_RELEASE_MS);
+        }
     }
 
     /** The ONLY writer of the camera profile. Always run under {@link #reconcileLock}.
@@ -3010,6 +3111,7 @@ public class RecordingModeManager {
         try {
             if (!pipeline.isRunning()) return;
             CameraIntent want = desiredCameraState();
+            reconcileDiLink5IdleSource(want);
             boolean freshFrameDemand = want.laneEnabled
                     || activeStreamFps() > 0
                     || bsViewShown()
@@ -3289,7 +3391,11 @@ public class RecordingModeManager {
      * reconnected device on the next tick automatically.
      */
     private boolean queryAccStateFromHardware() {
-        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isEnabled()) {
+        // ACC is vehicle telemetry, not a QCarCam capability. Use the explicit
+        // selected-mode fence even on DiLink 5 trims where the optional camera
+        // utility is absent; falling into the legacy BodyworkDevice path there
+        // can split RecordingModeManager from AccSentryDaemon's state.
+        if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
             boolean isAccOff = com.overdrive.app.monitor.AccMonitor.probeAccState(context);
             return !isAccOff;
         }

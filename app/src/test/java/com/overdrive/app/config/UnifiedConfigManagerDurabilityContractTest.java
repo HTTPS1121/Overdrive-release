@@ -213,7 +213,7 @@ public class UnifiedConfigManagerDurabilityContractTest {
         int reentrantBody = locking.indexOf("return body()");
         int open = locking.indexOf(
                 "RandomAccessFile(lockFile, \"rw\")", reentrantBody);
-        int acquire = locking.indexOf("lock = channel.lock()", open);
+        int acquire = locking.indexOf("lock = tryLockUntil(", open);
         int markHeld = locking.indexOf(
                 "holdingFileLock.set(true)", acquire);
         int mutationBody = locking.indexOf("return body()", markHeld);
@@ -696,7 +696,7 @@ public class UnifiedConfigManagerDurabilityContractTest {
                 appPrivate,
                 "synchronized(appPrivateBackupMonitor)",
                 "RandomAccessFile(File(APP_PRIVATE_BAK_LOCK_PATH), \"rw\")",
-                "backupLock = lockChannel.lock()",
+                "backupLock = tryLockUntil(",
                 "val published = try",
                 "seqOf(published) >= seqOf(snapshot)",
                 "val staging = File(",

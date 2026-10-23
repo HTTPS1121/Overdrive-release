@@ -132,6 +132,14 @@ public final class LogUploader {
                 "(\"?\\s*[:=]\\s*\"?)([A-Za-z0-9._:\\-]{4,})"),
     };
 
+    // Signed thumb / parking-asset tokens in a logged request line: /thumb/x.jpg?t=<jws>.
+    // The key name is a bare "t" so the sensitive-key pattern above misses it. Length bound
+    // keeps a short, harmless t= param readable. Held in its own field rather than appended
+    // to REDACTORS: that array is applied by INDEX, so a future insertion would either make
+    // this a silent no-op or pair a "$1" template with a group-less pattern and throw.
+    private static final Pattern QUERY_TOKEN_REDACTOR =
+            Pattern.compile("([?&]t=)[A-Za-z0-9._~-]{20,}");
+
     static String redact(String s) {
         if (s == null) return null;
         String out = s;
@@ -145,7 +153,9 @@ public final class LogUploader {
             m.appendReplacement(sb, Matcher.quoteReplacement(m.group(1) + m.group(2) + "[REDACTED]"));
         }
         m.appendTail(sb);
-        return sb.toString();
+        out = sb.toString();
+        // Query-param thumb tokens → keep the key, mask the value.
+        return QUERY_TOKEN_REDACTOR.matcher(out).replaceAll("$1[REDACTED]");
     }
 
     /**

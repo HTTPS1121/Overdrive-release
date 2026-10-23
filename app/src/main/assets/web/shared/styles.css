@@ -650,10 +650,13 @@ textarea:focus,
     align-items: center;
     justify-content: space-between;
     border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
+    background: var(--bg-glass);
+    -webkit-backdrop-filter: saturate(160%) blur(16px);
+    backdrop-filter: saturate(160%) blur(16px);
     position: sticky;
     top: 0;
     z-index: 50;
+    flex-shrink: 0;
 }
 
 .page-title {
@@ -915,6 +918,15 @@ select.text-input option {
 
 .toggle-switch input:checked + .toggle-slider::before {
     transform: translateX(20px);
+}
+
+[dir="rtl"] .toggle-slider::before {
+    left: auto;
+    right: 3px;
+}
+
+[dir="rtl"] .toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(-20px);
 }
 
 /* === BUTTON GROUPS === */
@@ -2284,9 +2296,12 @@ select.md-input ~ .md-label {
 
 /* Live view mobile header - visible with background */
 .live-view-page .mobile-header {
-    position: relative;
+    position: sticky;
+    top: 0;
     z-index: 60;
-    background: var(--bg-surface);
+    background: var(--bg-glass);
+    -webkit-backdrop-filter: saturate(160%) blur(16px);
+    backdrop-filter: saturate(160%) blur(16px);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
     transition: background-color 200ms ease-out, border-color 200ms ease-out, backdrop-filter 200ms ease-out;
@@ -2458,6 +2473,12 @@ select.md-input ~ .md-label {
 #mapContainer {
     width: 100%;
     height: 100%;
+}
+
+/* Every map is its own stacking context, so Leaflet's panes (200-700) and
+   controls (1000) stay below the mobile header, drawer and tab bar. */
+.leaflet-container {
+    isolation: isolate;
 }
 
 /* Constrain Leaflet z-index within map container */
@@ -3412,6 +3433,10 @@ select.md-input ~ .md-label {
         display: flex;
         align-items: center;
         justify-content: space-between;
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        flex-shrink: 0;
         /* Pad past the iOS notch / Android cutout so the hamburger isn't
            visually clipped or cut off by the system status bar. The
            viewport-fit=cover meta tag on each page makes safe-area-inset-top
@@ -3419,7 +3444,9 @@ select.md-input ~ .md-label {
         padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
         padding-left: calc(16px + env(safe-area-inset-left, 0px));
         padding-right: calc(16px + env(safe-area-inset-right, 0px));
-        background: var(--bg-surface);
+        background: var(--bg-glass);
+        -webkit-backdrop-filter: saturate(160%) blur(16px);
+        backdrop-filter: saturate(160%) blur(16px);
         border-bottom: 1px solid var(--border-subtle);
     }
 
@@ -3481,6 +3508,10 @@ select.md-input ~ .md-label {
         margin-right: 0;
         width: 100%;
         min-width: 0;
+    }
+    [dir="rtl"] .setting-control {
+        margin-left: 0;
+        margin-right: 0;
     }
     .setting-control > .select-control,
     .setting-control > select,
@@ -3981,6 +4012,7 @@ select.md-input ~ .md-label {
 .mode-selector {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-gap: 12px; /* Chrome 58 head unit: unprefixed grid `gap` is Chromium 66+ */
     gap: 12px;
 }
 
@@ -4123,7 +4155,10 @@ select.md-input ~ .md-label {
 }
 
 /* Trailing radio indicator — purely visual; the real input is .sr-only-ish.
-   A 2dp ring + a 10dp inner dot matches M3 radio anatomy. */
+   A 2dp ring + a 10dp inner dot matches M3 radio anatomy.
+   Ring colour is --text-muted, not --border-default: 10%-alpha white on the
+   card surface is ~1.4:1 and vanished on the head unit, especially under the
+   .45/.55 opacity dims on disabled / busy pickers. */
 .mode-radio {
     position: absolute;
     right: 14px;
@@ -4132,7 +4167,7 @@ select.md-input ~ .md-label {
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    border: 2px solid var(--border-default);
+    border: 2px solid var(--text-muted);
     background: transparent;
     transition: border-color 200ms ease-out;
     flex-shrink: 0;
@@ -4141,7 +4176,13 @@ select.md-input ~ .md-label {
 .mode-radio::after {
     content: "";
     position: absolute;
-    inset: 4px;
+    /* Explicit edges instead of `inset: 4px` — the shorthand is Chromium 87+ and
+       the BYD head-unit WebView (Chrome 58) silently ignores it, which left this
+       box 0x0 so the selected dot never painted (same bug as .modal-backdrop). */
+    top: 4px;
+    right: 4px;
+    bottom: 4px;
+    left: 4px;
     border-radius: 50%;
     background: var(--brand-primary);
     transform: scale(0);
@@ -4297,7 +4338,11 @@ select.md-input ~ .md-label {
    narrow / head-unit displays it slides up from the bottom. */
 .lang-sheet-backdrop {
     position: fixed;
-    inset: 0;
+    /* Explicit edges: `inset` is Chromium 87+, ignored by the Chrome 58 head-unit WebView. */
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     background: rgba(0, 0, 0, 0.55);
     z-index: 9000;
     display: flex;
@@ -4628,10 +4673,8 @@ select.md-input ~ .md-label {
     margin-top: 4px;
 }
 
-/* === RTL: mirror directional chevrons / flow arrows ===
-   Right-pointing "open / next" chevrons and "start → end" range arrows
-   point the reading direction, so flip them in RTL. Physical-direction
-   arrows (steering, turn signals, camera sides) are intentionally untouched. */
+/* RTL: chevrons and "start → end" range arrows point the reading direction.
+   Physical-direction arrows (steering, turn signals, camera sides) stay put. */
 [dir="rtl"] .credit-chev,
 [dir="rtl"] .tier-chev,
 [dir="rtl"] .session-chevron,
@@ -4640,17 +4683,4 @@ select.md-input ~ .md-label {
 [dir="rtl"] .rtl-flip-arrow {
     display: inline-block;
     transform: scaleX(-1);
-}
-
-/* === RTL: toggle switch knob ===
-   Mirror the knob so OFF sits at the right and ON slides left, and use
-   logical-safe overrides (left:auto + right) so any page-level "right"
-   rule combined with the LTR translateX(20px) can't push the knob out of
-   the track. */
-[dir="rtl"] .toggle-slider::before {
-    left: auto;
-    right: 3px;
-}
-[dir="rtl"] .toggle-switch input:checked + .toggle-slider::before {
-    transform: translateX(-20px);
 }

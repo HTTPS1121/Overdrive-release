@@ -30,10 +30,19 @@ public class BatterySocMonitor extends BaseDeviceMonitor<BatterySocData> {
             log("Initializing BYDAutoStatisticDevice via reflection...");
             
             // Context is already PermissionBypassContext
-            Class<?> deviceClass = Class.forName("android.hardware.bydauto.statistic.BYDAutoStatisticDevice");
-            Method getInstance = deviceClass.getMethod("getInstance", Context.class);
-            device = getInstance.invoke(null, context);
-            
+            Class<?> deviceClass;
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                // DiLink 5's getInstance() dereferences getApplicationContext(), which is null in a
+                // daemon; BydDeviceHelper supplies a context that returns itself there.
+                device = com.overdrive.app.byd.BydDeviceHelper.getDevice(
+                        "android.hardware.bydauto.statistic.BYDAutoStatisticDevice", context);
+                deviceClass = device != null ? device.getClass() : null;
+            } else {
+                deviceClass = Class.forName("android.hardware.bydauto.statistic.BYDAutoStatisticDevice");
+                Method getInstance = deviceClass.getMethod("getInstance", Context.class);
+                device = getInstance.invoke(null, context);
+            }
+
             if (device == null) {
                 logError("BYDAutoStatisticDevice.getInstance returned null", null);
                 markUnavailable();
@@ -77,19 +86,37 @@ public class BatterySocMonitor extends BaseDeviceMonitor<BatterySocData> {
             log("Registering SOC listener via reflection...");
             Class<?> deviceClass = device.getClass();
             Class<?> listenerClass = Class.forName("android.hardware.bydauto.statistic.AbsBYDAutoStatisticListener");
-            Method registerListener = deviceClass.getMethod("registerListener", listenerClass);
-            registerListener.invoke(device, listener);
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                registerOnDiLink5(deviceClass, listenerClass);
+            } else {
+                Method registerListener = deviceClass.getMethod("registerListener", listenerClass);
+                registerListener.invoke(device, listener);
+            }
             log("Started successfully");
         } catch (Exception e) {
             logError("Failed to register listener", e);
             isRunning.set(false);
+            // On DiLink 5 init succeeds (resetting the backoff), so a retry here would spin every second.
+            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return;
             markUnavailable();
         }
     }
     
+    /** DiLink 5 builds differ; fall back to the subscribe-all registerListener(listener, int[]). */
+    private void registerOnDiLink5(Class<?> deviceClass, Class<?> listenerClass) throws Exception {
+        try {
+            deviceClass.getMethod("registerListener", listenerClass).invoke(device, listener);
+        } catch (NoSuchMethodException | java.lang.reflect.InvocationTargetException e) {
+            deviceClass.getMethod("registerListener", listenerClass, int[].class)
+                    .invoke(device, listener, new int[0]);
+        }
+    }
+
     @Override
     public void stop() {
         if (!isRunning.getAndSet(false)) {
+            // A monitor that never started can still have its retry loop running.
+            cancelRetries();
             log("Already stopped");
             return;
         }

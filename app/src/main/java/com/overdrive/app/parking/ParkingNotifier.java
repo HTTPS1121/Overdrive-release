@@ -37,6 +37,8 @@ public final class ParkingNotifier {
     public static final String SESSION_URL_PREFIX = "/parking.html#/session/";
     /** Token lifetime for the push banner image (banners are looked at within minutes). */
     static final long ASSET_TOKEN_TTL_SEC = 6L * 3600L;
+    /** A fix this coarse (metres) gets its radius spelled out next to the GPS label. */
+    static final float COARSE_FIX_M = 100f;
 
     private final ParkingEnvironment env;
 
@@ -115,6 +117,8 @@ public final class ParkingNotifier {
                 data.put("energySource", s.energySource());
             }
             data.put("telegramButtons", new JSONArray());
+            // Telegram gets one part per line; the log and push keep the compact form.
+            data.put("telegramBody", body.replace(" · ", "\n"));
         } catch (Exception ignored) {}
         publish(CATEGORY_ENDED, title, body, s, data);
     }
@@ -178,6 +182,12 @@ public final class ParkingNotifier {
             b.append(" · ").append(levelLabel);
         }
         b.append(" · ").append(gpsLabel(s.gpsQuality));
+        if (s.hasFix() && s.accuracyM >= COARSE_FIX_M) {
+            // A cell / Wi-Fi fix the sidecar accepted once GPS went silent
+            // underground is "fresh" in time yet may sit a block away: say so
+            // next to the map pin instead of implying GNSS precision.
+            b.append(" (±").append(Math.round(s.accuracyM)).append(" m)");
+        }
         if (!ParkingSession.SENTRY_ARMED.equals(s.sentryState)
                 && !ParkingSession.SENTRY_LOCK_WAIT.equals(s.sentryState)) {
             b.append(" · ").append(msg("parking.notify.sentry_off",

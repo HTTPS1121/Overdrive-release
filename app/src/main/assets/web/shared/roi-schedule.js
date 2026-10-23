@@ -1,11 +1,12 @@
-// ROI Editor — Block-tap mode (10x7 grid matches backend exactly)
+// ROI Editor — Block-tap mode with the native grid's clipped bottom row.
 // Tap or drag across blocks to toggle them. What you see = what the backend uses.
 // ES5 compatible. Toggle = UI only. Save = commits to backend.
 
 var RoiEditor = (function() {
     'use strict';
     var canvas, ctx, currentQuadrant = 0;
-    var GC = 10, GR = 7, TOTAL = 70;
+    var GC = 10, GR = 8, TOTAL = 80, BLOCK = 32, FRAME_W = 320, FRAME_H = 240;
+    var LEGACY_ROWS = 7, LEGACY_TOTAL = 70;
     // Per-quadrant block masks: 1=active, 0=inactive. Default all active.
     var blocks = [null, null, null, null];
     var roiEnabledFlags = [false, false, false, false];
@@ -47,7 +48,8 @@ var RoiEditor = (function() {
     function getBlock(cx, cy) {
         var r = canvas.getBoundingClientRect();
         var nx = (cx - r.left) / r.width, ny = (cy - r.top) / r.height;
-        var bx = Math.floor(nx * GC), by = Math.floor(ny * GR);
+        if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1) return -1;
+        var bx = Math.floor(nx * FRAME_W / BLOCK), by = Math.floor(ny * FRAME_H / BLOCK);
         if (bx < 0 || bx >= GC || by < 0 || by >= GR) return -1;
         return by * GC + bx;
     }
@@ -120,12 +122,14 @@ var RoiEditor = (function() {
         }
         // Block grid overlay
         initBlocks(currentQuadrant);
-        var bw = canvasW / GC, bh = canvasH / GR;
+        var bw = canvasW * BLOCK / FRAME_W;
         var b = blocks[currentQuadrant];
         for (var by = 0; by < GR; by++) {
+            var y = by * BLOCK * canvasH / FRAME_H;
+            var bh = Math.min(BLOCK, FRAME_H - by * BLOCK) * canvasH / FRAME_H;
             for (var bx = 0; bx < GC; bx++) {
                 var idx = by * GC + bx;
-                var x = bx * bw, y = by * bh;
+                var x = bx * bw;
                 if (!b[idx]) {
                     // Inactive block — dim
                     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -173,6 +177,7 @@ var RoiEditor = (function() {
         var en = roiEnabledFlags[currentQuadrant];
         var qk = ['Q0', 'Q1', 'Q2', 'Q3'];
         var payload = {};
+        payload.roiGridVersion = 2;
         payload['roiEnabled_' + qk[currentQuadrant]] = en;
         // Only ship blocks when enabling. The server's roiBlocks_* handler in
         // SurveillanceApiHandler unconditionally re-derives roiEnabled from the
@@ -220,12 +225,26 @@ var RoiEditor = (function() {
     function loadConfig() {
         return fetch('/api/surveillance/config').then(function(r) { return r.json(); }).then(function(d) {
             var cfg = (d && d.config) ? d.config : d;  // Unwrap {config: ...} envelope
+            var geometry = cfg.motionGrid;
+            if (geometry && geometry.gridCols === 10 && geometry.gridRows === 8
+                    && geometry.blockSize === 32 && geometry.quadrantWidth === 320
+                    && geometry.quadrantHeight === 240) {
+                GC = geometry.gridCols; GR = geometry.gridRows; TOTAL = GC * GR;
+                BLOCK = geometry.blockSize; FRAME_W = geometry.quadrantWidth;
+                FRAME_H = geometry.quadrantHeight;
+            }
             var qk = ['Q0', 'Q1', 'Q2', 'Q3'];
             for (var q = 0; q < 4; q++) {
                 if (cfg['roiEnabled_' + qk[q]] !== undefined) roiEnabledFlags[q] = !!cfg['roiEnabled_' + qk[q]];
                 var ba = cfg['roiBlocks_' + qk[q]];
-                if (ba && ba.length === TOTAL) {
-                    blocks[q] = []; for (var i = 0; i < TOTAL; i++) blocks[q][i] = ba[i] ? 1 : 0;
+                if (ba && (ba.length === TOTAL || ba.length === LEGACY_TOTAL)) {
+                    blocks[q] = [];
+                    for (var i = 0; i < ba.length; i++) blocks[q][i] = ba[i] ? 1 : 0;
+                    if (ba.length === LEGACY_TOTAL) {
+                        for (var col = 0; col < GC; col++) {
+                            blocks[q][LEGACY_TOTAL + col] = blocks[q][(LEGACY_ROWS - 1) * GC + col];
+                        }
+                    }
                 } else { initBlocks(q); }
                 savedBlocks[q] = blocks[q].slice();
                 savedEnabled[q] = roiEnabledFlags[q];
@@ -280,8 +299,7 @@ var ScheduleEditor = (function() {
     }
     function removeRule(i) { rules.splice(i, 1); renderRules(); }
     function mkSel(vals, sel, ri, f, w) {
-        var s = document.createElement('select'); s.className = 'select-control';
-        s.style.cssText = 'width:'+w+'px;padding:4px 6px;font-size:13px;';
+        var s = document.createElement('select'); s.className = 'select-control roi-time-select';
         for (var i = 0; i < vals.length; i++) {
             var o = document.createElement('option'); o.value = vals[i]; o.textContent = pad(vals[i]);
             if (vals[i] === sel) o.selected = true; s.appendChild(o);
@@ -295,49 +313,49 @@ var ScheduleEditor = (function() {
         var c = document.getElementById('scheduleRulesList'); if (!c) return; c.innerHTML = '';
         for (var r = 0; r < rules.length; r++) {
             var rule = rules[r], div = document.createElement('div');
-            div.style.cssText = 'background:var(--bg-secondary);border-radius:8px;padding:12px;margin-bottom:8px;border:1px solid var(--card-border);';
-            var hdr = document.createElement('div'); hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;';
-            var lbl = document.createElement('span'); lbl.style.cssText = 'font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;'; lbl.textContent = BYD.i18n.t('roi.window_n', {n: r+1});
+            div.className = 'roi-rule';
+            var hdr = document.createElement('div'); hdr.className = 'roi-rule-head';
+            var lbl = document.createElement('span'); lbl.className = 'roi-rule-label'; lbl.textContent = BYD.i18n.t('roi.window_n', {n: r+1});
             hdr.appendChild(lbl);
-            var rm = document.createElement('button'); rm.textContent = BYD.i18n.t('roi.remove');
-            rm.style.cssText = 'background:none;border:1px solid rgba(239,68,68,0.3);color:#ef4444;font-size:11px;cursor:pointer;padding:2px 8px;border-radius:4px;';
+            var rm = document.createElement('button'); rm.type = 'button'; rm.className = 'btn btn-danger-ghost roi-rule-remove'; rm.textContent = BYD.i18n.t('roi.remove');
             (function(ri){ rm.onclick = function(){ removeRule(ri); }; })(r); hdr.appendChild(rm); div.appendChild(hdr);
-            var dr = document.createElement('div'); dr.style.cssText = 'display:flex;gap:3px;margin-bottom:10px;';
+            var dr = document.createElement('div'); dr.className = 'roi-days';
             for (var d = 0; d < 7; d++) {
-                var btn = document.createElement('button'); btn.textContent = dayNames[d];
+                var btn = document.createElement('button'); btn.type = 'button'; btn.textContent = dayNames[d];
                 var act = rule.days.indexOf(d) >= 0;
-                btn.style.cssText = 'flex:1;padding:6px 0;border-radius:6px;font-size:11px;font-weight:500;border:1px solid '+(act?'var(--brand-primary)':'var(--card-border)')+';cursor:pointer;background:'+(act?'var(--brand-primary)':'transparent')+';color:'+(act?'#fff':'var(--text-muted)')+';';
+                btn.className = 'roi-day' + (act ? ' is-on' : '');
+                btn.setAttribute('aria-pressed', act ? 'true' : 'false');
                 (function(ri,di){ btn.onclick = function(){ var idx=rules[ri].days.indexOf(di); if(idx>=0) rules[ri].days.splice(idx,1); else { rules[ri].days.push(di); rules[ri].days.sort(); } renderRules(); }; })(r,d);
                 dr.appendChild(btn);
             }
             div.appendChild(dr);
-            var tr = document.createElement('div'); tr.style.cssText = 'display:flex;align-items:center;gap:4px;flex-wrap:wrap;';
-            function mkL(t){ var s=document.createElement('span'); s.textContent=t; s.style.cssText='font-size:11px;color:var(--text-muted);'; return s; }
-            function mkC(){ var s=document.createElement('span'); s.textContent=':'; s.style.cssText='font-weight:bold;color:var(--text-muted);'; return s; }
+            var tr = document.createElement('div'); tr.className = 'roi-times';
+            function mkL(t){ var s=document.createElement('span'); s.textContent=t; s.className='roi-time-label'; return s; }
+            function mkC(){ var s=document.createElement('span'); s.textContent=':'; s.className='roi-time-colon'; return s; }
             tr.appendChild(mkL(BYD.i18n.t('roi.from'))); tr.appendChild(mkSel(hrs(),rule.startHour,r,'startHour',58)); tr.appendChild(mkC()); tr.appendChild(mkSel(mns(),rule.startMin,r,'startMin',54));
             tr.appendChild(mkL(BYD.i18n.t('roi.to'))); tr.appendChild(mkSel(hrs(),rule.endHour,r,'endHour',58)); tr.appendChild(mkC()); tr.appendChild(mkSel(mns(),rule.endMin,r,'endMin',54));
             div.appendChild(tr);
-            if (rule.days.length === 0) div.appendChild(mkW('\u26a0 ' + BYD.i18n.t('roi.err_select_day'),'#ef4444'));
-            else if (rule.startHour===rule.endHour && rule.startMin===rule.endMin) div.appendChild(mkW('\u26a0 ' + BYD.i18n.t('roi.err_identical'),'#ef4444'));
-            else if (rule.startHour>rule.endHour||(rule.startHour===rule.endHour&&rule.startMin>rule.endMin)) div.appendChild(mkW('\ud83c\udf19 ' + BYD.i18n.t('roi.overnight', {start: pad(rule.startHour)+':'+pad(rule.startMin), end: pad(rule.endHour)+':'+pad(rule.endMin)}),'var(--brand-primary)'));
+            if (rule.days.length === 0) div.appendChild(mkW(BYD.i18n.t('roi.err_select_day'), 'is-error', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'));
+            else if (rule.startHour===rule.endHour && rule.startMin===rule.endMin) div.appendChild(mkW(BYD.i18n.t('roi.err_identical'), 'is-error', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'));
+            else if (rule.startHour>rule.endHour||(rule.startHour===rule.endHour&&rule.startMin>rule.endMin)) div.appendChild(mkW(BYD.i18n.t('roi.overnight', {start: pad(rule.startHour)+':'+pad(rule.startMin), end: pad(rule.endHour)+':'+pad(rule.endMin)}), 'is-info', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'));
             c.appendChild(div);
         }
         updateSummary(); updateSaveBtn();
     }
-    function mkW(t,col) { var d=document.createElement('div'); d.style.cssText='font-size:11px;color:'+col+';margin-top:6px;'; d.textContent=t; return d; }
+    function mkW(t, tone, icon) { var d=document.createElement('div'); d.className='roi-note ' + tone; d.innerHTML=icon; var s=document.createElement('span'); s.textContent=t; d.appendChild(s); return d; }
     function hasErr() { for(var i=0;i<rules.length;i++) { if(rules[i].days.length===0) return true; if(rules[i].startHour===rules[i].endHour&&rules[i].startMin===rules[i].endMin) return true; } return false; }
     function updateSaveBtn() {
         var btn = document.getElementById('scheduleSaveBtn'); if (!btn) return;
         var cb = document.getElementById('scheduleEnabled'), en = cb ? cb.checked : false;
         var bad = en && hasErr();
-        btn.disabled = bad; btn.style.opacity = bad ? '0.4' : '1'; btn.style.cursor = bad ? 'not-allowed' : 'pointer';
+        btn.disabled = bad;
     }
     function updateSummary() {
         var el = document.getElementById('scheduleSummary'); if (!el) return;
         var cb = document.getElementById('scheduleEnabled'), en = cb ? cb.checked : false;
         if (!en) { el.textContent = BYD.i18n.t('roi.schedule_off'); el.style.color = 'var(--text-muted)'; return; }
         if (rules.length === 0) { el.textContent = BYD.i18n.t('roi.add_time_window'); el.style.color = 'var(--text-muted)'; return; }
-        if (hasErr()) { el.textContent = BYD.i18n.t('roi.fix_errors'); el.style.color = '#f59e0b'; return; }
+        if (hasErr()) { el.textContent = BYD.i18n.t('roi.fix_errors'); el.style.color = 'var(--warning)'; return; }
         var parts = [];
         for (var i = 0; i < rules.length; i++) {
             var r = rules[i], ds = [];
@@ -346,7 +364,7 @@ var ScheduleEditor = (function() {
             if (r.startHour>r.endHour||(r.startHour===r.endHour&&r.startMin>r.endMin)) ts += ' ' + BYD.i18n.t('roi.next_day_paren');
             parts.push(ds.join(',')+' '+ts);
         }
-        el.textContent = parts.join(' | '); el.style.color = '#22c55e';
+        el.textContent = parts.join(' | '); el.style.color = 'var(--success)';
     }
     function save() {
         var cb = document.getElementById('scheduleEnabled'), en = cb ? cb.checked : false;

@@ -151,21 +151,13 @@ public class Conditions {
                         new Label("state", "automation.state"),
                         new Label("locked", "automation.locked"),
                         new Label("unlocked", "automation.unlocked"))));
-        // Unlock SOURCE as a trigger (on-change) and condition, same pattern as lock above.
-        // Only "fob" is published, from the BODYWORK_REMOTE_CONTROL_UNLOCK bodywork event
-        // (BydDataCollector#onFobUnlockEvent). Other sources are not offered until there is
-        // a signal for them: the NFC event also fires when locking with the card, and
-        // app/digital-key/keyless unlocks have no bodywork event at all.
         addCondition(new EventCondition(
                 new Label("unlockSource", "automation.unlock_source"),
                 "automation.unlock_source_description",
                 new EnumType(
                         new Label("state", "automation.state"),
-                        new Label("fob", "automation.unlock_source_fob"))));
-        // Easy-entry seat motion as a trigger (on-change) and condition, same pattern.
-        // "settled" only fires after the seat has actually moved and then held still.
-        // Armed ONLY by a fob-button unlock — an unlock with no door opened,
-        // or any non-fob unlock source, never arms this at all.
+                        new Label("fob", "automation.unlock_source_fob"),
+                        new Label("none", "automation.unlock_source_none"))));
         addCondition(new EventCondition(
                 new Label("easyEntry", "automation.easy_entry"),
                 "automation.easy_entry_description",
@@ -371,7 +363,8 @@ public class Conditions {
                 new EnumType(
                         new Label("side", "automation.side"),
                         new Label("left", "automation.side_left"),
-                        new Label("right", "automation.side_right"))));
+                        new Label("right", "automation.side_right"),
+                        new Label("any", "automation.side_any"))));
         addCondition(new EventCondition(
                 new Label("rearCrossTraffic", "automation.rear_cross_traffic"),
                 "automation.rear_cross_traffic_description",
@@ -503,6 +496,23 @@ public class Conditions {
                 new Label("aux12vVoltage", "automation.aux_12v_voltage"),
                 "automation.aux_12v_voltage_description",
                 new IntType(new Label("decivolts", "automation.decivolts"), 90, 160)));
+        // ── Charging and tyres as numbers (the enum/flag versions above stay unchanged) ──
+        addCondition(new EventCondition(
+                new Label("chargingPower", "automation.charging_power"),
+                "automation.charging_power_description",
+                new IntType(new Label("kw", "automation.kilowatts"), 0, 500)));
+        addCondition(new EventCondition(
+                new Label("chargeTimeToFull", "automation.charge_time_to_full"),
+                "automation.charge_time_to_full_description",
+                new IntType(new Label("minutes", "automation.minutes"), 0, 1440)));
+        addCondition(new EventCondition(
+                new Label("tyrePressureLowest", "automation.tyre_pressure_lowest"),
+                "automation.tyre_pressure_lowest_description",
+                new IntType(new Label("kpa", "automation.kilopascals"), 0, 600)));
+        addCondition(new EventCondition(
+                new Label("acFanLevel", "automation.ac_fan_level"),
+                "automation.ac_fan_level_description",
+                new IntType(new Label("level", "automation.level"), 0, 7)));
         // ── Fuel (PHEV) percent ──
         addCondition(new EventCondition(
                 new Label("fuelLevel", "automation.fuel_level"),
@@ -584,6 +594,32 @@ public class Conditions {
         // (mirrors VariableCondition), keyed identically to BydEvent.mqttTrigger.
         addCondition(new MqttTriggerCondition(
                 new Label("mqttTrigger", "automation.mqtt_trigger"), "automation.mqtt_trigger_description"));
+        // ── SafeKeep backup signals (published only while SafeKeep is on) ──
+        addCondition(new EventCondition(
+                new Label("safeKeepState", "automation.safekeep_state"),
+                "automation.safekeep_state_description",
+                new EnumType(new Label("state", "automation.state"),
+                        new Label("idle", "automation.safekeep_idle"),
+                        new Label("uploading", "automation.safekeep_uploading"),
+                        new Label("paused", "automation.safekeep_paused"),
+                        new Label("off", "automation.safekeep_off"))));
+        addCondition(new EventCondition(
+                new Label("safeKeepBacklog", "automation.safekeep_backlog"),
+                "automation.safekeep_backlog_description",
+                new IntType(new Label("count", "automation.safekeep_count"), 0, 100000)));
+        addCondition(new EventCondition(
+                new Label("safeKeepLastError", "automation.safekeep_last_error"),
+                "automation.safekeep_last_error_description",
+                new EnumType(new Label("error", "automation.safekeep_error"),
+                        new Label("none", "automation.safekeep_err_none"),
+                        new Label("auth", "automation.safekeep_err_auth"),
+                        new Label("quota", "automation.safekeep_err_quota"),
+                        new Label("network", "automation.safekeep_err_network"),
+                        new Label("other", "automation.safekeep_err_other"))));
+        addCondition(new EventCondition(
+                new Label("safeKeepClipSaved", "automation.safekeep_clip_saved"),
+                "automation.safekeep_clip_saved_description",
+                new StringType(new Label("file", "automation.safekeep_file"), 128)));
     }
 
     /**

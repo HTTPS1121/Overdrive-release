@@ -33,6 +33,8 @@ public final class BydCloudDataProvider {
     /** Guarded by {@link #snapshotPublishLock}; retained across timestamp-less publications. */
     private long maximumVehicleInfoTimestamp;
     private final CopyOnWriteArrayList<CloudLockStateListener> lockListeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<CloudSnapshotListener> snapshotListeners =
+            new CopyOnWriteArrayList<>();
 
     // Track previous lock state to detect transitions
     private volatile boolean lastKnownLocked = false;
@@ -91,6 +93,15 @@ public final class BydCloudDataProvider {
 
     public void removeLockStateListener(CloudLockStateListener listener) {
         lockListeners.remove(listener);
+    }
+
+    /** Fired after every accepted vehicleInfo publication; read {@link #getSnapshot()} for it. */
+    public interface CloudSnapshotListener {
+        void onCloudSnapshotUpdated();
+    }
+
+    public void addSnapshotListener(CloudSnapshotListener listener) {
+        if (listener != null) snapshotListeners.addIfAbsent(listener);
     }
 
     // ── Snapshot access ─────────────────────────────────────────────────
@@ -214,6 +225,14 @@ public final class BydCloudDataProvider {
                     logger.info("Cloud lock state: UNLOCKED");
                     fireLockStateChanged(false, next.receivedAt);
                 }
+            }
+        }
+        // Outside the publish lock: listeners may take their own locks.
+        for (CloudSnapshotListener listener : snapshotListeners) {
+            try {
+                listener.onCloudSnapshotUpdated();
+            } catch (Exception e) {
+                logger.warn("Snapshot listener error: " + e.getMessage());
             }
         }
     }
@@ -1013,6 +1032,17 @@ public final class BydCloudDataProvider {
         // Initial fetch immediately, then every 5 minutes
         final String pollVin = vin;
         realtimePoller.scheduleAtFixedRate(() -> {
+            // The generic cloud-data merge poll uses the same realtime-status
+            // endpoint as the retired parked heartbeat. While an authoritative
+            // DiLink 5 parked session is explicitly using the local parked
+            // hold, skip this background request too so the session is truly
+            // local-only. ACC ON and every non-Di5 mode retain the existing
+            // five-minute cloud merge behavior.
+            if (shouldSuppressRealtimePollForDi5ParkedLocalHold()) {
+                logger.debug("REST realtime poll skipped: "
+                        + "DiLink 5 parked local keep-alive is active");
+                return;
+            }
             if (!realtimeRequestLock.tryLock()) {
                 logger.debug("REST realtime poll skipped: "
                         + "vehicle realtime request already in flight");
@@ -1041,6 +1071,35 @@ public final class BydCloudDataProvider {
                 realtimeRequestLock.unlock();
             }
         }, 0, POLL_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private static boolean shouldSuppressRealtimePollForDi5ParkedLocalHold() {
+        try {
+            return shouldSuppressRealtimePollForDi5ParkedLocalHold(
+                    com.overdrive.app.camera.dilink5.DiLink5Platform
+                            .isSelected(),
+                    com.overdrive.app.config.UnifiedConfigManager
+                            .isDi5ParkedKeepAliveEnabled(),
+                    com.overdrive.app.monitor.AccMonitor
+                            .isAccStateAuthoritative(),
+                    com.overdrive.app.monitor.AccMonitor.isAccOn());
+        } catch (Throwable t) {
+            // This is an optimization around the generic cloud-data feature,
+            // not part of the ACC state machine. Preserve its old behavior if
+            // platform/config state cannot be inspected.
+            return false;
+        }
+    }
+
+    static boolean shouldSuppressRealtimePollForDi5ParkedLocalHold(
+            boolean di5Selected,
+            boolean localParkedKeepAliveEnabled,
+            boolean accStateAuthoritative,
+            boolean accOn) {
+        return di5Selected
+                && localParkedKeepAliveEnabled
+                && accStateAuthoritative
+                && !accOn;
     }
 
     private void stopRealtimePoller() {

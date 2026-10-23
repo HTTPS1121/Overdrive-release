@@ -42,7 +42,7 @@ public class SohEstimator {
     private double nominalCapacityKwh = 0;
     private String nominalSource = "unset"; // "user" | "auto" | "unset"
 
-    private static final String SOH_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/abrp_soh_estimate.properties");
+    private static final String SOH_FILE = com.overdrive.app.util.ScratchRoot.path("abrp_soh_estimate.properties");
     private final File sohFile;
     private final PersistenceWriter persistenceWriter;
     private final UserNominalConfig userNominalConfig;
@@ -151,6 +151,13 @@ public class SohEstimator {
 
     private static final int LIVE_HISTORY_SIZE = 10;
     private final java.util.ArrayDeque<Double> liveHistory = new java.util.ArrayDeque<>(LIVE_HISTORY_SIZE);
+
+    // Live ticks arrive at telemetry cadence (ABRP can run at 1 Hz); the snapshot only has to
+    // survive a restart, so persist on a displayed-value/generation change or once a minute.
+    private static final long LIVE_PERSIST_MIN_INTERVAL_MS = 60_000L;
+    private long livePersistedAtMs = 0;                       // guarded by autoDetectLock
+    private long livePersistedSohTenths = Long.MIN_VALUE;     // sentinel = persist next tick
+    private long livePersistedGeneration = Long.MIN_VALUE;
 
     // SOH bounds. A battery's State of Health is, by definition, capacity
     // relative to a NEW pack — it CANNOT exceed 100%. Earlier code railed at
@@ -1920,6 +1927,7 @@ public class SohEstimator {
         capacityAhFirstAhSeen = -1;
         capacityAhSocCoupledCount = 0;
         liveHistory.clear();
+        livePersistedSohTenths = Long.MIN_VALUE;
         saturationStreak = 0;
         if (clearPeakAnchor) {
             peakRemainKwhAtFull = -1;
@@ -1948,7 +1956,17 @@ public class SohEstimator {
                 liveHistory.pollFirst();
             }
             currentSoh = median(liveHistory);
-            persistEstimate();
+            long nowMs = System.nanoTime() / 1_000_000L;
+            long sohTenths = Math.round(currentSoh * 10);
+            if (sohTenths != livePersistedSohTenths
+                    || estimatorGeneration != livePersistedGeneration
+                    || nowMs - livePersistedAtMs >= LIVE_PERSIST_MIN_INTERVAL_MS) {
+                if (persistEstimateWithOutcome().wasCommitted()) {
+                    livePersistedAtMs = nowMs;
+                    livePersistedSohTenths = sohTenths;
+                    livePersistedGeneration = estimatorGeneration;
+                }
+            }
         }
     }
 
@@ -2469,6 +2487,14 @@ public class SohEstimator {
         return getCapacitySohSnapshot().getDisplaySoh();
     }
 
+    /**
+     * Returns the canonical health value even before an estimator is available.
+     * Vehicle readings take priority; an existing estimator supplies the fallback.
+     */
+    public static double getDisplaySohOrOem(SohEstimator estimator) {
+        return estimator != null ? estimator.getDisplaySoh() : readOemSohPercent();
+    }
+
     /** Immutable nominal/source publication captured under autoDetectLock. */
     public static final class NominalSnapshot {
         private final double nominalCapacityKwh;
@@ -2677,8 +2703,7 @@ public class SohEstimator {
     }
 
     /**
-     * The vehicle's OWN state-of-health index, as reported by the OEM
-     * ({@code STATISTIC_BATTERY_HEALTHY_INDEX}) and surfaced on the snapshot as
+     * The vehicle's battery-health index, surfaced on the snapshot as
      * {@code sohPercent}. Already a plain 0..100 percent — the collector validates the
      * range before publishing — so it needs no scaling, no nominal capacity, and no
      * usable-vs-gross frame assumption. It is authoritative for both BEV and PHEV;
@@ -2686,7 +2711,7 @@ public class SohEstimator {
      *
      * @return the OEM percent in (0,100], or -1 when the trim doesn't report it.
      */
-    private double readOemSohPercent() {
+    private static double readOemSohPercent() {
         try {
             com.overdrive.app.byd.BydDataCollector col =
                 com.overdrive.app.byd.BydDataCollector.getInstance();

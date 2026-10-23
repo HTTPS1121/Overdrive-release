@@ -149,16 +149,15 @@ const TRIPS = {
     },
 
     // Criteria metadata for tooltips and descriptions.
-    // Strings come from BYD.i18n.t('trip.criteria.<key>.{label,desc,tip}'); the
-    // emoji icons stay inline because they're locale-neutral pictograms.
+    // Strings come from BYD.i18n.t('trip.criteria.<key>.{label,desc,tip}').
     // The 'speed_discipline' key remaps from 'speedDiscipline' so JS callers
     // that index by camelCase still work — see _criteriaKey() helper.
     criteriaInfo: {
-        anticipation:    { icon: '🔮', i18n: 'anticipation' },
-        smoothness:      { icon: '🌊', i18n: 'smoothness' },
-        speedDiscipline: { icon: '🎯', i18n: 'speed_discipline' },
-        efficiency:      { icon: '⚡', i18n: 'efficiency' },
-        consistency:     { icon: '📐', i18n: 'consistency' }
+        anticipation:    { i18n: 'anticipation' },
+        smoothness:      { i18n: 'smoothness' },
+        speedDiscipline: { i18n: 'speed_discipline' },
+        efficiency:      { i18n: 'efficiency' },
+        consistency:     { i18n: 'consistency' }
     },
 
     // ── Energy-leg icons (Material-Symbols-outlined shapes) ─────────────────
@@ -170,6 +169,16 @@ const TRIPS = {
     // `bolt` (electric) and `local_gas_station` (petrol).
     ICON_ELECTRIC: '<svg class="trip-leg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
     ICON_PETROL: '<svg class="trip-leg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 22h13M5 22V8a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v14"/><path d="M15 6V4a1 1 0 0 1 1-1h0a1 1 0 0 1 1 1v10a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V8.5"/><path d="M7 10h6"/></svg>',
+
+    ICON_TIP: '<svg class="tip-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>',
+
+    GRAD_GLYPHS: {
+        FLAT: '<path d="M4 19 8 5"/><path d="m16 5 4 14"/><path d="M12 6v2M12 11v2M12 16v2"/>',
+        HILLY: '<path d="m8 3 4 8 5-5 5 15H2L8 3z"/>',
+        MOUNTAIN_CLIMB: '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+        MOUNTAIN_DESCENT: '<path d="m22 17-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/>'
+    },
+    GRAD_NAMES: { FLAT: 'flat', HILLY: 'hilly', MOUNTAIN_CLIMB: 'climb', MOUNTAIN_DESCENT: 'descent' },
 
     /** Resolve a criterion field (label/desc/tip) through i18n. */
     criterion: function (key, field) {
@@ -235,8 +244,15 @@ const TRIPS = {
         // top, so the detail layout sticks across tabs. Close the
         // detail back to the list whenever the active tab changes.
         var self = this;
-        document.addEventListener('ot-tabs:active-changed', function () {
+        document.addEventListener('ot-tabs:active-changed', function (ev) {
             if (self.currentTripId != null || self._activeDetailRequest) self.hideDetail();
+            // The radar sizes itself from its box; drawn while Stats was hidden it got the 300px fallback.
+            var radar = document.getElementById('radarChart');
+            if (ev && ev.detail && ev.detail.id === 'stats' && radar && self.radarScoresCache) {
+                radar.style.width = '';
+                radar.style.height = '';
+                self.renderRadar(radar, self.radarScoresCache);
+            }
         });
 
         // Render skeletons immediately so the user sees something while the
@@ -346,6 +362,8 @@ const TRIPS = {
      */
     _startStorageRefresh() {
         if (this._storageRefreshTimer) return;   // idempotent
+        // Trip storage moved to storage.html: nothing on this page to refresh.
+        if (!document.getElementById('storageLimitSlider')) return;
         var self = this;
         this._storageRefreshTimer = setInterval(function () {
             if (document.visibilityState !== 'visible') return;
@@ -449,7 +467,17 @@ const TRIPS = {
         const rateInput = document.getElementById('rateInput');
         const currSelect = document.getElementById('currencySelect');
         if (rateInput && this.electricityRate > 0) rateInput.value = this.electricityRate;
-        if (currSelect) currSelect.value = this.currency;
+        if (currSelect) {
+            currSelect.value = this.currency;
+            // A saved currency the list doesn't offer (e.g. "AUD") would leave the select blank.
+            if (currSelect.value !== this.currency) {
+                const opt = document.createElement('option');
+                opt.value = this.currency;
+                opt.textContent = this.currency;
+                currSelect.insertBefore(opt, currSelect.firstChild);
+                currSelect.value = this.currency;
+            }
+        }
         // PHEV — server probe drives row visibility. Tank input is
         // shown in user's chosen unit; we convert L↔gal at the I/O
         // boundary so internal storage stays in litres.
@@ -1422,6 +1450,8 @@ const TRIPS = {
     },
 
     async loadCdrInfo() {
+        // The CDR card moved to storage.html; skip the (possibly slow) SD scan here.
+        if (!document.getElementById('tripCdrCleanupCard')) return false;
         if (this._cdrWritesPending > 0) return false;
         const writeVersion = this._cdrWriteVersion;
         try {
@@ -1523,6 +1553,8 @@ const TRIPS = {
     // calendar popup) so the two pages share one interaction model.
     rangeFromMs: null,
     rangeToMs: null,
+    // Daemon totals for the listed window (GET /api/trips/summary → period).
+    _periodTotals: null,
     // Calendar popup working state: which field ('from'|'to') is being picked,
     // the visible month, and the picked endpoints as "YYYY-MM-DD" local keys.
     _calTarget: null,
@@ -1584,11 +1616,10 @@ const TRIPS = {
         this.renderTripList([]);
         const empty = document.getElementById('tripEmptyState');
         if (empty) empty.style.display = 'none';
-        // No loadSummary() here: the weekly/monthly rollups are keyed to
-        // calendar periods, not arbitrary ranges, and would describe the wrong
-        // window. updatePeriodSummary() (invoked from renderTripList off the
-        // loaded range trips) is the correct, range-accurate source instead.
+        // The summary endpoint returns exact totals for [from, to] (`period`);
+        // on an older daemon updatePeriodSummary() falls back to the loaded trips.
         this.loadTripsBetween(this.rangeFromMs, this.rangeToMs, 0);
+        this.loadSummaryRange(this.rangeFromMs, this.rangeToMs);
     },
 
     // Fetch one page of the active custom range. New servers use the stable
@@ -2004,7 +2035,7 @@ const TRIPS = {
         });
 
         Object.keys(groups).forEach(day => {
-            const header = document.createElement('div');
+            const header = document.createElement('h3');
             header.className = 'day-header';
             header.textContent = day;
             container.appendChild(header);
@@ -2071,7 +2102,7 @@ const TRIPS = {
             a.className = 'trip-park-gap';
             a.href = 'parking.html#/session/' + encodeURIComponent(s.sessionId);
             a.title = BYD.i18n.t('nav.parking');
-            a.innerHTML = '🅿️ <span>' + esc(dur) + (place ? ' · ' + esc(place) : '') + (level ? ' · <b>' + esc(level) + '</b>' : '') +
+            a.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></svg><span>' + esc(dur) + (place ? ' · ' + esc(place) : '') + (level ? ' · <b>' + esc(level) + '</b>' : '') +
                 ((s.eventCount || 0) > 0 ? ' · ' + esc(BYD.i18n.t('parking.events_n', { n: s.eventCount })) : '') + '</span>';
             // The card itself opens the trip detail; the strip must win.
             a.addEventListener('click', ev => ev.stopPropagation());
@@ -2224,12 +2255,21 @@ const TRIPS = {
 
         const elevGain = trip.elevationGainM || trip.elevation_gain_m || 0;
         const gradProfile = trip.gradientProfile || trip.gradient_profile || '';
-        const gradIcons = { FLAT: '🛣️', HILLY: '⛰️', MOUNTAIN_CLIMB: '🏔️', MOUNTAIN_DESCENT: '⬇️' };
-        const elevStr = elevGain > 0 ? (gradIcons[gradProfile] || '') + ' +' + Math.round(elevGain) + 'm' : '';
+        // Gradient profile glyphs (flat road, hills, climb, descent); the profile name is the cell's title.
+        const gradIcons = this.GRAD_GLYPHS;
+        const gradNames = this.GRAD_NAMES;
+        const elevStr = elevGain > 0 ? '+' + Math.round(elevGain) + 'm' : '';
+
+        // Labelled metric cell, same family as the charging session-metric. `value` may carry markup.
+        const metric = (extraClass, glyph, value, label, title) =>
+            '<span class="trip-capsule trip-metric' + (extraClass ? ' ' + extraClass : '') + '"'
+                + (title ? ' title="' + this.esc(title) + '"' : '') + '>'
+                + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + glyph + '</svg>'
+                + '<span class="trip-metric-copy"><span class="trip-metric-value">' + value + '</span>'
+                + '<span class="trip-metric-label">' + this.esc(label) + '</span></span></span>';
 
         // PHEV fuel% capsule — mirrors the SoC capsule, only when both
-        // fuel readings are present (>= 0). Identical icon shape (battery /
-        // tank) so the row stays visually balanced. BEV trips have
+        // fuel readings are present (>= 0). BEV trips have
         // fuelPctStart/End at -1 and skip this entirely.
         const fuelStart = (trip.fuelPctStart != null) ? trip.fuelPctStart
             : (trip.fuel_pct_start != null) ? trip.fuel_pct_start : -1;
@@ -2237,8 +2277,9 @@ const TRIPS = {
             : (trip.fuel_pct_end != null) ? trip.fuel_pct_end : -1;
         let fuelStr = '';
         if (fuelStart >= 0 && fuelEnd >= 0) {
-            fuelStr = '<span class="trip-capsule" style="color:var(--warning);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 22h13M5 22V8a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v14"/><path d="M15 6V4a1 1 0 0 1 1-1h0a1 1 0 0 1 1 1v10a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V8.5"/></svg> '
-                + fuelStart.toFixed(2) + '<span class="rtl-flip-arrow">→</span>' + fuelEnd.toFixed(2) + '%</span>';
+            fuelStr = metric('', '<path d="M3 22h13M5 22V8a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v14"/><path d="M15 6V4a1 1 0 0 1 1-1h0a1 1 0 0 1 1 1v10a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V8.5"/><path d="M7 10h6"/>',
+                fuelStart.toFixed(2) + '<span class="rtl-flip-arrow">→</span>' + fuelEnd.toFixed(2) + '%',
+                tRC('trip.summary.litres', 'Petrol'));
         }
 
         // Energy capsule: real kWh > SoC-per-km efficiency. Dropped when
@@ -2250,13 +2291,17 @@ const TRIPS = {
         const capsuleEnergy = signedEnergyVal < 0 ? signedEnergyVal : energyUsed;
         const energyCapsule = (recovered || (capsuleEnergy === 0 && !(effRaw > 0)))
             ? ''
-            : '<span class="trip-capsule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> ' + (capsuleEnergy !== 0 ? capsuleEnergy.toFixed(2) + ' kWh' : eff + BYD.units.socPerDistLabel()) + '</span>';
+            : metric('', '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+                capsuleEnergy !== 0 ? capsuleEnergy.toFixed(2) + ' kWh' : eff + BYD.units.socPerDistLabel(),
+                tRC('trip.detail.energy', 'Energy'));
         // SoC capsule: only when BOTH bookends were actually read (>0). The
         // daemon stores 0 for a failed read, and a recovery-finalized row never
         // has an end SoC — "55.00→0.00%" would show a phantom full drain, and
         // recovered rows would read "0.00→0.00%".
         const socCapsule = this.hasSocPair(trip)
-            ? '<span class="trip-capsule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="7" width="12" height="10" rx="1"/><path d="M18 10h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2"/></svg> ' + socStart + '<span class="rtl-flip-arrow">→</span>' + socEnd + '%</span>'
+            ? metric('', '<rect x="3" y="6" width="16" height="12" rx="2"/><path d="M21 10v4"/>',
+                socStart + '<span class="rtl-flip-arrow">→</span>' + socEnd + '%',
+                tRC('charge.metric_soc', 'SoC'))
             : '';
         // Odometer capsule: absolute start→end readings (unit-aware). Gated on
         // both being present (>0) — recovered trips and HALs that don't report
@@ -2265,52 +2310,63 @@ const TRIPS = {
         const odoStart = trip.odometerStartKm || trip.odometer_start_km || 0;
         const odoEnd = trip.odometerEndKm || trip.odometer_end_km || 0;
         const odoCapsule = (odoStart > 0 && odoEnd > 0)
-            ? '<span class="trip-capsule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="14" r="7"/><path d="M12 14l3-3"/><path d="M12 3v2"/></svg> ' + BYD.units.dist(odoStart) + '<span class="rtl-flip-arrow">→</span>' + BYD.units.dist(odoEnd) + '</span>'
+            ? metric('', '<path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 13 4-4"/><path d="M7 17h10"/>',
+                BYD.units.dist(odoStart) + '<span class="rtl-flip-arrow">→</span>' + BYD.units.dist(odoEnd),
+                tRC('charge.detail_odometer', 'Odometer'))
             : '';
         // Score badge: a trip without score data (recovered, recovery-finalized,
         // or scored from an empty dynamics stream) shows a neutral glyph instead
         // of a misleading red 0.
+        const noScoreTitle = this.esc(recovered
+            ? tRC('trip.recovered.badge_title', 'Recovered from telemetry — no driving score available')
+            : tRC('trip.no_score_badge_title', 'Driving score unavailable for this trip'));
+        const scoreTitle = this.esc(tRC('trip.card.driver_score', 'Driver Score') + ': ' + avgScore);
         const scoreBadge = noScore
-            ? '<div class="trip-score-badge recovered" title="' + (recovered
-                    ? tRC('trip.recovered.badge_title', 'Recovered from telemetry — no driving score available')
-                    : tRC('trip.no_score_badge_title', 'Driving score unavailable for this trip')) + '">' +
-                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></div>'
-            : '<div class="trip-score-badge ' + scoreClass + '">' + avgScore + '</div>';
+            ? '<div class="trip-score-badge recovered" role="img" title="' + noScoreTitle + '" aria-label="' + noScoreTitle + '">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></div>'
+            : '<div class="trip-score-badge ' + scoreClass + '" role="img" title="' + scoreTitle + '" aria-label="' + scoreTitle + '">' + avgScore + '</div>';
         const recoveredTag = recovered
             ? '<span class="trip-recovered-tag">' + tRC('trip.recovered.tag', 'Recovered') + '</span>'
             : (this.isPartialTrip(trip)
                 ? '<span class="trip-recovered-tag">' + tRC('trip.partial.tag', 'Partial data') + '</span>'
                 : '');
 
+        const delTitle = this.esc(tRC('trip.delete_trip_title', 'Delete trip'));
         card.innerHTML =
             '<div class="trip-card-top">' +
-                '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-right:48px;">' +
-                    '<span class="trip-time" style="font-size: 18px;">' + timeStr + '</span>' +
-                    recoveredTag +
-                '</div>' +
+                scoreBadge +
+                // Real button: keyboard / screen-reader way into the detail; its click bubbles to the row.
+                '<button type="button" class="trip-open">' +
+                    '<span class="trip-head-line"><span class="trip-time">' + timeStr + '</span>' + recoveredTag + '</span>' +
+                    '<span class="trip-dist">' + BYD.units.dist(parseFloat(dist)) + '</span>' +
+                '</button>' +
             '</div>' +
-            scoreBadge +
             '<div class="trip-capsules">' +
-                '<span class="trip-capsule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/><circle cx="12" cy="12" r="10"/></svg> ' + BYD.units.dist(parseFloat(dist)) + '</span>' +
-                '<span class="trip-capsule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> ' + dur + '</span>' +
+                metric('', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', dur, tRC('trip.detail.duration', 'Duration')) +
                 energyCapsule +
                 socCapsule +
                 odoCapsule +
                 fuelStr +
-                (elevStr ? '<span class="trip-capsule" style="color:#0EA5E9;">' + elevStr + '</span>' : '') +
-                (!recovered && costStr ? '<span class="trip-capsule trip-capsule-cost" style="color:var(--warning);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> ' + costStr +
-                    (breakdownStr ? '<span class="trip-cost-split">' + breakdownStr + '</span>' : '') + '</span>' : '') +
+                (elevStr ? metric('', gradIcons[gradProfile] || gradIcons.HILLY, elevStr, tRC('trip.detail.elev_up', 'Elev ↑'),
+                    gradNames[gradProfile] ? tRC('trip.grad_profile.' + gradNames[gradProfile], '') : '') : '') +
+                (!recovered && costStr ? metric('trip-capsule-cost',
+                    '<path d="M4 7a3 3 0 0 1 3-3h11v16H7a3 3 0 0 1-3-3V7z"/><path d="M4 8h14M14 12h7v5h-7a2.5 2.5 0 0 1 0-5z"/>',
+                    this.esc(costStr) + (breakdownStr ? '<span class="trip-cost-split">' + breakdownStr + '</span>' : ''),
+                    tRC('trip.detail.cost', 'Cost')) : '') +
                 // Where the electricity price came from. Only for a named tariff —
-                // a trip on the global rate has nothing worth a capsule.
+                // a trip on the global rate has nothing worth a cell.
                 (!recovered && rateSource === 'charge' && rateLabel
-                    ? '<span class="trip-capsule trip-rate-src" title="' + this.esc(tRC('trip.rate_from_charge_title', 'Priced at the rate of your last charge')) + '">'
-                        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg> '
-                        + this.esc(rateLabel) + '</span>'
+                    ? metric('trip-rate-src', '<path d="M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10z"/><circle cx="12" cy="11" r="2"/>',
+                        this.esc(rateLabel), tRC('charge.detail_tariff', 'Tariff'),
+                        tRC('trip.rate_from_charge_title', 'Priced at the rate of your last charge'))
                     : '') +
             '</div>' +
-            '<button class="trip-delete-btn" onclick="event.stopPropagation(); TRIPS.deleteTrip(\'' + tripId + '\')" title="' + BYD.i18n.t('trip.delete_trip_title') + '">' +
-                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>' +
-            '</button>';
+            '<div class="trip-card-actions">' +
+                '<svg class="trip-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>' +
+                '<button type="button" class="trip-delete-btn" onclick="event.stopPropagation(); TRIPS.deleteTrip(\'' + tripId + '\')" title="' + delTitle + '" aria-label="' + delTitle + '">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>' +
+                '</button>' +
+            '</div>';
 
         return card;
     },
@@ -2349,6 +2405,7 @@ const TRIPS = {
         }
         if (key !== this._activeSummaryKey) {
             this._lastSummaryPayload = null;
+            this._periodTotals = null;
             this._resetCoreSummary();
         }
         const controller = cancellable === false ? null : this._newAbortController();
@@ -2383,6 +2440,7 @@ const TRIPS = {
         this._activeSummaryKey = null;
         this._summaryAbortController = null;
         this._lastSummaryPayload = null;
+        this._periodTotals = null;
     },
 
     async loadSummary(days) {
@@ -2404,6 +2462,26 @@ const TRIPS = {
         }
     },
 
+    // Exact totals for the picked From → To range (the response's `period`).
+    async loadSummaryRange(fromMs, toMs) {
+        const request = this._beginSummaryRequest(this._rangeListKey(fromMs, toMs), true);
+        try {
+            let url = '/api/trips/summary?from=' + fromMs;
+            if (toMs != null) url += '&to=' + toMs;
+            const resp = request.controller
+                ? await fetch(url, { signal: request.controller.signal })
+                : await fetch(url);
+            const data = await resp.json();
+            if (!this._isCurrentSummaryRequest(request)) return;
+            this._applySummaryPayload(data, request);
+        } catch (e) {
+            if (!this._isCurrentSummaryRequest(request) || this._isAbortError(e)) return;
+            console.warn('[Trips] Range summary load failed:', e);
+        } finally {
+            this._finishSummaryRequest(request);
+        }
+    },
+
     /**
      * Apply a /api/trips/summary response to the period-summary tiles.
      * Server returns an array of weekly rollups; we only render the most
@@ -2411,6 +2489,16 @@ const TRIPS = {
      */
     _applySummaryPayload(data, request) {
         if (request && !this._isCurrentSummaryRequest(request)) return false;
+        if (data && data.period && typeof data.period === 'object') {
+            // Totals for exactly the listed window (daemon side, every page of trips).
+            this._lastSummaryPayload = data;
+            this._periodTotals = data.period;
+            this.updatePeriodSummary();
+            return true;
+        }
+        // Older daemons only send calendar-week rollups, which describe the wrong
+        // window for a custom range; that view keeps its loaded-trip totals.
+        if (this.rangeFromMs != null) return false;
         if (!data || !Array.isArray(data.summary)) return false;
         this._lastSummaryPayload = data;
         if (data.summary.length === 0) {
@@ -2454,6 +2542,10 @@ const TRIPS = {
     // ==================== CLIENT-SIDE SUMMARY ====================
 
     updatePeriodSummary() {
+        if (this._periodTotals) {
+            this._renderPeriodTotals(this._periodTotals);
+            return;
+        }
         const trips = this.trips;
         // An empty window is legitimate for a custom range (a span with no
         // driving), unlike the day-presets. Zero the tiles rather than leaving
@@ -2579,6 +2671,46 @@ const TRIPS = {
                     label = totalLitres.toFixed(1) + ' L';
                 }
                 this.setEl('summaryFuel', label);
+                fuelTile.style.display = '';
+            } else {
+                fuelTile.style.display = 'none';
+            }
+        }
+    },
+
+    // Fill every period-summary tile from the daemon's totals for the listed window.
+    _renderPeriodTotals(p) {
+        const dist = Number(p.totalDistanceKm) || 0;
+        const energy = Number(p.totalEnergyKwh) || 0;
+        const socDelta = Number(p.totalSocDelta) || 0;
+        const cost = Number(p.totalCost) || 0;
+        const litres = Number(p.totalLitres) || 0;
+        this.setEl('summaryTrips', Number(p.tripCount) || 0);
+        this.setEl('summaryDistance', BYD.units.distVal(dist).toFixed(1));
+        this.setEl('summaryTime', ((Number(p.totalDurationSeconds) || 0) / 3600).toFixed(1));
+        this.setEl('summaryEfficiency', p.avgScore != null ? p.avgScore : '--');
+        this.setEl('summaryEnergy', energy > 0 ? energy.toFixed(1) : '--');
+        if (dist > 0.5 && energy > 0) {
+            this.setEl('summaryConsumption', BYD.units.per100Val((energy / dist) * 100).toFixed(1));
+        } else if (dist > 0.5 && socDelta > 0) {
+            this.setEl('summaryConsumption', BYD.units.per100Val((socDelta / dist) * 100).toFixed(1) + '%');
+        } else {
+            this.setEl('summaryConsumption', '--');
+        }
+        this.setEl('summaryEfficiency2', dist > 0.5 && energy > 0 ? BYD.units.effVal(dist / energy).toFixed(1) : '--');
+        if (cost > 0) {
+            this.setEl('summaryCost', (this.currency || '$') + cost.toFixed(1));
+        } else if (energy > 0 && this.electricityRate > 0) {
+            this.setEl('summaryCost', (this.currency || '$') + (energy * this.electricityRate).toFixed(1));
+        } else {
+            this.setEl('summaryCost', '--');
+        }
+        const fuelTile = document.getElementById('summaryFuelTile');
+        if (fuelTile) {
+            if (p.anyPhev && litres > 0) {
+                this.setEl('summaryFuel', this.fuelUnit === 'gal'
+                    ? (litres / this.LITRES_PER_GAL).toFixed(1) + ' gal'
+                    : litres.toFixed(1) + ' L');
                 fuelTile.style.display = '';
             } else {
                 fuelTile.style.display = 'none';
@@ -3316,10 +3448,14 @@ const TRIPS = {
             const gradProfile = trip.gradientProfile || trip.gradient_profile || '';
             const gradEl = document.getElementById('detailGradientPill');
             if (gradEl && gradProfile) {
-                const gradLabels = { FLAT: BYD.i18n.t('trip.grad_profile.flat'), HILLY: BYD.i18n.t('trip.grad_profile.hilly'), MOUNTAIN_CLIMB: BYD.i18n.t('trip.grad_profile.climb'), MOUNTAIN_DESCENT: BYD.i18n.t('trip.grad_profile.descent') };
-                const gradColors = { FLAT: 'rgba(34,197,94,0.15);color:#22C55E', HILLY: 'rgba(245,158,11,0.15);color:#F59E0B', MOUNTAIN_CLIMB: 'rgba(239,68,68,0.15);color:#EF4444', MOUNTAIN_DESCENT: 'rgba(14,165,233,0.15);color:#0EA5E9' };
-                gradEl.innerHTML = gradLabels[gradProfile] || gradProfile;
-                gradEl.style.cssText = 'display:inline-flex;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:' + (gradColors[gradProfile] || gradColors.FLAT);
+                const gradName = this.GRAD_NAMES[gradProfile];
+                const gradLabel = gradName ? BYD.i18n.t('trip.grad_profile.' + gradName) : gradProfile;
+                gradEl.className = 'grad-pill' + (gradName && gradName !== 'flat' ? ' is-' + gradName : '');
+                gradEl.innerHTML = (this.GRAD_GLYPHS[gradProfile]
+                        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + this.GRAD_GLYPHS[gradProfile] + '</svg>'
+                        : '')
+                    + '<span>' + this.esc(gradLabel) + '</span>';
+                gradEl.style.display = '';
             } else if (gradEl) {
                 gradEl.style.display = 'none';
             }
@@ -3701,6 +3837,21 @@ const TRIPS = {
             });
             var totalOnRoute = data.count + 1;
 
+            const tr = (k, fb, vars) => {
+                let v = BYD.i18n.t(k, vars);
+                if (!v || v === k) {
+                    v = fb;
+                    if (vars) Object.keys(vars).forEach(n => { v = v.split('{' + n + '}').join(vars[n]); });
+                }
+                return v;
+            };
+            const esc = (v) => this.esc(String(v));
+            const ico = (body, cls) => '<svg' + (cls ? ' class="' + cls + '"' : '') + ' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + body + '</svg>';
+            const IC_CLOCK = ico('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>');
+            const IC_COST = ico('<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/>');
+            const minutes = (sec) => Math.round(sec / 60) + BYD.units.minuteSuffix(false, false);
+            const stat = (icon, text) => '<div class="rc-stat">' + icon + '<span>' + esc(text) + '</span></div>';
+
             let html = '';
 
             // Summary banner
@@ -3709,60 +3860,58 @@ const TRIPS = {
             var isBetter = energyDelta < 0;
 
             if (avgEnergy > 0 && tripEnergy > 0) {
-                if (isBetter) {
-                    html += '<div style="padding:12px 14px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:12px;margin-bottom:12px;">';
-                    html += '<div style="font-size:14px;font-weight:600;color:#22C55E;">🎉 Used ' + energyPct + '% less energy than usual</div>';
-                    html += '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">#' + rank + ' of ' + totalOnRoute + ' trips on this route</div>';
-                    html += '</div>';
-                } else {
-                    html += '<div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:12px;margin-bottom:12px;">';
-                    html += '<div style="font-size:14px;font-weight:600;color:var(--warning);">📊 Used ' + energyPct + '% more energy than usual</div>';
-                    html += '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">#' + rank + ' of ' + totalOnRoute + ' trips on this route</div>';
-                    html += '</div>';
-                }
+                html += '<div class="rc-banner' + (isBetter ? ' is-better' : '') + '">'
+                    + ico(isBetter
+                        ? '<path d="m22 17-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/>'
+                        : '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>')
+                    + '<div><div class="rc-banner-title">' + esc(isBetter
+                        ? tr('trip.route_compare.less_energy', 'Used {pct}% less energy than usual', { pct: energyPct })
+                        : tr('trip.route_compare.more_energy', 'Used {pct}% more energy than usual', { pct: energyPct }))
+                    + '</div><div class="rc-banner-sub">'
+                    + esc(tr('trip.route_compare.rank', '#{rank} of {total} trips on this route', { rank: rank, total: totalOnRoute }))
+                    + '</div></div></div>';
             }
 
-            // Modern comparison cards — this trip vs route avg
-            html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">';
-            // This trip
-            html += '<div style="padding:12px;background:var(--bg-elevated);border-radius:10px;border:1px solid var(--border-subtle);">';
-            html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">This trip</div>';
-            if (tripEnergy > 0) html += '<div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">' + this.ICON_ELECTRIC + ' ' + tripEnergy.toFixed(1) + ' kWh</div>';
-            html += '<div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">⏱ ' + Math.round(tripDur/60) + BYD.units.minuteSuffix(false, false) + '</div>';
-            if (tripCost > 0) html += '<div style="font-size:13px;color:var(--text-primary);">💰 ' + currency + tripCost.toFixed(1) + '</div>';
+            // This trip vs route average
+            html += '<div class="rc-compare">';
+            html += '<div class="rc-col"><div class="td-eyebrow">' + esc(tr('trip.route_compare.this_trip', 'This trip')) + '</div>';
+            if (tripEnergy > 0) html += stat(this.ICON_ELECTRIC, tripEnergy.toFixed(1) + ' kWh');
+            html += stat(IC_CLOCK, minutes(tripDur));
+            if (tripCost > 0) html += stat(IC_COST, currency + tripCost.toFixed(1));
             html += '</div>';
-            // Route avg
-            html += '<div style="padding:12px;background:var(--bg-elevated);border-radius:10px;border:1px solid var(--border-subtle);">';
-            html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Route average</div>';
-            if (avgEnergy > 0) html += '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">' + this.ICON_ELECTRIC + ' ' + avgEnergy.toFixed(1) + ' kWh</div>';
-            html += '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">⏱ ' + Math.round(avgDur/60) + BYD.units.minuteSuffix(false, false) + '</div>';
-            if (avgCost > 0) html += '<div style="font-size:13px;color:var(--text-secondary);">💰 ' + currency + avgCost.toFixed(1) + '</div>';
+            html += '<div class="rc-col is-avg"><div class="td-eyebrow">' + esc(tr('trip.route_compare.route_avg', 'Route average')) + '</div>';
+            if (avgEnergy > 0) html += stat(this.ICON_ELECTRIC, avgEnergy.toFixed(1) + ' kWh');
+            html += stat(IC_CLOCK, minutes(avgDur));
+            if (avgCost > 0) html += stat(IC_COST, currency + avgCost.toFixed(1));
             html += '</div>';
             html += '</div>';
 
             // Sparkline
             if (similar.length >= 2) {
-                html += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Energy trend (oldest → newest)</div>';
+                html += '<div class="rc-trend-label">' + esc(tr('trip.route_compare.energy_trend', 'Energy trend (oldest → newest)')) + '</div>';
                 html += '<canvas id="routeSparkline" class="sparkline-container" style="width:100%;height:40px;"></canvas>';
             }
 
             // Compare on Map button
             if (stats.bestTripId > 0) {
-                html += '<button onclick="TRIPS.showRouteMapComparison(' + tripId + ',' + stats.bestTripId + ',' + (stats.worstTripId > 0 ? stats.worstTripId : -1) + ')" style="width:100%;padding:10px;margin:8px 0;background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:8px;color:var(--brand-primary);font-size:13px;font-weight:600;cursor:pointer;">🗺️ Compare on Map</button>';
+                html += '<button type="button" class="btn btn-secondary rc-map-btn" onclick="TRIPS.showRouteMapComparison(' + tripId + ',' + stats.bestTripId + ',' + (stats.worstTripId > 0 ? stats.worstTripId : -1) + ')">'
+                    + ico('<polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><path d="M8 2v16M16 6v16"/>')
+                    + '<span>' + esc(tr('trip.route_compare.compare_map', 'Compare on map')) + '</span></button>';
             }
 
-            // Recent trips — clickable links
-            html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 6px;text-transform:uppercase;letter-spacing:0.5px;">Trips on this route (' + data.count + ')</div>';
+            // Recent trips on this route
+            html += '<div class="td-eyebrow rc-list-head">' + esc(tr('trip.route_compare.trips_on_route', 'Trips on this route ({count})', { count: data.count })) + '</div>';
+            const bestLabel = tr('trip.route_legend_best', 'Best');
             similar.slice(0, 5).forEach(function(t) {
                 var date = new Date(t.startTime || t.start_time).toLocaleDateString(BYD.i18n.getLang(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 var energy = (t.energyUsedKwh || t.energy_used_kwh || 0);
                 var cost = t.tripCost || t.trip_cost || 0;
                 var isBest = t.id === stats.bestTripId;
-                html += '<div class="route-comparison-item" style="cursor:pointer;" onclick="TRIPS.showDetail(' + t.id + ')">';
-                html += '<span class="route-comparison-date">' + date + (isBest ? ' 🏆' : '') + '</span>';
-                html += '<span class="route-comparison-eff">' + (energy > 0 ? energy.toFixed(1) + ' kWh' : '--') + (cost > 0 ? ' · ' + currency + cost.toFixed(0) : '') + '</span>';
-                html += '<span style="color:var(--brand-primary);font-size:12px;" class="rtl-flip-arrow">→</span>';
-                html += '</div>';
+                html += '<button type="button" class="route-comparison-item" onclick="TRIPS.showDetail(' + Number(t.id) + ')">';
+                html += '<span class="route-comparison-date">' + esc(date) + (isBest ? '<span class="rc-best">' + esc(bestLabel) + '</span>' : '') + '</span>';
+                html += '<span class="route-comparison-eff">' + esc((energy > 0 ? energy.toFixed(1) + ' kWh' : '--') + (cost > 0 ? ' · ' + currency + cost.toFixed(0) : '')) + '</span>';
+                html += ico('<path d="m9 18 6-6-6-6"/>', 'rc-chevron');
+                html += '</button>';
             });
 
             content.innerHTML = html;
@@ -3798,8 +3947,11 @@ const TRIPS = {
         const max = Math.max.apply(null, points) * 1.1;
         const range = max - min || 1;
 
+        // Canvas can't resolve var(); read the theme colour.
+        const primary = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim() || '#5DDBB6';
         ctx.beginPath();
-        ctx.strokeStyle = 'rgba(99,102,241,0.6)';
+        ctx.strokeStyle = primary;
+        ctx.globalAlpha = 0.6;
         ctx.lineWidth = 2;
         points.forEach(function(v, i) {
             var x = (i / (points.length - 1)) * (w - 8) + 4;
@@ -3807,6 +3959,7 @@ const TRIPS = {
             if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         });
         ctx.stroke();
+        ctx.globalAlpha = 1;
 
         // Highlight current trip (last point)
         var lastVal = points[points.length - 1];
@@ -3814,7 +3967,7 @@ const TRIPS = {
         var lastY = h - 4 - ((lastVal - min) / range) * (h - 8);
         ctx.beginPath();
         ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'var(--brand-primary)';
+        ctx.fillStyle = primary;
         ctx.fill();
     },
 
@@ -4058,7 +4211,7 @@ const TRIPS = {
             var card = document.createElement('div');
             card.id = 'costBreakdown';
             card.className = 'detail-card cost-breakdown';
-            card.style.cssText = 'margin-top:12px;padding:12px 14px;background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);display:none;';
+            card.style.display = 'none';
             // Insert at the end of #detailSummary so the card sits below the
             // grid and the gradient pill, matching existing detail-card flow.
             summaryHost.appendChild(card);
@@ -4083,37 +4236,36 @@ const TRIPS = {
         var curEsc = esc(currency);
 
         var rows = [];
-        var title = '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;">'
-            + esc(BYD.i18n.t('trip.cost_breakdown_title')) + '</div>';
+        var title = '<div class="td-eyebrow">' + esc(BYD.i18n.t('trip.cost_breakdown_title')) + '</div>';
 
         if (electricCost > 0) {
-            rows.push('<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-secondary);margin-bottom:4px;">'
-                + '<span>' + this.ICON_ELECTRIC + ' ' + esc(BYD.i18n.t('trip.cost_electric_line', {
+            rows.push('<div class="cb-row">'
+                + '<span class="cb-label">' + this.ICON_ELECTRIC + esc(BYD.i18n.t('trip.cost_electric_line', {
                     kwh: energyKwh.toFixed(1),
                     rate: currency + rate.toFixed(2)
                   })) + '</span>'
-                + '<span style="color:var(--text-primary);">' + curEsc + electricCost.toFixed(2) + '</span>'
+                + '<span class="cb-val">' + curEsc + electricCost.toFixed(2) + '</span>'
                 + '</div>');
         }
         if (fuelCost > 0) {
-            rows.push('<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-secondary);margin-bottom:4px;">'
-                + '<span>' + this.ICON_PETROL + ' ' + esc(BYD.i18n.t('trip.cost_petrol_line', {
+            rows.push('<div class="cb-row">'
+                + '<span class="cb-label">' + this.ICON_PETROL + esc(BYD.i18n.t('trip.cost_petrol_line', {
                     litres: litres.toFixed(2),
                     rate: currency + fuelPrice.toFixed(2)
                   })) + '</span>'
-                + '<span style="color:var(--text-primary);">' + curEsc + fuelCost.toFixed(2) + '</span>'
+                + '<span class="cb-val">' + curEsc + fuelCost.toFixed(2) + '</span>'
                 + '</div>');
         } else if (isPhev && litres <= 0 && this.tankCapacityL <= 0) {
             // PHEV with no metered fuel and no tank size set — surface a
             // one-line nudge so users know why the petrol leg is absent.
             // (When litres > 0 the burn is metered from the HAL accumulator
             // and tank capacity is irrelevant, so we don't nag here.)
-            rows.push('<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">'
-                + esc(BYD.i18n.t('trip.cost_set_tank_hint')) + '</div>');
+            rows.push('<div class="cb-hint">' + this.ICON_TIP
+                + '<span>' + esc(BYD.i18n.t('trip.cost_set_tank_hint')) + '</span></div>');
         }
-        rows.push('<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-primary);font-weight:600;border-top:1px solid var(--border-subtle);padding-top:6px;margin-top:6px;">'
-            + '<span>' + esc(BYD.i18n.t('trip.cost_total_line')) + '</span>'
-            + '<span>' + curEsc + totalCost.toFixed(2) + '</span>'
+        rows.push('<div class="cb-row is-total">'
+            + '<span class="cb-label">' + esc(BYD.i18n.t('trip.cost_total_line')) + '</span>'
+            + '<span class="cb-val">' + curEsc + totalCost.toFixed(2) + '</span>'
             + '</div>');
 
         // l/100km capsule + HEV mode share — these are useful diagnostics
@@ -4165,7 +4317,7 @@ const TRIPS = {
             if (pct > 0) foot.push(BYD.i18n.t('trip.ice_share_time_label', { pct: pct }));
         }
         var footHtml = foot.length > 0
-            ? '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;">' + foot.join(' · ') + '</div>'
+            ? '<div class="cb-foot">' + foot.join(' · ') + '</div>'
             : '';
 
         container.innerHTML = title + rows.join('') + footHtml;
@@ -4185,42 +4337,49 @@ const TRIPS = {
         }
 
         if (!moments) {
-            list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px 0;">' + BYD.i18n.t('trip.no_micro_data') + '</div>';
+            list.innerHTML = '<div class="moment-empty">' + this.esc(BYD.i18n.t('trip.no_micro_data')) + '</div>';
             return;
         }
 
-        const items = [];
-        const tooltips = {
-            'Launch Events': 'Number of hard accelerations from standstill (0→30+ km/h). Fewer = more efficient starts.',
-            'Coast-Brake Events': 'Times you went directly from coasting to braking. More events = less anticipation of stops.',
-            'Avg Coast Gap': 'Average time between lifting the accelerator and pressing the brake. Longer gaps = better anticipation.',
-            'Pedal Smoothness (σ)': 'Standard deviation of pedal input changes. Lower σ = smoother, more consistent pedal work.'
+        // Label + one-line explanation per moment, from trip.micro.<key>[_tip].
+        const tm = (key, fallback) => {
+            const v = BYD.i18n.t('trip.micro.' + key);
+            return v && v !== 'trip.micro.' + key ? v : fallback;
         };
-        if (moments.launchProfiles) items.push({ icon: '🚀', label: 'Launch Events', value: moments.launchProfiles.length });
+        const items = [];
+        const moment = (icon, key, label, tip, value) =>
+            items.push({ icon: icon, label: tm(key, label), tip: tm(key + '_tip', tip), value: value });
+        if (moments.launchProfiles) moment('<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>',
+            'launch_events', 'Launch Events', 'Number of hard accelerations from standstill (0→30+ km/h). Fewer = more efficient starts.',
+            moments.launchProfiles.length);
         if (moments.coastBrakeEvents) {
-            items.push({ icon: '🛑', label: 'Coast-Brake Events', value: moments.coastBrakeEvents.length });
+            moment('<path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M8 12h8"/>',
+                'coast_brake_events', 'Coast-Brake Events', 'Times you went directly from coasting to braking. More events = less anticipation of stops.',
+                moments.coastBrakeEvents.length);
             if (moments.coastBrakeEvents.length > 0) {
                 const avgGap = moments.coastBrakeEvents.reduce((s, e) => s + (e.coastGapMs || e.coast_gap_ms || 0), 0) / moments.coastBrakeEvents.length / 1000;
-                items.push({ icon: '⏳', label: 'Avg Coast Gap', value: avgGap.toFixed(1) + BYD.units.secondSuffix(true) });
+                moment('<path d="M5 22h14M5 2h14"/><path d="M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/>',
+                    'avg_coast_gap', 'Avg Coast Gap', 'Average time between lifting the accelerator and pressing the brake. Longer gaps = better anticipation.',
+                    avgGap.toFixed(1) + BYD.units.secondSuffix(true));
             }
         }
         if (moments.pedalSmoothnessWindows) {
             const avgSmooth = moments.pedalSmoothnessWindows.length > 0
                 ? moments.pedalSmoothnessWindows.reduce((s, w) => s + (w.stdDev || w.std_dev || 0), 0) / moments.pedalSmoothnessWindows.length
                 : 0;
-            items.push({ icon: '📊', label: 'Pedal Smoothness (σ)', value: avgSmooth.toFixed(1) });
+            moment('<path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/>',
+                'pedal_smoothness', 'Pedal Smoothness (σ)', 'Standard deviation of pedal input changes. Lower σ = smoother, more consistent pedal work.',
+                avgSmooth.toFixed(1));
         }
 
         items.forEach(item => {
             const el = document.createElement('div');
             el.className = 'moment-item';
-            el.style.position = 'relative';
-            const tip = tooltips[item.label] || '';
-            el.innerHTML = '<span class="moment-icon">' + item.icon + '</span>' +
-                '<div style="flex:1;"><span>' + item.label + '</span>' +
-                (tip ? '<div style="font-size:10px;color:var(--text-muted);margin-top:2px;line-height:1.3;">' + tip + '</div>' : '') +
+            el.innerHTML = '<span class="moment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + item.icon + '</svg></span>' +
+                '<div class="moment-text"><span>' + this.esc(item.label) + '</span>' +
+                (item.tip ? '<div class="moment-tip">' + this.esc(item.tip) + '</div>' : '') +
                 '</div>' +
-                '<span class="moment-value">' + item.value + '</span>';
+                '<span class="moment-value">' + this.esc(String(item.value)) + '</span>';
             list.appendChild(el);
         });
     },
@@ -4315,7 +4474,7 @@ const TRIPS = {
         // Update tooltip content based on score and DNA breakdown
         const tooltipTitle = document.getElementById('scoreTooltipTitle');
         const tooltipDesc = document.getElementById('scoreTooltipDesc');
-        const tooltipTip = document.getElementById('scoreTooltipTip');
+        const tooltipTip = document.getElementById('scoreTooltipTipText') || document.getElementById('scoreTooltipTip');
         const tierPills = document.querySelectorAll('.score-tier-pill');
 
         if (tooltipTitle) tooltipTitle.textContent = BYD.i18n.t('trip.score_summary', { label: label, score: score });
@@ -4536,10 +4695,10 @@ const TRIPS = {
             if (closest) {
                 const info = self.criteriaInfo[closest.key];
                 if (!info) return;
-                document.getElementById('radarTooltipTitle').textContent = info.icon + ' ' + self.criterion(closest.key, 'label');
+                document.getElementById('radarTooltipTitle').textContent = self.criterion(closest.key, 'label');
                 document.getElementById('radarTooltipScore').textContent = closest.score + '/100';
                 document.getElementById('radarTooltipDesc').textContent = self.criterion(closest.key, 'desc');
-                document.getElementById('radarTooltipTip').textContent = '💡 ' + self.criterion(closest.key, 'tip');
+                document.getElementById('radarTooltipTip').textContent = self.criterion(closest.key, 'tip');
 
                 // Position tooltip — always below and centered on dot
                 const wrapRect = wrap.getBoundingClientRect();

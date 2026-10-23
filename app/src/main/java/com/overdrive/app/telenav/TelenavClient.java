@@ -14,6 +14,11 @@ import com.telenav.app.external.IServiceManager;
 import com.telenav.app.external.IUserDataService;
 import com.telenav.app.external.model.search.Place;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -37,6 +42,7 @@ public final class TelenavClient {
     private static final String NAVI_SERVICE = "com.telenav.app.service.TnNaviService";
     private static final String NAVI_ACTION = "com.telenav.app.external.service.NAVI";
     private static final String CLIENT_VERSION = "2.1.1"; // isValidClient checks major == "2"
+    private static final int DAEMON_TCP_PORT = 19876;     // CameraDaemon TcpCommandServer
 
     // From the decompiled INavigationService.Stub (Telenav v9.0.152): the AIDL
     // descriptor and startNavigation's transaction code. We raw-transact this one
@@ -55,7 +61,7 @@ public final class TelenavClient {
         return ctx.getPackageManager().resolveService(intent, 0) != null;
     }
 
-    /** Calls the specific "register …ServiceCallback" method on the manager. */
+    /** Calls the specific "register/unRegister …ServiceCallback" method on the manager. */
     public interface Registrar {
         void register(IServiceManager mgr, IServiceInitCallback cb) throws RemoteException;
     }
@@ -73,6 +79,7 @@ public final class TelenavClient {
     public static <T> T withUserData(Context ctx, long timeoutMs, UserDataOp<T> op) throws Exception {
         return withService(ctx, timeoutMs,
                 IServiceManager::registerUserDataServiceCallback,
+                IServiceManager::unRegisterUserDataServiceCallback,
                 binder -> op.run(IUserDataService.Stub.asInterface(binder)));
     }
 
@@ -89,6 +96,7 @@ public final class TelenavClient {
     public static boolean startNavigation(Context ctx, long timeoutMs, Place place) throws Exception {
         Boolean r = withService(ctx, timeoutMs,
                 IServiceManager::registerNavigationServiceCallback,
+                IServiceManager::unRegisterNavigationServiceCallback,
                 binder -> rawStartNavigation(binder, place));
         return Boolean.TRUE.equals(r);
     }
@@ -97,6 +105,7 @@ public final class TelenavClient {
     public static int getNavState(Context ctx, long timeoutMs) throws Exception {
         Integer r = withService(ctx, timeoutMs,
                 IServiceManager::registerNavigationServiceCallback,
+                IServiceManager::unRegisterNavigationServiceCallback,
                 binder -> {
                     Parcel data = Parcel.obtain();
                     Parcel reply = Parcel.obtain();
@@ -114,6 +123,7 @@ public final class TelenavClient {
     public static boolean stopNav(Context ctx, long timeoutMs) throws Exception {
         Boolean r = withService(ctx, timeoutMs,
                 IServiceManager::registerNavigationServiceCallback,
+                IServiceManager::unRegisterNavigationServiceCallback,
                 binder -> {
                     Parcel data = Parcel.obtain();
                     Parcel reply = Parcel.obtain();
@@ -148,20 +158,43 @@ public final class TelenavClient {
     }
 
     /**
-     * Bind, obtain a service binder via {@code registrar}, run {@code op}, unbind.
+     * Tells the daemon OverDrive is about to launch or bind Telenav, so a Telenav this starts is
+     * stopped while parked. Best effort; blocks up to ~2 s. Must be called off the main thread.
+     */
+    static void noteUseToDaemon() {
+        Socket socket = new Socket();
+        try {
+            socket.connect(new InetSocketAddress("127.0.0.1", DAEMON_TCP_PORT), 500);
+            socket.setSoTimeout(1500);
+            new PrintWriter(socket.getOutputStream(), true).println("{\"cmd\":\"telenavUse\"}");
+            new BufferedReader(new InputStreamReader(socket.getInputStream())).readLine();
+        } catch (Exception e) {
+            Log.w(TAG, "daemon not told about Telenav use: " + e.getMessage());
+        } finally {
+            try { socket.close(); } catch (Exception ignore) {}
+        }
+    }
+
+    /**
+     * Bind, obtain a service binder via {@code registrar}, run {@code op}, unregister, unbind.
      * Blocking with an overall timeout. Must be called off the main thread.
      */
-    private static <T> T withService(Context ctx, long timeoutMs, Registrar registrar, BinderOp<T> op)
-            throws Exception {
+    private static <T> T withService(Context ctx, long timeoutMs, Registrar registrar,
+            Registrar unregistrar, BinderOp<T> op) throws Exception {
         if (ctx == null) throw new IllegalStateException("no context");
         if (!isAvailable(ctx)) {
             throw new IllegalStateException("Telenav navigation service unavailable");
         }
+        noteUseToDaemon();
 
         final CountDownLatch connected = new CountDownLatch(1);
         final CountDownLatch serviceReady = new CountDownLatch(1);
         final AtomicReference<IBinder> serviceBinder = new AtomicReference<>();
         final AtomicReference<String> failure = new AtomicReference<>();
+        // Guards registration against a connect that lands after we gave up.
+        final Object registration = new Object();
+        final boolean[] finished = {false};
+        final AtomicReference<IServiceManager> registeredWith = new AtomicReference<>();
         final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
 
         final IServiceInitCallback initCallback = new IServiceInitCallback.Stub() {
@@ -187,8 +220,13 @@ public final class TelenavClient {
                         serviceReady.countDown();
                         return;
                     }
-                    registrar.register(sm, initCallback);
-                } catch (RemoteException e) {
+                    synchronized (registration) {
+                        if (finished[0]) return;
+                        registrar.register(sm, initCallback);
+                        registeredWith.set(sm);
+                    }
+                } catch (Exception e) {
+                    // Remote runtime exceptions are rethrown here too, on the main thread.
                     failure.set("register callback: " + e.getMessage());
                     serviceReady.countDown();
                 }
@@ -223,6 +261,17 @@ public final class TelenavClient {
             }
             return op.run(b);
         } finally {
+            IServiceManager sm;
+            synchronized (registration) {
+                finished[0] = true;
+                sm = registeredWith.getAndSet(null);
+            }
+            // Pair every register with its unRegister so Telenav drops our callback binder.
+            if (sm != null) {
+                try { unregistrar.register(sm, initCallback); } catch (Exception e) {
+                    Log.w(TAG, "unregister callback: " + e.getMessage());
+                }
+            }
             try { ctx.unbindService(conn); } catch (Throwable ignore) {}
         }
     }

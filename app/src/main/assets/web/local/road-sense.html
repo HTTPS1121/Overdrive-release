@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title data-i18n="app.road_sense_title">RoadSense - OverDrive</title>
     <link rel="icon" type="image/webp" href="../shared/app-icon-dark.webp">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
       Bottom-tab manifest. Tabs grouping the RoadSense settings cards:
         General      — master enable + calibration mode
@@ -26,8 +26,9 @@
             { id: 'blindspot',   label: 'Blind Spot',  i18n: 'road_sense.tab_blindspot',   svg: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>' }
         ];
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
         /* Blind-spot speed window: two narrow km/h fields on one row. .text-input is
            built for full-width fields (width:100% + min-width:200px), so a narrow
@@ -70,11 +71,66 @@
         }
         /* No responsive override needed: the shared 768px rule already stacks
            .setting-row and zeroes .setting-control's left margin. */
+        /* Blind-spot camera modes: three choice cards per row, stacked on phones. */
+        .btn-group.r-choice-cards.bs-mode-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        @media (max-width: 599px) {
+            .btn-group.r-choice-cards.bs-mode-cards { grid-template-columns: minmax(0, 1fr); }
+        }
+        /* Cards stretch to one height; keep each card's content at the top. */
+        .bs-mode-cards > .btn-toggle {
+            display: -webkit-box;
+            display: -webkit-flex;
+            display: flex;
+            -webkit-box-orient: vertical;
+            -webkit-flex-direction: column;
+            flex-direction: column;
+            -webkit-align-items: flex-start;
+            align-items: flex-start;
+            -webkit-justify-content: flex-start;
+            justify-content: flex-start;
+        }
+        .bs-mode-cards .r-choice-ico svg { width: 26px; height: 26px; }
+        :root[data-android-embed="1"] .bs-mode-cards .r-choice-ico svg { width: 32px; height: 32px; }
+        /* One framing block shows at a time and keeps a divider to the row after it;
+           the JS marks the card's last visible row so the card ends without one. */
+        .bs-frame > .setting-row:last-child { border-bottom: 1px solid var(--hairline, var(--border-subtle)); }
+        #bsViewBody .setting-row.bs-row-last { border-bottom: none; }
+        .bs-stitch-actions {
+            display: flex;
+            flex-wrap: wrap;
+            margin-top: 8px;
+            padding-top: 16px;
+            border-top: 1px solid var(--hairline, var(--border-subtle));
+        }
+        .bs-stitch-actions > .btn { margin: 0 10px 10px 0; }
+        [dir="rtl"] .bs-stitch-actions > .btn { margin: 0 0 10px 10px; }
+        /* Google key card: wrapping link rows and inline Open buttons (no flex gap on Chrome 58). */
+        .rs-google-links { display: flex; flex-wrap: wrap; margin-top: 6px; }
+        .rs-google-links > .btn { margin: 0 8px 8px 0; }
+        [dir="rtl"] .rs-google-links > .btn { margin: 0 0 8px 8px; }
+        .rs-google-open { margin-left: 8px; }
+        @media (max-width: 599px) {
+            .btn-group.r-choice-cards#rsGoogleSpendBtns { grid-template-columns: minmax(0, 1fr); }
+        }
+        /* Spending cards stretch to one height; keep each card's content at the top. */
+        #rsGoogleSpendBtns > .btn-toggle {
+            display: -webkit-box;
+            display: -webkit-flex;
+            display: flex;
+            -webkit-box-orient: vertical;
+            -webkit-flex-direction: column;
+            flex-direction: column;
+            -webkit-align-items: flex-start;
+            align-items: flex-start;
+            -webkit-justify-content: flex-start;
+            justify-content: flex-start;
+        }
+        [dir="rtl"] .rs-google-open { margin-left: 0; margin-right: 8px; }
     </style>
 </head>
-<body>
+<body class="r-settings">
     <div class="app-layout">
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content" aria-busy="true" inert style="pointer-events:none">
@@ -191,6 +247,250 @@
                             <div class="setting-control" style="display:flex;gap:8px;">
                                 <button type="button" class="btn btn-secondary" id="rsRoutingClearBtn" onclick="RoadSenseSettings.clearRouting()" data-i18n="road_sense.routing_clear">Clear</button>
                                 <button type="button" class="btn btn-primary" id="rsRoutingSaveBtn" onclick="RoadSenseSettings.saveRouting()" data-i18n="road_sense.routing_save">Save</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Google Maps (BYOK). The key is write-only: stored encrypted by the daemon and
+                     never returned (status reports only hasKey). Pure daemon HTTP, so shown everywhere. -->
+                <div class="card" data-tab="map" id="rsGoogleCard">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+                            <span data-i18n="road_sense.google_title">Google Maps (your own key)</span>
+                        </div>
+                        <span class="status-badge inactive" id="rsGoogleBadge" data-i18n="road_sense.google_status_unset">Not set up</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-hint" data-i18n="road_sense.google_intro">Use your own Google Maps key for Google's map, live traffic, traffic-aware routes and Google search. Within Google's free monthly usage it costs nothing.</div>
+
+                        <div class="routing-guide" style="margin:4px 0 12px;padding:14px 16px;border-radius:14px;background:var(--md-sys-color-surface-container-high,rgba(127,127,127,0.10));">
+                            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                                <div class="setting-name" data-i18n="road_sense.google_guide_title">How to set up your Google key</div>
+                                <button type="button" class="btn btn-secondary" id="rsGoogleGuideBtn" aria-expanded="true" aria-controls="rsGoogleGuideBody" onclick="RoadSenseSettings.toggleGoogleGuide()" data-i18n="road_sense.google_guide_hide">Hide steps</button>
+                            </div>
+                            <div id="rsGoogleGuideBody" style="margin-top:8px;">
+                                <ol class="routing-steps" style="margin:0;padding-left:20px;line-height:1.6;font-size:13px;color:var(--md-sys-color-on-surface-variant,#666);">
+                                    <li>
+                                        <span data-i18n="road_sense.google_step1">Create a NEW Google Cloud project.</span>
+                                        <div style="color:var(--warning);" data-i18n="road_sense.google_step1_warn">Don't use your Gemini / AI Studio project: turning on billing there moves Gemini to paid.</div>
+                                        <div class="rs-google-links"><button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('project')" data-i18n="road_sense.google_open">Open</button></div>
+                                    </li>
+                                    <li>
+                                        <span data-i18n="road_sense.google_step2">Turn on billing for the new project. A card is required; nothing is charged while you stay inside the free usage and the daily limits below.</span>
+                                        <div class="rs-google-links"><button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('billing')" data-i18n="road_sense.google_open">Open</button></div>
+                                    </li>
+                                    <li>
+                                        <span data-i18n="road_sense.google_step3">Enable these four APIs in the new project:</span>
+                                        <div class="rs-google-links">
+                                            <button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('tiles')" data-i18n="road_sense.google_api_tiles_name">Map Tiles API</button>
+                                            <button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('routes')" data-i18n="road_sense.google_api_routes_name">Routes API</button>
+                                            <button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('places')" data-i18n="road_sense.google_api_places_name">Places API (New)</button>
+                                            <button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('geocode')" data-i18n="road_sense.google_api_geocode_name">Geocoding API</button>
+                                        </div>
+                                    </li>
+                                    <li>
+                                        <span data-i18n="road_sense.google_step4">Create an API key and restrict it to those four APIs.</span>
+                                        <div class="rs-google-links"><button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('credentials')" data-i18n="road_sense.google_open">Open</button></div>
+                                    </li>
+                                    <li>
+                                        <span data-i18n="road_sense.google_step5">Set the daily quotas to the numbers shown below.</span>
+                                        <div class="rs-google-links"><button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('quotas')" data-i18n="road_sense.google_open">Open</button></div>
+                                    </li>
+                                    <li>
+                                        <span id="rsGoogleStep6" data-i18n="road_sense.google_step6">Optional: add a $1 budget alert. It only alerts you; it doesn't stop charges.</span>
+                                        <div class="rs-google-links"><button type="button" class="btn btn-secondary" onclick="RoadSenseSettings.openGoogleConsole('budgets')" data-i18n="road_sense.google_open">Open</button></div>
+                                    </li>
+                                    <li><span data-i18n="road_sense.google_step7">Paste the key below and tap Save. OverDrive checks each API.</span></li>
+                                </ol>
+                            </div>
+                        </div>
+
+                        <div class="setting-stack" id="rsGoogleFreeBlock">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_free_title">How OverDrive keeps it free</div>
+                                <div class="setting-desc" data-i18n="road_sense.google_free_limits">Each daily limit is Google's free monthly usage ÷ 31, minus 10%.</div>
+                                <div class="setting-desc" id="rsGoogleFreePause" style="margin-top:4px;">When a limit is reached, OverDrive pauses that Google feature until the daily reset and uses the OverDrive map or backup routing instead.</div>
+                            </div>
+                        </div>
+
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_pricing">Pricing</div>
+                                <div class="setting-desc" data-i18n="road_sense.google_pricing_desc">Google gives more free usage to accounts billed in India. This sets the daily limits below.</div>
+                                <div class="setting-desc" id="rsGooglePricingHint" style="display:none;margin-top:4px;" data-i18n="road_sense.google_pricing_hint_india">This car's SIM is from India. Choose India if your Google Cloud billing country is India.</div>
+                            </div>
+                            <div class="setting-control">
+                                <select id="rsGooglePricing" class="text-input" onchange="RoadSenseSettings.setGooglePricing(this.value)">
+                                    <option value="global" data-i18n="road_sense.google_pricing_global">Global</option>
+                                    <option value="india" data-i18n="road_sense.google_pricing_india">India (billing country India, most usage in India)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="setting-row r-choice-row" id="rsGoogleSpendBlock">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_spend_title">Spending</div>
+                                <div class="setting-desc" data-i18n="road_sense.google_spend_desc">Stay inside Google's free monthly usage, or allow paid usage up to a limit you set.</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group r-choice-cards" id="rsGoogleSpendBtns">
+                                    <button type="button" class="btn-toggle active" id="rsGoogleSpendFree" aria-pressed="true" onclick="RoadSenseSettings.setGoogleSpendMode('free')" data-i18n="road_sense.google_spend_free">Free only<span class="r-choice-desc" data-i18n="road_sense.google_spend_free_desc">Recommended. Google features pause at the free daily limits, so nothing is charged.</span></button>
+                                    <button type="button" class="btn-toggle" id="rsGoogleSpendPaid" aria-pressed="false" onclick="RoadSenseSettings.setGoogleSpendMode('paid')" data-i18n="road_sense.google_spend_paid_title">Allow paid usage<span class="r-choice-desc" data-i18n="road_sense.google_spend_paid_desc">Up to a monthly limit you set. No daily pauses and faster traffic updates.</span></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row" id="rsGoogleBudgetRow" style="display:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_budget_title">Monthly limit (US$)</div>
+                                <div class="setting-desc" id="rsGoogleSpendLine"></div>
+                            </div>
+                            <div class="setting-control">
+                                <input type="number" id="rsGoogleBudget" class="text-input" min="1" max="10000" step="0.01" inputmode="decimal" placeholder="10.00" aria-label="Monthly limit in US dollars" data-i18n-attr="aria-label:road_sense.google_spend_budget_aria" onchange="RoadSenseSettings.setGoogleBudget()">
+                            </div>
+                        </div>
+                        <div class="setting-stack" id="rsGoogleSpendPaidInfo" style="display:none;">
+                            <div class="setting-info">
+                                <div class="setting-desc" data-i18n="road_sense.google_spend_note">OverDrive uses your free monthly usage first, then estimates cost from Google's list prices and pauses Google features at 95% of your limit. Google's billing can lag up to 48 hours, so also set a Cloud Billing budget alert at the same amount.</div>
+                            </div>
+                        </div>
+
+                        <div class="setting-stack">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_quotas_title">Recommended daily quotas</div>
+                                <div class="setting-desc" id="rsGoogleQuotasDesc" data-i18n="road_sense.google_quotas_desc">Enter these in Google Cloud (step 5). OverDrive's own daily limits use the same numbers.</div>
+                            </div>
+                            <div class="info-box" style="margin-top:0;">
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_tiles">Map Tiles</span><span class="value" id="rsGoogleQuotaTiles">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_routes">Routes</span><span class="value" id="rsGoogleQuotaRoutes">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_autocomplete">Places autocomplete</span><span class="value" id="rsGoogleQuotaAutocomplete">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_place_details">Place details</span><span class="value" id="rsGoogleQuotaPlaceDetails">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_text_search">Text search</span><span class="value" id="rsGoogleQuotaTextSearch">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_geocode">Geocoding</span><span class="value" id="rsGoogleQuotaGeocode">--</span></div>
+                            </div>
+                            <div class="setting-desc" id="rsGoogleQuotaRoutesNote" style="display:none;" data-i18n="road_sense.google_quotas_routes_note">While route colours are on, Routes shows the Enterprise-tier number: one Google daily quota covers both kinds of route request.</div>
+                            <div class="setting-desc" id="rsGoogleQuotaTilesNote" style="display:none;" data-i18n="road_sense.google_quotas_tiles_note">Map Tiles above 15,000 a day needs a quota increase request in Google Cloud.</div>
+                        </div>
+
+                        <div id="rsGoogleTermsBlock">
+                            <div class="info-box-warning" role="note">
+                                <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                <div class="info-note" data-i18n="road_sense.google_terms_body">Google's terms don't allow Google Maps services in apps built into a car outside the EEA. Google could suspend your Cloud project.</div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" id="rsGoogleTermsName" data-i18n="road_sense.google_terms_accept">I understand</div>
+                                    <div class="setting-desc" data-i18n="road_sense.google_terms_accept_desc">Required before the first save.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="rsGoogleTerms" aria-labelledby="rsGoogleTermsName">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="setting-stack">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_key">Google Maps API key</div>
+                                <div class="setting-desc" data-i18n="road_sense.google_key_desc">Starts with "AIza". Stored encrypted on this car and never shown again after saving.</div>
+                            </div>
+                            <input type="password" id="rsGoogleKey" class="text-input" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="Paste your Google Maps API key" data-i18n-attr="placeholder:road_sense.google_key_ph" />
+                        </div>
+                        <div class="setting-row" style="border-bottom:none;justify-content:flex-end;gap:8px;">
+                            <div class="setting-control" style="display:flex;gap:8px;">
+                                <button type="button" class="btn btn-secondary" id="rsGoogleClearBtn" onclick="RoadSenseSettings.clearGoogle()" data-i18n="road_sense.google_clear">Clear</button>
+                                <button type="button" class="btn btn-secondary" id="rsGoogleTestBtn" onclick="RoadSenseSettings.testGoogle()" data-i18n="road_sense.google_test">Test</button>
+                                <button type="button" class="btn btn-primary" id="rsGoogleSaveBtn" onclick="RoadSenseSettings.saveGoogle()" data-i18n="road_sense.google_save">Save</button>
+                            </div>
+                        </div>
+
+                        <div class="info-box" id="rsGoogleApiBox" style="display:none;margin-top:0;" role="status">
+                            <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_tiles">Map Tiles</span><span class="value"><span id="rsGoogleApiTilesState">--</span><button type="button" class="btn btn-secondary rs-google-open" id="rsGoogleApiTilesOpen" style="display:none;" onclick="RoadSenseSettings.openGoogleConsole('tiles')" data-i18n="road_sense.google_open">Open</button></span></div>
+                            <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_routes">Routes</span><span class="value"><span id="rsGoogleApiRoutesState">--</span><button type="button" class="btn btn-secondary rs-google-open" id="rsGoogleApiRoutesOpen" style="display:none;" onclick="RoadSenseSettings.openGoogleConsole('routes')" data-i18n="road_sense.google_open">Open</button></span></div>
+                            <div class="info-row"><span class="label" data-i18n="road_sense.google_api_places">Places</span><span class="value"><span id="rsGoogleApiPlacesState">--</span><button type="button" class="btn btn-secondary rs-google-open" id="rsGoogleApiPlacesOpen" style="display:none;" onclick="RoadSenseSettings.openGoogleConsole('places')" data-i18n="road_sense.google_open">Open</button></span></div>
+                            <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_geocode">Geocoding</span><span class="value"><span id="rsGoogleApiGeocodeState">--</span><button type="button" class="btn btn-secondary rs-google-open" id="rsGoogleApiGeocodeOpen" style="display:none;" onclick="RoadSenseSettings.openGoogleConsole('geocode')" data-i18n="road_sense.google_open">Open</button></span></div>
+                        </div>
+
+                        <div id="rsGoogleFeatures" style="display:none;">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.google_feature_basemap">Google map</div>
+                                    <div class="setting-desc" data-i18n="road_sense.google_feature_basemap_desc">Show Google's map instead of the OverDrive map.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="rsGoogleFeatBasemap" onchange="RoadSenseSettings.toggleGoogleFeature('basemap')">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.google_feature_traffic">Live traffic</div>
+                                    <div class="setting-desc" data-i18n="road_sense.google_feature_traffic_desc">Colour roads on the map by current traffic.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="rsGoogleFeatTraffic" onchange="RoadSenseSettings.toggleGoogleFeature('traffic')">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.google_feature_routing">Traffic-aware routes</div>
+                                    <div class="setting-desc" data-i18n="road_sense.google_feature_routing_desc">Routes and arrival times that account for live traffic.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="rsGoogleFeatRouting" onchange="RoadSenseSettings.toggleGoogleFeature('routing')">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.google_feature_route_traffic">Colour the route by traffic</div>
+                                    <div class="setting-desc" data-i18n="road_sense.google_feature_route_traffic_desc">Uses Google's Enterprise routes tier: 1,000 free a month (India 7,000).</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="rsGoogleFeatRouteTraffic" onchange="RoadSenseSettings.toggleGoogleFeature('routeTraffic')">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.google_feature_search">Google search</div>
+                                    <div class="setting-desc" data-i18n="road_sense.google_feature_search_desc">Find places and addresses with Google.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="rsGoogleFeatSearch" onchange="RoadSenseSettings.toggleGoogleFeature('search')">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="setting-stack" id="rsGoogleUsageBlock" style="display:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.google_usage_title">Usage</div>
+                                <div class="setting-desc" id="rsGoogleResetLine"></div>
+                            </div>
+                            <div class="setting-desc" id="rsGoogleUsageEmpty" data-i18n="road_sense.google_usage_none">No usage reported yet. It appears after the map has used Google.</div>
+                            <div class="info-box" id="rsGoogleUsageRows" style="display:none;margin-top:0;">
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_tiles">Map Tiles</span><span class="value" id="rsGoogleUseTiles">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_routes">Routes</span><span class="value" id="rsGoogleUseRoutes">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_routes_traffic">Routes with traffic colours</span><span class="value" id="rsGoogleUseRoutesTraffic">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_autocomplete">Places autocomplete</span><span class="value" id="rsGoogleUseAutocomplete">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_place_details">Place details</span><span class="value" id="rsGoogleUsePlaceDetails">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_text_search">Text search</span><span class="value" id="rsGoogleUseTextSearch">--</span></div>
+                                <div class="info-row"><span class="label" data-i18n="road_sense.google_sku_geocode">Geocoding</span><span class="value" id="rsGoogleUseGeocode">--</span></div>
                             </div>
                         </div>
                     </div>
@@ -594,7 +894,7 @@
                     </div>
                 </div>
 
-                <!-- Blind Spot: enable -->
+                <!-- Blind Spot: enable + live preview -->
                 <div class="card" data-tab="blindspot">
                     <div class="card-header">
                         <div class="card-title">
@@ -604,10 +904,10 @@
                         <span class="status-badge inactive" id="bsStatusBadge" data-i18n="status.off">OFF</span>
                     </div>
                     <div class="card-body">
-                        <div class="setting-row">
+                        <div class="setting-row" id="bsEnableRow">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="road_sense.bs_enable">Enable Blind Spot</div>
-                                <div class="setting-desc" data-i18n="road_sense.bs_enable_desc">Shows a merged rear + side camera view in a floating window when you turn on the indicator. Size and position are set below. Left signal shows rear + left; right signal shows right + rear.</div>
+                                <div class="setting-desc" data-i18n="road_sense.bs_enable_desc_short">Shows a camera view of the side you're turning towards while the indicator is on.</div>
                             </div>
                             <div class="setting-control">
                                 <label class="toggle-switch">
@@ -616,25 +916,130 @@
                                 </label>
                             </div>
                         </div>
-                        <!-- Camera selection: merge both, or show a single camera. -->
-                        <div class="setting-row">
+                        <!-- The preview is a NATIVE layer on the car screen, so updateUI() shows
+                             this row only in the in-app WebView. It always shows the side selected
+                             below (bsSetPreview / bsSelectSide). -->
+                        <div class="setting-row" id="bsPreviewControls" style="display:none;">
                             <div class="setting-info">
-                                <div class="setting-name" data-i18n="road_sense.bs_merge_title">Cameras shown</div>
-                                <div class="setting-desc" data-i18n="road_sense.bs_merge_desc">Merge the rear and side cameras into one view, or show just one camera. Single-camera views fill the window with that camera's full field of view; the Blend point and Blend softness sliders only apply to the merged view.</div>
+                                <div class="setting-name" data-i18n="road_sense.bs_preview_title">Live preview</div>
+                                <div class="setting-desc" data-i18n="road_sense.bs_preview_live_desc">Shows the view on the car screen now, at its real size and position.</div>
                             </div>
-                            <div class="setting-control" style="display:flex;flex-wrap:wrap;">
-                                <button class="btn btn-secondary" id="bsMergeBoth" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetMergeMode('both')" data-i18n="road_sense.bs_merge_both">Rear + side</button>
-                                <button class="btn btn-secondary" id="bsMergeSide" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetMergeMode('side')" data-i18n="road_sense.bs_merge_side">Side only</button>
-                                <button class="btn btn-secondary" id="bsMergeRear" style="margin:0 0 8px 0;" onclick="RoadSenseSettings.bsSetMergeMode('rear')" data-i18n="road_sense.bs_merge_rear">Rear only</button>
+                            <div class="setting-control">
+                                <div class="btn-group" role="group" aria-label="Live preview" data-i18n-attr="aria-label:road_sense.bs_preview_title">
+                                    <button type="button" class="btn-toggle active" id="bsPrevOff" aria-pressed="true" onclick="RoadSenseSettings.bsSetPreview('off')" data-i18n="road_sense.bs_preview_off">Off</button>
+                                    <button type="button" class="btn-toggle" id="bsPrevL" aria-pressed="false" onclick="RoadSenseSettings.bsSetPreview('left')" data-i18n="road_sense.bs_turn_left">Left turn</button>
+                                    <button type="button" class="btn-toggle" id="bsPrevR" aria-pressed="false" onclick="RoadSenseSettings.bsSetPreview('right')" data-i18n="road_sense.bs_turn_right">Right turn</button>
+                                </div>
                             </div>
                         </div>
-                        <!-- Card rotation. Only applies to single-camera views (the merged
-                             panorama is landscape and always upright), so this row is shown
-                             only for the "Side only" / "Rear only" modes. "Auto" orients to
-                             the direction of travel (flips 180° in reverse). -->
-                        <!-- Rotation and forward-orientation are PER SIDE: the JS is
-                             bsSetRotation(side, deg) and highlights bsRot{L,R}* /
-                             bsBase{L,R}*. Single-argument calls no-op. -->
+                    </div>
+                </div>
+
+                <!-- Blind Spot: what the card shows. Per-side rows show one turn direction at a
+                     time (bsSelectSide); a running preview shows that same side. -->
+                <div class="card" data-tab="blindspot">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m23 7-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                            <span data-i18n="road_sense.bs_view_title">Camera view</span>
+                        </div>
+                    </div>
+                    <div class="card-body" id="bsViewBody">
+                        <div class="setting-row r-choice-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.bs_merge_title">Cameras shown</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group r-choice-cards bs-mode-cards">
+                                    <button type="button" class="btn-toggle" id="bsMergeBoth" aria-pressed="false" onclick="RoadSenseSettings.bsSetMergeMode('both')" data-i18n="road_sense.bs_merge_both"><span class="r-choice-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="2" width="7" height="13" rx="2.5"/><path d="M10.2 6.2q1.8-1.2 3.6 0M10.2 11.3q1.8 1 3.6 0"/><path d="M7 8 1.5 11v9.5L7 14.5z" fill="currentColor" fill-opacity=".5" stroke="none"/><path d="M9.8 16.5h4.4l3.6 6H6.2z" fill="currentColor" fill-opacity=".5" stroke="none"/></svg></span>Rear + side<span class="r-choice-desc" data-i18n="road_sense.bs_merge_both_desc">Rear and side cameras blended into one wide view.</span></button>
+                                    <button type="button" class="btn-toggle" id="bsMergeSide" aria-pressed="false" onclick="RoadSenseSettings.bsSetMergeMode('side')" data-i18n="road_sense.bs_merge_side"><span class="r-choice-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="2" width="7" height="13" rx="2.5"/><path d="M10.2 6.2q1.8-1.2 3.6 0M10.2 11.3q1.8 1 3.6 0"/><path d="M7 8 1.5 11v9.5L7 14.5z" fill="currentColor" fill-opacity=".5" stroke="none"/></svg></span>Side only<span class="r-choice-desc" data-i18n="road_sense.bs_merge_side_desc">Just the side camera on the side you're turning to.</span></button>
+                                    <button type="button" class="btn-toggle" id="bsMergeRear" aria-pressed="false" onclick="RoadSenseSettings.bsSetMergeMode('rear')" data-i18n="road_sense.bs_merge_rear"><span class="r-choice-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="2" width="7" height="13" rx="2.5"/><path d="M10.2 6.2q1.8-1.2 3.6 0M10.2 11.3q1.8 1 3.6 0"/><path d="M9.8 16.5h4.4l3.6 6H6.2z" fill="currentColor" fill-opacity=".5" stroke="none"/></svg></span>Rear only<span class="r-choice-desc" data-i18n="road_sense.bs_merge_rear_desc">Just the rear camera.</span></button>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Rear + side only (_bsReflectStitchControls). Live while dragging
+                             (bsTune, in memory); Apply alignment saves. -->
+                        <div id="bsStitchControls">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.bs_stitch_title">Blend alignment</div>
+                                    <div class="setting-desc" data-i18n="road_sense.bs_stitch_desc">Line up the rear and side cameras where they meet, then tap Apply alignment.</div>
+                                </div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_rear_fov">Width A</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsRearFovVal">1.66</span>
+                                    <input type="range" class="slider" id="bsRearFov" min="1.0" max="2.2" step="0.02" value="1.66" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_side_fov">Width B</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsSideFovVal">1.98</span>
+                                    <input type="range" class="slider" id="bsSideFov" min="1.0" max="2.2" step="0.02" value="1.98" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_yaw">Blend point</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsYawVal">1.23</span>
+                                    <input type="range" class="slider" id="bsYaw" min="0" max="1.4" step="0.01" value="1.23" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_roll">Tilt</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsRollVal">0.25</span>
+                                    <input type="range" class="slider" id="bsRoll" min="-0.4" max="0.4" step="0.005" value="0.25" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_pitch">Height</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsPitchVal">-0.275</span>
+                                    <input type="range" class="slider" id="bsPitch" min="-0.4" max="0.4" step="0.005" value="-0.275" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_feather">Blend softness</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFeatherVal">0.38</span>
+                                    <input type="range" class="slider" id="bsFeather" min="0" max="1.0" step="0.02" value="0.38" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_proj_exp">Side spread</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsProjExpVal">1.00</span>
+                                    <input type="range" class="slider" id="bsProjExp" min="0.4" max="1.6" step="0.02" value="1.0" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_rear_roll">Rear level</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsRearRollVal">0.00</span>
+                                    <input type="range" class="slider" id="bsRearRoll" min="-0.4" max="0.4" step="0.005" value="0.0" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_rear_pitch">Rear tilt</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsRearPitchVal">0.00</span>
+                                    <input type="range" class="slider" id="bsRearPitch" min="-0.4" max="0.4" step="0.005" value="0.0" oninput="RoadSenseSettings.bsTune()">
+                                </div></div>
+                            </div>
+                            <div class="bs-stitch-actions">
+                                <button class="btn btn-primary" id="bsStitchApplyBtn" disabled onclick="RoadSenseSettings.bsSave()" data-i18n="road_sense.bs_save">Apply alignment</button>
+                                <button class="btn btn-secondary" onclick="RoadSenseSettings.bsResetDefaults()" data-i18n="road_sense.bs_reset">Reset to default</button>
+                            </div>
+                        </div>
+                        <!-- Single-camera modes only (the merged view has no per-side settings). -->
+                        <div class="setting-row" id="bsSideRow" style="display:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.bs_side_title">Settings for</div>
+                                <div class="setting-desc" data-i18n="road_sense.bs_side_desc">Each turn direction keeps its own view settings.</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group" role="group" aria-label="Settings for" data-i18n-attr="aria-label:road_sense.bs_side_title">
+                                    <button type="button" class="btn-toggle active" id="bsSideL" aria-pressed="true" onclick="RoadSenseSettings.bsSelectSide('left')" data-i18n="road_sense.bs_turn_left">Left turn</button>
+                                    <button type="button" class="btn-toggle" id="bsSideR" aria-pressed="false" onclick="RoadSenseSettings.bsSelectSide('right')" data-i18n="road_sense.bs_turn_right">Right turn</button>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Single-camera modes only; "Auto" flips 180° in reverse. PER SIDE:
+                             bsSetRotation(side, deg) / bsSetRotationBase(side, deg). -->
                         <div class="setting-row" id="bsRotationLeftRow" style="display:none;">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="road_sense.bs_rotation_left_title">Rotate view — left</div>
@@ -642,7 +1047,6 @@
                             </div>
                             <div class="setting-control" style="display:flex;flex-wrap:wrap;">
                                 <button class="btn btn-secondary" id="bsRotL0" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('left', 0)" data-i18n="road_sense.bs_rotation_0">0&deg;</button>
-                                <button class="btn btn-secondary" id="bsRotL40" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('left', 40)" data-i18n="road_sense.bs_rotation_40">40&deg;</button>
                                 <button class="btn btn-secondary" id="bsRotL90" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('left', 90)" data-i18n="road_sense.bs_rotation_90">90&deg;</button>
                                 <button class="btn btn-secondary" id="bsRotL180" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('left', 180)" data-i18n="road_sense.bs_rotation_180">180&deg;</button>
                                 <button class="btn btn-secondary" id="bsRotL270" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('left', 270)" data-i18n="road_sense.bs_rotation_270">270&deg;</button>
@@ -662,6 +1066,56 @@
                                 <button class="btn btn-secondary" id="bsBaseL270" style="margin:0 0 8px 0;" onclick="RoadSenseSettings.bsSetRotationBase('left', 270)" data-i18n="road_sense.bs_rotation_270">270&deg;</button>
                             </div>
                         </div>
+                        <!-- Per-side framing (Side only): bsSetFraming(side, key, value) saves on
+                             release; bsFramingInput streams the drag to the live preview. -->
+                        <div class="bs-frame" id="bsFrameLRow" style="display:none;">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.bs_framing_left_title">Adjust framing — left</div>
+                                    <div class="setting-desc" data-i18n="road_sense.bs_framing_desc_live">Fine-tune this side's picture for your car. Each change is saved when you let go.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <button class="btn btn-secondary" onclick="RoadSenseSettings.bsResetFraming('left')" data-i18n="road_sense.bs_framing_reset">Reset</button>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.bs_framing_mirror">Mirror</div>
+                                    <div class="setting-desc" id="bsFrameLMirrorDescPreset" data-i18n="road_sense.bs_framing_mirror_desc">Turn on if the view shows the front of the car instead of behind it.</div>
+                                    <div class="setting-desc" id="bsFrameLMirrorDescCam" style="display:none;" data-i18n="road_sense.bs_framing_mirror_flip_desc">Flip the picture left to right.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="bsFrameLMirror" onchange="RoadSenseSettings.bsSetFramingMirror('left', this.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_angle">Angle</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameLAngleVal">0&deg;</span>
+                                    <input type="range" class="slider" id="bsFrameLAngle" min="-180" max="180" step="1" value="0" oninput="RoadSenseSettings.bsFramingInput('left', 'angle', this.value)" onchange="RoadSenseSettings.bsSetFraming('left', 'angle', this.value)">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_zoom">Zoom</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameLZoomVal">1.00&times;</span>
+                                    <input type="range" class="slider" id="bsFrameLZoom" min="0.5" max="2" step="0.05" value="1" oninput="RoadSenseSettings.bsFramingInput('left', 'zoom', this.value)" onchange="RoadSenseSettings.bsSetFraming('left', 'zoom', this.value)">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_pan_x">Move left / right</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameLPanXVal">0%</span>
+                                    <input type="range" class="slider" id="bsFrameLPanX" min="-50" max="50" step="1" value="0" oninput="RoadSenseSettings.bsFramingInput('left', 'panX', this.value)" onchange="RoadSenseSettings.bsSetFraming('left', 'panX', this.value)">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_pan_y">Move up / down</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameLPanYVal">0%</span>
+                                    <input type="range" class="slider" id="bsFrameLPanY" min="-50" max="50" step="1" value="0" oninput="RoadSenseSettings.bsFramingInput('left', 'panY', this.value)" onchange="RoadSenseSettings.bsSetFraming('left', 'panY', this.value)">
+                                </div></div>
+                            </div>
+                        </div>
                         <div class="setting-row" id="bsRotationRightRow" style="display:none;">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="road_sense.bs_rotation_right_title">Rotate view — right</div>
@@ -673,7 +1127,6 @@
                                 <button class="btn btn-secondary" id="bsRotR90" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('right', 90)" data-i18n="road_sense.bs_rotation_90">90&deg;</button>
                                 <button class="btn btn-secondary" id="bsRotR180" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('right', 180)" data-i18n="road_sense.bs_rotation_180">180&deg;</button>
                                 <button class="btn btn-secondary" id="bsRotR270" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('right', 270)" data-i18n="road_sense.bs_rotation_270">270&deg;</button>
-                                <button class="btn btn-secondary" id="bsRotR310" style="margin:0 8px 8px 0;" onclick="RoadSenseSettings.bsSetRotation('right', 310)" data-i18n="road_sense.bs_rotation_310">310&deg;</button>
                                 <button class="btn btn-secondary" id="bsRotRAuto" style="margin:0 0 8px 0;" onclick="RoadSenseSettings.bsSetRotation('right', 'auto')" data-i18n="road_sense.bs_rotation_auto">Auto</button>
                             </div>
                         </div>
@@ -689,12 +1142,60 @@
                                 <button class="btn btn-secondary" id="bsBaseR270" style="margin:0 0 8px 0;" onclick="RoadSenseSettings.bsSetRotationBase('right', 270)" data-i18n="road_sense.bs_rotation_270">270&deg;</button>
                             </div>
                         </div>
-                        <!-- Single-camera fisheye rectifier; hidden in merged mode
-                             (libod dewarps that path itself). -->
-                        <div class="setting-row" id="bsRectifyRow" style="border-bottom:none;display:none;">
+                        <div class="bs-frame" id="bsFrameRRow" style="display:none;">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.bs_framing_right_title">Adjust framing — right</div>
+                                    <div class="setting-desc" data-i18n="road_sense.bs_framing_desc_live">Fine-tune this side's picture for your car. Each change is saved when you let go.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <button class="btn btn-secondary" onclick="RoadSenseSettings.bsResetFraming('right')" data-i18n="road_sense.bs_framing_reset">Reset</button>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <div class="setting-name" data-i18n="road_sense.bs_framing_mirror">Mirror</div>
+                                    <div class="setting-desc" id="bsFrameRMirrorDescPreset" data-i18n="road_sense.bs_framing_mirror_desc">Turn on if the view shows the front of the car instead of behind it.</div>
+                                    <div class="setting-desc" id="bsFrameRMirrorDescCam" style="display:none;" data-i18n="road_sense.bs_framing_mirror_flip_desc">Flip the picture left to right.</div>
+                                </div>
+                                <div class="setting-control">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="bsFrameRMirror" onchange="RoadSenseSettings.bsSetFramingMirror('right', this.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_angle">Angle</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameRAngleVal">0&deg;</span>
+                                    <input type="range" class="slider" id="bsFrameRAngle" min="-180" max="180" step="1" value="0" oninput="RoadSenseSettings.bsFramingInput('right', 'angle', this.value)" onchange="RoadSenseSettings.bsSetFraming('right', 'angle', this.value)">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_zoom">Zoom</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameRZoomVal">1.00&times;</span>
+                                    <input type="range" class="slider" id="bsFrameRZoom" min="0.5" max="2" step="0.05" value="1" oninput="RoadSenseSettings.bsFramingInput('right', 'zoom', this.value)" onchange="RoadSenseSettings.bsSetFraming('right', 'zoom', this.value)">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_pan_x">Move left / right</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameRPanXVal">0%</span>
+                                    <input type="range" class="slider" id="bsFrameRPanX" min="-50" max="50" step="1" value="0" oninput="RoadSenseSettings.bsFramingInput('right', 'panX', this.value)" onchange="RoadSenseSettings.bsSetFraming('right', 'panX', this.value)">
+                                </div></div>
+                            </div>
+                            <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_framing_pan_y">Move up / down</div></div>
+                                <div class="setting-control"><div class="slider-control">
+                                    <span class="slider-value" id="bsFrameRPanYVal">0%</span>
+                                    <input type="range" class="slider" id="bsFrameRPanY" min="-50" max="50" step="1" value="0" oninput="RoadSenseSettings.bsFramingInput('right', 'panY', this.value)" onchange="RoadSenseSettings.bsSetFraming('right', 'panY', this.value)">
+                                </div></div>
+                            </div>
+                        </div>
+                        <!-- Single-camera fisheye rectifier (one value for both sides); hidden
+                             in merged mode (libod dewarps that path itself). -->
+                        <div class="setting-row" id="bsRectifyRow" style="display:none;">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="road_sense.bs_rectify_title">Fisheye correction</div>
-                                <div class="setting-desc" data-i18n="road_sense.bs_rectify_desc">Straighten the fisheye/barrel curve of the single-camera side and rear views. Higher values flatten the bulge but crop the edges slightly. Only applies to the single-camera views, not the merged one.</div>
+                                <div class="setting-desc" data-i18n="road_sense.bs_rectify_desc_short">Straightens the curved fisheye look. One setting for both sides; higher values crop the edges slightly.</div>
                             </div>
                             <div class="setting-control"><div class="slider-control">
                                 <span class="slider-value" id="bsRectifyVal">0</span>
@@ -704,74 +1205,8 @@
                     </div>
                 </div>
 
-                <!-- Blind Spot: WHEN it appears (speed window + reverse suppression).
-                     Both default to off/any, so an untouched install behaves exactly as
-                     before. Speed is entered in km/h regardless of the display-unit
-                     preference — the daemon gate works in km/h, and the hint below
-                     echoes the mph equivalent for users on miles. -->
-                <div class="card" data-tab="blindspot">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            <span data-i18n="road_sense.bs_when_title">When it appears</span>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <!-- No divider: this row and the Apply button below it are one
-                             group (the staged speed pair). The divider goes after Apply
-                             instead, separating that group from the reverse toggle. -->
-                        <div class="setting-row bs-speed-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="road_sense.bs_speed_range_title">Speed range</div>
-                                <div class="setting-desc" data-i18n="road_sense.bs_speed_range_desc">Only show the blind-spot view while driving within this speed range. Leave both at 0 (Any) to show it at any speed. Useful to keep the view out of the way in slow traffic or at motorway speeds.</div>
-                                <div class="setting-desc bs-speed-hint" id="bsSpeedConv"></div>
-                            </div>
-                            <div class="setting-control bs-speed-range">
-                                <input class="text-input bs-speed-num" id="bsMinSpeed" type="number" inputmode="numeric"
-                                       min="0" max="300" step="1"
-                                       data-i18n-attr="aria-label:road_sense.bs_speed_min_aria"
-                                       aria-label="Minimum speed in km/h, 0 for any"
-                                       oninput="RoadSenseSettings.bsSpeedInput()">
-                                <span class="bs-speed-dash">–</span>
-                                <input class="text-input bs-speed-num" id="bsMaxSpeed" type="number" inputmode="numeric"
-                                       min="0" max="300" step="1"
-                                       data-i18n-attr="aria-label:road_sense.bs_speed_max_aria"
-                                       aria-label="Maximum speed in km/h, 0 for any"
-                                       oninput="RoadSenseSettings.bsSpeedInput()">
-                                <span class="bs-speed-unit">km/h</span>
-                            </div>
-                        </div>
-                        <!-- Apply belongs to the SPEED PAIR only (the two bounds are
-                             staged and committed together, so a half-typed pair can
-                             never be persisted as an inverted window). It therefore sits
-                             directly under those inputs — placing it after the toggle
-                             below would imply the toggle needs applying too, when that
-                             one saves immediately. bs-apply-row tightens the top gap so
-                             the button reads as part of the row above it. -->
-                        <div class="setting-row bs-apply-row">
-                            <button class="btn btn-primary" id="bsSpeedApplyBtn" disabled onclick="RoadSenseSettings.bsApplySpeedWindow()" data-i18n="common.apply_changes">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;vertical-align:middle;margin-right:6px;"><polyline points="20 6 9 17 4 12"/></svg>
-                                Apply Changes
-                            </button>
-                        </div>
-                        <div class="setting-row" style="border-bottom:none;">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="road_sense.bs_reverse_title">Hide in reverse</div>
-                                <div class="setting-desc" data-i18n="road_sense.bs_reverse_desc">Keep the blind-spot view hidden while reverse gear is engaged, so it doesn't cover the reversing camera.</div>
-                            </div>
-                            <div class="setting-control">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="bsSuppressReverse" onchange="RoadSenseSettings.bsToggleSuppressReverse()">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Blind Spot: on-screen size + position (live, daemon rescales the
-                     SurfaceControl layer). Placed ABOVE Alignment — size/position is
-                     the common adjustment; the FOV/blend sliders are advanced tuning. -->
+                <!-- Blind Spot: on-screen size + position (staged, then Apply; the daemon
+                     rescales the SurfaceControl layer). -->
                 <div class="card" data-tab="blindspot">
                     <div class="card-header">
                         <div class="card-title">
@@ -843,89 +1278,67 @@
                     </div>
                 </div>
 
-                <!-- Blind Spot: calibration (debug) -->
+                <!-- Blind Spot: WHEN it appears (speed window + reverse suppression).
+                     Both default to off/any, so an untouched install behaves exactly as
+                     before. Speed is entered in km/h regardless of the display-unit
+                     preference — the daemon gate works in km/h, and the hint below
+                     echoes the mph equivalent for users on miles. -->
                 <div class="card" data-tab="blindspot">
                     <div class="card-header">
                         <div class="card-title">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                            <span data-i18n="road_sense.bs_calib_title">Alignment</span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            <span data-i18n="road_sense.bs_when_title">When it appears</span>
                         </div>
                     </div>
                     <div class="card-body">
-                        <!-- Live preview controls — the preview is a NATIVE window
-                             on the car's screen, so it only works in the in-app
-                             WebView. Hidden by default; updateUI() reveals it only
-                             when AndroidBridge is present (not on a tunnel/browser). -->
-                        <div id="bsPreviewControls" style="display:none;flex-direction:column;align-items:stretch;padding:16px 0;border-bottom:1px solid var(--border-subtle);">
-                            <div class="setting-info" style="margin-bottom:12px;">
-                                <div class="setting-name" data-i18n="road_sense.bs_calib_debug">Live alignment</div>
-                                <div class="setting-desc" data-i18n="road_sense.bs_calib_desc">Tap a side to open a live preview window on the car's screen, then drag the sliders below to align it. The preview floats above this page — drag it aside if it covers the controls. Apply when it looks right.</div>
+                        <!-- No divider: this row and the Apply button below it are one
+                             group (the staged speed pair). The divider goes after Apply
+                             instead, separating that group from the reverse toggle. -->
+                        <div class="setting-row bs-speed-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.bs_speed_range_title">Speed range</div>
+                                <div class="setting-desc" data-i18n="road_sense.bs_speed_range_desc">Only show the blind-spot view while driving within this speed range. Leave both at 0 (Any) to show it at any speed. Useful to keep the view out of the way in slow traffic or at motorway speeds.</div>
+                                <div class="setting-desc bs-speed-hint" id="bsSpeedConv"></div>
                             </div>
-                            <div style="display:flex;flex-wrap:wrap;">
-                                <button class="btn btn-secondary" style="margin:0 10px 10px 0;" onclick="RoadSenseSettings.bsPreview(7)" data-i18n="road_sense.bs_preview_left">Show left view</button>
-                                <button class="btn btn-secondary" style="margin:0 10px 10px 0;" onclick="RoadSenseSettings.bsPreview(8)" data-i18n="road_sense.bs_preview_right">Show right view</button>
-                                <button class="btn btn-secondary" style="margin:0 0 10px 0;" onclick="RoadSenseSettings.bsPreviewStop()" data-i18n="road_sense.bs_preview_stop">Hide preview</button>
+                            <div class="setting-control bs-speed-range">
+                                <input class="text-input bs-speed-num" id="bsMinSpeed" type="number" inputmode="numeric"
+                                       min="0" max="300" step="1"
+                                       data-i18n-attr="aria-label:road_sense.bs_speed_min_aria"
+                                       aria-label="Minimum speed in km/h, 0 for any"
+                                       oninput="RoadSenseSettings.bsSpeedInput()">
+                                <span class="bs-speed-dash">–</span>
+                                <input class="text-input bs-speed-num" id="bsMaxSpeed" type="number" inputmode="numeric"
+                                       min="0" max="300" step="1"
+                                       data-i18n-attr="aria-label:road_sense.bs_speed_max_aria"
+                                       aria-label="Maximum speed in km/h, 0 for any"
+                                       oninput="RoadSenseSettings.bsSpeedInput()">
+                                <span class="bs-speed-unit">km/h</span>
                             </div>
                         </div>
-
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_rear_fov">Width A</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsRearFovVal">1.66</span>
-                                <input type="range" class="slider" id="bsRearFov" min="1.0" max="2.2" step="0.02" value="1.66" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
+                        <!-- Apply belongs to the SPEED PAIR only (the two bounds are
+                             staged and committed together, so a half-typed pair can
+                             never be persisted as an inverted window). It therefore sits
+                             directly under those inputs — placing it after the toggle
+                             below would imply the toggle needs applying too, when that
+                             one saves immediately. bs-apply-row tightens the top gap so
+                             the button reads as part of the row above it. -->
+                        <div class="setting-row bs-apply-row">
+                            <button class="btn btn-primary" id="bsSpeedApplyBtn" disabled onclick="RoadSenseSettings.bsApplySpeedWindow()" data-i18n="common.apply_changes">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;vertical-align:middle;margin-right:6px;"><polyline points="20 6 9 17 4 12"/></svg>
+                                Apply Changes
+                            </button>
                         </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_side_fov">Width B</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsSideFovVal">1.98</span>
-                                <input type="range" class="slider" id="bsSideFov" min="1.0" max="2.2" step="0.02" value="1.98" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_yaw">Blend point</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsYawVal">1.23</span>
-                                <input type="range" class="slider" id="bsYaw" min="0" max="1.4" step="0.01" value="1.23" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_roll">Tilt</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsRollVal">0.25</span>
-                                <input type="range" class="slider" id="bsRoll" min="-0.4" max="0.4" step="0.005" value="0.25" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_pitch">Height</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsPitchVal">-0.275</span>
-                                <input type="range" class="slider" id="bsPitch" min="-0.4" max="0.4" step="0.005" value="-0.275" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_feather">Blend softness</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsFeatherVal">0.38</span>
-                                <input type="range" class="slider" id="bsFeather" min="0" max="1.0" step="0.02" value="0.38" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_proj_exp">Side spread</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsProjExpVal">1.00</span>
-                                <input type="range" class="slider" id="bsProjExp" min="0.4" max="1.6" step="0.02" value="1.0" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_rear_roll">Rear level</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsRearRollVal">0.00</span>
-                                <input type="range" class="slider" id="bsRearRoll" min="-0.4" max="0.4" step="0.005" value="0.0" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-                        <div class="setting-row"><div class="setting-info"><div class="setting-name" data-i18n="road_sense.bs_rear_pitch">Rear tilt</div></div>
-                            <div class="setting-control"><div class="slider-control">
-                                <span class="slider-value" id="bsRearPitchVal">0.00</span>
-                                <input type="range" class="slider" id="bsRearPitch" min="-0.4" max="0.4" step="0.005" value="0.0" oninput="RoadSenseSettings.bsTune()">
-                            </div></div>
-                        </div>
-
-                        <div style="display:flex;flex-wrap:wrap;padding-top:20px;margin-top:8px;border-top:1px solid var(--border-subtle);">
-                            <button class="btn btn-primary" style="margin:0 10px 0 0;" onclick="RoadSenseSettings.bsSave()" data-i18n="road_sense.bs_save">Apply alignment</button>
-                            <button class="btn btn-secondary" onclick="RoadSenseSettings.bsResetDefaults()" data-i18n="road_sense.bs_reset">Reset to default</button>
+                        <div class="setting-row" style="border-bottom:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="road_sense.bs_reverse_title">Hide in reverse</div>
+                                <div class="setting-desc" data-i18n="road_sense.bs_reverse_desc">Keep the blind-spot view hidden while reverse gear is engaged, so it doesn't cover the reversing camera.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="bsSuppressReverse" onchange="RoadSenseSettings.bsToggleSuppressReverse()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -937,10 +1350,10 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <script src="../shared/auth.js"></script>
-    <script src="../shared/core.js?v=23"></script>
+    <script src="../shared/core.js?v=24"></script>
     <script src="../shared/settings-hydration.js?v=1"></script>
-    <script src="../shared/update-flow.js"></script>
-    <script src="../shared/road-sense.js?v=chimevolume8"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
+    <script src="../shared/road-sense.js?v=bsux2"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');

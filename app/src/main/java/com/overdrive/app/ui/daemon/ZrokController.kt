@@ -96,7 +96,7 @@ class ZrokController(
         // First ensure token is loaded
         ensureTokenLoaded { hasToken ->
             if (!hasToken) {
-                callback.onError("❌ No Zrok token configured. Tap to configure.")
+                callback.onError(com.overdrive.app.util.AppLocaleContext.of(context).getString(com.overdrive.app.R.string.zrok_error_no_token))
                 return@ensureTokenLoaded
             }
 

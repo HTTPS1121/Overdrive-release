@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "name": "Hazard ahead",
+  "size": "medium",
+  "about": "The RoadSense road and sign as one layer, with your own wording and a bar that fills as the hazard gets closer.",
+  "layers": [
+    { "type": "road", "name": "Road", "x": -60, "y": 21, "scale": 1,
+      "ahead": "=hazard_ahead", "hazard": "=hazard_type", "distance": "=hazard_m", "severity": "=hazard_sev", "count": "=hazard_count",
+      "region": "eu", "side": "left" },
+    { "type": "text", "name": "Label", "x": 222, "y": 58, "size": 15, "weight": 500,
+      "text": "=!known(hazard_ahead) ? 'RoadSense' : !hazard_ahead ? 'Road clear' : (hazard_type == 1 ? 'Pothole' : hazard_type == 3 ? 'Rough road' : hazard_type == 0 ? 'Speed breaker' : 'Road hazard') + (hazard_count > 1 ? ' ×' + fmt(hazard_count) : '')",
+      "color": "text2" },
+    { "type": "text", "name": "Distance", "x": 222, "y": 106, "size": 40, "weight": 600,
+      "text": "=near(hazard_m) >= 100 ? round(near(hazard_m) / 10) * 10 : round(near(hazard_m) / 5) * 5", "unit": "=near_unit", "color": "text", "motion": "number",
+      "visible": "=hazard_ahead" },
+    { "type": "text", "name": "Clear", "x": 222, "y": 100, "size": 28, "weight": 600,
+      "text": "=known(hazard_ahead) ? 'Nothing ahead' : 'No road data'", "color": "text", "visible": "=!hazard_ahead" },
+    { "type": "text", "name": "Severity", "x": 222, "y": 134, "size": 15, "weight": 600,
+      "text": "=hazard_sev >= 3 ? 'Severe · slow down' : hazard_sev == 2 ? 'Moderate' : 'Minor'",
+      "color": "=hazard_sev >= 3 ? danger : warn", "visible": "=hazard_ahead" },
+    { "type": "bar", "name": "Closing in", "x": 222, "y": 150, "w": 152, "h": 6, "value": "=clamp(1 - hazard_m / 500, 0, 1)",
+      "color": "=hazard_sev >= 3 ? glowDanger : glowWarn", "track": "etch", "glow": 0.8, "motion": "liquid", "visible": "=hazard_ahead" }
+  ]
+}

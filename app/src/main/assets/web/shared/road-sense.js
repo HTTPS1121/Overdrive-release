@@ -54,6 +54,10 @@ BYD.roadSense = {
         // Blind Spot (separate UCM 'blindspot' section). enabled gates the
         // native indicator overlay; the 6 numerics are the stitch calibration.
         bsEnabled: false,
+        // Persisted calibration-preview state (debugPreview / debugView 7|8), so the page
+        // shows a preview that is already on the car screen.
+        bsDebugPreview: false,
+        bsDebugView: 7,
         // Camera merge mode: 'both' (rear+side stitch), 'side', or 'rear'.
         bsMergeMode: 'both',
         // On-screen card rotation. Either a fixed quarter turn (0/90/180/270) or
@@ -85,6 +89,15 @@ BYD.roadSense = {
         // (side/rear). Separate from the recording pipeline's dewarp; 0 = off.
         // Ignored for the merged 'both' view.
         bsRectifyStrength: 0,
+        // Per-side adjustment of the 40°/310° framing (Side-only mode): mirror, angle
+        // trim in degrees, zoom multiplier, pan as a fraction of the card. Neutral =
+        // the stock framing; persisted as framing{Mirror,Angle,Zoom,PanX,PanY}{Left,Right}.
+        bsFramingLeft: { mirror: false, angle: 0, zoom: 1, panX: 0, panY: 0 },
+        bsFramingRight: { mirror: false, angle: 0, zoom: 1, panX: 0, panY: 0 },
+        // Same adjustment for the plain camera view (any other Side-only angle), kept
+        // separately so each keeps its own tuning; persisted as framingCam*{Left,Right}.
+        bsFramingCamLeft: { mirror: false, angle: 0, zoom: 1, panX: 0, panY: 0 },
+        bsFramingCamRight: { mirror: false, angle: 0, zoom: 1, panX: 0, panY: 0 },
         // Conditional display: the card only appears while the vehicle speed is
         // inside [bsMinSpeedKmh, bsMaxSpeedKmh] and, optionally, not in reverse.
         // 0 means "no bound on that end", so 0/0 = any speed (the shipping
@@ -174,7 +187,7 @@ BYD.roadSense = {
     async init() {
         await this.loadConfig();
         this.updateUI(false);
-        await Promise.all([this.loadRoutingStatus(), this.loadClusterStatus()]);
+        await Promise.all([this.loadRoutingStatus(), this.loadClusterStatus(), this.loadGoogleStatus()]);
         this._hydrated = true;
         if (BYD.utils && BYD.utils.unlockSettingsHydration) {
             BYD.utils.unlockSettingsHydration();
@@ -191,6 +204,7 @@ BYD.roadSense = {
         try {
             if (window.BYD && BYD.i18n && typeof BYD.i18n.onChange === 'function') {
                 BYD.i18n.onChange(function () { self._bsPaintSpeedHint(); });
+                BYD.i18n.onChange(function () { self._renderGoogle(); });
             }
         } catch (e) { /* no i18n runtime — the hint keeps its English fallback */ }
         document.addEventListener('visibilitychange', function () {
@@ -218,6 +232,11 @@ BYD.roadSense = {
         window.addEventListener('beforeunload', function () {
             self._flushWarnVolumeOnExit();
             if (self._bsPreviewActive) self.bsPreviewStop();
+        });
+        // The preview covers part of the car screen, so it closes with the Blind Spot tab.
+        document.addEventListener('ot-tabs:active-changed', function (e) {
+            var id = (e && e.detail) ? e.detail.id : null;
+            if (id !== 'blindspot' && self._bsPreviewActive) self.bsPreviewStop();
         });
     },
 
@@ -293,6 +312,10 @@ BYD.roadSense = {
                 const bs = data.config.blindspot;
                 const c = this.config;
                 if (typeof bs.enabled === 'boolean') c.bsEnabled = bs.enabled;
+                // Read the way the daemon's optBoolean / optInt do.
+                c.bsDebugPreview = bs.debugPreview === true
+                    || (typeof bs.debugPreview === 'string' && bs.debugPreview.toLowerCase() === 'true');
+                c.bsDebugView = (bs.debugView === 8 || bs.debugView === '8') ? 8 : 7;
                 if (bs.mergeMode === 'both' || bs.mergeMode === 'side' || bs.mergeMode === 'rear') c.bsMergeMode = bs.mergeMode;
                 if (bs.rotation === 0 || bs.rotation === 90 || bs.rotation === 180 || bs.rotation === 270 || bs.rotation === 'auto') c.bsRotation = bs.rotation;
                 if (bs.rotationBase === 0 || bs.rotationBase === 90 || bs.rotationBase === 180 || bs.rotationBase === 270) c.bsRotationBase = bs.rotationBase;
@@ -319,6 +342,10 @@ BYD.roadSense = {
                 if (typeof bs.rearRoll === 'number') c.bsRearRoll = this._clamp(bs.rearRoll, -0.4, 0.4);
                 if (typeof bs.rearPitch === 'number') c.bsRearPitch = this._clamp(bs.rearPitch, -0.4, 0.4);
                 if (typeof bs.rectifyStrength === 'number') c.bsRectifyStrength = this._clamp(bs.rectifyStrength, 0, 100);
+                c.bsFramingLeft = this._bsReadFraming(bs, 'Left');
+                c.bsFramingRight = this._bsReadFraming(bs, 'Right');
+                c.bsFramingCamLeft = this._bsReadFraming(bs, 'Left', 'Cam');
+                c.bsFramingCamRight = this._bsReadFraming(bs, 'Right', 'Cam');
                 // Conditional display. Anything outside 1..BS_SPEED_MAX collapses to 0
                 // ("any") — the same normalisation the daemon gate applies, so the UI
                 // can never display a bound the daemon quietly ignores.
@@ -442,6 +469,7 @@ BYD.roadSense = {
             routingCard.style.display = '';
             if (loadLiveStatus) this.loadRoutingStatus();
         }
+        if (loadLiveStatus && document.getElementById('rsGoogleCard')) this.loadGoogleStatus();
 
         // Cluster projection drives an on-car native projection via daemon HTTP.
         // The toggle/status only DO something on-car, but showing the card off-car
@@ -509,9 +537,24 @@ BYD.roadSense = {
         this._setBadge('bsStatusBadge', c.bsEnabled);
         if (c.bsMergeMode !== 'both' && c.bsMergeMode !== 'side' && c.bsMergeMode !== 'rear') c.bsMergeMode = 'both';
         this._bsHighlightMergeMode(c.bsMergeMode);
+        // Live preview is a NATIVE on-car window — only meaningful in the in-app
+        // WebView. Hide the preview controls on a tunnel/browser (no AndroidBridge),
+        // where tapping them would do nothing. Sliders + Apply still work remotely
+        // (they tune/persist via HTTP), so only the preview row is gated.
+        var inApp = (typeof window.AndroidBridge !== 'undefined');
+        var pc = document.getElementById('bsPreviewControls');
+        if (pc) pc.style.display = inApp ? '' : 'none';
+        var enableRow = document.getElementById('bsEnableRow');
+        if (enableRow) enableRow.style.borderBottom = inApp ? '' : 'none';
+        // A preview already on the car screen shows as on, and the per-side controls
+        // open on the side it shows.
+        if (inApp) {
+            this._bsPreviewActive = c.bsDebugPreview;
+            if (c.bsDebugPreview) this._bsSide = (c.bsDebugView === 8) ? 'right' : 'left';
+        }
         // PER-SIDE rotation: normalise + reflect left (view 7) and right (view 8)
         // independently. The mirror-imaged cameras each carry their own angle + auto base.
-        var _normRot = function (v) { return (v === 0 || v === 90 || v === 180 || v === 270 || v === 'auto') ? v : 0; };
+        var _normRot = function (v) { return (v === 0 || v === 40 || v === 90 || v === 180 || v === 270 || v === 310 || v === 'auto') ? v : 0; };
         var _normBase = function (v) { return (v === 0 || v === 90 || v === 180 || v === 270) ? v : 0; };
         c.bsRotationLeft = _normRot(c.bsRotationLeft);
         c.bsRotationRight = _normRot(c.bsRotationRight);
@@ -527,6 +570,7 @@ BYD.roadSense = {
         // Fisheye slider value + row visibility (single-camera modes only).
         this._bsSetSlider('bsRectify', 'bsRectifyVal', c.bsRectifyStrength);
         this._bsReflectRectifyRow(c.bsMergeMode);
+        this._bsReflectModeDependents(c.bsMergeMode);
         // Conditional display: baseline the group as saved so Apply starts disabled
         // (same staged-edit model as the display/placement group below), then paint —
         // but PRESERVE a pending edit. updateUI also runs from reload() on
@@ -540,22 +584,22 @@ BYD.roadSense = {
         this._bsSpeedSaved = { min: c.bsMinSpeedKmh, max: c.bsMaxSpeedKmh };
         if (!speedPending) this._bsPaintSpeedWindow();
         this._bsMarkSpeedDirty();
-        // Live preview is a NATIVE on-car window — only meaningful in the in-app
-        // WebView. Hide the preview controls on a tunnel/browser (no AndroidBridge),
-        // where tapping them would do nothing. Sliders + Apply still work remotely
-        // (they tune/persist via HTTP), so only the preview row is gated.
-        var inApp = (typeof window.AndroidBridge !== 'undefined');
-        var pc = document.getElementById('bsPreviewControls');
-        if (pc) pc.style.display = inApp ? '' : 'none';
-        this._bsSetSlider('bsRearFov', 'bsRearFovVal', c.bsRearFov);
-        this._bsSetSlider('bsSideFov', 'bsSideFovVal', c.bsSideFov);
-        this._bsSetSlider('bsYaw', 'bsYawVal', c.bsYaw);
-        this._bsSetSlider('bsRoll', 'bsRollVal', c.bsRoll);
-        this._bsSetSlider('bsPitch', 'bsPitchVal', c.bsPitch);
-        this._bsSetSlider('bsFeather', 'bsFeatherVal', c.bsFeather);
-        this._bsSetSlider('bsProjExp', 'bsProjExpVal', c.bsProjExp);
-        this._bsSetSlider('bsRearRoll', 'bsRearRollVal', c.bsRearRoll);
-        this._bsSetSlider('bsRearPitch', 'bsRearPitchVal', c.bsRearPitch);
+        // Merged-view alignment sliders: same rule as the speed window — a reload must
+        // not throw away slider moves that have not been applied yet.
+        if (!this._bsStitchDirty()) {
+            this._bsSetSlider('bsRearFov', 'bsRearFovVal', c.bsRearFov);
+            this._bsSetSlider('bsSideFov', 'bsSideFovVal', c.bsSideFov);
+            this._bsSetSlider('bsYaw', 'bsYawVal', c.bsYaw);
+            this._bsSetSlider('bsRoll', 'bsRollVal', c.bsRoll);
+            this._bsSetSlider('bsPitch', 'bsPitchVal', c.bsPitch);
+            this._bsSetSlider('bsFeather', 'bsFeatherVal', c.bsFeather);
+            this._bsSetSlider('bsProjExp', 'bsProjExpVal', c.bsProjExp);
+            this._bsSetSlider('bsRearRoll', 'bsRearRollVal', c.bsRearRoll);
+            this._bsSetSlider('bsRearPitch', 'bsRearPitchVal', c.bsRearPitch);
+            this._bsStitchBaseline = this._bsStitchValues();
+        }
+        this._bsMarkStitchDirty();
+        this._bsReflectSide();
         // Reflect the ACTIVE target's saved size%/corner + layout dropdown, and
         // highlight the selected display target. Normalise first so a missing/empty
         // value still shows a definite selection (defaults head_unit).
@@ -1291,6 +1335,592 @@ BYD.roadSense = {
         }
     },
 
+    // ==================== Google Maps (BYOK) ====================
+    // GET /api/navmap/google/status; POST setup | test | settings | clear (fetch only).
+    // The key is write-only: the daemon never returns it, so the input is cleared after use.
+
+    _GOOGLE_URLS: {
+        project: 'https://console.cloud.google.com/projectcreate',
+        billing: 'https://console.cloud.google.com/billing',
+        tiles: 'https://console.cloud.google.com/apis/library/tile.googleapis.com',
+        routes: 'https://console.cloud.google.com/apis/library/routes.googleapis.com',
+        places: 'https://console.cloud.google.com/apis/library/places.googleapis.com',
+        geocode: 'https://console.cloud.google.com/apis/library/geocoding-backend.googleapis.com',
+        credentials: 'https://console.cloud.google.com/apis/credentials',
+        quotas: 'https://console.cloud.google.com/google/maps-apis/quotas',
+        budgets: 'https://console.cloud.google.com/billing/budgets'
+    },
+    _GOOGLE_APIS: ['tiles', 'routes', 'places', 'geocode'],
+    _GOOGLE_QUOTA_SKUS: ['tiles', 'routes', 'autocomplete', 'placeDetails', 'textSearch', 'geocode'],
+    _GOOGLE_USAGE_SKUS: ['tiles', 'routes', 'routesTraffic', 'autocomplete', 'placeDetails', 'textSearch', 'geocode'],
+    _GOOGLE_FEATURES: ['basemap', 'traffic', 'routing', 'routeTraffic', 'search'],
+    _googleStatus: null,
+    _googleProbe: null,
+    _googleGuideTouched: false,
+    _googleWriteVersion: 0,
+    _googleWritesPending: 0,
+
+    _googleId(prefix, name) {
+        return prefix + name.charAt(0).toUpperCase() + name.slice(1);
+    },
+
+    // Numbers and times follow the app language, like the rest of the UI.
+    _googleLang() {
+        try { return (window.BYD && BYD.i18n && BYD.i18n.getLang) ? (BYD.i18n.getLang() || undefined) : undefined; } catch (e) { return undefined; }
+    },
+
+    _googleNum(n) {
+        const v = Number(n) || 0;
+        try { return v.toLocaleString(this._googleLang()); } catch (e) { return String(v); }
+    },
+
+    _googleSkuApi(sku) {
+        if (sku === 'autocomplete' || sku === 'placeDetails' || sku === 'textSearch') return 'places';
+        if (sku === 'routesTraffic') return 'routes';
+        return sku;
+    },
+
+    _googleResetTime(ms) {
+        const n = Number(ms);
+        if (!(n > 0)) return '';
+        try {
+            return new Date(n).toLocaleTimeString(this._googleLang(), { hour: '2-digit', minute: '2-digit' });
+        } catch (e) {
+            return new Date(n).toTimeString().slice(0, 5);
+        }
+    },
+
+    // A snapshot whose reset time has passed describes a finished day.
+    _googleUsageDayOver(usage) {
+        const reset = Number(usage && usage.resetAtMs);
+        return reset > 0 && reset <= Date.now();
+    },
+
+    _googleQuotaLatched(latch) {
+        if (!latch || latch.reason !== 'quota') return false;
+        const until = Number(latch.untilMs);
+        return !(until > 0) || until > Date.now();
+    },
+
+    async _postGoogle(url, body) {
+        this._googleWriteVersion++;
+        this._googleWritesPending++;
+        try {
+            return await this._enqueueWrite(async () => {
+                try {
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body || {})
+                    });
+                    const data = await resp.json();
+                    return resp.ok && data ? data : null;
+                } catch (e) {
+                    console.warn('RoadSense: Google write failed:', e);
+                    return null;
+                }
+            });
+        } finally {
+            this._googleWritesPending--;
+        }
+    },
+
+    async loadGoogleStatus() {
+        if (this._googleWritesPending > 0) return;
+        const writeVersion = this._googleWriteVersion;
+        let status = null;
+        try {
+            const resp = await fetch('/api/navmap/google/status');
+            const data = await resp.json();
+            status = (data && data.success) ? data : null;
+        } catch (e) {
+            console.warn('RoadSense: Google status failed:', e);
+        }
+        if (this._googleWritesPending > 0 || writeVersion !== this._googleWriteVersion) return;
+        this._googleStatus = status;
+        this._renderGoogle();
+    },
+
+    _renderGoogle() {
+        const s = this._googleStatus;
+        const hasKey = !!(s && s.hasKey);
+        this._setGoogleBadge(this._googleBadgeState(s));
+        if (s && !this._googleGuideTouched) this._setGoogleGuide(!hasKey);
+
+        const pricing = (s && s.pricing === 'india') ? 'india' : 'global';
+        const pricingSel = document.getElementById('rsGooglePricing');
+        if (pricingSel && !pricingSel.disabled) pricingSel.value = pricing;
+        const hint = document.getElementById('rsGooglePricingHint');
+        if (hint) hint.style.display = (s && s.suggestedPricing === 'india' && pricing !== 'india') ? '' : 'none';
+
+        const paid = !!(s && s.spendMode === 'paid');
+        const recommended = (paid && s.recommendedPaid) || (s && s.recommended) || {};
+        const flags = (s && s.features) || {};
+        // One Google daily quota covers both route tiers, so it follows the Enterprise one while colours are on.
+        const routeColours = flags.routeTraffic !== false && recommended.routesTraffic != null;
+        this._GOOGLE_QUOTA_SKUS.forEach(sku => {
+            const el = document.getElementById(this._googleId('rsGoogleQuota', sku));
+            if (!el) return;
+            const n = Number(recommended[sku === 'routes' && routeColours ? 'routesTraffic' : sku]) || 0;
+            el.textContent = n > 0
+                ? this._t('road_sense.google_per_day', '{n} / day', { n: this._googleNum(n) })
+                : '--';
+        });
+        const routesNote = document.getElementById('rsGoogleQuotaRoutesNote');
+        if (routesNote) routesNote.style.display = routeColours ? '' : 'none';
+        // Google's default Map Tiles quota is 15,000 a day; a paid budget can recommend more.
+        const tilesNote = document.getElementById('rsGoogleQuotaTilesNote');
+        if (tilesNote) tilesNote.style.display = (paid && Number(recommended.tiles) > 15000) ? '' : 'none';
+        this._renderGoogleSpend(s, paid);
+
+        const time = this._googleResetTime(s && s.resetAtMs);
+        const pause = document.getElementById('rsGoogleFreePause');
+        if (pause) {
+            pause.textContent = time
+                ? this._t('road_sense.google_free_pause_at',
+                    'When a limit is reached, OverDrive pauses that Google feature until the daily reset at {time} (your time) and uses the OverDrive map or backup routing instead.',
+                    { time: time })
+                : this._t('road_sense.google_free_pause',
+                    'When a limit is reached, OverDrive pauses that Google feature until the daily reset and uses the OverDrive map or backup routing instead.');
+        }
+
+        const terms = document.getElementById('rsGoogleTermsBlock');
+        if (terms) terms.style.display = (s && s.termsAccepted) ? 'none' : '';
+
+        const keyInput = document.getElementById('rsGoogleKey');
+        if (keyInput) {
+            const phKey = hasKey ? 'road_sense.google_key_set_ph' : 'road_sense.google_key_ph';
+            keyInput.setAttribute('data-i18n-attr', 'placeholder:' + phKey);
+            keyInput.placeholder = this._t(phKey, hasKey
+                ? 'A key is saved — paste a new one to replace it'
+                : 'Paste your Google Maps API key');
+        }
+
+        // The last Save/Test result wins; otherwise show the stored check, if one ran.
+        const probe = this._googleProbe;
+        if (probe) this._renderGoogleApis(probe.apiState, probe.apiReason);
+        else if (hasKey && Number(s.validatedMs) > 0) this._renderGoogleApis(s.apiState, s.apiReason);
+        else this._renderGoogleApis(null, null);
+
+        const features = document.getElementById('rsGoogleFeatures');
+        if (features) features.style.display = hasKey ? '' : 'none';
+        this._GOOGLE_FEATURES.forEach(name => {
+            const el = document.getElementById(this._googleId('rsGoogleFeat', name));
+            if (el && !el.disabled) el.checked = flags[name] !== false;
+        });
+
+        this._renderGoogleUsage(s, time);
+    },
+
+    _googleDollars(cents, always2) {
+        const n = Math.max(0, Number(cents) || 0);
+        return (!always2 && n % 100 === 0) ? String(n / 100) : (n / 100).toFixed(2);
+    },
+
+    // Free mode keeps the free-usage explanation; paid mode shows the estimate and paid wording instead.
+    _renderGoogleSpend(s, paid) {
+        // A tapped "Allow paid usage" card stays selected until a budget is saved.
+        const showPaid = paid || !!this._googleSpendPendingPaid;
+        const freeBtn = document.getElementById('rsGoogleSpendFree');
+        const paidBtn = document.getElementById('rsGoogleSpendPaid');
+        if (freeBtn && paidBtn && !paidBtn.disabled) {
+            freeBtn.classList.toggle('active', !showPaid);
+            freeBtn.setAttribute('aria-pressed', showPaid ? 'false' : 'true');
+            paidBtn.classList.toggle('active', showPaid);
+            paidBtn.setAttribute('aria-pressed', showPaid ? 'true' : 'false');
+        }
+        const budget = document.getElementById('rsGoogleBudget');
+        const cents = Number(s && s.monthlyBudgetCents) || 0;
+        if (budget && !budget.disabled && document.activeElement !== budget) {
+            budget.value = cents > 0 ? this._googleDollars(cents, true) : '';
+        }
+        const budgetRow = document.getElementById('rsGoogleBudgetRow');
+        if (budgetRow) budgetRow.style.display = showPaid ? '' : 'none';
+        const info = document.getElementById('rsGoogleSpendPaidInfo');
+        if (info) info.style.display = showPaid ? '' : 'none';
+        const line = document.getElementById('rsGoogleSpendLine');
+        if (line) {
+            line.textContent = paid
+                ? this._t('road_sense.google_spend_estimate', 'Estimated spend this month: ${spent} of ${limit}', {
+                    spent: this._googleDollars(s.estimatedSpendCents, true),
+                    limit: this._googleDollars(cents, false)
+                })
+                : this._t('road_sense.google_budget_desc', 'Google features pause at 95% of this amount.');
+        }
+        const freeBlock = document.getElementById('rsGoogleFreeBlock');
+        if (freeBlock) freeBlock.style.display = paid ? 'none' : '';
+        const quotasDesc = document.getElementById('rsGoogleQuotasDesc');
+        if (quotasDesc) {
+            const qKey = paid ? 'road_sense.google_quotas_desc_paid' : 'road_sense.google_quotas_desc';
+            quotasDesc.setAttribute('data-i18n', qKey);
+            quotasDesc.textContent = this._t(qKey, paid
+                ? 'Enter these in Google Cloud (step 5) as a safety net. In paid mode OverDrive limits by your monthly amount, not per day.'
+                : 'Enter these in Google Cloud (step 5). OverDrive\'s own daily limits use the same numbers.');
+        }
+        const step6 = document.getElementById('rsGoogleStep6');
+        if (step6) {
+            const key = paid ? 'road_sense.google_step6_paid' : 'road_sense.google_step6';
+            step6.setAttribute('data-i18n', key);
+            step6.textContent = this._t(key, paid
+                ? 'Required: add a Cloud Billing budget alert at your monthly limit. It only alerts you; it doesn\'t stop charges.'
+                : 'Optional: add a $1 budget alert. It only alerts you; it doesn\'t stop charges.');
+        }
+    },
+
+    _googleBadgeState(s) {
+        if (!s || !s.hasKey) return 'unset';
+        if (!s.enabled) return 'off';
+        const states = s.apiState || {};
+        for (const api of this._GOOGLE_APIS) {
+            if (states[api] === 'disabled' || states[api] === 'denied') return 'attention';
+        }
+        const usage = s.usage;
+        if (usage && usage.latches && !this._googleUsageDayOver(usage)) {
+            for (const api of this._GOOGLE_APIS) {
+                if (this._googleQuotaLatched(usage.latches[api])) return 'limit';
+            }
+        }
+        return 'active';
+    },
+
+    _setGoogleBadge(state) {
+        const badge = document.getElementById('rsGoogleBadge');
+        if (!badge) return;
+        const looks = {
+            active: ['road_sense.google_status_active', 'Active', 'active'],
+            unset: ['road_sense.google_status_unset', 'Not set up', 'inactive'],
+            off: ['status.off', 'OFF', 'inactive'],
+            limit: ['road_sense.google_status_limit', 'Limit reached', 'inactive'],
+            attention: ['road_sense.google_status_attention', 'Needs attention', 'errored']
+        };
+        const look = looks[state] || looks.unset;
+        // Keep data-i18n on the shown key so a language switch re-translates the right text.
+        badge.setAttribute('data-i18n', look[0]);
+        badge.textContent = this._t(look[0], look[1]);
+        badge.className = 'status-badge ' + look[2];
+    },
+
+    _renderGoogleApis(apiState, apiReason) {
+        const box = document.getElementById('rsGoogleApiBox');
+        if (!box) return;
+        if (!apiState) { box.style.display = 'none'; return; }
+        box.style.display = '';
+        this._GOOGLE_APIS.forEach(api => {
+            const id = this._googleId('rsGoogleApi', api);
+            const stateEl = document.getElementById(id + 'State');
+            const openBtn = document.getElementById(id + 'Open');
+            const state = String(apiState[api] || 'unknown');
+            const reason = apiReason ? String(apiReason[api] || '') : '';
+            // "unverified": Google answered without checking the key (Geocoding), so no green OK.
+            const verified = state === 'ok' && reason !== 'unverified';
+            let key = 'road_sense.google_state_unknown';
+            let fallback = 'Couldn\'t check';
+            if (state === 'ok' && !verified) { key = 'road_sense.google_state_unverified'; fallback = 'Checked when used'; }
+            else if (state === 'ok') { key = 'road_sense.google_state_ok'; fallback = 'OK'; }
+            else if (state === 'disabled') { key = 'road_sense.google_state_disabled'; fallback = 'Not enabled'; }
+            else if (state === 'denied' && reason === 'billing') { key = 'road_sense.google_state_billing'; fallback = 'Billing off'; }
+            else if (state === 'denied') { key = 'road_sense.google_state_denied'; fallback = 'Key not accepted'; }
+            if (stateEl) {
+                stateEl.textContent = this._t(key, fallback);
+                stateEl.style.color = verified ? 'var(--success)'
+                    : ((state === 'disabled' || state === 'denied') ? 'var(--danger)' : '');
+            }
+            if (openBtn) openBtn.style.display = state === 'disabled' ? '' : 'none';
+        });
+    },
+
+    _renderGoogleUsage(s, time) {
+        const block = document.getElementById('rsGoogleUsageBlock');
+        if (!block) return;
+        const hasKey = !!(s && s.hasKey);
+        block.style.display = hasKey ? '' : 'none';
+        if (!hasKey) return;
+        const reset = document.getElementById('rsGoogleResetLine');
+        if (reset) {
+            reset.textContent = time
+                ? this._t('road_sense.google_usage_reset', 'Daily limits reset at {time} (your time).', { time: time })
+                : '';
+        }
+        const usage = (s.usage && typeof s.usage === 'object') ? s.usage : null;
+        const empty = document.getElementById('rsGoogleUsageEmpty');
+        const rows = document.getElementById('rsGoogleUsageRows');
+        if (empty) empty.style.display = usage ? 'none' : '';
+        if (rows) rows.style.display = usage ? '' : 'none';
+        if (!usage) return;
+        const dayOver = this._googleUsageDayOver(usage);
+        const day = usage.day || {};
+        const month = usage.month || {};
+        const allowance = usage.allowance || {};
+        const latches = usage.latches || {};
+        const caps = s.caps || {};
+        const paid = s.spendMode === 'paid';
+        const recommended = (paid && s.recommendedPaid) || s.recommended || {};
+        this._GOOGLE_USAGE_SKUS.forEach(sku => {
+            const el = document.getElementById(this._googleId('rsGoogleUse', sku));
+            if (!el) return;
+            const vars = {
+                day: this._googleNum(dayOver ? 0 : day[sku]),
+                dayMax: this._googleNum(allowance[sku] != null ? allowance[sku] : recommended[sku]),
+                month: this._googleNum(month[sku]),
+                monthMax: this._googleNum(Math.floor((Number(caps[sku]) || 0) * 0.95)),
+                free: this._googleNum(caps[sku])
+            };
+            // Free mode stops the month at 95% of the free cap; paid mode is bounded by the budget instead.
+            let text = paid
+                ? this._t('road_sense.google_usage_row_paid', 'Today {day} · Month {month} ({free} free)', vars)
+                : this._t('road_sense.google_usage_row', 'Today {day} / {dayMax} · Month {month} / {monthMax}', vars);
+            if (!dayOver && this._googleQuotaLatched(latches[this._googleSkuApi(sku)])) {
+                text += ' · ' + this._t('road_sense.google_usage_paused', 'Paused');
+            }
+            el.textContent = text;
+        });
+    },
+
+    toggleGoogleGuide() {
+        this._googleGuideTouched = true;
+        const body = document.getElementById('rsGoogleGuideBody');
+        this._setGoogleGuide(!!(body && body.style.display === 'none'));
+    },
+
+    _setGoogleGuide(open) {
+        const body = document.getElementById('rsGoogleGuideBody');
+        const btn = document.getElementById('rsGoogleGuideBtn');
+        if (body) body.style.display = open ? '' : 'none';
+        if (!btn) return;
+        const key = open ? 'road_sense.google_guide_hide' : 'road_sense.google_guide_show';
+        btn.setAttribute('data-i18n', key);
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.textContent = this._t(key, open ? 'Hide steps' : 'Show steps');
+    },
+
+    openGoogleConsole(id) {
+        if (Object.prototype.hasOwnProperty.call(this._GOOGLE_URLS, id)) {
+            this.openExternal(this._GOOGLE_URLS[id]);
+        }
+    },
+
+    _setGoogleBusy(busy) {
+        ['rsGoogleSaveBtn', 'rsGoogleTestBtn', 'rsGoogleClearBtn'].forEach(id => {
+            const btn = document.getElementById(id);
+            if (btn) btn.disabled = busy;
+        });
+    },
+
+    _googleNeedsAttention(apiState) {
+        const states = apiState || {};
+        return this._GOOGLE_APIS.some(api => states[api] === 'disabled' || states[api] === 'denied');
+    },
+
+    _toastGoogleError(code) {
+        if (code === 'terms_required') {
+            this._toast('road_sense.google_terms_required', 'Turn on "I understand" under the Google terms notice first', 'error');
+        } else if (code === 'invalid_format') {
+            this._toast('road_sense.google_key_format', 'That doesn\'t look like a Google Maps key. It starts with AIza and is 39 characters long.', 'error');
+        } else if (code === 'invalid_key') {
+            this._toast('road_sense.google_key_rejected', 'Google didn\'t accept this key. Check that you copied all of it.', 'error');
+        } else if (code === 'no_key') {
+            this._toast('road_sense.google_no_key', 'Save a Google key first', 'error');
+        } else if (code === 'budget_required') {
+            this._toast('road_sense.google_budget_required', 'Enter a monthly limit in dollars first', 'error');
+        } else if (code === 'budget_min') {
+            this._toast('road_sense.google_budget_min', 'The monthly limit must be at least $1.', 'error');
+        } else {
+            this._toastFailed();
+        }
+    },
+
+    /** Budget field in dollars to whole cents within $1 to $10,000; null when empty or not positive. */
+    _googleBudgetCents() {
+        const input = document.getElementById('rsGoogleBudget');
+        const raw = input ? String(input.value || '').trim().replace(',', '.') : '';
+        const dollars = raw ? Number(raw) : NaN;
+        if (!(dollars > 0) || !isFinite(dollars)) return null;
+        return Math.min(1000000, Math.round(dollars * 100));
+    },
+
+    _setGoogleSpendBusy(busy) {
+        ['rsGoogleSpendFree', 'rsGoogleSpendPaid', 'rsGoogleBudget'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = busy;
+        });
+    },
+
+    async _postGoogleSpend(body) {
+        this._setGoogleSpendBusy(true);
+        let data = null;
+        try {
+            data = await this._postGoogle('/api/navmap/google/settings', body);
+        } finally {
+            this._setGoogleSpendBusy(false);
+        }
+        if (data && data.success) this._toastSaved();
+        else this._toastGoogleError(data ? data.error : null);
+        // Success or not, the radios and the budget field follow the daemon's stored values.
+        await this.loadGoogleStatus();
+        if (!(data && data.success)) this._renderGoogle();
+    },
+
+    async setGoogleSpendMode(mode) {
+        if (!this._hydrated || (mode !== 'free' && mode !== 'paid')) return;
+        if (mode === 'free') {
+            this._googleSpendPendingPaid = false;
+            await this._postGoogleSpend({ spendMode: 'free' });
+            return;
+        }
+        const cents = this._googleBudgetCents();
+        if (cents === null) {
+            // Show the limit field; paid is saved once a budget arrives through setGoogleBudget().
+            this._googleSpendPendingPaid = true;
+            this._renderGoogle();
+            const budget = document.getElementById('rsGoogleBudget');
+            if (budget && typeof budget.focus === 'function') budget.focus();
+            return;
+        }
+        this._googleSpendPendingPaid = false;
+        await this._postGoogleSpend({ spendMode: 'paid', monthlyBudgetCents: cents });
+    },
+
+    async setGoogleBudget() {
+        if (!this._hydrated) return;
+        const cents = this._googleBudgetCents();
+        if (cents === null) {
+            this._toastGoogleError('budget_required');
+            this._renderGoogle();
+            return;
+        }
+        const paidBtn = document.getElementById('rsGoogleSpendPaid');
+        const body = { monthlyBudgetCents: cents };
+        if (paidBtn && paidBtn.classList.contains('active')) body.spendMode = 'paid';
+        this._googleSpendPendingPaid = false;
+        await this._postGoogleSpend(body);
+    },
+
+    async setGooglePricing(value) {
+        const sel = document.getElementById('rsGooglePricing');
+        if (!sel || !this._hydrated || (value !== 'global' && value !== 'india')) return;
+        const previous = (this._googleStatus && this._googleStatus.pricing === 'india') ? 'india' : 'global';
+        sel.disabled = true;
+        try {
+            const data = await this._postGoogle('/api/navmap/google/settings', { pricing: value });
+            if (data && data.success) {
+                this._toastSaved();
+            } else {
+                sel.value = previous;
+                this._toastFailed();
+            }
+        } finally {
+            sel.disabled = false;
+        }
+        await this.loadGoogleStatus();
+    },
+
+    async toggleGoogleFeature(name) {
+        if (this._GOOGLE_FEATURES.indexOf(name) < 0) return;
+        const el = document.getElementById(this._googleId('rsGoogleFeat', name));
+        if (!el || !this._hydrated || el.disabled) return;
+        const on = el.checked;
+        const body = {};
+        body[name] = on;
+        el.disabled = true;
+        try {
+            const data = await this._postGoogle('/api/navmap/google/settings', body);
+            if (data && data.success) {
+                this._toastSaved();
+            } else {
+                el.checked = !on;
+                this._toastFailed();
+            }
+        } finally {
+            el.disabled = false;
+        }
+        await this.loadGoogleStatus();
+    },
+
+    async saveGoogle() {
+        const keyInput = document.getElementById('rsGoogleKey');
+        const apiKey = keyInput ? (keyInput.value || '').trim() : '';
+        if (!apiKey) {
+            this._toast('road_sense.google_key_required', 'Paste your Google Maps API key first', 'error');
+            return;
+        }
+        if (!/^AIza[A-Za-z0-9_-]{35}$/.test(apiKey)) {
+            this._toastGoogleError('invalid_format');
+            return;
+        }
+        const termsEl = document.getElementById('rsGoogleTerms');
+        const acceptTerms = !!(termsEl && termsEl.checked);
+        if (!(this._googleStatus && this._googleStatus.termsAccepted) && !acceptTerms) {
+            this._toastGoogleError('terms_required');
+            return;
+        }
+        const body = { apiKey: apiKey, acceptTerms: acceptTerms };
+        const pricingSel = document.getElementById('rsGooglePricing');
+        if (pricingSel && (pricingSel.value === 'global' || pricingSel.value === 'india')) {
+            body.pricing = pricingSel.value;
+        }
+        this._setGoogleBusy(true);
+        try {
+            const data = await this._postGoogle('/api/navmap/google/setup', body);
+            // A rejected key must not replace the stored key's per-API results.
+            if (data && data.success && data.apiState) {
+                this._googleProbe = { apiState: data.apiState, apiReason: data.apiReason || null };
+            }
+            if (data && data.success) {
+                if (keyInput) keyInput.value = '';
+                if (this._googleNeedsAttention(data.apiState)) {
+                    this._toast('road_sense.google_saved_attention', 'Key saved. Some Google APIs need attention; see the list below.', 'error');
+                } else {
+                    this._toast('road_sense.google_saved', 'Google key saved', 'success');
+                }
+            } else {
+                this._toastGoogleError(data ? data.error : null);
+            }
+        } finally {
+            this._setGoogleBusy(false);
+        }
+        await this.loadGoogleStatus();
+    },
+
+    async testGoogle() {
+        this._setGoogleBusy(true);
+        try {
+            const data = await this._postGoogle('/api/navmap/google/test', {});
+            if (data && data.apiState) {
+                this._googleProbe = { apiState: data.apiState, apiReason: data.apiReason || null };
+            }
+            if (data && data.success) {
+                if (this._googleNeedsAttention(data.apiState)) {
+                    this._toast('road_sense.google_test_attention', 'Some Google APIs need attention; see the list below.', 'error');
+                } else {
+                    this._toast('road_sense.google_test_done', 'Checked each Google API', 'success');
+                }
+            } else {
+                this._toastGoogleError(data ? data.error : null);
+            }
+        } finally {
+            this._setGoogleBusy(false);
+        }
+        await this.loadGoogleStatus();
+    },
+
+    async clearGoogle() {
+        this._setGoogleBusy(true);
+        try {
+            const data = await this._postGoogle('/api/navmap/google/clear', {});
+            if (data && data.success) {
+                this._googleProbe = null;
+                const keyInput = document.getElementById('rsGoogleKey');
+                if (keyInput) keyInput.value = '';
+                this._toast('road_sense.google_cleared', 'Google key removed', 'success');
+            } else {
+                this._toastFailed();
+            }
+        } finally {
+            this._setGoogleBusy(false);
+        }
+        await this.loadGoogleStatus();
+    },
+
     // ==================== Cluster projection ====================
     //
     // Projecting the map onto the driver cluster is a native on-car action — the
@@ -1617,6 +2247,8 @@ BYD.roadSense = {
         // Same gate as the rotation rows; without this the fisheye row only
         // re-evaluated on a page reload after switching mode.
         this._bsReflectRectifyRow(mode);
+        this._bsReflectModeDependents(mode);
+        this._bsReflectSide();
         const ok = await this._bsSave({ mergeMode: mode });
         if (ok) { this._toastSaved(); }
         else {
@@ -1624,67 +2256,165 @@ BYD.roadSense = {
             this._bsHighlightMergeMode(prev);
             this._bsReflectRotationRow(prev);
             this._bsReflectRectifyRow(prev);
+            this._bsReflectModeDependents(prev);
+            this._bsReflectSide();
             this._toastFailed();
         }
+    },
+
+    /** Everything else that follows the camera mode: the 40°/310° buttons (Rear-only
+     *  hides them and shows a stored one as 0°), both highlights, the framing blocks
+     *  and the merged-view alignment sliders. */
+    _bsReflectModeDependents(mode) {
+        this._bsReflectPresetButtons(mode);
+        this._bsHighlightRotation('left', this.config.bsRotationLeft);
+        this._bsHighlightRotation('right', this.config.bsRotationRight);
+        this._bsReflectFraming();
+        this._bsReflectStitchControls(mode);
+    },
+
+    /** The alignment sliders only shape the merged view, so a single camera hides them. */
+    _bsReflectStitchControls(mode) {
+        var merged = (mode === 'both');
+        var box = document.getElementById('bsStitchControls');
+        if (box) box.style.display = merged ? '' : 'none';
+    },
+
+    /** The 40°/310° buttons frame a side camera, so Rear-only mode hides them. */
+    _bsReflectPresetButtons(mode) {
+        ['bsRotL310', 'bsRotR40'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.style.display = (mode === 'rear') ? 'none' : '';
+        });
     },
 
     /** Highlight the selected merge mode (M3 tonal selection, same pattern as the
      *  display-target / corner buttons). */
     _bsHighlightMergeMode(mode) {
         var map = { both: 'bsMergeBoth', side: 'bsMergeSide', rear: 'bsMergeRear' };
-        for (var k in map) {
-            var el = document.getElementById(map[k]);
-            if (el) { if (k === mode) el.classList.add('active'); else el.classList.remove('active'); }
-        }
+        for (var k in map) this._bsSetPressed(map[k], k === mode);
     },
 
-    /** Rotation only applies to the single-camera views — show the per-side rows for
-     *  side/rear, hide them (the merged panorama can't rotate) for 'both'. PER-SIDE:
-     *  there are two rotation rows (left camera = left turn / view 7; right camera =
-     *  right turn / view 8) because the two cameras are mirror-imaged. */
+    /** Selected look + aria-pressed for one segmented / choice button. */
+    _bsSetPressed(id, on) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('active', !!on);
+        el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    },
+
+    // ── Selected side: per-side settings show one turn direction at a time, and a
+    //    running live preview always shows that same side. ─────────────────────────
+    _bsSide: 'left',
+
+    /** Choose which turn direction's settings show; a running preview moves with it. */
+    bsSelectSide(side) {
+        if (side !== 'left' && side !== 'right') return;
+        if (this._bsPreviewActive && side !== this._bsSide) {
+            this.bsPreview(side === 'right' ? 8 : 7);
+            return;
+        }
+        this._bsSide = side;
+        this._bsReflectSide();
+    },
+
+    /** Live preview control: 'off', 'left' or 'right'. Tapping the side already
+     *  showing starts it again (the card's ✕ can close it without this page knowing). */
+    bsSetPreview(choice) {
+        if (choice === 'off') { this.bsPreviewStop(); return; }
+        if (choice === 'left' || choice === 'right') this.bsPreview(choice === 'right' ? 8 : 7);
+    },
+
+    /** Paint everything that follows the selected side and the preview state. */
+    _bsReflectSide() {
+        var right = (this._bsSide === 'right');
+        var on = !!this._bsPreviewActive;
+        this._bsSetPressed('bsSideL', !right);
+        this._bsSetPressed('bsSideR', right);
+        this._bsSetPressed('bsPrevOff', !on);
+        this._bsSetPressed('bsPrevL', on && !right);
+        this._bsSetPressed('bsPrevR', on && right);
+        var mode = this.config.bsMergeMode;
+        var sideRow = document.getElementById('bsSideRow');
+        if (sideRow) sideRow.style.display = (mode === 'side' || mode === 'rear') ? '' : 'none';
+        this._bsReflectRotationRow(mode);
+        this._bsReflectRectifyRow(mode);
+        this._bsReflectFraming();
+        this._bsTrimDividers();
+        this._bsRefreshLayout();
+    },
+
+    /** The Camera view card's last visible row drops its divider; rows hidden after it
+     *  would otherwise leave a stray line at the bottom of the card. */
+    _bsTrimDividers() {
+        var body = document.getElementById('bsViewBody');
+        if (!body) return;
+        var rows = body.querySelectorAll('.setting-row');
+        var last = null;
+        for (var i = 0; i < rows.length; i++) {
+            rows[i].classList.remove('bs-row-last');
+            var shown = true;
+            for (var el = rows[i]; el && el !== body; el = el.parentNode) {
+                if (el.style && el.style.display === 'none') { shown = false; break; }
+            }
+            if (shown) last = rows[i];
+        }
+        if (last) last.classList.add('bs-row-last');
+    },
+
+    /** Rows shown or hidden here change height; a synthetic resize lets the shared
+     *  long-description folding re-measure them. */
+    _bsRefreshLayout() {
+        if (this._bsLayoutTimer) return;
+        var self = this;
+        this._bsLayoutTimer = setTimeout(function () {
+            self._bsLayoutTimer = null;
+            try { window.dispatchEvent(new Event('resize')); } catch (e) { /* next real resize re-measures */ }
+        }, 50);
+    },
+
+    /** Rotation only applies to the single-camera views, and only the selected side's
+     *  rows show (left camera = left turn / view 7; right camera = right turn / view 8). */
     _bsReflectRotationRow(mode) {
         var single = (mode === 'side' || mode === 'rear');
-        ['bsRotationLeftRow', 'bsRotationRightRow'].forEach(function (id) {
+        var right = (this._bsSide === 'right');
+        var show = function (id, visible) {
             var row = document.getElementById(id);
-            if (row) row.style.display = single ? '' : 'none';
-        });
-        // Each auto-base row hangs off its side's rotation row; show it only when that
-        // side is single-camera AND set to 'auto'.
-        var baseL = document.getElementById('bsAutoBaseLeftRow');
-        if (baseL) baseL.style.display = (single && this.config.bsRotationLeft === 'auto') ? '' : 'none';
-        var baseR = document.getElementById('bsAutoBaseRightRow');
-        if (baseR) baseR.style.display = (single && this.config.bsRotationRight === 'auto') ? '' : 'none';
+            if (row) row.style.display = visible ? '' : 'none';
+        };
+        show('bsRotationLeftRow', single && !right);
+        show('bsRotationRightRow', single && right);
+        // Each auto-base row hangs off its side's rotation row and needs that side on 'auto'.
+        show('bsAutoBaseLeftRow', single && !right && this.config.bsRotationLeft === 'auto');
+        show('bsAutoBaseRightRow', single && right && this.config.bsRotationRight === 'auto');
     },
 
     /** Is this angle one of the free-angle presets, which bring their own framing? */
     _bsIsPresetAngle(v) { return v === 40 || v === 310; },
 
-    /** Fisheye/lens-dewarp applies only to the single-camera views — show the row
-     *  for side/rear, hide it for the merged 'both' view (libod handles that).
-     *
-     *  Also hidden when BOTH sides use a free-angle preset. Those framings were
-     *  measured with no dewarp, so the daemon holds the setting back while one is
-     *  active; leaving the control on screen would offer a slider that does nothing.
-     *
-     *  Gated on BOTH sides, not either: the angle is per-side but the dewarp is one
-     *  global setting, so with a preset on one side and a quarter turn on the other it
-     *  still does something and has to stay reachable. */
+    /** Fisheye/lens-dewarp applies only to the single-camera views — hidden for the
+     *  merged 'both' view (libod handles that). It is one setting for both sides, but a
+     *  free-angle preset ignores it (those framings were measured with no dewarp), so
+     *  the row is also hidden while the SELECTED side shows a preset — the slider would
+     *  do nothing to the view being edited. Selecting the other side reaches it. */
     _bsReflectRectifyRow(mode) {
         var single = (mode === 'side' || mode === 'rear');
-        var bothPreset = this._bsIsPresetAngle(this.config.bsRotationLeft)
-            && this._bsIsPresetAngle(this.config.bsRotationRight);
+        var rot = (this._bsSide === 'right') ? this.config.bsRotationRight : this.config.bsRotationLeft;
+        // Rear-only never renders a preset, so the dewarp always applies there.
+        var preset = (mode === 'side') && this._bsIsPresetAngle(rot);
         var row = document.getElementById('bsRectifyRow');
-        if (row) row.style.display = (single && !bothPreset) ? '' : 'none';
+        if (row) row.style.display = (single && !preset) ? '' : 'none';
     },
 
-    /** Live-preview the fisheye strength while dragging (label + running scaler),
-     *  WITHOUT persisting on every input event. Mirrors the stitch sliders' bsTune. */
+    /** While dragging: label + live preview only; the value is saved on release
+     *  (bsSetRectify), so config keeps the saved value for a failed-save revert. */
     bsRectifyInput(v) {
         var n = parseInt(v, 10);
         if (isNaN(n)) return;
-        this.config.bsRectifyStrength = this._clamp(n, 0, 100);
+        n = this._clamp(n, 0, 100);
         var l = document.getElementById('bsRectifyVal');
-        if (l) l.textContent = String(this.config.bsRectifyStrength);
+        if (l) l.textContent = String(n);
+        this._bsLiveSend('rectifyStrength', n);
     },
 
     /** Commit the fisheye strength on release (change event). Persists to
@@ -1693,9 +2423,213 @@ BYD.roadSense = {
         var n = this._clamp(parseInt(v, 10) || 0, 0, 100);
         var prev = this.config.bsRectifyStrength;
         this.config.bsRectifyStrength = n;
+        this._bsLiveCommitted('rectifyStrength');
         const ok = await this._bsSave({ rectifyStrength: n });
         if (ok) { this._toastSaved(); }
-        else { this.config.bsRectifyStrength = prev; this._bsSetSlider('bsRectify', 'bsRectifyVal', prev); this._toastFailed(); }
+        else {
+            this.config.bsRectifyStrength = prev;
+            this._bsSetSlider('bsRectify', 'bsRectifyVal', prev);
+            this._bsLiveRevert(false);
+            this._toastFailed();
+        }
+    },
+
+    // ── Live preview of a dragged slider (framing / fisheye). The newest value goes
+    //    to the card — one request at a time, at most every BS_LIVE_MIN_MS — and the
+    //    release saves it as before. Nothing here persists. ─────────────────────────
+    BS_LIVE_MIN_MS: 80,
+
+    _bsLiveSend(key, value) {
+        if (!this._bsPreviewActive) return;
+        if (!this._bsLivePending) this._bsLivePending = {};
+        this._bsLivePending[key] = value;
+        this._bsLiveDirty = true;
+        this._bsLivePump();
+    },
+
+    _bsLivePump() {
+        if (this._bsLiveBusy || this._bsLiveTimer || !this._bsLivePending) return;
+        var self = this;
+        var wait = this.BS_LIVE_MIN_MS - (Date.now() - (this._bsLiveLastMs || 0));
+        if (wait > 0) {
+            this._bsLiveTimer = setTimeout(function () {
+                self._bsLiveTimer = null;
+                self._bsLivePump();
+            }, wait);
+            return;
+        }
+        var p = this._bsLivePending;
+        this._bsLivePending = null;
+        var parts = [];
+        for (var k in p) {
+            if (p.hasOwnProperty(k)) parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(p[k])));
+        }
+        if (!parts.length) return;
+        this._bsLiveBusy = true;
+        this._bsLiveLastMs = Date.now();
+        fetch('/api/bs/live?' + parts.join('&'), { method: 'POST' })
+            .catch(function () { /* the release still saves */ })
+            .then(function () { self._bsLiveBusy = false; self._bsLivePump(); });
+    },
+
+    /** The saved value for this key is on its way; drop its queued live value. */
+    _bsLiveCommitted(key) {
+        if (this._bsLivePending) delete this._bsLivePending[key];
+    },
+
+    /** Put the card back on the saved values: after a failed save (only if a live
+     *  value was sent), and always when the preview stops. */
+    _bsLiveRevert(force) {
+        this._bsLivePending = null;
+        if (this._bsLiveTimer) { clearTimeout(this._bsLiveTimer); this._bsLiveTimer = null; }
+        if (!force && !this._bsLiveDirty) return;
+        this._bsLiveDirty = false;
+        fetch('/api/bs/live', { method: 'POST' }).catch(function () { /* next settings write re-applies */ });
+    },
+
+    // ── Per-side view adjustment (Side only) ───────────────────────────────────
+    // Ranges and neutral values match GpuSurveillancePipeline.bsFramingFor and
+    // applyBsCameraFraming.
+    BS_FRAMING_RANGE: { angle: [-180, 180], zoom: [0.5, 2], panX: [-0.5, 0.5], panY: [-0.5, 0.5] },
+    BS_FRAMING_NEUTRAL: { mirror: false, angle: 0, zoom: 1, panX: 0, panY: 0 },
+
+    /** One side's saved adjustment for a set ('' = 40°/310° framing, 'Cam' = plain
+     *  camera view), read the way the daemon's optBoolean/optDouble do. */
+    _bsReadFraming(bs, side, set) {
+        var pre = 'framing' + (set || '');
+        var raw = bs[pre + 'Mirror' + side];
+        var f = { mirror: raw === true || (typeof raw === 'string' && raw.toLowerCase() === 'true') };
+        ['angle', 'zoom', 'panX', 'panY'].forEach(function (key) {
+            f[key] = this._bsFramingClamp(key, bs[pre + this._bsCap(key) + side]);
+        }, this);
+        return f;
+    },
+
+    /** Clamp to the key's range; anything missing or non-numeric is neutral. */
+    _bsFramingClamp(key, v) {
+        var n = (typeof v === 'number') ? v
+            : (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN;
+        if (!isFinite(n)) return this.BS_FRAMING_NEUTRAL[key];
+        var r = this.BS_FRAMING_RANGE[key];
+        return this._clamp(n, r[0], r[1]);
+    },
+
+    _bsCap(key) { return key.charAt(0).toUpperCase() + key.slice(1); },
+
+    /** The set a side edits: its 40°/310° framing (''), or the plain camera view ('Cam'). */
+    _bsFramingSet(side) {
+        var rot = (side === 'right') ? this.config.bsRotationRight : this.config.bsRotationLeft;
+        return this._bsIsPresetAngle(rot) ? '' : 'Cam';
+    },
+
+    _bsFramingProp(side) { return 'bsFraming' + this._bsFramingSet(side) + (side === 'right' ? 'Right' : 'Left'); },
+
+    _bsFraming(side) { return this.config[this._bsFramingProp(side)]; },
+
+    /** Control id: bsFrame{L|R}{Row|Mirror|Angle|Zoom|PanX|PanY}, labels add 'Val'. */
+    _bsFramingId(side, part) { return 'bsFrame' + (side === 'right' ? 'R' : 'L') + part; },
+
+    /** Persisted key for the side's current set, e.g. framingPanXLeft / framingCamPanXLeft. */
+    _bsFramingKey(side, key) {
+        return 'framing' + this._bsFramingSet(side) + this._bsCap(key) + (side === 'right' ? 'Right' : 'Left');
+    },
+
+    /** Slider value to stored value (the pan sliders are in percent); null if unparseable. */
+    _bsFramingParse(key, raw) {
+        var n = parseFloat(raw);
+        if (!isFinite(n)) return null;
+        if (key === 'panX' || key === 'panY') n = Math.round(n) / 100;
+        else if (key === 'angle') n = Math.round(n);
+        else n = Math.round(n * 100) / 100;
+        return this._bsFramingClamp(key, n);
+    },
+
+    _bsFramingLabel(key, v) {
+        if (key === 'zoom') return v.toFixed(2) + '×';
+        var n = (key === 'angle') ? Math.round(v) : Math.round(v * 100);
+        return (n > 0 ? '+' : '') + n + (key === 'angle' ? '°' : '%');
+    },
+
+    _bsPaintFraming(side, key, v) {
+        var id = this._bsFramingId(side, this._bsCap(key));
+        var slider = document.getElementById(id);
+        if (slider) slider.value = (key === 'panX' || key === 'panY') ? Math.round(v * 100) : v;
+        var label = document.getElementById(id + 'Val');
+        if (label) label.textContent = this._bsFramingLabel(key, v);
+    },
+
+    /** Side-only shows the selected side's adjustment block, painted from the set its
+     *  angle uses; Mirror's hint follows the set (fix a mirrored feed vs flip the picture). */
+    _bsReflectFraming() {
+        ['left', 'right'].forEach(function (side) {
+            var preset = this._bsFramingSet(side) === '';
+            var row = document.getElementById(this._bsFramingId(side, 'Row'));
+            if (row) row.style.display = (this.config.bsMergeMode === 'side' && side === this._bsSide) ? '' : 'none';
+            var dp = document.getElementById(this._bsFramingId(side, 'MirrorDescPreset'));
+            if (dp) dp.style.display = preset ? '' : 'none';
+            var dc = document.getElementById(this._bsFramingId(side, 'MirrorDescCam'));
+            if (dc) dc.style.display = preset ? 'none' : '';
+            var f = this._bsFraming(side);
+            this._setChecked(this._bsFramingId(side, 'Mirror'), f.mirror);
+            ['angle', 'zoom', 'panX', 'panY'].forEach(function (key) { this._bsPaintFraming(side, key, f[key]); }, this);
+        }, this);
+    },
+
+    /** Live label + live preview while dragging; the value is saved on release (bsSetFraming). */
+    bsFramingInput(side, key, raw) {
+        if (!this.BS_FRAMING_RANGE[key]) return;
+        var v = this._bsFramingParse(key, raw);
+        if (v === null) return;
+        var label = document.getElementById(this._bsFramingId(side, this._bsCap(key)) + 'Val');
+        if (label) label.textContent = this._bsFramingLabel(key, v);
+        this._bsLiveSend(this._bsFramingKey(side, key), v);
+    },
+
+    /** Save one framing value; the daemon re-frames the card live. */
+    async bsSetFraming(side, key, raw) {
+        if (!this.BS_FRAMING_RANGE[key]) return;
+        var v = this._bsFramingParse(key, raw);
+        if (v === null) return;
+        var f = this._bsFraming(side);
+        var prev = f[key];
+        this._bsPaintFraming(side, key, v);
+        if (v === prev) return;
+        f[key] = v;
+        var saveKey = this._bsFramingKey(side, key);
+        this._bsLiveCommitted(saveKey);
+        var payload = {}; payload[saveKey] = v;
+        const ok = await this._bsSave(payload);
+        if (ok) { this._toastSaved(); }
+        else { f[key] = prev; this._bsPaintFraming(side, key, prev); this._bsLiveRevert(false); this._toastFailed(); }
+    },
+
+    async bsSetFramingMirror(side, on) {
+        var f = this._bsFraming(side);
+        var prev = f.mirror;
+        on = !!on;
+        if (on === prev) return;
+        f.mirror = on;
+        var payload = {}; payload[this._bsFramingKey(side, 'mirror')] = on;
+        const ok = await this._bsSave(payload);
+        if (ok) { this._toastSaved(); }
+        else { f.mirror = prev; this._setChecked(this._bsFramingId(side, 'Mirror'), prev); this._toastFailed(); }
+    },
+
+    /** Back to neutral for the set the side is showing. */
+    async bsResetFraming(side) {
+        var prop = this._bsFramingProp(side);
+        var prev = this.config[prop];
+        var next = Object.assign({}, this.BS_FRAMING_NEUTRAL);
+        var payload = {};
+        for (var k in next) {
+            payload[this._bsFramingKey(side, k)] = next[k];
+            this._bsLiveCommitted(this._bsFramingKey(side, k));
+        }
+        this.config[prop] = next;
+        this._bsReflectFraming();
+        const ok = await this._bsSave(payload);
+        if (ok) { this._toastSaved(); }
+        else { this.config[prop] = prev; this._bsReflectFraming(); this._bsLiveRevert(false); this._toastFailed(); }
     },
 
     // ── Conditional display: speed window + reverse suppression ────────────────
@@ -1968,9 +2902,9 @@ BYD.roadSense = {
         else { el.checked = !on; this._toastFailed(); }
     },
 
-    /** Select a SIDE's on-screen card rotation: a quarter turn (0/90/180/270), one of
-     *  the free-angle presets (40/310 — each also applies its own crop, mirror and
-     *  zoom, so no other setting has to be touched), or 'auto' (direction-of-travel —
+    /** Select a SIDE's on-screen card rotation: a quarter turn (0/90/180/270), the
+     *  free-angle preset (310 left / 40 right — the daemon renders either angle as that
+     *  camera's own crop, mirror and zoom), or 'auto' (direction-of-travel —
      *  the daemon holds that side's base angle moving forward and flips 180° in
      *  reverse gear). side is 'left' (view 7) or 'right' (view 8). Persists immediately
      *  and takes effect live on the running card. */
@@ -1984,18 +2918,16 @@ BYD.roadSense = {
         if (d === prev) return;
         this.config[key] = d;
         this._bsHighlightRotation(side, d);
-        this._bsReflectAutoBaseRow(side, d);
-        // Picking a preset can make the fisheye control inert, so re-evaluate its row
-        // here as well — otherwise it would only update on a reload or a mode change.
-        this._bsReflectRectifyRow(this.config.bsMergeMode);
+        // Picking a preset can make the fisheye control inert and swaps the framing set,
+        // so the side's rows are re-evaluated here, not only on a reload or a mode change.
+        this._bsReflectSide();
         var payload = {}; payload[saveKey] = d;
         const ok = await this._bsSave(payload);
         if (ok) { this._toastSaved(); }
         else {
             this.config[key] = prev;
             this._bsHighlightRotation(side, prev);
-            this._bsReflectAutoBaseRow(side, prev);
-            this._bsReflectRectifyRow(this.config.bsMergeMode);
+            this._bsReflectSide();
             this._toastFailed();
         }
     },
@@ -2004,6 +2936,10 @@ BYD.roadSense = {
     _bsHighlightRotation(side, deg) {
         var isRight = (side === 'right');
         var pfx = isRight ? 'bsRotR' : 'bsRotL';
+        // Rear-only renders a stored preset as 0° (see _bsReflectPresetButtons).
+        if (this.config.bsMergeMode === 'rear' && this._bsIsPresetAngle(deg)) deg = 0;
+        // Either preset angle renders this camera's framing; each row shows only its own.
+        if (this._bsIsPresetAngle(deg)) deg = isRight ? 40 : 310;
         var map = { 0: pfx + '0', 40: pfx + '40', 90: pfx + '90', 180: pfx + '180',
                     270: pfx + '270', 310: pfx + '310', auto: pfx + 'Auto' };
         for (var k in map) {
@@ -2016,11 +2952,13 @@ BYD.roadSense = {
     },
 
     /** A side's forward-orientation base row is only meaningful when that side's
-     *  rotation is 'auto'. */
+     *  rotation is 'auto', and shows only for the selected side in a single-camera view. */
     _bsReflectAutoBaseRow(side, rot) {
         var id = (side === 'right') ? 'bsAutoBaseRightRow' : 'bsAutoBaseLeftRow';
         var row = document.getElementById(id);
-        if (row) row.style.display = (rot === 'auto') ? '' : 'none';
+        var mode = this.config.bsMergeMode;
+        var selected = (side === 'right') === (this._bsSide === 'right');
+        if (row) row.style.display = ((mode === 'side' || mode === 'rear') && selected && rot === 'auto') ? '' : 'none';
     },
 
     /** Select a side's forward-gear base orientation used by 'auto' (0/90/180/270).
@@ -2081,18 +3019,55 @@ BYD.roadSense = {
         if (rpv) rpv.textContent = String(c.bsRearPitch);
     },
 
-    /** Live-tune the in-car stitch via /api/stream/bs (in-memory, debounced).
-     *  Order: hfov/sideHFov/yaw/roll/feather/projExp/vscale/pitch/rearRoll/rearPitch. */
+    /** Live-tune the in-car stitch via /api/stream/bs (in-memory, debounced). */
     bsTune() {
         this._bsReadSliders();
-        const c = this.config;
+        this._bsMarkStitchDirty();
+        var self = this;
         if (this._bsTuneTimer) clearTimeout(this._bsTuneTimer);
         this._bsTuneTimer = setTimeout(function () {
-            fetch('/api/stream/bs/' + c.bsRearFov + '/' + c.bsSideFov + '/' + c.bsYaw +
-                  '/' + c.bsRoll + '/' + c.bsFeather + '/' + c.bsProjExp + '/1.0/' + c.bsPitch +
-                  '/' + c.bsRearRoll + '/' + c.bsRearPitch,
-                  { method: 'POST' });
+            self._bsTuneTimer = null;
+            self._bsPushStitch();
         }, 120);
+    },
+
+    /** Push the alignment values in config to the running scalers (not persisted).
+     *  Order: hfov/sideHFov/yaw/roll/feather/projExp/vscale/pitch/rearRoll/rearPitch. */
+    _bsPushStitch() {
+        const c = this.config;
+        fetch('/api/stream/bs/' + c.bsRearFov + '/' + c.bsSideFov + '/' + c.bsYaw +
+              '/' + c.bsRoll + '/' + c.bsFeather + '/' + c.bsProjExp + '/1.0/' + c.bsPitch +
+              '/' + c.bsRearRoll + '/' + c.bsRearPitch,
+              { method: 'POST' }).catch(function () { /* best-effort live tune */ });
+    },
+
+    BS_STITCH_IDS: ['bsRearFov', 'bsSideFov', 'bsYaw', 'bsRoll', 'bsPitch', 'bsFeather',
+        'bsProjExp', 'bsRearRoll', 'bsRearPitch'],
+
+    /** The alignment sliders' values as shown. */
+    _bsStitchValues() {
+        return this.BS_STITCH_IDS.map(function (id) {
+            var el = document.getElementById(id);
+            return el ? String(el.value) : '';
+        });
+    },
+
+    /** True when the alignment sliders differ from what was last loaded or applied. */
+    _bsStitchDirty() {
+        var base = this._bsStitchBaseline;
+        if (!base) return false;
+        var now = this._bsStitchValues();
+        for (var i = 0; i < now.length; i++) {
+            if (now[i] !== base[i]) return true;
+        }
+        return false;
+    },
+
+    /** Apply alignment lights up only while the sliders hold unapplied moves. */
+    _bsMarkStitchDirty() {
+        var dirty = this._bsStitchDirty();
+        var btn = document.getElementById('bsStitchApplyBtn');
+        if (btn) { btn.disabled = !dirty; btn.classList.toggle('has-changes', dirty); }
     },
 
     /** Select the display target: 'head_unit' (infotainment) or 'cluster' (driver
@@ -2163,6 +3138,7 @@ BYD.roadSense = {
         this.config[key] = corner;
         this._bsHighlightCorner(side, corner);
         this._bsMarkDirty();
+        this.bsSelectSide(side);
     },
 
     /** Snapshot of the persisted display/placement values, for dirty-compare +
@@ -2251,17 +3227,28 @@ BYD.roadSense = {
         }
     },
 
-    /** Start the live debug preview on the car screen: set debugPreview flag +
-     *  debugView side, select the stream view so the overlay paints. */
+    /** Start the live debug preview on the car screen (7 = left turn, 8 = right turn),
+     *  or move a running one to that side: set debugPreview flag + debugView side,
+     *  select the stream view so the overlay paints. The per-side controls follow it. */
     async bsPreview(mode) {
+        mode = (mode === 8) ? 8 : 7;
+        var prevSide = this._bsSide;
+        this._bsSide = (mode === 8) ? 'right' : 'left';
+        this._bsReflectSide();
         // H2: the flag MUST persist before we hijack the global stream to 7/8.
         // If the UCM write fails (EACCES-from-app-UID is a documented risk), the
         // service never shows the overlay (tick takes the hide branch) and won't
         // restore the stream (streamWarmedView stays -1) — leaving the stream
         // stuck on a blind-spot view with no preview and no error. Bail first.
         const ok = await this._bsSave({ debugPreview: true, debugView: mode });
-        if (!ok) { this._toastFailed(); return; }
+        if (!ok) {
+            this._bsSide = prevSide;
+            this._bsReflectSide();
+            this._toastFailed();
+            return;
+        }
         this._bsPreviewActive = true;
+        this._bsReflectSide();
         // Drive the DEDICATED blind-spot pipeline (port 8889), not the shared
         // live-view stream. The overlay renders the BS lane, so the side must be
         // set on /api/bs/view; the old /api/stream/view/{7,8} switched a different
@@ -2274,21 +3261,41 @@ BYD.roadSense = {
     },
 
     async bsPreviewStop() {
+        var wasActive = this._bsPreviewActive;
         this._bsPreviewActive = false;
+        this._bsReflectSide();
+        // Unsaved slider values (a cut-off drag, unapplied alignment) must not stay on
+        // the card the driver uses once the preview ends — including a debounced
+        // alignment push that would otherwise land after the revert.
+        if (wasActive) {
+            if (this._bsTuneTimer) { clearTimeout(this._bsTuneTimer); this._bsTuneTimer = null; }
+            this._bsLiveRevert(true);
+        }
         const ok = await this._bsSave({ debugPreview: false });
-        if (!ok) this._toastFailed();   // L6: surface a stuck-preview write failure
+        if (!ok) {
+            this._bsPreviewActive = wasActive;
+            this._bsReflectSide();
+            this._toastFailed();   // L6: surface a stuck-preview write failure
+        }
         this._bsSyncNative();
     },
 
     async bsSave() {
         this._bsReadSliders();
         const c = this.config;
+        var applied = this._bsStitchValues();
         const ok = await this._bsSave({
             rearFov: c.bsRearFov, sideFov: c.bsSideFov, yaw: c.bsYaw,
             roll: c.bsRoll, pitch: c.bsPitch, feather: c.bsFeather,
             projExp: c.bsProjExp, rearRoll: c.bsRearRoll, rearPitch: c.bsRearPitch
         });
-        if (ok) this._toastSaved(); else this._toastFailed();
+        if (ok) {
+            this._bsStitchBaseline = applied;
+            this._bsMarkStitchDirty();
+            // The card may have been put back on the old values when a preview ended.
+            this._bsPushStitch();
+            this._toastSaved();
+        } else this._toastFailed();
     },
 
     async bsResetDefaults() {

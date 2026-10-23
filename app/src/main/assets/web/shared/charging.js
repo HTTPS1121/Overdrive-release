@@ -93,6 +93,7 @@ var CHARGING = {
         brand: '#0EA5E9',
         brandRgba: 'rgba(14, 165, 233, 0.22)',
         accent: '#00D4AA',
+        dc: '#85CFFF',
         amber: '#F59E0B',
         danger: '#EF4444',
         good: '#22C55E',
@@ -221,6 +222,9 @@ var CHARGING = {
             };
             this.colors.brand      = pick('--brand-primary',     this.colors.brand);
             this.colors.brandRgba  = this._rgba(this.colors.brand, 0.22);
+            // Energy-per-charge bars match the page legend: AC primary, DC tertiary.
+            this.colors.accent     = pick('--primary',           this.colors.accent);
+            this.colors.dc         = pick('--tertiary',          this.colors.dc);
             this.colors.text       = pick('--chart-text',        this.colors.text);
             this.colors.textStrong = pick('--chart-text-strong', this.colors.textStrong);
             this.colors.grid       = pick('--chart-grid',        this.colors.grid);
@@ -999,7 +1003,96 @@ var CHARGING = {
                 : this._t('charge.disabled_hint', 'Enable charging analytics in Settings to start recording'));
         }
 
+        this._renderLiveTile(live, isCharging, liveKwh, liveRate, completion);
         this._renderSummaryCharts(s);
+    },
+
+    // Sessions-tab "Charging now" tile. Shown only while a charge is in
+    // progress; it reuses the live summary and the open session row, and each
+    // reading hides when there is no value for it.
+    _renderLiveTile: function (live, isCharging, liveKwh, liveRate, completion) {
+        var tile = document.getElementById('chargeLiveTile');
+        if (!tile) return;
+        live = live || {};
+        var s = this._liveSession;
+        var show = isCharging || (s != null && live.charging !== false);
+        tile.style.display = show ? '' : 'none';
+        if (!show) return;
+
+        var kind = s ? this._typeKind(s) : 'unk';
+        if (kind === 'dc') tile.classList.add('is-dc');
+        else tile.classList.remove('is-dc');
+        var kicker = [this._t('charge.in_progress', 'Charging now')];
+        var place = s ? this._locationLabel(s) : '';
+        if (place) kicker.push(place);
+        if (kind !== 'unk') kicker.push(this._typeLabel(s));
+        this._setText('chargeLiveKicker', kicker.join(' · '));
+
+        var liveSoc = Number(live.socPercent);
+        var nowSoc = live.socPercent != null && isFinite(liveSoc)
+            ? liveSoc
+            : (s && s.endSoc != null ? Number(s.endSoc) : NaN);
+        var hasNow = isFinite(nowSoc) && nowSoc >= 0 && nowSoc <= 100;
+        var socText = s
+            ? this._socRangeText({ startSoc: s.startSoc, endSoc: hasNow ? nowSoc : null })
+            : (hasNow ? Math.round(nowSoc) + '%' : '--');
+        var title = [];
+        if (socText !== '--') title.push(socText);
+        if (completion && completion.secondary) title.push(completion.secondary);
+        this._setText('chargeLiveTitle', title.length
+            ? title.join(' · ')
+            : this._t('charge.state_charging', 'Charging'));
+        var fill = document.getElementById('chargeLiveFill');
+        if (fill) fill.style.width = (hasNow ? nowSoc : 0) + '%';
+
+        var any = false;
+        var stat = function (self, id, text) {
+            self._setText(id, text || '--');
+            self._showCard(id + 'Stat', !!text);
+            if (text) any = true;
+        };
+        var kw = 0;
+        var kwEstimated = false;
+        if (s && s.livePowerKw != null && s.livePowerKw > 0) {
+            kw = s.livePowerKw;
+            kwEstimated = s.isEstimated === true;
+        } else if (isCharging && live.powerKw != null && live.powerKw > 0
+                && live.powerSource !== 'nominalPlaceholder') {
+            kw = live.powerKw;
+            kwEstimated = live.isEstimated === true;
+        }
+        stat(this, 'chargeLivePower', kw > 0
+            ? (kwEstimated ? '≈' : '') + kw.toFixed(1) + ' kW' : '');
+
+        var poisoned = !!s && s.powerDataQuality === 'poisoned';
+        var rowApproximate = s ? this._energyIsApproximate(s) : false;
+        var kwh = 0;
+        var kwhApproximate = false;
+        if (s && !poisoned && s.energyAdded > 0) {
+            kwh = s.energyAdded;
+            kwhApproximate = rowApproximate;
+        } else if (!poisoned && liveKwh > 0) {
+            kwh = liveKwh;
+            kwhApproximate = this._energyIsApproximate(live);
+        }
+        stat(this, 'chargeLiveAdded', kwh > 0
+            ? (kwhApproximate ? '~' : '') + kwh.toFixed(1) + ' kWh' : '');
+
+        var cost = '';
+        if (s && s.cost != null && s.cost > 0) {
+            cost = (rowApproximate ? '~' : '') + this._money(s.cost);
+        } else if (!poisoned && liveKwh > 0 && liveRate > 0) {
+            cost = '~' + this._money(liveKwh * liveRate);
+        }
+        stat(this, 'chargeLiveCost', cost);
+
+        var temp = s
+            ? (s.tempAvg != null ? Number(s.tempAvg)
+                : (s.tempHigh != null ? Number(s.tempHigh) : NaN))
+            : NaN;
+        stat(this, 'chargeLiveTemp', isFinite(temp) ? Math.round(temp) + '°C' : '');
+        stat(this, 'chargeLiveTtf', completion ? completion.primary : '');
+        this._showCard('chargeLiveStats', any);
     },
 
     _chargingCompletion: function (live) {
@@ -1208,13 +1301,19 @@ var CHARGING = {
             var bt = b && b.startTime ? b.startTime : 0;
             return self.sortOrder === 'oldest' ? at - bt : bt - at;
         });
+        // Grouped by start day (mock list): each session is one .session-item
+        // and the first session of a day carries the day heading.
+        var lastDayKey = null;
         for (var i = 0; i < displayedSessions.length; i++) {
             (function (s) {
-                var card = document.createElement('article');
-                card.className =
-                    'session-card app-surface-card app-surface-card--interactive';
-                card.setAttribute('role', 'button');
-                card.setAttribute('tabindex', '0');
+                var item = document.createElement('div');
+                item.className = 'session-item';
+                var dayKey = s.startTime ? self._dateKey(new Date(s.startTime)) : '';
+                var dayHead = dayKey && dayKey !== lastDayKey
+                    ? '<h3 class="session-day-head">'
+                        + self._esc(self._fmtDay(s.startTime)) + '</h3>'
+                    : '';
+                lastDayKey = dayKey;
 
                 var kind = self._typeKind(s);
                 var typeLabel = self._typeLabel(s);
@@ -1256,7 +1355,9 @@ var CHARGING = {
                 var odoStr = (s.startOdometerKm != null && s.startOdometerKm > 0) ? self._dist(s.startOdometerKm) : '';
                 var locStr = self._locationLabel(s);   // place name, else coords, else ''
 
-                var startTime = self._fmtDate(s.startTime);
+                // The day heading carries the date, so the row shows the clock.
+                var startTime = dayKey
+                    ? self._fmtClock(s.startTime) : self._fmtDate(s.startTime);
                 var rangeStr = (s.rangeGained != null && s.rangeGained > 0)
                     ? self._dist(s.rangeGained) : '--';
                 var contextStr = locStr || costStr || odoStr || '--';
@@ -1277,12 +1378,23 @@ var CHARGING = {
                     ? Number(s.endSoc) : Number(s.startSoc);
                 var socFillPct = isFinite(fillSoc)
                     && fillSoc >= 0 && fillSoc <= 100 ? fillSoc : 0;
+                // The bar spans start → end SoC (mock); without a start it fills from 0.
+                var socFrom = Number(s.startSoc);
+                var socFillStyle = 'width:' + socFillPct + '%';
+                if (s.startSoc != null && s.endSoc != null && isFinite(socFrom)
+                        && socFrom >= 0 && socFrom <= socFillPct) {
+                    socFillStyle = 'margin-left:' + socFrom + '%;width:'
+                        + (socFillPct - socFrom) + '%';
+                }
 
                 // Always show the power chip in the pill (peak for finished, live
                 // for in-progress) — the user wants kW visible regardless of state.
                 var powerChip = peakStr;
-                card.setAttribute('aria-label', typeLabel + ', ' + energy);
-                card.innerHTML =
+                item.innerHTML = dayHead +
+                    '<article class="session-card session-card--' + kind
+                        + ' app-surface-card app-surface-card--interactive"'
+                        + ' role="button" tabindex="0" aria-label="'
+                        + self._esc(typeLabel + ', ' + energy) + '">' +
                     '<div class="session-primary">' +
                         '<div class="session-kind-row">' +
                             '<span class="session-type session-type-' + kind + '">' +
@@ -1305,8 +1417,8 @@ var CHARGING = {
                         '<div class="session-soc-row">' +
                             '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="16" height="12" rx="2"/><path d="M21 10v4"/></svg>' +
                             '<span>' + self._esc(socRange) + '</span>' +
-                            '<span class="session-soc-track"><span class="session-soc-fill" style="width:' +
-                                socFillPct + '%"></span></span>' +
+                            '<span class="session-soc-track"><span class="session-soc-fill" style="' +
+                                socFillStyle + '"></span></span>' +
                         '</div>' +
                         ((powerEstimated || energyApproximate)
                             ? '<span class="session-estimate-badge">' +
@@ -1356,10 +1468,13 @@ var CHARGING = {
                                     '<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>' +
                             '</button>') +
                     '</div>' +
-                    '';
+                    '</article>';
 
+                var card = item.querySelector('.session-card') || item;
                 card.addEventListener('click', function () { self.showDetail(s.id); });
                 card.addEventListener('keydown', function (e) {
+                    // Keys on the row's own buttons (delete, quality info) are theirs.
+                    if (e.target !== card) return;
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); self.showDetail(s.id); }
                 });
                 var delBtn = card.querySelector('.session-delete-btn');
@@ -1371,7 +1486,7 @@ var CHARGING = {
                     e.stopPropagation();
                     self.deleteSession(s.id);
                 });
-                grid.appendChild(card);
+                grid.appendChild(item);
             })(displayedSessions[i]);
         }
     },
@@ -3079,7 +3194,7 @@ var CHARGING = {
             ctx.beginPath();
             this._roundRectPath(ctx, bx, by, barW, Math.max(barH, 1), 3);
             ctx.fillStyle = pts[j].chargerKind === 'dc'
-                ? this.colors.brand
+                ? this.colors.dc
                 : pts[j].chargerKind === 'unk'
                     ? this.colors.textMuted
                     : this.colors.accent;
@@ -3953,7 +4068,18 @@ var CHARGING = {
     },
     _setInput: function (id, value) {
         var el = document.getElementById(id);
-        if (el) el.value = (value == null ? '' : value);
+        if (!el) return;
+        var v = (value == null ? '' : value);
+        el.value = v;
+        // A saved value the list doesn't offer (e.g. an ISO code such as "AUD")
+        // would leave the select blank; show it as its own option instead.
+        if (el.tagName === 'SELECT' && v !== '' && el.value !== v) {
+            var opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            el.insertBefore(opt, el.firstChild);
+            el.value = v;
+        }
     },
     _setVal: function (id, value, isCheckbox) {
         var el = document.getElementById(id);

@@ -216,11 +216,11 @@ class CommunitySyncProvider(
         private val logger = DaemonLogger.getInstance("Community/Sync")
         private val JSON = "application/json; charset=utf-8".toMediaType()
 
-        /** Privacy-sensitive AI/community traffic fails closed when proxy-only mode is enabled. */
+        /** Privacy-sensitive community traffic takes one route per request, never a direct fallback. */
         private fun proxiedClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-            .proxy(com.overdrive.app.mqtt.ProxyHelper.getFailClosedHttpProxy())
+            .proxySelector(com.overdrive.app.mqtt.ProxyHelper.singleRouteSelector())
             .followRedirects(false)
             .followSslRedirects(false)
             .build()

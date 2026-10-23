@@ -20,9 +20,9 @@ public class DiLink5QCarCamBackend {
     private static final String FAST_CAM_ASSET =
             "dilink5/fast_cam_capture";
     private static final String FAST_CAM_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/fast_cam_capture");
+            com.overdrive.app.util.ScratchRoot.path("fast_cam_capture");
     private static final String LEGACY_QCARCAM_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/qcarcam_test");
+            com.overdrive.app.util.ScratchRoot.path("qcarcam_test");
     private static final String CAPTURE_FPS_PROPERTY =
             "persist.overdrive.fast_cam_fps";
     public static final String CONFIG_CAMERA_MAPPING_KEY =
@@ -48,6 +48,9 @@ public class DiLink5QCarCamBackend {
         return exitCode == FAST_CAM_EXIT_AIS_STALL;
     }
     private static final long PROCESS_STOP_TIMEOUT_MS = 1_000L;
+    // On SIGTERM fast_cam_capture stops and closes every camera before it frees the buffers.
+    private static final long PROCESS_GRACEFUL_STOP_TIMEOUT_MS = 3_000L;
+    private static final long GRACEFUL_STOP_RESERVE_SLACK_MS = 250L;
     private static final long NATIVE_RECOVERY_WAIT_TIMEOUT_MS = 12_000L;
     private static final long NATIVE_RETIREMENT_EXECUTION_BUDGET_MS =
             9_500L;
@@ -56,6 +59,8 @@ public class DiLink5QCarCamBackend {
     private static final long OWNER_RETIREMENT_RETRY_BUDGET_MS = 22_000L;
     private static final long EXPECTED_STOP_RETRY_WINDOW_MS = 24_000L;
     private static final long PROCESS_START_CHECK_MS = 300L;
+    // Field logs show the IPC-ready line 140-500 ms after spawn.
+    private static final long PRODUCER_BRING_UP_WAIT_MS = 1_000L;
     private static final long HARDWARE_RELEASE_SETTLE_MS = 1_000L;
     private static final SecureRandom CHANNEL_RANDOM = new SecureRandom();
     private static volatile Boolean sSupported;
@@ -207,6 +212,54 @@ public class DiLink5QCarCamBackend {
             lock.unlock();
         }
     }
+
+    /**
+     * Camera bring-up parsed from fast_cam_capture's startup output: one
+     * "started OK" line per streaming camera, then the IPC-ready line.
+     */
+    static final class ProducerBringUp {
+        final Process process;
+        private int startedCameras;
+        private boolean complete;
+        private boolean outputClosed;
+
+        ProducerBringUp(Process process) {
+            this.process = process;
+        }
+
+        synchronized void onOutputLine(String line) {
+            if (complete || line == null) return;
+            if (line.startsWith("[+] Camera ")
+                    && line.contains(" started OK")) {
+                startedCameras++;
+            } else if (line.startsWith(
+                    "[+] Zero-Copy Multi-Channel IPC Server initialized")) {
+                complete = true;
+                notifyAll();
+            }
+        }
+
+        synchronized void onOutputClosed() {
+            outputClosed = true;
+            notifyAll();
+        }
+
+        /** Started-camera count, or -1 when bring-up was not observed in time. */
+        synchronized int awaitStartedCameras(long timeoutMs)
+                throws InterruptedException {
+            long deadlineNs = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+            while (!complete && !outputClosed) {
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(
+                        deadlineNs - System.nanoTime());
+                if (remainingMs <= 0L) return -1;
+                wait(remainingMs);
+            }
+            return complete ? startedCameras : -1;
+        }
+    }
+
+    private static volatile ProducerBringUp sProducerBringUp;
 
     public interface FrameListener {
         void onFrameAvailable(long timestampNs);
@@ -711,23 +764,12 @@ public class DiLink5QCarCamBackend {
                 return false;
             }
 
-            // The sidecar is a standalone ELF. When the daemon storage is
-            // relocated (DiLink 5: /sdcard, mounted noexec) prefer the copy
-            // bundled as a jniLib in the app's nativeLibraryDir, which is always
-            // executable. Fall back to deploying from assets on platforms whose
-            // storage still permits execution (DiLink 3/4), so upstream
-            // behaviour is unchanged when the jniLib is absent.
-            java.io.File binary = new java.io.File(
-                    context.getApplicationInfo().nativeLibraryDir,
-                    System.mapLibraryName("fast_cam_capture"));
-            if (!binary.isFile()) {
-                binary = new java.io.File(FAST_CAM_PATH);
-                if (!deployVerifiedAsset(
-                        context, FAST_CAM_ASSET, binary, 0700)) {
-                    logger.error("fast_cam_capture is unavailable at "
-                            + binary.getPath());
-                    return false;
-                }
+            java.io.File binary = new java.io.File(FAST_CAM_PATH);
+            if (!deployVerifiedAsset(
+                    context, FAST_CAM_ASSET, binary, 0700)) {
+                logger.error("fast_cam_capture is unavailable at "
+                        + FAST_CAM_PATH);
+                return false;
             }
             int[] cameraMapping = resolveCameraMapping();
             String cameraIds = DiLink5CameraMapping.toCsv(cameraMapping);
@@ -824,10 +866,20 @@ public class DiLink5QCarCamBackend {
                     "--socket", socketPath);
             processBuilder.environment().put(
                     "LD_LIBRARY_PATH",
-                    "/vendor/lib64:/system/lib64:/data/local/tmp");
+                    "/vendor/lib64:/system/lib64:"
+                            + com.overdrive.app.util.ScratchRoot.dir());
             processBuilder.environment().put(
                     "LD_PRELOAD", releaseGuard.getAbsolutePath());
+            // The LD_PRELOADed release guard resolves its reason-file
+            // directory from OVERDRIVE_SCRATCH (see fast_cam_release_guard.c);
+            // stamp it explicitly rather than relying on inheritance.
+            com.overdrive.app.util.ScratchRoot.applyEnv(processBuilder);
             processBuilder.redirectErrorStream(true);
+            // A reason still on disk belongs to an earlier producer; never let it name this one.
+            String staleReason = releaseGuardReasonSuffix();
+            if (!staleReason.isEmpty()) {
+                logger.info("Earlier fast_cam_capture left a release reason" + staleReason);
+            }
 
             startedProcess = processBuilder.start();
             Process process = startedProcess;
@@ -872,6 +924,7 @@ public class DiLink5QCarCamBackend {
             }
             drainHardwareOutput(process);
             outputDrainerStarted = true;
+            ProducerBringUp bringUp = sProducerBringUp;
 
             if (process.waitFor(
                     PROCESS_START_CHECK_MS, TimeUnit.MILLISECONDS)) {
@@ -889,6 +942,9 @@ public class DiLink5QCarCamBackend {
                                 : ""));
                 return false;
             }
+            int startedCameras = bringUp != null && bringUp.process == process
+                    ? bringUp.awaitStartedCameras(PRODUCER_BRING_UP_WAIT_MS)
+                    : -1;
             if (!isStartAllowed(startEpoch, acquisitionGeneration)) {
                 if (stopProcess(process)) {
                     clearHardwareSessionIfOwned(process, ownerToken);
@@ -898,6 +954,20 @@ public class DiLink5QCarCamBackend {
             }
             if (!isHardwareSessionCurrent(
                     process, acquisitionGeneration, ownerToken)) {
+                return false;
+            }
+            if (startedCameras == 0) {
+                // No streams means no shared buffers, so the child is safe to
+                // stop; the native client would otherwise retry it forever.
+                logger.error("fast_cam_capture could not open cameras "
+                        + cameraIds + "; select the DiLink 5 camera mapping "
+                        + "that matches this vehicle.");
+                if (stopProcess(process)) {
+                    clearHardwareSessionIfOwned(process, ownerToken);
+                    markCleanReleaseIfNoOwnership();
+                }
+                DiLink5CameraSafety.suppressForProcess(
+                        "QCarCam opened none of cameras " + cameraIds);
                 return false;
             }
             logger.info("Qualcomm fast_cam_capture started via owned supervisor"
@@ -1260,7 +1330,7 @@ public class DiLink5QCarCamBackend {
         } catch (android.system.ErrnoException e) {
             if (e.errno == android.system.OsConstants.ESRCH) return true;
         }
-        if (waitForPidExit(pid, PROCESS_STOP_TIMEOUT_MS)) return true;
+        if (waitForPidExit(pid, PROCESS_GRACEFUL_STOP_TIMEOUT_MS)) return true;
         try {
             android.system.Os.kill(
                     pid, android.system.OsConstants.SIGKILL);
@@ -1358,6 +1428,9 @@ public class DiLink5QCarCamBackend {
             configuredModel = selected != null ? selected : "";
         } catch (Throwable ignored) {
         }
+        // Diagnostics only: Di5.0_DXF_W is reported by the Shark 6 and by
+        // large-pack BEVs whose inputs are 0-3, so it cannot select a layout.
+        String vehicleType = readSystemProperty("ro.vehicle.type");
         mapping = DiLink5CameraMapping.forPlatform(
                 configuredModel,
                 android.os.Build.MODEL,
@@ -1366,7 +1439,8 @@ public class DiLink5QCarCamBackend {
         logger.info(("8,9,5,4".equals(cameraIds)
                 ? "Detected BYD Shark/DMO"
                 : "Using standard DiLink 5")
-                + " camera mapping: " + cameraIds);
+                + " camera mapping: " + cameraIds
+                + (vehicleType.isEmpty() ? "" : " (ro.vehicle.type=" + vehicleType + ")"));
         return mapping;
     }
 
@@ -1529,18 +1603,23 @@ public class DiLink5QCarCamBackend {
     }
 
     private static void drainHardwareOutput(Process process) {
+        ProducerBringUp bringUp = new ProducerBringUp(process);
+        sProducerBringUp = bringUp;
         Thread drainer = new Thread(() -> {
             try (java.io.BufferedReader reader = new java.io.BufferedReader(
                     new java.io.InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     logger.info("[FastCamProc] " + line);
+                    bringUp.onOutputLine(line);
                 }
                 int exitCode = process.waitFor();
                 boolean expected =
                         classifyDrainedHardwareExitAndClear(process);
                 if (expected) {
-                    logger.info("fast_cam_capture stopped with code " + exitCode);
+                    // Consumed here too, so a reason left by this stop is never blamed on a later exit.
+                    logger.info("fast_cam_capture stopped with code " + exitCode
+                            + releaseGuardReasonSuffix());
                 } else if (isAisStallSelfExit(exitCode)) {
                     logger.warn("fast_cam_capture self-exited after an AIS "
                             + "pipeline stall (code " + exitCode + "); known "
@@ -1556,6 +1635,7 @@ public class DiLink5QCarCamBackend {
                 logger.warn("fast_cam_capture output drainer stopped: "
                         + t.getMessage());
             } finally {
+                bringUp.onOutputClosed();
                 synchronized (DiLink5QCarCamBackend.class) {
                     if (sHardwareProcess == process && !process.isAlive()) {
                         clearHardwareSession();
@@ -1582,16 +1662,22 @@ public class DiLink5QCarCamBackend {
                 process, ownerTokenForProcess(process));
         try {
             process.destroy();
-            long gracefulWaitMs = boundedDeadlineWaitMs(
-                    deadlineElapsedMs, PROCESS_STOP_TIMEOUT_MS);
+            long gracefulWaitMs = gracefulStopWaitMs(deadlineElapsedMs);
             if (gracefulWaitMs <= 0L) {
                 return false;
             }
-            if (!process.waitFor(
+            long sigtermAtMs = android.os.SystemClock.elapsedRealtime();
+            if (process.waitFor(
                     gracefulWaitMs, TimeUnit.MILLISECONDS)) {
+                logger.info("fast_cam_capture exited "
+                        + (android.os.SystemClock.elapsedRealtime() - sigtermAtMs)
+                        + " ms after SIGTERM (code " + process.exitValue() + ")");
+            } else {
                 if (!hasDeadlineBudget(deadlineElapsedMs, 1L)) {
                     return false;
                 }
+                logger.warn("fast_cam_capture still running " + gracefulWaitMs
+                        + " ms after SIGTERM; calling destroyForcibly");
                 process.destroyForcibly();
                 long forcedWaitMs = boundedDeadlineWaitMs(
                         deadlineElapsedMs, PROCESS_STOP_TIMEOUT_MS);
@@ -1629,6 +1715,24 @@ public class DiLink5QCarCamBackend {
         return Math.max(0L, Math.min(maximumMs, remaining));
     }
 
+    /** Up to the graceful timeout, never less than before, keeping the forced-stop and settle reserve. */
+    static long gracefulStopWaitMs(long deadlineElapsedMs) {
+        return gracefulStopWaitMs(
+                deadlineElapsedMs, android.os.SystemClock.elapsedRealtime());
+    }
+
+    static long gracefulStopWaitMs(long deadlineElapsedMs, long nowElapsedMs) {
+        if (deadlineElapsedMs == Long.MAX_VALUE) {
+            return PROCESS_GRACEFUL_STOP_TIMEOUT_MS;
+        }
+        long remaining = deadlineElapsedMs - nowElapsedMs;
+        long legacy = Math.max(0L, Math.min(PROCESS_STOP_TIMEOUT_MS, remaining));
+        long extended = Math.min(PROCESS_GRACEFUL_STOP_TIMEOUT_MS,
+                remaining - PROCESS_STOP_TIMEOUT_MS - HARDWARE_RELEASE_SETTLE_MS
+                        - GRACEFUL_STOP_RESERVE_SLACK_MS);
+        return Math.max(legacy, extended);
+    }
+
     private static boolean deployVerifiedAsset(
             android.content.Context context,
             String asset,
@@ -1639,8 +1743,12 @@ public class DiLink5QCarCamBackend {
         try {
             java.io.File parent =
                     destination.getParentFile().getCanonicalFile();
+            // Traversal guard: the binary may only ever land directly inside
+            // the live scratch root (canonical on both sides).
+            String scratchRoot = new java.io.File(
+                    com.overdrive.app.util.ScratchRoot.dir()).getCanonicalPath();
             if (!FAST_CAM_ASSET.equals(asset)
-                    || !com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp").equals(parent.getPath())
+                    || !scratchRoot.equals(parent.getPath())
                     || !FAST_CAM_PATH.equals(destination.getPath())) {
                 return false;
             }
@@ -2657,7 +2765,8 @@ public class DiLink5QCarCamBackend {
         }
         if (isExpectedStopCurrent(process)) {
             logger.info("Clearing an intentionally stopped FastCam child "
-                    + "before its output-drainer completed.");
+                    + "before its output-drainer completed."
+                    + releaseGuardReasonSuffix());
         } else {
             // Process death is positive proof that the producer no longer
             // owns QCarCam. Keep the JNI/client owner published so the frame
@@ -2687,11 +2796,11 @@ public class DiLink5QCarCamBackend {
 
     /**
      * Must match REASON_FILE_PATH in fast_cam_release_guard.c: the guard
-     * writes ONE line there describing why it failed closed (which step,
-     * errno, frame ids) right before {@code _exit(125)}.
+     * writes ONE line there describing the failure (step, errno, frame ids)
+     * that made it stop the producer.
      */
     private static final String RELEASE_GUARD_REASON_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_dilink5_release_guard_reason");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_dilink5_release_guard_reason");
 
     /**
      * Read-and-consume the release guard's fail-closed reason as a log

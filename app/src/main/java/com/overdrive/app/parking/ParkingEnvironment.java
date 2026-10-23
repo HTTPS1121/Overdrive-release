@@ -64,6 +64,14 @@ public interface ParkingEnvironment {
          * Higher is better; 0 on decode failure.
          */
         double frameScore(byte[] jpeg, float[] regionNorm);
+
+        /**
+         * True when the JPEG is (near-)uniformly black — what the GL sampler
+         * produces when it renders before the camera texture is valid in its
+         * shared context. A real night scene has streetlight / IR highlights
+         * and never decodes to a flat black plane. False on decode failure.
+         */
+        default boolean isBlank(byte[] jpeg) { return false; }
     }
 
     long nowMs();

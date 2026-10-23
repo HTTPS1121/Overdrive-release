@@ -10,17 +10,20 @@ import com.overdrive.app.automation.AutomationCategories;
 import com.overdrive.app.automation.Automations;
 import com.overdrive.app.automation.value.BaseValue;
 import com.overdrive.app.automation.value.Value;
+import com.overdrive.app.byd.BydDataCollector;
 import com.overdrive.app.byd.BydVehicleData;
 import com.overdrive.app.byd.bodywork.BodyworkConstants;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Cross-checks the advertised condition catalog against its runtime publishers. */
 public class AutomationSignalContractTest {
@@ -111,6 +114,38 @@ public class AutomationSignalContractTest {
         Automations.markEditorSeedActive();
         BydEvent.bydEvent(copied);
         assertEquals(47, rawState(BydEvent.TARGET_SOC));
+    }
+
+    @Test
+    public void batteryHealthPublishesTheIncomingReadingBeforeThePreviousSnapshot()
+            throws Exception {
+        Field instance = BydDataCollector.class.getDeclaredField("instance");
+        instance.setAccessible(true);
+        Object previous = instance.get(null);
+        try {
+            Constructor<BydDataCollector> constructor =
+                    BydDataCollector.class.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            BydDataCollector collector = constructor.newInstance();
+            Field initialized = BydDataCollector.class.getDeclaredField("initialized");
+            initialized.setAccessible(true);
+            initialized.set(collector, true);
+            Field snapshot = BydDataCollector.class.getDeclaredField("snapshot");
+            snapshot.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            AtomicReference<BydVehicleData> snapshots =
+                    (AtomicReference<BydVehicleData>) snapshot.get(collector);
+            snapshots.set(new BydVehicleData.Builder().sohPercent(97).build());
+            instance.set(null, collector);
+            Automations.markEditorSeedActive();
+
+            BydEvent.bydEvent(new BydVehicleData.Builder().sohPercent(84).build());
+
+            assertEquals(84, rawState(BydEvent.BATTERY_SOH));
+        } finally {
+            instance.set(null, previous);
+            Automations.expireState(BydEvent.BATTERY_SOH);
+        }
     }
 
     @Test

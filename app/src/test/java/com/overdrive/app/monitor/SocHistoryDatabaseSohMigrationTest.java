@@ -120,7 +120,7 @@ public class SocHistoryDatabaseSohMigrationTest {
     }
 
     @Test
-    public void sohConsumersUseOneDisplaySnapshot() throws IOException {
+    public void sohOnlyConsumersResolveOnceWithoutRequiringAnEstimator() throws IOException {
         String source = databaseSource();
         String record = between(source,
                 "// SOH from the canonical resolver.",
@@ -129,17 +129,39 @@ public class SocHistoryDatabaseSohMigrationTest {
                 "private void foldSessionIntoDaily(long endTime",
                 "// Read current row (if any), accumulate");
 
-        assertTrue(record.contains("CapacitySohSnapshot capacitySoh"));
-        assertTrue(record.contains("capacitySoh.hasDisplaySoh()"));
-        assertTrue(record.contains("capacitySoh.getDisplaySoh()"));
+        assertEquals(1, occurrences(record, "SohEstimator.getDisplaySohOrOem("));
+        assertTrue(record.contains("sohPercent = canonicalSoh;"));
+        assertFalse(record.contains("sohEst != null"));
         assertFalse(record.contains("sohEst.hasDisplaySoh()"));
         assertFalse(record.contains("sohEst.getDisplaySoh()"));
 
-        assertTrue(daily.contains("CapacitySohSnapshot capacitySoh"));
-        assertTrue(daily.contains("capacitySoh.hasDisplaySoh()"));
-        assertTrue(daily.contains("capacitySoh.getDisplaySoh()"));
+        assertEquals(1, occurrences(daily, "SohEstimator.getDisplaySohOrOem("));
+        assertTrue(daily.contains("soh = canonicalSoh;"));
+        assertFalse(daily.contains("est != null"));
         assertFalse(daily.contains("est.hasEstimate()"));
         assertFalse(daily.contains("est.getDisplaySoh()"));
+    }
+
+    @Test
+    public void energyEstimateKeepsNominalCapacityAndHealthInOneSnapshot() throws IOException {
+        String estimate = between(databaseSource(),
+                "private double socEstimateForOpenSession(double endSoc)",
+                "private CounterRestoreState readCounterRestoreState(");
+
+        assertEquals(1, occurrences(estimate, ".getCapacitySohSnapshot()"));
+        assertTrue(estimate.contains("capacitySoh.getNominalCapacityKwh()"));
+        assertTrue(estimate.contains("capacitySoh.getDisplaySoh()"));
+        assertFalse(estimate.contains("soh.getNominalCapacityKwh()"));
+        assertFalse(estimate.contains("soh.getDisplaySoh()"));
+    }
+
+    private static int occurrences(String source, String token) {
+        int count = 0;
+        for (int index = source.indexOf(token); index >= 0;
+                index = source.indexOf(token, index + token.length())) {
+            count++;
+        }
+        return count;
     }
 
     private static String databaseSource() throws IOException {

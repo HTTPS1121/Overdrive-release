@@ -58,7 +58,7 @@ public class SafeLocationApiHandler {
                     return true;
                 }
 
-                SafeLocation zone = mgr.addZone(name, lat, lng, radiusM);
+                SafeLocation zone = mgr.addZone(req);
                 if (zone == null) {
                     HttpResponse.sendJsonError(out, Messages.get("errors.safelocation_max_zones"));
                     return true;

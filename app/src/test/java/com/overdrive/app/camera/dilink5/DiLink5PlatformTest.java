@@ -136,4 +136,38 @@ public class DiLink5PlatformTest {
         assertFalse(DiLink5Platform.matchesModeGeneration(generation, null));
         assertFalse(DiLink5Platform.matchesModeGeneration(null, generation));
     }
+
+    @Test
+    public void committedSnapshotKeepsModeAndGenerationCoupled() {
+        String generation = UUID.randomUUID().toString();
+        for (String mode : new String[]{"default", "dilink4", "camera2", "dilink5"}) {
+            DiLink5Platform.ActiveModeSnapshot value = DiLink5Platform.parseActiveModeMarker(
+                    (mode + "\n" + generation + "\n").getBytes(StandardCharsets.UTF_8));
+            assertEquals(mode, value.mode);
+            assertEquals(generation, value.generation);
+            assertEquals(!"dilink5".equals(mode), value.supportsLegacyVehicleApi());
+            assertTrue(value.matches(DiLink5Platform.parseActiveModeMarker(
+                    (mode + "\n" + generation + "\n").getBytes(StandardCharsets.UTF_8))));
+            assertFalse(value.matches(DiLink5Platform.parseActiveModeMarker(
+                    (mode + "\n" + UUID.randomUUID() + "\n").getBytes(StandardCharsets.UTF_8))));
+            assertFalse(value.matches(null));
+        }
+    }
+
+    @Test
+    public void committedSnapshotNeverDefaultsMissingOrMalformedMarker() {
+        assertNull(DiLink5Platform.parseActiveModeMarker(null));
+        String generation = UUID.randomUUID().toString();
+        for (String malformed : new String[]{"", "default\n", "invalid\n" + generation + "\n",
+                "default\nnot-a-uuid\n", "default\n1-1-1-1-1\n",
+                "default\n" + generation + "\nextra-data\n"}) {
+            assertNull(DiLink5Platform.parseActiveModeMarker(
+                    malformed.getBytes(StandardCharsets.UTF_8)));
+        }
+        assertNull(DiLink5Platform.parseActiveModeMarker(new byte[1_025]));
+        DiLink5Platform.ActiveModeSnapshot legacy = DiLink5Platform.parseActiveModeMarker(
+                ("default\n" + generation + "\n").getBytes(StandardCharsets.UTF_8));
+        assertFalse(legacy.matches(DiLink5Platform.parseActiveModeMarker(
+                ("dilink5\n" + generation + "\n").getBytes(StandardCharsets.UTF_8))));
+    }
 }

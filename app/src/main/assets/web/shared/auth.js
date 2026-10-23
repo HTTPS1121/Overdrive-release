@@ -87,12 +87,10 @@ const BYDAuth = {
     // Authenticated fetch wrapper
     // ALWAYS sends Authorization header (doesn't rely on cookies)
     fetch: async function(url, options = {}) {
-        const headers = {
-            ...options.headers,
-            ...this.getAuthHeaders()
-        };
+        // Object.assign, not object spread: spread needs Chrome 60 and the head-unit floor is 58.
+        const headers = Object.assign({}, options.headers, this.getAuthHeaders());
         
-        const response = await fetch(url, { ...options, headers });
+        const response = await fetch(url, Object.assign({}, options, { headers }));
         
         // Handle 401 - redirect to login
         if (response.status === 401) {

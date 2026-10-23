@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widgets mark: two tiles over a wide band, single-colour and tint-driven like the other rail icons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorOnSurfaceVariant">
+    <path
+        android:fillColor="@android:color/white"
+        android:fillType="evenOdd"
+        android:pathData="M5,3h4a2,2 0,0 1,2 2v4a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-4a2,2 0,0 1,2 -2zM5,4.8a0.2,0.2 0,0 0,-0.2 0.2v4a0.2,0.2 0,0 0,0.2 0.2h4a0.2,0.2 0,0 0,0.2 -0.2v-4a0.2,0.2 0,0 0,-0.2 -0.2z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:fillType="evenOdd"
+        android:pathData="M15,3h4a2,2 0,0 1,2 2v4a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-4a2,2 0,0 1,2 -2zM15,4.8a0.2,0.2 0,0 0,-0.2 0.2v4a0.2,0.2 0,0 0,0.2 0.2h4a0.2,0.2 0,0 0,0.2 -0.2v-4a0.2,0.2 0,0 0,-0.2 -0.2z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:fillType="evenOdd"
+        android:pathData="M5,13h14a2,2 0,0 1,2 2v4a2,2 0,0 1,-2 2h-14a2,2 0,0 1,-2 -2v-4a2,2 0,0 1,2 -2zM5,14.8a0.2,0.2 0,0 0,-0.2 0.2v4a0.2,0.2 0,0 0,0.2 0.2h14a0.2,0.2 0,0 0,0.2 -0.2v-4a0.2,0.2 0,0 0,-0.2 -0.2z" />
+</vector>

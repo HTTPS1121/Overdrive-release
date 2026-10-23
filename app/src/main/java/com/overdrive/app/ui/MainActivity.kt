@@ -85,6 +85,7 @@ open class MainActivity : AppCompatActivity() {
     // Daemon startup manager
     private lateinit var daemonStartupManager: DaemonStartupManager
     private var onboardingHost: com.overdrive.app.onboarding.OnboardingHost? = null
+    private var vehicleSetupAssistant: com.overdrive.app.setup.VehicleSetupAssistant? = null
     // Bounded poll while waiting for an onboarding navigation to commit (~2s total).
     private val NAV_POLL_INTERVAL_MS = 100L
     private val NAV_POLL_MAX_ATTEMPTS = 20
@@ -149,6 +150,7 @@ open class MainActivity : AppCompatActivity() {
             R.id.railSectionControls, R.string.rail_section_controls,
             setOf(
                 NavigationRailCatalog.VEHICLE,
+                NavigationRailCatalog.PROXIMITY,
                 NavigationRailCatalog.SEAT_POSITIONS,
                 NavigationRailCatalog.PROJECTION,
                 NavigationRailCatalog.CHARGING,
@@ -160,6 +162,7 @@ open class MainActivity : AppCompatActivity() {
                 NavigationRailCatalog.TRIPS,
                 NavigationRailCatalog.ROAD_SENSE,
                 NavigationRailCatalog.MAP,
+                NavigationRailCatalog.WIDGETS,
             )
         ),
         RailSection(
@@ -258,7 +261,18 @@ open class MainActivity : AppCompatActivity() {
         // cannot abort activity launch. See setupStorageDirectories().
         if (!remoteDevSession) window.decorView.post {
             try {
-                setupStorageDirectories()
+                if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                    // DiLink 5: shared storage can be slow at boot; keep its file I/O off the main thread.
+                    Thread({
+                        try {
+                            setupStorageDirectories()
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Deferred storage setup failed: ${e.message}", e)
+                        }
+                    }, "StorageSetup").start()
+                } else {
+                    setupStorageDirectories()
+                }
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "Deferred storage setup failed: ${e.message}", e)
             }
@@ -457,6 +471,14 @@ open class MainActivity : AppCompatActivity() {
     private fun maybeStartOnboarding(delayMs: Long) {
         val runner = Runnable {
             if (isFinishing || isDestroyed) return@Runnable
+            // An accepted vehicle setup survives the storage-switch restart; finish it before
+            // the guide resumes so the guide sees the applied state. One the car's ignition
+            // interrupted waits for the guide's vehicle step or the Diagnostics card instead.
+            if (com.overdrive.app.setup.VehicleSetupJournal.isPending(this) &&
+                !com.overdrive.app.setup.VehicleSetupJournal.deferred(this) &&
+                startVehicleSetup(fromOnboarding = false) { maybeStartOnboarding(0L) }) {
+                return@Runnable
+            }
             val host = onboardingHost ?: com.overdrive.app.onboarding.OnboardingHost(
                 this, daemonStartupManager.adbLauncher,
             ).also { onboardingHost = it }
@@ -528,6 +550,7 @@ open class MainActivity : AppCompatActivity() {
             "trips" -> R.id.tripsFragment
             "charging" -> R.id.chargingFragment
             "roadsense" -> R.id.roadSenseFragment
+            "widgets" -> R.id.widgetsFragment
             "recordings" -> R.id.recordingsFragment
             "parking" -> R.id.parkingFragment
             "live" -> R.id.liveViewFragment
@@ -1436,7 +1459,7 @@ open class MainActivity : AppCompatActivity() {
         // Preserve the original behaviour exactly.
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
             android.util.Log.i("MainActivity", "Pre-R: requesting runtime WRITE_EXTERNAL_STORAGE")
-            fallbackToSettingsRequest()
+            requestStoragePermissionUi()
             return
         }
 
@@ -1455,11 +1478,15 @@ open class MainActivity : AppCompatActivity() {
         try {
             val adb = com.overdrive.app.launcher.AdbShellExecutor(this)
             StorageSetup.tryGrantViaAppOps(this, adb) { granted ->
-                runOnUiThread { onAppOpsGrantResult(granted) }
+                if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                    onAppOpsGrantResult(granted)
+                } else {
+                    runOnUiThread { onAppOpsGrantResult(granted) }
+                }
             }
         } catch (e: Exception) {
             android.util.Log.w("MainActivity", "app-ops pre-grant threw, falling back to Settings: ${e.message}")
-            fallbackToSettingsRequest()
+            requestStoragePermissionUi()
         }
     }
 
@@ -1471,7 +1498,16 @@ open class MainActivity : AppCompatActivity() {
             return
         }
         android.util.Log.w("MainActivity", "app-ops grant did not take; falling back to Settings UI")
-        fallbackToSettingsRequest()
+        requestStoragePermissionUi()
+    }
+
+    /** The permission UI needs the main thread; the DiLink 5 storage setup runs off it. */
+    private fun requestStoragePermissionUi() {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            fallbackToSettingsRequest()
+            return
+        }
+        runOnUiThread { if (!isFinishing && !isDestroyed) fallbackToSettingsRequest() }
     }
 
     private fun fallbackToSettingsRequest() {
@@ -1643,7 +1679,15 @@ open class MainActivity : AppCompatActivity() {
     fun applyScreenshotPrivacyMode(enabled: Boolean) {
         screenshotPrivacyController?.setEnabled(enabled)
     }
-    
+
+    /** Hide the rail and app bar while a screen fills the window. Any navigation restores them. */
+    fun setContentImmersive(immersive: Boolean) {
+        if (!::navigationRailContainer.isInitialized) return
+        val visibility = if (immersive) View.GONE else View.VISIBLE
+        navigationRailContainer.visibility = visibility
+        findViewById<View>(R.id.appBarLayout)?.visibility = visibility
+    }
+
     private fun setupNavigation(savedInstanceState: Bundle?) {
         setSupportActionBar(toolbar)
 
@@ -1660,6 +1704,7 @@ open class MainActivity : AppCompatActivity() {
                 R.id.recordingsFragment,
                 R.id.parkingFragment,
                 R.id.vehicleControlFragment,
+                R.id.remoteAccessFragment,
                 R.id.seatPositionsFragment,
                 R.id.projectionFragment,
                 R.id.tripsFragment,
@@ -1668,6 +1713,7 @@ open class MainActivity : AppCompatActivity() {
                 R.id.keyMappingFragment,
                 R.id.integrationsFragment,
                 R.id.roadSenseFragment,
+                R.id.widgetsFragment,
                 R.id.networkFragment,
                 R.id.diagnosticsFragment,
                 R.id.settingsFragment,
@@ -1682,6 +1728,7 @@ open class MainActivity : AppCompatActivity() {
         // Settings is a top-level rail destination, so NavigationUI hides the
         // up caret; it has to be restored when Recordings opens it as a child.
         navController.addOnDestinationChangedListener { _, destination, arguments ->
+            setContentImmersive(false)
             if (destination.id == R.id.settingsFragment &&
                 arguments?.getBoolean(SettingsFragment.KEY_FROM_RECORDINGS) == true
             ) {
@@ -1723,6 +1770,9 @@ open class MainActivity : AppCompatActivity() {
             RailItem(NavigationRailCatalog.VEHICLE, R.id.railDestVehicle,
                 R.id.vehicleControlFragment,
                 R.drawable.ic_vehicle_control, R.string.rail_vehicle),
+            RailItem(NavigationRailCatalog.PROXIMITY, R.id.railDestProximity,
+                R.id.remoteAccessFragment,
+                R.drawable.ic_overlay_mode_proximity, R.string.nav_page_remote_access),
             RailItem(NavigationRailCatalog.SEAT_POSITIONS, R.id.railDestSeatPositions,
                 R.id.seatPositionsFragment,
                 R.drawable.ic_seat_positions, R.string.rail_seat_positions),
@@ -1742,6 +1792,9 @@ open class MainActivity : AppCompatActivity() {
             RailItem(NavigationRailCatalog.MAP, R.id.railDestMap, 0,
                 R.drawable.ic_roadsense_map, R.string.rail_hazard_map,
                 launchActivity = com.overdrive.app.navmap.RoadSenseMapActivity::class.java),
+            RailItem(NavigationRailCatalog.WIDGETS, R.id.railDestWidgets,
+                R.id.widgetsFragment,
+                R.drawable.ic_widgets, R.string.rail_widgets),
             RailItem(NavigationRailCatalog.AUTOMATIONS, R.id.railDestAutomations,
                 R.id.automationsFragment,
                 R.drawable.ic_automations, R.string.rail_automations),
@@ -1756,6 +1809,7 @@ open class MainActivity : AppCompatActivity() {
                     R.id.abrpSettingsFragment,
                     R.id.mqttFragment,
                     R.id.bydCloudFragment,
+                    R.id.safeKeepFragment,
                 )),
             RailItem(NavigationRailCatalog.NETWORK, R.id.railDestNetwork,
                 R.id.networkFragment,
@@ -2479,6 +2533,8 @@ open class MainActivity : AppCompatActivity() {
         // Optional native camera-ID order in front,right,rear,left order.
         // Empty keeps the model/property auto-detection path.
         val dilink5CameraMapping: String,
+        // Camera2 360 slice order such as "B;L;R;F"; empty is Auto (the camera's own order).
+        val camera2SliceOrder: String = "",
         // DiLink 4-only path that leaves APA output untouched and consumes
         // preview port 0 exactly as supplied by the HAL.
         val dilink4PassiveApaMode: Boolean,
@@ -2612,6 +2668,7 @@ open class MainActivity : AppCompatActivity() {
             val cameraMode = config.optString("cameraMode", "default")
                 .lowercase(java.util.Locale.US)
                 .let { if (it == "dilink4" || it == "dilink5") it else "default" }
+                .let { if (com.overdrive.app.camera.camera2.Camera2Platform.isMode(config.optString("cameraMode", ""))) "camera2" else it }
 
             // OEM Dashcam state lives in the same camera.* UCM section but is
             // not (yet) merged into /api/surveillance/config. Read it directly
@@ -2639,6 +2696,7 @@ open class MainActivity : AppCompatActivity() {
                 cameraMode = cameraMode,
                 dilink5CameraMapping = config.optString(
                     "dilink5CameraMapping", ""),
+                camera2SliceOrder = config.optString("camera2SliceOrder", ""),
                 dilink4PassiveApaMode = config.optBoolean(
                     "dilink4PassiveApaMode", false),
                 dilink4RedMask = config.optBoolean("dilink4RedMask", false),
@@ -2681,6 +2739,7 @@ open class MainActivity : AppCompatActivity() {
         val saveDilink4TweaksButton = dialogView.findViewById<View>(R.id.btnSaveCameraDilink4Tweaks)
         val dilink4PassiveApaSwitch = dialogView.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.swCameraDilink4PassiveApaMode)
         val legacyMappingEditable = state.cameraMode != "dilink5"
+            && state.cameraMode != "camera2"
         val dilink4RedMaskSwitch = dialogView.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.swCameraDilink4RedMask)
         val oemDashcamGroup = dialogView.findViewById<android.widget.RadioGroup>(R.id.rgOemDashcamId)
         val currentOemDashcamView = dialogView.findViewById<TextView>(R.id.tvCurrentOemDashcam)
@@ -3091,12 +3150,14 @@ open class MainActivity : AppCompatActivity() {
         val initialModeRadioId = when (state.cameraMode) {
             "dilink4" -> R.id.rbCameraModeDilink4
             "dilink5" -> R.id.rbCameraModeDilink5
+            "camera2" -> R.id.rbCameraModeCamera2
             else -> R.id.rbCameraModeDefault
         }
         cameraModeGroup.check(initialModeRadioId)
         currentCameraModeView.text = when (state.cameraMode) {
             "dilink4" -> getString(R.string.camera_mode_current_dilink4)
             "dilink5" -> getString(R.string.camera_mode_current_dilink5)
+            "camera2" -> getString(R.string.camera_mode_current_camera2)
             else -> getString(R.string.camera_mode_current_default)
         }
 
@@ -3179,10 +3240,79 @@ open class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Camera2 360 slice order; the daemon applies it at its next start.
+        val camera2OrderCard = dialogView.findViewById<View>(R.id.cardCamera2SliceOrder)
+        val camera2OrderGroup =
+            dialogView.findViewById<android.widget.RadioGroup>(R.id.rgCamera2SliceOrder)
+        val currentCamera2OrderView =
+            dialogView.findViewById<TextView>(R.id.tvCurrentCamera2SliceOrder)
+        val saveCamera2OrderButton = dialogView.findViewById<View>(R.id.btnSaveCamera2SliceOrder)
+        val camera2OrderEditable = state.cameraMode == "camera2"
+        val savedCamera2Order = state.camera2SliceOrder.trim()
+        camera2OrderCard.visibility = if (camera2OrderEditable) View.VISIBLE else View.GONE
+        currentCamera2OrderView.text = if (savedCamera2Order.isEmpty()) {
+            getString(R.string.camera2_order_current_auto)
+        } else {
+            getString(R.string.camera2_order_current_format, savedCamera2Order)
+        }
+        when (savedCamera2Order) {
+            "" -> camera2OrderGroup.check(R.id.rbCamera2OrderAuto)
+            "F;R;L;B" -> camera2OrderGroup.check(R.id.rbCamera2OrderStandard)
+            "B;L;R;F" -> camera2OrderGroup.check(R.id.rbCamera2OrderOpposite)
+            else -> camera2OrderGroup.clearCheck()
+        }
+        fun selectedCamera2Order(): String? = when (camera2OrderGroup.checkedRadioButtonId) {
+            R.id.rbCamera2OrderAuto -> ""
+            R.id.rbCamera2OrderStandard -> "F;R;L;B"
+            R.id.rbCamera2OrderOpposite -> "B;L;R;F"
+            else -> null
+        }
+        fun refreshCamera2OrderAction() {
+            saveCamera2OrderButton.isEnabled =
+                camera2OrderEditable && selectedCamera2Order() != null
+        }
+        camera2OrderGroup.setOnCheckedChangeListener { _, _ -> refreshCamera2OrderAction() }
+        refreshCamera2OrderAction()
+
+        saveCamera2OrderButton.setOnClickListener {
+            val selectedOrder = selectedCamera2Order() ?: return@setOnClickListener
+            if (selectedOrder == savedCamera2Order) {
+                Toast.makeText(
+                    this,
+                    getString(R.string.camera_dilink5_mapping_unchanged),
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@setOnClickListener
+            }
+            val payload = org.json.JSONObject().apply {
+                put("camera2SliceOrder", selectedOrder)
+            }.toString()
+            saveCamera2OrderButton.isEnabled = false
+            postSurveillanceConfig(payload) { success, message ->
+                if (success) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.camera_mapping_saved),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    restartCameraDaemonForCameraSettings()
+                    dialog.dismiss()
+                } else {
+                    refreshCamera2OrderAction()
+                    Toast.makeText(
+                        this,
+                        message ?: getString(R.string.toast_failed_to_save_short),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+
         saveCameraModeButton.setOnClickListener {
             val selectedMode = when (cameraModeGroup.checkedRadioButtonId) {
                 R.id.rbCameraModeDilink4 -> "dilink4"
                 R.id.rbCameraModeDilink5 -> "dilink5"
+                R.id.rbCameraModeCamera2 -> "camera2"
                 else -> "default"
             }
             // No-op when the user re-applies the already-saved mode — saves a
@@ -3204,6 +3334,7 @@ open class MainActivity : AppCompatActivity() {
                     currentCameraModeView.text = when (selectedMode) {
                         "dilink4" -> getString(R.string.camera_mode_current_dilink4)
                         "dilink5" -> getString(R.string.camera_mode_current_dilink5)
+                        "camera2" -> getString(R.string.camera_mode_current_camera2)
                         else -> getString(R.string.camera_mode_current_default)
                     }
                     Toast.makeText(
@@ -4065,7 +4196,7 @@ open class MainActivity : AppCompatActivity() {
             var frameMismatch = false
 
             try {
-                val sohFile = java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/abrp_soh_estimate.properties"))
+                val sohFile = java.io.File(com.overdrive.app.util.ScratchRoot.path("abrp_soh_estimate.properties"))
                 if (sohFile.exists()) {
                     val props = java.util.Properties()
                     java.io.FileInputStream(sohFile).use { props.load(it) }
@@ -4403,7 +4534,7 @@ open class MainActivity : AppCompatActivity() {
                     }
                 } else {
                     // Fallback: try direct file delete (works if app has permissions)
-                    val sohFile = java.io.File(com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/abrp_soh_estimate.properties"))
+                    val sohFile = java.io.File(com.overdrive.app.util.ScratchRoot.path("abrp_soh_estimate.properties"))
                     val deleted = if (sohFile.exists()) sohFile.delete() else true
                     runOnUiThread {
                         if (deleted) {
@@ -4688,7 +4819,7 @@ open class MainActivity : AppCompatActivity() {
 
         val wantDisabled = !enable
         val action = if (enable) "Enabling" else "Disabling"
-        Toast.makeText(this, getString(R.string.toast_traffic_monitor_changing, action), Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(if (enable) R.string.toast_traffic_monitor_enabling else R.string.toast_traffic_monitor_disabling), Toast.LENGTH_SHORT).show()
 
         // Mutate + verify in one ADB roundtrip; the trailing probe is what we trust.
         var shellOutput = ""
@@ -4751,7 +4882,7 @@ open class MainActivity : AppCompatActivity() {
                         // Show reboot reminder
                         com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity, R.style.Theme_Overdrive_M3_Dialog)
                             .setIcon(R.drawable.ic_check_circle)
-                            .setTitle(getString(R.string.dialog_traffic_status_title, state.replaceFirstChar { it.uppercase() }))
+                            .setTitle(getString(if (enable) R.string.dialog_traffic_status_enabled else R.string.dialog_traffic_status_disabled))
                             .setMessage(getString(R.string.dialog_traffic_reboot_message))
                             .setPositiveButton(getString(R.string.dialog_ok), null)
                             .show()
@@ -4787,6 +4918,8 @@ open class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        vehicleSetupAssistant?.detach()
+        vehicleSetupAssistant = null
         screenshotPrivacyController?.stop()
         screenshotPrivacyController = null
         navigationRailAnimator?.cancel()
@@ -4864,6 +4997,8 @@ open class MainActivity : AppCompatActivity() {
     fun invokeResetDataDialog() = showResetDataDialog()
     fun invokeBatteryHealthAction() = showBatteryHealthDialog()
     fun invokeReconfigureCameraAction() = onReconfigureCameraClicked()
+    /** Daemon storage (scratch root) opt-in. Needs no daemon: see ScratchRootDialog. */
+    fun invokeDaemonStorageAction() = com.overdrive.app.ui.dialog.ScratchRootDialog.show(this)
     fun invokeTrafficMonitorAction() {
         // Match drawer-open behavior: refresh status before showing dialog.
         try {
@@ -4900,6 +5035,17 @@ open class MainActivity : AppCompatActivity() {
      * the private restartCameraDaemonForCameraSettings.
      */
     fun restartCameraDaemonForOnboarding() = restartCameraDaemonForCameraSettings()
+
+    /** Vehicle setup assistant; false when it could not open (already open, finishing). */
+    fun startVehicleSetup(
+        fromOnboarding: Boolean = false,
+        onFinished: ((Boolean) -> Unit)? = null,
+    ): Boolean {
+        if (isFinishing || isDestroyed) return false
+        val assistant = vehicleSetupAssistant
+            ?: com.overdrive.app.setup.VehicleSetupAssistant(this).also { vehicleSetupAssistant = it }
+        return assistant.start(fromOnboarding, onFinished)
+    }
 
     /**
      * Open the real vehicle capacity/model dialog for the vehicle chapter.

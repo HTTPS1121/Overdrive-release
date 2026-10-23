@@ -7,6 +7,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
@@ -22,15 +23,16 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.Locale;
 
 /**
  * Shared proxy detection utility for the local SOCKS/HTTP proxies: Tailscale
  * (8539), WireGuard (8541) and sing-box (8119).
  *
  * The BYD head unit may route internet through a sing-box proxy on port 8119.
- * The WireGuard listener (wgproxy) sends only destinations inside the peers'
- * AllowedIPs through the tunnel and dials everything else directly or via
- * sing-box, so the proxy route chain stays correct when it is selected.
+ * The WireGuard listener (wgproxy) is selected only for the user's MQTT brokers; it sends
+ * destinations inside the peers' AllowedIPs through the tunnel and dials everything else
+ * directly or via sing-box.
  * This helper probes the proxy availability and provides socket factories
  * for both HTTP clients (OkHttp) and MQTT clients (Paho).
  *
@@ -46,7 +48,7 @@ public class ProxyHelper {
     private static final int PROXY_PORT = 8119;
     private static final int TAILSCALE_PROXY_PORT = 8539;
     private static final int WIREGUARD_PROXY_PORT = 8541;
-    private static final String PROXY_ENABLED_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.tailscale/proxy_enabled");
+    private static final String PROXY_ENABLED_FILE = com.overdrive.app.util.ScratchRoot.path(".tailscale/proxy_enabled");
     private static final String WIREGUARD_PROXY_ENABLED_FILE = com.overdrive.app.wireguard.WireGuardPaths.PROXY_FLAG;
     // Loopback TCP connect budget. 200ms was too tight: a cold/loaded sing-box (or a
     // probe issued while the proxy is still binding) could miss, and a SINGLE miss
@@ -71,6 +73,11 @@ public class ProxyHelper {
     private static volatile int proxyPort = PROXY_PORT;
     private static volatile long lastProbeTime = 0;
 
+    // sing-box-only probe, cached apart from the Tailscale-first MQTT selection above.
+    private static volatile boolean egressChecked = false;
+    private static volatile boolean egressAvailable = false;
+    private static volatile long lastEgressProbeTime = 0;
+
     /**
      * Guards the process-global {@code socksProxyHost}/{@code socksProxyPort} JVM
      * properties across the window where they matter: from the set/clear until the
@@ -94,7 +101,9 @@ public class ProxyHelper {
     private ProxyHelper() {} // Utility class
 
     /**
-     * Check if the sing-box proxy is available. Result is cached — a POSITIVE result
+     * Proxy selection for the user's MQTT brokers: the Tailscale listener first (the Daemons
+     * toggle exists for tailnet brokers), then sing-box. Public-internet clients must use
+     * {@link #isEgressProxyAvailable()} instead. Result is cached — a POSITIVE result
      * for {@link #CACHE_DURATION_MS}, a NEGATIVE result for only
      * {@link #NEG_CACHE_DURATION_MS} so a transient probe miss doesn't strand traffic
      * on the (timing-out) direct path for a full minute.
@@ -145,6 +154,26 @@ public class ProxyHelper {
     }
 
     /**
+     * Whether sing-box, the only general-egress proxy, is listening (same asymmetric cache as
+     * {@link #isProxyAvailable()}). The Tailscale listener is never egress: the bundled CGO-free
+     * tailscaled cannot resolve public hostnames on Android.
+     */
+    public static boolean isEgressProxyAvailable() {
+        long now = System.currentTimeMillis();
+        if (egressChecked) {
+            long ttl = egressAvailable ? CACHE_DURATION_MS : NEG_CACHE_DURATION_MS;
+            if ((now - lastEgressProbeTime) < ttl) {
+                return egressAvailable;
+            }
+        }
+        boolean up = probePort(PROXY_PORT);
+        egressAvailable = up;
+        lastEgressProbeTime = now;
+        egressChecked = true;
+        return up;
+    }
+
+    /**
      * Get the proxy port number.
      * Used by MqttPublisherService to set JVM-level socksProxyPort for WebSocket connections.
      */
@@ -164,11 +193,11 @@ public class ProxyHelper {
     /**
      * The SOCKS port we expect when the user enabled a proxy: Tailscale if its flag is on, else
      * WireGuard if its flag is on, else the Tailscale port. Stable (flag-based, not probe-based),
-     * so "proxy warming up" diagnostics and the fail-closed route name the right endpoint.
+     * so "proxy warming up" diagnostics name the right endpoint.
      */
     public static int getExpectedProxyPort() {
-        if (isFlagEnabled(PROXY_ENABLED_FILE)) return TAILSCALE_PROXY_PORT;
-        if (isFlagEnabled(WIREGUARD_PROXY_ENABLED_FILE)) return WIREGUARD_PROXY_PORT;
+        if (isProxyExpected()) return TAILSCALE_PROXY_PORT;
+        if (isWireGuardProxyExpected()) return WIREGUARD_PROXY_PORT;
         return TAILSCALE_PROXY_PORT;
     }
 
@@ -179,25 +208,36 @@ public class ProxyHelper {
     public static void invalidateCache() {
         proxyAvailable = false;
         proxyChecked = false;
+        egressAvailable = false;
+        egressChecked = false;
     }
 
     /**
      * Whether the user has ENABLED the Tailscale SOCKS proxy (persisted flag written by the
-     * Daemons screen to {@code .tailscale/proxy_enabled}) or the WireGuard tunnel (flag written
-     * by the launcher to {@code .wireguard/proxy_enabled}). When true, outbound traffic is
+     * Daemons screen to {@code .tailscale/proxy_enabled}). When true, outbound traffic is
      * expected to go through the proxy ONLY, so callers must not fall back to a direct dial
      * that cannot reach a proxy-only (e.g. subnet-routed LAN) broker off Wi-Fi.
      */
     public static boolean isProxyExpected() {
-        return isFlagEnabled(PROXY_ENABLED_FILE) || isFlagEnabled(WIREGUARD_PROXY_ENABLED_FILE);
-    }
-
-    private static boolean isFlagEnabled(String path) {
-        try (BufferedReader r = new BufferedReader(new FileReader(path))) {
+        try (BufferedReader r = new BufferedReader(new FileReader(PROXY_ENABLED_FILE))) {
             return isProxyEnabledValue(r.readLine());
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /** Whether the WireGuard tunnel is enabled (flag written by the launcher to {@code .wireguard/proxy_enabled}). */
+    public static boolean isWireGuardProxyExpected() {
+        try (BufferedReader r = new BufferedReader(new FileReader(WIREGUARD_PROXY_ENABLED_FILE))) {
+            return isProxyEnabledValue(r.readLine());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** MQTT brokers may sit behind either SOCKS listener; {@link #routeFor} stays Tailscale-only. */
+    public static boolean isMqttProxyExpected() {
+        return isProxyExpected() || isWireGuardProxyExpected();
     }
 
     /** Parse a persisted {@code proxy_enabled} value: true iff "true" (any case) or "1", trimmed. */
@@ -208,47 +248,23 @@ public class ProxyHelper {
     }
 
     /**
-     * Get a Java Proxy object for HTTP clients (OkHttp).
-     * Returns Proxy.NO_PROXY if proxy is not available.
+     * Proxy for PUBLIC-internet HTTP clients: sing-box over HTTP CONNECT (its proven path), else
+     * {@link Proxy#NO_PROXY}. Never the Tailscale listener — see {@link #isEgressProxyAvailable()}.
      */
     public static Proxy getHttpProxy() {
-        if (isProxyAvailable()) {
-            // Proxy TYPE must match the resolved backend port:
-            //  - Tailscale (8539) is a `tailscaled --socks5-server` that ONLY speaks
-            //    SOCKS5 and REJECTS HTTP CONNECT → it needs Proxy.Type.SOCKS.
-            //  - WireGuard (8541) is wgproxy's SOCKS5 listener (CONNECT only, no auth) → SOCKS too.
-            //  - sing-box (8119) is a "mixed" inbound; v26.8 reached it via HTTP CONNECT
-            //    and that is the PROVEN path. The blanket SOCKS swap (added for the
-            //    Tailscale case) regressed sing-box: route/geocode POSTs to the BYOK
-            //    endpoint began failing whenever sing-box was engaged. Restore HTTP for
-            //    the sing-box port; keep SOCKS only for the Tailscale port that requires it.
-            Proxy.Type type = (proxyPort == TAILSCALE_PROXY_PORT || proxyPort == WIREGUARD_PROXY_PORT)
-                    ? Proxy.Type.SOCKS
-                    : Proxy.Type.HTTP;
-            return new Proxy(type, new InetSocketAddress(PROXY_HOST, proxyPort));
+        if (isEgressProxyAvailable()) {
+            return new Proxy(Proxy.Type.HTTP, new InetSocketAddress(PROXY_HOST, PROXY_PORT));
         }
         return Proxy.NO_PROXY;
     }
 
     /**
      * Proxy route CHAIN for clients whose destinations are PUBLIC internet
-     * (BYD Cloud, GitHub release metadata): the selected local proxy first,
-     * then a DIRECT fallback — or just DIRECT when no proxy is up.
-     *
-     * <p>Why a chain: {@link #isProxyAvailable()} is a blind loopback TCP
-     * probe. It cannot distinguish a general-egress proxy (sing-box, or
-     * Tailscale fronting an exit node) from the tailnet-only Tailscale SOCKS
-     * listener that the Daemons screen exposes for private MQTT brokers —
-     * and it prefers the Tailscale port. A tailnet-only listener stays
-     * healthy under the probe while every public destination sent through it
-     * fails, so a single frozen proxy wedges the caller for as long as the
-     * listener is up ({@link #invalidateCache()} just re-selects it). OkHttp
-     * consumers install the chain via a per-call ProxySelector: proxy-first
-     * behavior is preserved where the proxy IS the egress (sing-box /
-     * exit-node cars), and everything else falls through to direct within
-     * the same call. Do NOT use this for privacy-sensitive traffic — that's
-     * {@link #getFailClosedHttpProxy()}'s job, which intentionally has no
-     * direct fallback.
+     * (BYD Cloud, GitHub release metadata): the egress proxy first, then a
+     * DIRECT fallback — or just DIRECT when no proxy is up. OkHttp falls
+     * through to direct within the same call when the proxy leg dies. Do NOT
+     * use this for privacy-sensitive traffic — that's {@link #routeFor}'s
+     * job, which intentionally has no direct fallback.
      */
     public static java.util.List<Proxy> proxyRouteChain(Proxy selected) {
         if (selected == null || Proxy.NO_PROXY.equals(selected)) {
@@ -265,7 +281,7 @@ public class ProxyHelper {
      * PUBLIC-internet clients (weather, analytics ping, RoadSense sync, map
      * routing/tiles): re-evaluates {@link #getHttpProxy()} on every request
      * and returns {@link #proxyRouteChain}, so the proxy is picked up when it
-     * appears and a tailnet-only listener can't wedge the feature. Clients
+     * appears and a dead proxy can't wedge the feature. Clients
      * with bespoke logging or resolution cadence (BYD cloud transport,
      * AppUpdater, Telegram daemon) keep their own selectors built on
      * {@link #proxyRouteChain}.
@@ -293,18 +309,105 @@ public class ProxyHelper {
             };
 
     /**
-     * HTTP proxy selection for privacy-sensitive traffic. When the user has
-     * enabled proxy-only routing but the listener is still unavailable, return
-     * the expected local SOCKS endpoint so clients fail closed instead of
-     * silently dialing the destination directly.
+     * Single route (no direct fallback) for privacy-sensitive HTTP to {@code host}. Tailnet
+     * hosts always use the Tailscale listener; private LAN hosts use it only while the Tailscale
+     * proxy is enabled (subnet routes), failing closed if it is down; loopback goes direct;
+     * public hosts use {@link #getHttpProxy()}.
      */
-    public static Proxy getFailClosedHttpProxy() {
-        Proxy selected = getHttpProxy();
-        if (!Proxy.NO_PROXY.equals(selected) || !isProxyExpected()) {
-            return selected;
-        }
+    public static Proxy routeFor(String host) {
+        if (isTailnetHost(host)) return tailscaleProxy();
+        if (isLoopbackHost(host)) return Proxy.NO_PROXY;
+        if (isLanHost(host)) return isProxyExpected() ? tailscaleProxy() : Proxy.NO_PROXY;
+        return getHttpProxy();
+    }
+
+    /** Per-request OkHttp {@link java.net.ProxySelector} returning {@link #routeFor}'s single route. */
+    public static java.net.ProxySelector singleRouteSelector() {
+        return SINGLE_ROUTE_SELECTOR;
+    }
+
+    private static final java.net.ProxySelector SINGLE_ROUTE_SELECTOR =
+            new java.net.ProxySelector() {
+                @Override
+                public java.util.List<Proxy> select(java.net.URI uri) {
+                    return java.util.Collections.singletonList(
+                            routeFor(uri == null ? null : uri.getHost()));
+                }
+
+                @Override
+                public void connectFailed(
+                        java.net.URI uri,
+                        SocketAddress address,
+                        java.io.IOException failure) {
+                    invalidateCache();
+                }
+            };
+
+    /** Whether {@code proxy} is the Tailscale SOCKS listener. */
+    public static boolean isTailscaleRoute(Proxy proxy) {
+        return proxy != null
+                && proxy.type() == Proxy.Type.SOCKS
+                && proxy.address() instanceof InetSocketAddress
+                && ((InetSocketAddress) proxy.address()).getPort() == TAILSCALE_PROXY_PORT;
+    }
+
+    private static Proxy tailscaleProxy() {
         return new Proxy(Proxy.Type.SOCKS,
-                new InetSocketAddress(PROXY_HOST, getExpectedProxyPort()));
+                new InetSocketAddress(PROXY_HOST, TAILSCALE_PROXY_PORT));
+    }
+
+    /** RFC1918 / link-local / ULA literals and home-network suffixes. No DNS lookups. */
+    public static boolean isLanHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        String h = host.toLowerCase(Locale.ROOT);
+        if (h.startsWith("[") && h.endsWith("]")) h = h.substring(1, h.length() - 1);
+        if (h.equals("localhost") || h.endsWith(".local") || h.endsWith(".lan")
+                || h.endsWith(".home") || h.endsWith(".internal") || h.endsWith(".home.arpa")) {
+            return true;
+        }
+        byte[] a = hostLiteral(h);
+        if (a == null) return false;
+        if (a.length == 4) {
+            int b0 = a[0] & 0xff, b1 = a[1] & 0xff;
+            return b0 == 10 || b0 == 127 || (b0 == 172 && b1 >= 16 && b1 <= 31)
+                    || (b0 == 192 && b1 == 168) || (b0 == 169 && b1 == 254);
+        }
+        int b0 = a[0] & 0xff, b1 = a[1] & 0xff;
+        return (b0 & 0xfe) == 0xfc || (b0 == 0xfe && (b1 & 0xc0) == 0x80);
+    }
+
+    /** Tailscale CGNAT range 100.64.0.0/10 or MagicDNS names. */
+    public static boolean isTailnetHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        String h = host.toLowerCase(Locale.ROOT);
+        if (h.endsWith(".ts.net")) return true;
+        byte[] a = hostLiteral(h);
+        return a != null && a.length == 4 && (a[0] & 0xff) == 100 && ((a[1] & 0xff) & 0xc0) == 64;
+    }
+
+    /** localhost or a loopback literal. No DNS lookups. */
+    static boolean isLoopbackHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        String h = host.toLowerCase(Locale.ROOT);
+        if (h.startsWith("[") && h.endsWith("]")) h = h.substring(1, h.length() - 1);
+        if (h.equals("localhost")) return true;
+        byte[] a = hostLiteral(h);
+        try {
+            return a != null && InetAddress.getByAddress(a).isLoopbackAddress();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static byte[] hostLiteral(String h) {
+        boolean v4 = h.matches("\\d{1,3}(\\.\\d{1,3}){3}");
+        boolean v6 = h.indexOf(':') >= 0 && h.matches("[0-9a-f:.]+");
+        if (!v4 && !v6) return null;
+        try {
+            return InetAddress.getByName(h).getAddress();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -337,13 +440,19 @@ public class ProxyHelper {
                     : (SSLSocketFactory) SSLSocketFactory.getDefault();
 
             if (isProxyAvailable()) {
-                return new ProxiedSslSocketFactory(baseSslFactory);
+                return new ProxiedSslSocketFactory(baseSslFactory, proxyPort);
             }
             return baseSslFactory;
         } catch (Exception e) {
             logger.error("Failed to create proxied SSL factory: " + e.getMessage());
             return (SSLSocketFactory) SSLSocketFactory.getDefault();
         }
+    }
+
+    /** System-trust TLS factory for PUBLIC brokers: through sing-box when it is up, else direct. */
+    public static SSLSocketFactory getEgressSslSocketFactory() {
+        SSLSocketFactory base = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        return isEgressProxyAvailable() ? new ProxiedSslSocketFactory(base, PROXY_PORT) : base;
     }
 
     /**
@@ -435,10 +544,10 @@ public class ProxyHelper {
         private final SSLSocketFactory sslFactory;
         private final Proxy proxy;
 
-        ProxiedSslSocketFactory(SSLSocketFactory sslFactory) {
+        ProxiedSslSocketFactory(SSLSocketFactory sslFactory, int port) {
             this.sslFactory = sslFactory;
             this.proxy = new Proxy(Proxy.Type.SOCKS,
-                    new InetSocketAddress(PROXY_HOST, proxyPort));
+                    new InetSocketAddress(PROXY_HOST, port));
         }
 
         /**

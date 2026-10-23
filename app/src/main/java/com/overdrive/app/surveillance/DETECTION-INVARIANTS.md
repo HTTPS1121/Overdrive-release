@@ -40,6 +40,28 @@ window). Brakes: 10 s min-gap after any stop + a hard budget of 3 assisted
 (unconfirmed) triggers per rolling 10 min + TTL'd latch (10 s) + quadrant scoping
 + brightness/incoherence discriminators at every consumer.
 
+**With YOLO loaded, channels 2-4 cannot record on their own:** the final gate after
+the overrides (`if (aiAvailable && !aiRecentlyConfirmed) shouldSuppress = true`, v44.2)
+re-suppresses them, so only class evidence (1) authorizes a recording. Their
+"override … recording" log lines therefore don't mean a recording started.
+
+**Light-change check (feeds channel 1).** Early AI only dispatches cameras whose
+motion survived, and the `>25%` flash filter discards a whole camera — so a close car
+whose headlights fill that camera was never classified. A flash-killed camera
+(`isLightChangeKill`) gets whole-view mosaic YOLO looks in a chain (first look on the
+kill, follow-ups ≥1 s apart, ≤3 looks / 4.5 s). Detections must pass the zone rows
+and the drawn area (`quadrantRoiMirror`; the camera has no motion mask) and, for a
+person, the 0.50 bar. Only a HIT counts and only hits flow downstream: a person seen
+again on a follow-up (not at a spot that already recorded within 5 min), or a vehicle
+that MOVED — a same-size box off every still chain position, paired with a chain
+position now empty. One look can't tell a passing car from an unlearned parked car
+the light just lit, and box size flickers with light, so neither one look nor size
+change (approach/recede) counts. A hit records directly (outside the lifecycle
+lock); a still chain promotes its cars into the baseline. Brakes: per-camera 3 s gap,
+30 looks / 10 min per camera, takes turns with motion AI, skipped while recording or
+after our deterrent. Accepted residual: two same-size unlearned parked cars lit one
+after the other read as a move (implies a moving light source).
+
 ## The funnel
 
 A real event is missed iff any stage wrongly kills the signal:

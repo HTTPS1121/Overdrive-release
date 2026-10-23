@@ -173,6 +173,30 @@ set_target_properties(dilink5_camera PROPERTIES
     LINK_FLAGS "-Wl,--gc-sections,--strip-all,--exclude-libs,ALL"
 )
 
+# ==================== Camera2 360 Library ====================
+# NDK Camera2 bridge for the camera2 mode only; no other mode loads it.
+add_library(camera2_avm SHARED
+    camera/camera2_avm_bridge.cpp
+)
+target_link_libraries(camera2_avm
+    camera2ndk
+    android
+    log
+)
+target_compile_options(camera2_avm PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+    -ffunction-sections
+    -fdata-sections
+)
+target_compile_definitions(camera2_avm PRIVATE
+    $<$<CONFIG:Release>:NDEBUG>
+    $<$<CONFIG:RelWithDebInfo>:NDEBUG>
+)
+set_target_properties(camera2_avm PROPERTIES
+    LINK_FLAGS "-Wl,--gc-sections,--strip-all,--exclude-libs,ALL"
+)
+
 # ==================== od library ====================
 # Standalone utility library with host-authorization gate. Same hardening as surveillance:
 # all symbols hidden, fully stripped, sections GC'd — only the two JNI entry points remain.
@@ -196,6 +220,12 @@ set_target_properties(od PROPERTIES
     LINK_FLAGS "-Wl,--gc-sections,--strip-all,--exclude-libs,ALL"
 )
 
+# Optional private transport. Public builds package its verified prebuilt;
+# source builds must not also supply a jniLibs copy of the same library.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/parked/CMakeLists.txt")
+    add_subdirectory(parked)
+endif()
+
 # ==================== NEON SIMD Optimization ====================
 # Enable NEON for ARM architectures
 if(ANDROID_ABI STREQUAL "arm64-v8a")
@@ -215,3 +245,40 @@ else()
     target_compile_options(surveillance PRIVATE -O3 -ffast-math)
     message(STATUS "NEON not available for ${ANDROID_ABI}")
 endif()
+
+# ==================== Voice front-end ====================
+# The voice assistant's car-microphone input: SpeexDSP echo cancelling and noise suppression over
+# the two cabin mics and the speaker reference. Loaded only when that input is selected.
+set(SPEEXDSP_DIR ${CMAKE_SOURCE_DIR}/third_party/speexdsp)
+add_library(voice_frontend SHARED
+    voice/voice_frontend.c
+    ${SPEEXDSP_DIR}/libspeexdsp/mdf.c
+    ${SPEEXDSP_DIR}/libspeexdsp/preprocess.c
+    ${SPEEXDSP_DIR}/libspeexdsp/filterbank.c
+    ${SPEEXDSP_DIR}/libspeexdsp/fftwrap.c
+    ${SPEEXDSP_DIR}/libspeexdsp/kiss_fft.c
+    ${SPEEXDSP_DIR}/libspeexdsp/kiss_fftr.c
+)
+target_include_directories(voice_frontend PRIVATE
+    ${CMAKE_SOURCE_DIR}/voice
+    ${SPEEXDSP_DIR}/include
+    ${SPEEXDSP_DIR}/libspeexdsp
+)
+# SpeexDSP's configure switches, given here instead of a config.h: floating point, bundled KISS FFT.
+target_compile_definitions(voice_frontend PRIVATE
+    FLOATING_POINT
+    USE_KISS_FFT
+    EXPORT=
+    $<$<CONFIG:Release>:NDEBUG>
+    $<$<CONFIG:RelWithDebInfo>:NDEBUG>
+)
+target_compile_options(voice_frontend PRIVATE
+    -fvisibility=hidden
+    -ffunction-sections
+    -fdata-sections
+    -O2
+)
+target_link_libraries(voice_frontend m)
+set_target_properties(voice_frontend PROPERTIES
+    LINK_FLAGS "-Wl,--gc-sections,--strip-all,--exclude-libs,ALL"
+)

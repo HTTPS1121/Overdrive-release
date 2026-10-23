@@ -21,7 +21,18 @@ import org.json.JSONObject;
 public class BatteryMonitor {
 
     private static final long BATTERY_FETCH_INTERVAL_MS = 30_000L;
-    private static final long BATTERY_VOLTAGE_STALE_MS = 60_000L;
+    /**
+     * Must outlive the slowest legitimate refresh, or a parked car reports its own
+     * cadence as "stale": the collector only re-reads 12V every
+     * POLL_INTERVAL_PARKED_MS with ACC off, and we re-sample that snapshot every
+     * BATTERY_FETCH_INTERVAL_MS, so a good parked observation legitimately reaches
+     * the sum of the two. Derived, not hardcoded, so raising either cannot silently
+     * blank the UI again. Constant expression — does not class-load the collector.
+     */
+    static final long BATTERY_VOLTAGE_STALE_MS =
+            com.overdrive.app.byd.BydDataCollector.POLL_INTERVAL_PARKED_MS
+                    + BATTERY_FETCH_INTERVAL_MS
+                    + 30_000L;  // margin for scheduler drift
 
     private static volatile double lastBatteryVoltage = 0.0;
     private static volatile String lastBatteryLevel = "UNKNOWN";

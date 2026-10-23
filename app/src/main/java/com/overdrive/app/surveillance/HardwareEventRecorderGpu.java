@@ -80,6 +80,21 @@ public class HardwareEventRecorderGpu {
          * @param info Buffer info (size, offset, timestamp, flags)
          */
         void onH264Packet(ByteBuffer h264Data, MediaCodec.BufferInfo info);
+
+        /**
+         * Called once when this encoder is being retired and the callback is
+         * about to be cleared ({@link #clearStreamCallback()}): a quality
+         * change restarting the stream encoder, an idle shutdown or a
+         * pipeline stop. No further {@link #onH264Packet} calls follow from
+         * this encoder. A live viewer should re-attach to the replacement
+         * encoder (which sends fresh SPS/PPS) rather than wait for its idle
+         * timeout.
+         *
+         * <p>Invoked under the encoder's callback lock from the thread that
+         * disables streaming: implementations MUST NOT block (hand off to the
+         * viewer's own thread, e.g. by offering a sentinel into its queue).
+         */
+        default void onStreamRetired() {}
     }
 
     /** Resolves replay storage only after the encoded range is strongly pinned. */
@@ -411,6 +426,12 @@ public class HardwareEventRecorderGpu {
     // described a one-second peak and over-provisioned the whole 60-second
     // window; measured MAX output is ~103% of target, so 10% is conservative.
     private static final double PRE_RECORD_BITRATE_OVERHEAD = 1.10;
+    // Replay arenas must hold the whole window at the encoder's VBR peak, not its
+    // target: H.265 at a 10 Mbps target ran 1.2-1.3x while driving.
+    private static final double MANUAL_CLIP_VBR_HEADROOM = 1.5;
+    // Headroom never grows an arena past this; the daemon heap (max ~256 MB) runs
+    // ~110 MB besides the ring, so long windows keep their nominal size.
+    private static final int MANUAL_CLIP_VBR_ARENA_CAP_BYTES = 64 * 1024 * 1024;
     // A requested window must begin on the preceding IDR. Retain one complete
     // two-second GOP beyond the user-visible duration so exact 30/60-second
     // requests do not intermittently start at the next keyframe and fail.
@@ -1360,6 +1381,9 @@ public class HardwareEventRecorderGpu {
     private final Object streamCallbackLock = new Object();
     private final CopyOnWriteArraySet<StreamCallback> streamCallbacks =
         new CopyOnWriteArraySet<>();
+    // Coalesces viewer-driven forced IDRs (see requestSyncFrameRateLimited).
+    // Per encoder instance: a restarted stream encoder starts a fresh window.
+    private final SyncFrameRateLimiter viewerSyncFrameLimiter = new SyncFrameRateLimiter();
     
     // Recording state
     // volatile: read by isRecording() from RecordingModeManager,
@@ -1557,7 +1581,51 @@ public class HardwareEventRecorderGpu {
     private final java.util.concurrent.atomic.AtomicBoolean rotationInFlight =
         new java.util.concurrent.atomic.AtomicBoolean(false);
     private int segmentNumber = 0;
-    private String segmentBasePath = null;  // Base path for segment rotation (without .mp4)
+    private volatile String segmentBasePath = null;  // Base path for segment rotation (without .mp4)
+    // moveSegments request for the next rotation; only a ticket of the same recording takes it.
+    private final java.util.concurrent.atomic.AtomicReference<SegmentMove> pendingSegmentMove =
+        new java.util.concurrent.atomic.AtomicReference<>(null);
+    // The request the swap in progress took; finished by handleWriterRotatePacket. Writer thread only.
+    private SegmentMove takenSegmentMove;
+
+    /** One request to open the next segment of the current recording in another folder. */
+    public final class SegmentMove {
+        public static final int NOT_TAKEN = 0;  // withdrawn, or the recording ended first
+        public static final int MOVED = 1;
+        public static final int FAILED = 2;     // the segment could not be opened there
+
+        final String dir;
+        final long generation;
+        private final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        private volatile int outcome = FAILED;  // what a rotation that took it reports unless set below
+
+        SegmentMove(String dir, long generation) {
+            this.dir = dir;
+            this.generation = generation;
+        }
+
+        /** Waits for a rotation to try this request, or for it to be dropped; false on timeout. */
+        public boolean await(long timeoutMs) throws InterruptedException {
+            return done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+
+        /** NOT_TAKEN, MOVED or FAILED, once {@link #await} returned true. */
+        public int outcome() {
+            return outcome;
+        }
+
+        /** Withdraws the request if no rotation has taken it; true if withdrawn. */
+        public boolean cancel() {
+            if (!pendingSegmentMove.compareAndSet(this, null)) return false;
+            finish(NOT_TAKEN);
+            return true;
+        }
+
+        void finish(int result) {
+            outcome = result;
+            done.countDown();
+        }
+    }
 
     // ---- Geo-tagging snapshot (for v3 sidecar geo block) -----------------
     // Captured at triggerEventRecording start, before MediaMuxer.start().
@@ -2024,6 +2092,8 @@ public class HardwareEventRecorderGpu {
         if (usePreRecordBuffer) {
             int desiredSec = effectivePreRecordRetentionSeconds();
             int desiredBudget = computePreRecordBudgetBytes(desiredSec, bitrate);
+            int arenaBudget = computeReplayArenaBytes(
+                    desiredBudget, manualClipRetentionSeconds, bitrate);
             if (useInstancePreRecordBuffer) {
                 // Per-instance arena. Skip the static shared ring entirely so
                 // OEM and pano never share a producer — see field doc on
@@ -2032,7 +2102,7 @@ public class HardwareEventRecorderGpu {
                 // is reclaimed on release(); steady-state memory cost is
                 // bounded by the configured budget (8–128 MB).
                 preRecordBuffer = allocatePreRecordBufferWithFallback(
-                        desiredBudget, desiredSec, "per-instance");
+                        arenaBudget, desiredBudget, desiredSec, "per-instance");
                 if (preRecordBuffer != null) {
                     preRecordBufferIsInstance = true;
                     logger.info("Allocated per-instance pre-record byte ring: budget="
@@ -2053,10 +2123,10 @@ public class HardwareEventRecorderGpu {
                     // would retain both until the Cleaner runs and recreate the
                     // native-memory spike that the byte-ring design removed.
                     logger.info("Allocating pre-record byte ring: budget="
-                        + (desiredBudget / 1024 / 1024) + "MB, duration="
+                        + (arenaBudget / 1024 / 1024) + "MB, duration="
                         + desiredSec + "s, bitrate=" + (bitrate / 1_000_000) + "Mbps");
                     sharedPreRecordBuffer = allocatePreRecordBufferWithFallback(
-                            desiredBudget, desiredSec, "shared");
+                            arenaBudget, desiredBudget, desiredSec, "shared");
                     sharedPreRecordBudgetBytes = sharedPreRecordBuffer != null
                             ? sharedPreRecordBuffer.getBudgetBytes() : 0;
                     if (sharedPreRecordBuffer == null) {
@@ -2080,9 +2150,16 @@ public class HardwareEventRecorderGpu {
                     // start reproduces the same first-encoder sizing).
                     sharedPreRecordBuffer.clear();
                     long desiredUs = desiredSec * 1_000_000L;
-                    if (desiredBudget > sharedPreRecordBudgetBytes
-                            && regrowSharedRingLocked(desiredBudget, desiredSec,
-                                    availableHeapBytes())) {
+                    // Replay headroom first; a heap refusal falls back to the nominal regrow.
+                    boolean regrown = arenaBudget > desiredBudget
+                            && arenaBudget > sharedPreRecordBudgetBytes
+                            && regrowSharedRingLocked(arenaBudget, desiredSec,
+                                    availableHeapBytes());
+                    if (!regrown && desiredBudget > sharedPreRecordBudgetBytes) {
+                        regrown = regrowSharedRingLocked(desiredBudget, desiredSec,
+                                availableHeapBytes());
+                    }
+                    if (regrown) {
                         logger.info("Pre-record byte ring regrown to "
                                 + (sharedPreRecordBudgetBytes / 1024 / 1024) + "MB for "
                                 + desiredSec + "s at " + (bitrate / 1_000_000)
@@ -2323,13 +2400,24 @@ public class HardwareEventRecorderGpu {
      * Allocate the desired history arena, then degrade through unique smaller
      * budgets. A replay allocation failure must not remove the safety event's
      * existing pre-roll; the final 8 MiB attempt preserves at least a partial
-     * event window on memory-constrained units.
+     * event window on memory-constrained units. The replay {@code arenaBudget}
+     * is tried first only when the heap can absorb it plus the regrow margin.
      */
     private H264ByteRingBuffer allocatePreRecordBufferWithFallback(
-            int desiredBudget, int desiredSeconds, String owner) {
+            int arenaBudget, int desiredBudget, int desiredSeconds, String owner) {
         int eventSeconds = Math.max(1, Math.min(30, preRecordDurationSeconds));
         int eventBudget = computePreRecordBudgetBytes(eventSeconds, bitrate);
+        if (arenaBudget > desiredBudget) {
+            long heapAvailable = availableHeapBytes();
+            if (heapAvailable < (long) arenaBudget + SHARED_RING_REGROW_HEAP_MARGIN_BYTES) {
+                logger.warn(owner + " replay headroom arena "
+                        + (arenaBudget / 1024 / 1024) + "MB skipped: only "
+                        + (heapAvailable / 1024 / 1024) + "MB heap headroom");
+                arenaBudget = desiredBudget;
+            }
+        }
         int[] budgets = new int[] {
+                arenaBudget,
                 desiredBudget,
                 desiredBudget > LONG_REPLAY_FALLBACK_BYTES
                         ? LONG_REPLAY_FALLBACK_BYTES : 0,
@@ -2337,6 +2425,7 @@ public class HardwareEventRecorderGpu {
                 PRE_RECORD_BUDGET_FLOOR_BYTES
         };
         int[] durations = new int[] {
+                desiredSeconds,
                 desiredSeconds,
                 desiredSeconds,
                 eventSeconds,
@@ -2358,7 +2447,7 @@ public class HardwareEventRecorderGpu {
             try {
                 H264ByteRingBuffer ring = new H264ByteRingBuffer(
                         candidateBudget, durations[i]);
-                if (i > 0) {
+                if (candidateBudget < desiredBudget) {
                     logger.warn("Using " + (candidateBudget / 1024 / 1024)
                             + "MB " + owner + " pre-record fallback; manual replay "
                             + "history may require a camera-daemon cold restart");
@@ -2405,7 +2494,20 @@ public class HardwareEventRecorderGpu {
         }
         return (int) bytes;
     }
-    
+
+    /**
+     * Arena for a saved replay window sized at {@link #MANUAL_CLIP_VBR_HEADROOM};
+     * never below {@code nominalBudget}, and the headroom alone never exceeds
+     * {@link #MANUAL_CLIP_VBR_ARENA_CAP_BYTES}.
+     */
+    private static int computeReplayArenaBytes(int nominalBudget, int manualSeconds,
+                                               int bitrateBps) {
+        if (manualSeconds <= 0 || bitrateBps <= 0) return nominalBudget;
+        int retainedSeconds = Math.min(62, manualSeconds + MANUAL_CLIP_GOP_HEADROOM_SECONDS);
+        long replay = (long) ((bitrateBps / 8.0) * retainedSeconds * MANUAL_CLIP_VBR_HEADROOM);
+        return (int) Math.max(nominalBudget, Math.min(replay, MANUAL_CLIP_VBR_ARENA_CAP_BYTES));
+    }
+
     /**
      * Sets whether this encoder uses the pre-record buffer.
      * Should be set to false for stream-only encoders.
@@ -2756,6 +2858,55 @@ public class HardwareEventRecorderGpu {
     }
 
     /**
+     * Rotates now so the next segment opens in {@code toDir}, but only while this recording's
+     * segments are in {@code fromDir} and no rotation is in flight. If that segment can't be
+     * opened, the current segment keeps going in the old folder. Null when nothing was armed.
+     */
+    public SegmentMove moveSegments(File fromDir, File toDir) {
+        if (fromDir == null || toDir == null) return null;
+        synchronized (startStopLock) {
+            String base = segmentBasePath;
+            if (!isWritingToFile || base == null || rotationInFlight.get()
+                    || !fromDir.getAbsolutePath().equals(new File(base).getParent())) {
+                return null;
+            }
+            final long sinceLastRotate = (segmentStartTime > 0)
+                    ? (System.currentTimeMillis() - segmentStartTime)
+                    : Long.MAX_VALUE;
+            if (sinceLastRotate < ROTATE_DEBOUNCE_MS) return null;
+            SegmentMove move = new SegmentMove(toDir.getAbsolutePath(), recordingGeneration);
+            SegmentMove previous = pendingSegmentMove.getAndSet(move);
+            if (previous != null) previous.finish(SegmentMove.NOT_TAKEN);
+            // The writer-abort branch clears isWritingToFile before it drops: one side sees the other.
+            if (!isWritingToFile) {
+                move.cancel();
+                return null;
+            }
+            logger.info("Moving the next segment from " + fromDir.getAbsolutePath()
+                    + " to " + toDir.getAbsolutePath());
+            rotateSegment();
+            return move;
+        }
+    }
+
+    /** The pending move if it belongs to this ticket's recording; a stale ticket never takes it. */
+    private SegmentMove takeSegmentMove(MuxerPacket ticket) {
+        SegmentMove move = pendingSegmentMove.get();
+        if (move == null || segmentBasePath == null || move.generation != ticket.rotateGeneration
+                || !pendingSegmentMove.compareAndSet(move, null)) {
+            return null;
+        }
+        takenSegmentMove = move;
+        return move;
+    }
+
+    /** Ends any untaken move request (the recording is starting or closing). */
+    private void dropPendingSegmentMove() {
+        SegmentMove move = pendingSegmentMove.getAndSet(null);
+        if (move != null) move.finish(SegmentMove.NOT_TAKEN);
+    }
+
+    /**
      * One-shot listener invoked the first time the encoder publishes its
      * output format (SPS/PPS available). Set by GpuSurveillancePipeline so
      * deferred recordings can start as soon as the format is ready, without
@@ -2836,12 +2987,21 @@ public class HardwareEventRecorderGpu {
     
     /**
      * Removes the streaming callback.
+     *
+     * <p>Every registered sink is told it is being retired
+     * ({@link StreamCallback#onStreamRetired()}) BEFORE the set is cleared,
+     * so a /ws viewer can re-attach to the replacement encoder instead of
+     * freezing until its 60 s idle exit. The notice runs under
+     * {@code streamCallbackLock} on the disabling thread; sinks must not
+     * block in it.
      */
     public void clearStreamCallback() {
+        int retired;
         synchronized (streamCallbackLock) {
+            retired = StreamCallbackRetirement.notifyRetired(streamCallbacks);
             streamCallbacks.clear();
         }
-        logger.info("Stream callback cleared");
+        logger.info("Stream callback cleared (" + retired + " sink(s) notified of retirement)");
     }
     
     /**
@@ -3111,6 +3271,7 @@ public class HardwareEventRecorderGpu {
             // Create muxer. Hold muxerLock so the disk writer never observes a
             // half-constructed muxer (e.g., started but trackIndex still -1).
             boolean muxerOk = false;
+            boolean openEnospc = false;
             synchronized (muxerLock) {
                 try {
                     muxer = new MediaMuxer(tempFile.getAbsolutePath(),
@@ -3147,6 +3308,7 @@ public class HardwareEventRecorderGpu {
                     muxerOk = true;
                 } catch (Exception e) {
                     logger.error("MediaMuxer setup failed", e);
+                    openEnospc = isEnospc(e);
                     if (muxer != null) {
                         try { muxer.release(); } catch (Exception ignored) {}
                         muxer = null;
@@ -3157,6 +3319,7 @@ public class HardwareEventRecorderGpu {
                 }
             }
             if (!muxerOk) {
+                if (openEnospc) noteFolderEnospc(tempFile);
                 if (tempFile != null && tempFile.exists()) tempFile.delete();
                 tempFile = null;
                 return false;
@@ -3293,6 +3456,7 @@ public class HardwareEventRecorderGpu {
             segmentStartTime = System.currentTimeMillis();
             segmentNumber = 0;
             segmentBasePath = outputPath.replaceAll("\\.mp4$", "");
+            dropPendingSegmentMove();
             // Writer-owned rotation boundary reset: reclaim any leftover arm
             // from a previous recording and step BOTH epochs — a stale
             // ROTATE ticket (e.g. one a blocked writer dequeued during the
@@ -3641,6 +3805,7 @@ public class HardwareEventRecorderGpu {
                 listenerGeneration++;
                 closeInProgress = false;
             }
+            dropPendingSegmentMove();
             return;
         }
 
@@ -3810,6 +3975,7 @@ public class HardwareEventRecorderGpu {
             segmentStartTime = 0;
             segmentNumber = 0;
             segmentBasePath = null;
+            dropPendingSegmentMove();
         }
 
         // Restart the drainer NOW — before ANY storage I/O for the closing
@@ -3875,6 +4041,8 @@ public class HardwareEventRecorderGpu {
         long lastAudioPtsUs = -1L;
         int recordedFrames;
         boolean aborted;
+        // elapsedRealtime (waitForFinalizers' clock) at which closeEventRecording() stops waiting.
+        long joinDeadlineMs;
         com.overdrive.app.geo.GeoSnapshot startGeo;   // null = no start fix
         String codecMime;
         int bitrate;
@@ -3960,6 +4128,11 @@ public class HardwareEventRecorderGpu {
      * here can wedge nothing but this thread.
      */
     private void finalizeClosedSegmentAsync(final ClosingSegment seg) {
+        try {
+            seg.joinDeadlineMs = android.os.SystemClock.elapsedRealtime() + CLOSE_FINALIZE_WAIT_MS;
+        } catch (Throwable ignored) {
+            // JVM test stubs: deadline 0 means no relief wait and no retry.
+        }
         inFlightFinalizers.incrementAndGet();
         final Runnable work = () -> {
             try {
@@ -3997,6 +4170,79 @@ public class HardwareEventRecorderGpu {
                 + startFailure.getMessage() + ") — finalizing inline");
             work.run();
         }
+    }
+
+    // Within closeEventRecording()'s joins: 5 s for the final segment, 2 s + 3 s before it fences rotations.
+    private static final long FOLDER_RELIEF_CLOSE_WAIT_MS = 3_500L;
+    private static final long FOLDER_RELIEF_ROTATION_WAIT_MS = 1_500L;
+    // The retried rename must land before close() stops waiting, or the engine never sees the clip.
+    private static final long FOLDER_RELIEF_RENAME_MARGIN_MS = 500L;
+
+    /**
+     * rename(2): 0 or the errno. On ENOSPC, StorageManager checks for a FAT32 folder out of
+     * entries and retries while {@code retryWanted} holds. Both suppliers are read only on the
+     * failure path.
+     */
+    private static int renameWithFolderRelief(File from, File to,
+                                              java.util.function.LongSupplier waitMs,
+                                              java.util.function.BooleanSupplier retryWanted) {
+        int errno = renameErrno(from, to);
+        if (errno != 0) {
+            try {
+                errno = com.overdrive.app.storage.StorageManager.getInstance()
+                        .renameInFullFolder(from, to, errno, waitMs.getAsLong(), retryWanted);
+            } catch (Throwable ignored) {
+                // StorageManager may not be initialised in every process.
+            }
+        }
+        return errno;
+    }
+
+    /** Final segment: wait only on its finalizer thread, and only until close()'s join gives up. */
+    private static long closeReliefWaitMs(ClosingSegment seg) {
+        if (!Thread.currentThread().getName().startsWith("GpuSegmentFinalizer-close-")) return 0L;
+        long left = seg.joinDeadlineMs - android.os.SystemClock.elapsedRealtime()
+                - FOLDER_RELIEF_RENAME_MARGIN_MS;
+        return Math.max(0L, Math.min(FOLDER_RELIEF_CLOSE_WAIT_MS, left));
+    }
+
+    private static void noteFolderEnospc(File target) {
+        if (target == null) return;
+        try {
+            com.overdrive.app.storage.StorageManager.getInstance()
+                    .noteFolderEnospc(target.getParentFile());
+        } catch (Throwable ignored) {
+            // StorageManager may not be initialised in every process.
+        }
+    }
+
+    private static int renameErrno(File from, File to) {
+        try {
+            android.system.Os.rename(from.getAbsolutePath(), to.getAbsolutePath());
+            return 0;
+        } catch (android.system.ErrnoException e) {
+            return e.errno;
+        } catch (RuntimeException e) {
+            return from.renameTo(to) ? 0 : -1;  // Os unavailable (JVM test stubs)
+        }
+    }
+
+    private static String errnoLabel(int errno) {
+        try {
+            String name = android.system.OsConstants.errnoName(errno);
+            return name != null ? name : String.valueOf(errno);
+        } catch (Throwable t) {
+            return String.valueOf(errno);
+        }
+    }
+
+    private static boolean isEnospc(Throwable t) {
+        for (int depth = 0; t != null && depth < 8; t = t.getCause(), depth++) {
+            if (t instanceof android.system.ErrnoException) {
+                return ((android.system.ErrnoException) t).errno == android.system.OsConstants.ENOSPC;
+            }
+        }
+        return false;
     }
 
     private void finalizeClosedSegment(final ClosingSegment seg) {
@@ -4061,7 +4307,11 @@ public class HardwareEventRecorderGpu {
         if (tempFile != null && outputPath != null && tempFile.exists()) {
             if (!recordingBroken && seg.recordedFrames > 0 && tempFile.length() > 1024) {
                 File finalFile = new File(outputPath);
-                if (tempFile.renameTo(finalFile)) {
+                int renameErrno = renameWithFolderRelief(tempFile, finalFile,
+                        () -> closeReliefWaitMs(seg),
+                        () -> android.os.SystemClock.elapsedRealtime()
+                                < seg.joinDeadlineMs - FOLDER_RELIEF_RENAME_MARGIN_MS);
+                if (renameErrno == 0) {
                     // Use actual PTS range for accurate duration (not recordedFrames/fps
                     // which is misleading when pre-record frames are included)
                     float durationSec = (seg.firstFramePtsUs >= 0 && seg.lastFramePtsUs > seg.firstFramePtsUs)
@@ -4136,7 +4386,8 @@ public class HardwareEventRecorderGpu {
                         logger.warn("Geo sidecar submit failed: " + e.getMessage());
                     }
                 } else {
-                    logger.error("Failed to rename temp file — deleting orphan");
+                    logger.error("Failed to rename temp file (" + errnoLabel(renameErrno)
+                            + ") — deleting orphan");
                     tempFile.delete();
                 }
             } else if (recordingBroken) {
@@ -4168,7 +4419,7 @@ public class HardwareEventRecorderGpu {
             // Cheap and idempotent, so it runs for the success path too.
             try {
                 com.overdrive.app.storage.StorageManager.getInstance()
-                        .invalidateCategorySizeCache(null);
+                        .invalidateSizeCacheFor(tempFile);
             } catch (Throwable ignored) {
                 // StorageManager may not be initialised in every process.
             }
@@ -4219,6 +4470,32 @@ public class HardwareEventRecorderGpu {
                 logger.error( "Failed to request sync frame", e);
             }
         }
+    }
+
+    /**
+     * Viewer-driven variant of {@link #requestSyncFrame()}: at most one forced
+     * IDR per {@link SyncFrameRateLimiter#MIN_INTERVAL_MS} on this encoder.
+     *
+     * <p>The stream encoder is shared by every live viewer, so each viewer's
+     * request (a /ws attach, the camera's client rising edge, a congestion
+     * skip in the sender, a re-attach after an encoder restart) forces an IDR
+     * on all of them. The first request in a window passes immediately;
+     * later ones are coalesced into the IDR already on its way.
+     *
+     * <p>Only the stream lane uses this. The recorder's own calls (event
+     * start, segment-rotation splice) keep the unlimited
+     * {@link #requestSyncFrame()}: a coalesced keyframe there would leave a
+     * segment without a decodable start.
+     *
+     * @return true if the request reached the encoder; false if coalesced
+     */
+    public boolean requestSyncFrameRateLimited() {
+        if (!viewerSyncFrameLimiter.tryAcquire()) {
+            logger.debug("Sync frame request coalesced (one already forced <1s ago)");
+            return false;
+        }
+        requestSyncFrame();
+        return true;
     }
     
     /**
@@ -4319,6 +4596,16 @@ public class HardwareEventRecorderGpu {
         return lastDiskWrittenMs;
     }
 
+    /** Muxer write-queue depth (0..600); read-only backpressure signal for background uploads. */
+    public int getMuxerQueueDepth() {
+        return muxerWriteQueue.size();
+    }
+
+    /** Cumulative video packets dropped under disk backpressure since this encoder was created. */
+    public long getMuxerDropCount() {
+        return muxerDropCount.get();
+    }
+
     /**
      * @return true if the pre-record byte ring is allocated and active for
      *         this encoder. False if the encoder is stream-only or if the
@@ -4404,15 +4691,14 @@ public class HardwareEventRecorderGpu {
     }
 
     /**
-     * @param allowStartTruncation the caller already truncated the requested
-     *        start to the ring's oldest PACKET ("save whatever is buffered").
-     *        After a PTS-discontinuity wipe that oldest packet is usually a
-     *        P-frame, so the decodable start (next IDR) can sit up to one GOP
-     *        later — with this flag the export adopts the cursor's decodable
-     *        start instead of refusing on the start-side coverage check. The
-     *        end-side check still applies, and a clip whose decodable region
-     *        would shrink below {@link #MANUAL_CLIP_MIN_TRUNCATED_SPAN_US} is
-     *        still refused rather than emitted as a sliver.
+     * @param allowStartTruncation save whatever is buffered: when the ring no
+     *        longer holds a keyframe at or before {@code startPtsUs} (history
+     *        truncated at trigger time, a P-frame head after a PTS-discontinuity
+     *        wipe, or head eviction during post-roll), adopt the cursor's first
+     *        decodable keyframe instead of refusing on the start-side coverage
+     *        check. The end-side check still applies, and a clip whose decodable
+     *        region would shrink below {@link #MANUAL_CLIP_MIN_TRUNCATED_SPAN_US}
+     *        is still refused rather than emitted as a sliver.
      */
     public boolean exportManualClip(ManualClipOutputProvider outputProvider,
                                     long startPtsUs, long endPtsUs,
@@ -4450,21 +4736,17 @@ public class HardwareEventRecorderGpu {
                 return false;
             }
 
-            // Never silently turn a requested 30/60-second replay into a
-            // warmed-up or memory-truncated fragment. The start may be earlier
-            // than requested because decoding must begin at the preceding IDR;
-            // it must not be materially later. The end allows a few frame
-            // intervals because the requested timestamp need not land exactly
-            // on an encoded sample.
+            // The start may be earlier than requested because decoding must
+            // begin at the preceding IDR; it is later only when the caller
+            // allows truncation. The end allows a few frame intervals because
+            // the requested timestamp need not land exactly on an encoded sample.
             final long coverageToleranceUs = Math.max(250_000L,
                     fps > 0 ? (3_000_000L / fps) : 250_000L);
             boolean startCovered =
                     cursor.getStartPtsUs() <= startPtsUs + coverageToleranceUs;
             if (!startCovered && allowStartTruncation) {
-                // Truncated request: the caller pinned its start to the oldest
-                // ring packet, which may be undecodable (P-frame head after a
-                // discontinuity wipe). Accept the cursor's decodable start as
-                // the effective start as long as a meaningful window remains.
+                // The requested start is gone or undecodable. Accept the cursor's
+                // decodable start as long as a meaningful window remains.
                 startCovered = cursor.getStartPtsUs()
                         <= endPtsUs - MANUAL_CLIP_MIN_TRUNCATED_SPAN_US;
                 if (startCovered) {
@@ -5658,6 +5940,7 @@ public class HardwareEventRecorderGpu {
             }
             isWritingToFile = false;
             recording = false;
+            dropPendingSegmentMove();  // this abort bypasses close, which would drop it
             // FIX (audit R2): also propagate the abort up to the wrapper so
             // GpuMosaicRecorder.recording flips false and StorageManager's
             // recordingActive sentinel clears. Without this, RMM's wedge
@@ -6080,6 +6363,12 @@ public class HardwareEventRecorderGpu {
             logger.error("Writer-side rotation failed unexpectedly: " + t.getMessage(), t);
             rotationInFlight.set(false);
             try { releaseMuxerPacket(ticket); } catch (Throwable ignored) {}
+        } finally {
+            SegmentMove move = takenSegmentMove;
+            if (move != null) {
+                takenSegmentMove = null;
+                move.done.countDown();  // outcome was set by the swap (FAILED unless it said otherwise)
+            }
         }
     }
 
@@ -6123,7 +6412,11 @@ public class HardwareEventRecorderGpu {
         // mutating closedStartGeo*/startGeo* before the swap is committed
         // corrupted the CONTINUING segment's geo on every failed rotation,
         // and could race a successor trigger's own location capture.
-        String newPath = nextSegmentPath(segmentBasePath);
+        // A requested folder move is tried on this segment only. If it fails, the current segment
+        // keeps going (no retry backoff, so no extra cut) and the requester sees FAILED.
+        final SegmentMove move = takeSegmentMove(ticket);
+        final String movedBasePath = (move != null) ? rebasedSegmentPath(move.dir) : null;
+        String newPath = nextSegmentPath(movedBasePath != null ? movedBasePath : segmentBasePath);
         File newTempFile = new File(newPath + ".tmp");
         MediaMuxer newMuxer = null;
         int newTrackIndex = -1;
@@ -6141,7 +6434,7 @@ public class HardwareEventRecorderGpu {
             } else {
                 logger.error("Cannot rotate: savedFormat is null (encoder hasn't published format)");
                 try { newMuxer.release(); } catch (Exception ignored) {}
-                abortRotationKeepOldSegment(ticket, newTempFile, true);
+                abortRotationKeepOldSegment(ticket, newTempFile, move == null);
                 return;
             }
         } catch (Exception e) {
@@ -6151,7 +6444,16 @@ public class HardwareEventRecorderGpu {
             if (newMuxer != null) {
                 try { newMuxer.release(); } catch (Exception ignored) {}
             }
-            abortRotationKeepOldSegment(ticket, newTempFile, true);
+            if (isEnospc(e)) {
+                // The next rotation attempt (seconds away) lands in the freed entries.
+                try {
+                    com.overdrive.app.storage.StorageManager.getInstance()
+                            .relieveFolderEntries(newTempFile.getParentFile(), true);
+                } catch (Throwable ignored) {
+                    // StorageManager may not be initialised in every process.
+                }
+            }
+            abortRotationKeepOldSegment(ticket, newTempFile, move == null);
             return;
         }
 
@@ -6210,6 +6512,7 @@ public class HardwareEventRecorderGpu {
                     + ", live gen " + recordingGeneration + ")");
                 try { newMuxer.release(); } catch (Exception ignored) {}
                 if (newTempFile.exists()) newTempFile.delete();
+                if (move != null) move.outcome = SegmentMove.NOT_TAKEN;  // the recording ended, not the card
                 // No segmentNumber back-out: the bump only happens below,
                 // after this re-check passes.
                 if (ticket.rotateGeneration == recordingGeneration) {
@@ -6302,7 +6605,7 @@ public class HardwareEventRecorderGpu {
                 closedStartGeoAgeMs = prevClosedGeoAgeMs;
                 closedStartGeoCapturedAtMs = prevClosedGeoCapturedAtMs;
                 try { newMuxer.release(); } catch (Exception ignored) {}
-                abortRotationKeepOldSegment(ticket, newTempFile, true);
+                abortRotationKeepOldSegment(ticket, newTempFile, move == null);
                 return;
             }
 
@@ -6337,6 +6640,10 @@ public class HardwareEventRecorderGpu {
                 writeRebased(muxer, trackIndex, ticket.data, ticket.info);
                 recordedFrames = 1;
                 lastDiskWrittenMs = System.currentTimeMillis();
+                if (movedBasePath != null) {
+                    segmentBasePath = movedBasePath;
+                    move.outcome = SegmentMove.MOVED;  // committed: the file is in the new folder
+                }
             } catch (Exception e) {
                 logger.error("First write to new segment failed — rolling back"
                     + " to old muxer: " + e.getMessage());
@@ -6367,7 +6674,7 @@ public class HardwareEventRecorderGpu {
                 closedStartGeoCapturedAtMs = prevClosedGeoCapturedAtMs;
                 try { newMuxer.stop(); } catch (Exception ignored) {}
                 try { newMuxer.release(); } catch (Exception ignored) {}
-                abortRotationKeepOldSegment(ticket, newTempFile, true);
+                abortRotationKeepOldSegment(ticket, newTempFile, move == null);
                 return;
             }
         }
@@ -6379,6 +6686,9 @@ public class HardwareEventRecorderGpu {
         logger.info("Segment " + segmentNumber + " started: " + newTempFile.getName()
             + (spliceWasKeyframe ? " (keyframe splice)"
                                  : " (deadline splice — P-frame lead)"));
+        if (move != null) {
+            logger.info("Segment " + segmentNumber + " moved to " + newTempFile.getParent());
+        }
 
         // Hand the old muxer to the background finalizer. stop() takes
         // 50-200 ms (writes the moov atom); rename blocks on metadata — both
@@ -6554,7 +6864,11 @@ public class HardwareEventRecorderGpu {
             if (oldTemp != null && oldTemp.exists()) {
                 if (!segmentBroken && oldRecordedFrames > 0 && oldTemp.length() > 1024) {
                     File finalFile = new File(oldOutputPath);
-                    if (oldTemp.renameTo(finalFile)) {
+                    // Retried only while this recording still owns the segment callback.
+                    int renameErrno = renameWithFolderRelief(oldTemp, finalFile,
+                            () -> FOLDER_RELIEF_ROTATION_WAIT_MS,
+                            () -> listenerGeneration == listenerGenerationAtCommit);
+                    if (renameErrno == 0) {
                         finalisedSegment = finalFile;
                         float durationSec = (oldFirstPtsUs >= 0 && oldLastPtsUs > oldFirstPtsUs)
                                 ? (oldLastPtsUs - oldFirstPtsUs) / 1_000_000.0f
@@ -6606,7 +6920,8 @@ public class HardwareEventRecorderGpu {
                                     + e.getMessage());
                         }
                     } else {
-                        logger.error("Failed to rename segment " + oldSegmentNumber + " — deleting orphan");
+                        logger.error("Failed to rename segment " + oldSegmentNumber + " ("
+                                + errnoLabel(renameErrno) + ") — deleting orphan");
                         oldTemp.delete();
                     }
                 } else if (segmentBroken) {
@@ -6630,7 +6945,7 @@ public class HardwareEventRecorderGpu {
                 // size keeps counting a segment that is already gone.
                 try {
                     com.overdrive.app.storage.StorageManager.getInstance()
-                            .invalidateCategorySizeCache(null);
+                            .invalidateSizeCacheFor(oldTemp);
                 } catch (Throwable ignored) {
                     // StorageManager may not be initialised in every process.
                 }
@@ -7005,6 +7320,13 @@ public class HardwareEventRecorderGpu {
         } catch (Exception ignored) {}
         return basePath + "_" + segmentNumber + ".mp4";
     }
+
+    /** The current base path moved into {@code dir}; null when there is no move or no base. */
+    private String rebasedSegmentPath(String dir) {
+        String base = segmentBasePath;
+        if (dir == null || base == null) return null;
+        return new File(dir, new File(base).getName()).getAbsolutePath();
+    }
     
     /**
      * Implements loop recording by deleting oldest segments when storage is low.
@@ -7052,7 +7374,15 @@ public class HardwareEventRecorderGpu {
 
         long now = System.currentTimeMillis();
         boolean anyDeleted = false;
+        com.overdrive.app.storage.StorageManager relief = null;
+        try {
+            relief = com.overdrive.app.storage.StorageManager.getInstance();
+        } catch (Throwable ignored) {
+            // StorageManager may not be initialised in every process.
+        }
         for (File f : orphans) {
+            // A clip may wait under a FAT32 relief name (OD??????.TMP); StorageManager removes those itself.
+            if (relief != null && relief.isFolderReliefHopFile(f)) continue;
             long age = now - f.lastModified();
             if (age > 5 * 60 * 1000) { // Older than 5 minutes
                 long size = f.length();

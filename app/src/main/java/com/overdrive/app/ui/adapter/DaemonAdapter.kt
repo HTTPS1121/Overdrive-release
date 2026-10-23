@@ -39,7 +39,13 @@ class DaemonAdapter(
     override fun onBindViewHolder(holder: DaemonViewHolder, position: Int) {
         holder.bind(getItem(position))
     }
-    
+
+    /** Re-bind [type]'s card so its switch snaps back to the published state. */
+    fun refreshItem(type: DaemonType) {
+        val index = currentList.indexOfFirst { it.type == type }
+        if (index >= 0) notifyItemChanged(index)
+    }
+
     inner class DaemonViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val statusIndicator: View = itemView.findViewById(R.id.statusIndicator)
         private val ivDaemonIcon: ImageView = itemView.findViewById(R.id.ivDaemonIcon)
@@ -121,7 +127,9 @@ class DaemonAdapter(
             
             // Set switch state without triggering listener
             switchDaemon.setOnCheckedChangeListener(null)
-            switchDaemon.isChecked = state.status == DaemonStatus.RUNNING
+            // ON means "enabled": a failing or retrying daemon stays ON so the user can switch it off.
+            switchDaemon.isChecked = !state.needsConfiguration &&
+                (state.status == DaemonStatus.RUNNING || state.userEnabled)
             switchDaemon.isEnabled = !state.needsConfiguration && 
                                      state.status != DaemonStatus.STARTING && 
                                      state.status != DaemonStatus.STOPPING
@@ -252,15 +260,15 @@ class DaemonAdapter(
          */
         fun getLogFilePath(type: DaemonType): String? {
             return when (type) {
-                DaemonType.CAMERA_DAEMON -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cam_daemon.log")
-                DaemonType.SENTRY_DAEMON -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/sentry_daemon.log")
-                DaemonType.ACC_SENTRY_DAEMON -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/acc_sentry_daemon.log")
-                DaemonType.CLOUDFLARED_TUNNEL -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/cloudflared.log")
-                DaemonType.ZROK_TUNNEL -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/zrok.log")
-                DaemonType.TAILSCALE_TUNNEL -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.tailscale/tailscale.log")
+                DaemonType.CAMERA_DAEMON -> com.overdrive.app.util.ScratchRoot.path("cam_daemon.log")
+                DaemonType.SENTRY_DAEMON -> com.overdrive.app.util.ScratchRoot.path("sentry_daemon.log")
+                DaemonType.ACC_SENTRY_DAEMON -> com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.log")
+                DaemonType.CLOUDFLARED_TUNNEL -> com.overdrive.app.util.ScratchRoot.path("cloudflared.log")
+                DaemonType.ZROK_TUNNEL -> com.overdrive.app.util.ScratchRoot.path("zrok.log")
+                DaemonType.TAILSCALE_TUNNEL -> com.overdrive.app.util.ScratchRoot.path(".tailscale/tailscale.log")
                 DaemonType.WIREGUARD_TUNNEL -> com.overdrive.app.wireguard.WireGuardPaths.LOG
-                DaemonType.SINGBOX_PROXY -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/singbox.log")
-                DaemonType.TELEGRAM_DAEMON -> com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/telegrambotdaemon.log")
+                DaemonType.SINGBOX_PROXY -> com.overdrive.app.util.ScratchRoot.path("singbox.log")
+                DaemonType.TELEGRAM_DAEMON -> com.overdrive.app.util.ScratchRoot.path("telegrambotdaemon.log")
             }
         }
 

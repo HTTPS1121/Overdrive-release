@@ -32,6 +32,9 @@ public final class CameraConfigResolver {
     }
 
     public static ResolvedCameraConfig resolve(String vehicleModel) {
+        if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            return resolveCamera2();
+        }
         JSONObject camera = getCameraSection();
         boolean dilink5 = DiLink5Platform.isSelected();
         boolean dilink4 = !dilink5 && DiLink5Platform.isDiLink4Selected();
@@ -129,6 +132,27 @@ public final class CameraConfigResolver {
                 roleMappings);
     }
 
+    /**
+     * Camera2 360: fixed super-frame geometry, slice order from the HAL. Probe
+     * results, manual ids and legacy role overrides belong to other modes.
+     */
+    private static ResolvedCameraConfig resolveCamera2() {
+        CameraProfile profile = CameraProfiles.camera2Avm(
+                com.overdrive.app.camera.camera2.Camera2AvmBackend.cachedSliceRoles());
+        return new ResolvedCameraConfig(
+                profile,
+                profile.getId(),
+                false,
+                profile.getPanoCameraId(),
+                profile.getPanoWidth(),
+                profile.getPanoHeight(),
+                profile.getPanoSurfaceMode(),
+                false,
+                true,
+                false,
+                profile.getDefaultRoleMappings());
+    }
+
     /** Validate a manual camera ID without overriding DI4's HAL tag mapping. */
     public static boolean isManualPanoCameraIdAllowed(int cameraId) {
         if (cameraId < 0 || cameraId > PanoCameraFallbackOrder.MAX_CAMERA_ID) {
@@ -158,6 +182,16 @@ public final class CameraConfigResolver {
         return DiLink5Platform.isSelected();
     }
 
+    /**
+     * Camera2 fixes the source layout in the platform, so legacy camera writes are refused.
+     * Deliberately the free process-mode read: re-reading the marker here would add a second
+     * config-lock acquisition to every legacy save. A stale allow is harmless because the
+     * Camera2 resolver reads none of these keys.
+     */
+    private static boolean isCamera2RuntimeSelected() {
+        return com.overdrive.app.camera.camera2.Camera2Platform.isSelected();
+    }
+
     /** True only for the opt-in DiLink 4 passive APA compatibility path. */
     public static boolean isPassiveApaModeEnabled() {
         if (!DiLink5Platform.isDiLink4Selected()) return false;
@@ -176,6 +210,7 @@ public final class CameraConfigResolver {
      * is just durable user intent.
      */
     public static boolean saveRoleMapping(CameraRole role, CameraSourceRef sourceRef) {
+        if (isCamera2RuntimeSelected()) return false;
         if (role == null || sourceRef == null || isDiLink5RuntimeSelected()) return false;
         // Build a fresh JSONObject from the cached section's serialized form.
         // UnifiedConfigManager.loadConfig returns the cached config by
@@ -199,6 +234,7 @@ public final class CameraConfigResolver {
      * Remove a single role mapping so it falls back to the profile default.
      */
     public static boolean clearRoleMapping(CameraRole role) {
+        if (isCamera2RuntimeSelected()) return false;
         if (role == null || isDiLink5RuntimeSelected()) return false;
         JSONObject camera = getCameraSection();
         JSONObject existing = camera.optJSONObject("roleMappings");
@@ -218,6 +254,7 @@ public final class CameraConfigResolver {
             boolean manualOverride,
             int cameraId,
             boolean concurrentProbeEnabled) {
+        if (isCamera2RuntimeSelected()) return false;
         if (isDiLink5RuntimeSelected()
                 || (manualOverride && (cameraId < 0 || cameraId > 5))) {
             return false;
@@ -268,6 +305,7 @@ public final class CameraConfigResolver {
      * the runtime probe completes.
      */
     public static boolean saveCameraProfile(String profileId) {
+        if (isCamera2RuntimeSelected()) return false;
         if (isDiLink5RuntimeSelected()) return false;
         JSONObject update = new JSONObject();
         if (profileId == null || profileId.isEmpty()
@@ -338,6 +376,7 @@ public final class CameraConfigResolver {
      */
     public static boolean persistPanoramicProbe(int cameraId, int surfaceMode, int width, int height,
                                                 boolean validated, boolean fallback) {
+        if (isCamera2RuntimeSelected()) return false;
         if (isDiLink5RuntimeSelected()) return false;
         JSONObject update = new JSONObject();
         putSafely(update, "probedCameraId", cameraId);
@@ -367,6 +406,9 @@ public final class CameraConfigResolver {
      * exposes only the fixed QCarCam mosaic slices.
      */
     public static JSONArray buildPreviewCandidates(ResolvedCameraConfig resolved) {
+        if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+            return camera2PreviewCandidates(resolved);
+        }
         JSONArray out = new JSONArray();
         boolean dilink5 = DiLink5Platform.isSelected();
         if (dilink5
@@ -397,6 +439,18 @@ public final class CameraConfigResolver {
                     ? resolved.getPanoHeight() / 2
                     : passiveApa
                             ? PassiveApaGeometry.HEIGHT : resolved.getPanoHeight());
+            out.put(item);
+        }
+        return out;
+    }
+
+    /** Camera2 exposes only the four super-frame slices; it never opens another camera. */
+    private static JSONArray camera2PreviewCandidates(ResolvedCameraConfig resolved) {
+        JSONArray out = new JSONArray();
+        for (PanoramicSlice slice : PanoramicSlice.values()) {
+            JSONObject item = CameraSourceRef.panoramicSlice(slice).toJson();
+            putSafely(item, "previewWidth", resolved.getPanoWidth() / 4);
+            putSafely(item, "previewHeight", resolved.getPanoHeight());
             out.put(item);
         }
         return out;

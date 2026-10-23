@@ -7,6 +7,7 @@ import com.overdrive.app.launcher.AdbDaemonLauncher
 import com.overdrive.app.launcher.AdbShellExecutor
 import com.overdrive.app.launcher.ZrokLauncher
 import com.overdrive.app.launcher.TailscaleLauncher
+import com.overdrive.app.launcher.TunnelLauncher
 import com.overdrive.app.launcher.WireGuardLauncher
 import com.overdrive.app.logging.LogManager
 import com.overdrive.app.telegram.config.UnifiedTelegramConfig
@@ -32,6 +33,13 @@ class DaemonStartupManager(
     private val healthCheckThread =
         android.os.HandlerThread("DaemonHealthCheck").apply { start() }
     private val healthCheckHandler = Handler(healthCheckThread.looper)
+
+    // DI5: staged starts that failed while ADB was unreachable, replayed on the next connection.
+    private val deferredStarts = ArrayList<Pair<DaemonType, () -> Unit>>()
+    @Volatile
+    private var supervisionStopped = false
+    @Volatile
+    private var lastHealthSnapshotAtMs = 0L
     // Public so MainActivity / fragments / one-shot callers can route their
     // ADB-shell commands through this single shared launcher instead of
     // allocating fresh `AdbDaemonLauncher(this)` instances each call.
@@ -165,7 +173,7 @@ class DaemonStartupManager(
             // here or through ifNotUserStopped/relaunchDaemon, which carry the same
             // gate. The marker is only ever erased by the ACC judge on a real
             // ACC-on, by a recovery trigger after a VERIFIED erase, or by an explicit
-            // user start. In onAndOff the marker never exists, so this is inert.
+            // user start. In onAndOff it exists only after a low-battery cutoff.
             //
             // The one thing that MAY run while parked is the judge itself: it is the
             // only process that can end the park, so a start request that finds the
@@ -186,6 +194,7 @@ class DaemonStartupManager(
                 // though the process-lifetime guard is still set from the pre-park session.
                 parkObserved = false
                 if (endedStamp != null) consumedParkEndStamp = endedStamp
+                TunnelLauncher.resetAutoStartBackoff()
                 if (activityManager != null) {
                     // Alive = its +45/+60 s start timers are still pending, or its 30 s
                     // health check is ticking; either relaunches the stack now that the
@@ -209,6 +218,7 @@ class DaemonStartupManager(
             // erase has been VERIFIED — at which point the exists() check the gates
             // use is itself already false.
             userStoppedDaemons.clear()
+            TunnelLauncher.resetAutoStartBackoff()
             val manager = DaemonStartupManager(context, null)
             bootManager = manager
             manager.initializeOnBoot()
@@ -308,6 +318,7 @@ class DaemonStartupManager(
                         consumedParkEndStamp = readParkEndedStamp()
                         recoveryInProgress = false
                         android.util.Log.i(TAG, "recoverFromPark: marker erase verified — relaunching stack")
+                        TunnelLauncher.resetAutoStartBackoff()
                         onRecovered()
                     } else {
                         recoveryInProgress = false
@@ -657,6 +668,7 @@ class DaemonStartupManager(
      * stop is more important than one automatic start attempt.
      */
     private fun ifNotUserStopped(type: DaemonType, onAllowed: () -> Unit) {
+        val noteGeneration = daemonsViewModel?.userStartGeneration(type) ?: 0
         // ABSOLUTE "Vehicle ON only" parked gate, for BOTH managers, in the SAME
         // ordered shell command as the per-daemon sentinel decision. While the
         // parked-shutdown marker exists the stack was intentionally terminated for
@@ -698,8 +710,10 @@ class DaemonStartupManager(
                             log.info(TAG, "Auto-start: Vehicle-ON-only parked marker present — " +
                                 "not starting ${type.displayName} (stay asleep)")
                         }
-                        out.contains("STOPPED") ->
+                        out.contains("STOPPED") -> {
                             log.info(TAG, "Auto-start: ${type.displayName} is manually stopped — skipping")
+                            daemonsViewModel?.noteExternalStop(type, noteGeneration)
+                        }
                         out.contains("OK") || out.contains("MACHINE") -> {
                             if (out.contains("MACHINE")) {
                                 log.info(TAG, "Auto-start: cleared machine stop for ${type.displayName}")
@@ -714,6 +728,7 @@ class DaemonStartupManager(
                 override fun onError(error: String) {
                     log.warn(TAG, "Auto-start sentinel probe failed for " +
                         "${type.displayName} ($error) — leaving it stopped")
+                    deferUntilAdbConnects(type, onAllowed)
                 }
             }
         )
@@ -789,25 +804,34 @@ class DaemonStartupManager(
         }
     }
 
+    /** Automatic Cloudflared starts wait out TunnelLauncher's failure backoff; a user start resets it. */
+    private fun cloudflaredBackingOff(source: String): Boolean {
+        val waitMs = TunnelLauncher.autoStartDelayMs()
+        if (waitMs <= 0L) return false
+        log.info(TAG, "$source: Cloudflared failed repeatedly — next automatic attempt in ${waitMs / 1000}s")
+        return true
+    }
+
     private fun startTunnelFromPreferences(vm: DaemonsViewModel) {
         val cloudflaredEnabled = PreferencesManager.isDaemonEnabled(DaemonType.CLOUDFLARED_TUNNEL)
         val zrokEnabled = PreferencesManager.isDaemonEnabled(DaemonType.ZROK_TUNNEL)
         val tailscaleEnabled = PreferencesManager.isDaemonEnabled(DaemonType.TAILSCALE_TUNNEL)
         val wireguardEnabled = PreferencesManager.isDaemonEnabled(DaemonType.WIREGUARD_TUNNEL)
 
-        // Cloudflared and Zrok are mutually exclusive (both expose the dashboard publicly)
+        // Each enabled tunnel starts on its own; Cloudflared and Zrok may run side by side.
         if (cloudflaredEnabled) {
             vm.cloudflaredController.isRunning { isRunning ->
                 if (isRunning) {
                     log.info(TAG, "Cloudflared already running, skipping start")
-                } else {
+                } else if (!cloudflaredBackingOff("Auto-start")) {
                     ifNotUserStopped(DaemonType.CLOUDFLARED_TUNNEL) {
                         log.info(TAG, "Starting Cloudflared (user enabled)...")
                         vm.startDaemon(DaemonType.CLOUDFLARED_TUNNEL, userInitiated = false)
                     }
                 }
             }
-        } else if (zrokEnabled) {
+        }
+        if (zrokEnabled) {
             vm.zrokController.isRunning { isRunning ->
                 if (isRunning) {
                     log.info(TAG, "Zrok already running, skipping start")
@@ -818,7 +842,8 @@ class DaemonStartupManager(
                     }
                 }
             }
-        } else if (!tailscaleEnabled && !wireguardEnabled) {
+        }
+        if (!cloudflaredEnabled && !zrokEnabled && !tailscaleEnabled && !wireguardEnabled) {
             log.info(TAG, "No tunnel enabled by user")
         }
 
@@ -842,7 +867,7 @@ class DaemonStartupManager(
                 if (isRunning) {
                     log.info(TAG, "WireGuard already running, skipping start")
                 } else {
-                    ifWireGuardConfigured {
+                    ifWireGuardConfiguredForStart {
                         ifNotUserStopped(DaemonType.WIREGUARD_TUNNEL) {
                             log.info(TAG, "Starting WireGuard (user enabled)...")
                             vm.startDaemon(DaemonType.WIREGUARD_TUNNEL, userInitiated = false)
@@ -868,8 +893,10 @@ class DaemonStartupManager(
             val tunnelDelay = if (PreferencesManager.isDaemonEnabled(DaemonType.SINGBOX_PROXY)) 5_000L else 0L
 
             handler.postDelayed({
-                // Cloudflared and Zrok are mutually exclusive
-                if (PreferencesManager.isDaemonEnabled(DaemonType.CLOUDFLARED_TUNNEL)) {
+                // Each enabled tunnel starts on its own; Cloudflared and Zrok may run side by side.
+                if (PreferencesManager.isDaemonEnabled(DaemonType.CLOUDFLARED_TUNNEL) &&
+                    !cloudflaredBackingOff("Boot")
+                ) {
                     ifNotUserStopped(DaemonType.CLOUDFLARED_TUNNEL) {
                         log.info(TAG, "Boot: Starting Cloudflared...")
                         adbLauncher.launchTunnel(object : AdbDaemonLauncher.TunnelCallback {
@@ -878,7 +905,8 @@ class DaemonStartupManager(
                             override fun onError(error: String) { log.error(TAG, "Boot: Cloudflared error: $error") }
                         })
                     }
-                } else if (PreferencesManager.isDaemonEnabled(DaemonType.ZROK_TUNNEL)) {
+                }
+                if (PreferencesManager.isDaemonEnabled(DaemonType.ZROK_TUNNEL)) {
                     ifNotUserStopped(DaemonType.ZROK_TUNNEL) {
                         log.info(TAG, "Boot: Starting Zrok...")
                         startZrokOnBoot()
@@ -894,7 +922,7 @@ class DaemonStartupManager(
                 }
 
                 if (PreferencesManager.isDaemonEnabled(DaemonType.WIREGUARD_TUNNEL)) {
-                    ifWireGuardConfigured {
+                    ifWireGuardConfiguredForStart {
                         ifNotUserStopped(DaemonType.WIREGUARD_TUNNEL) {
                             log.info(TAG, "Boot: Starting WireGuard...")
                             startWireGuardOnBoot()
@@ -1011,7 +1039,7 @@ class DaemonStartupManager(
         val tailscaleEnabled = PreferencesManager.isDaemonEnabled(DaemonType.TAILSCALE_TUNNEL)
         val wireguardEnabled = PreferencesManager.isDaemonEnabled(DaemonType.WIREGUARD_TUNNEL)
 
-        // Cloudflared and Zrok are mutually exclusive
+        // Each enabled tunnel restarts on its own; Cloudflared and Zrok may run side by side.
         if (cloudflaredEnabled) {
             vm.cloudflaredController.isRunning { isRunning ->
                 if (isRunning && forceRestart) {
@@ -1030,7 +1058,8 @@ class DaemonStartupManager(
                     log.info(TAG, "Cloudflared already running, no restart needed")
                 }
             }
-        } else if (zrokEnabled) {
+        }
+        if (zrokEnabled) {
             vm.zrokController.isRunning { isRunning ->
                 if (isRunning && forceRestart) {
                     log.info(TAG, "Restarting Zrok to apply new proxy settings...")
@@ -1168,6 +1197,9 @@ class DaemonStartupManager(
      */
     private fun startDaemonHealthCheck() {
         if (!healthCheckRunning.compareAndSet(false, true)) return
+        // From here the health check owns revival (a manager without a ViewModel has no
+        // Telegram/Tailscale/Singbox fallback, as before).
+        synchronized(deferredStarts) { deferredStarts.clear() }
         log.info(TAG, "Daemon health check started (interval=${HEALTH_CHECK_INTERVAL_MS / 1000}s)")
         // Arm the ADB reconnect hook together with the periodic loop (and
         // disarm together in stopHealthCheckThread): a reconnect-triggered
@@ -1197,7 +1229,24 @@ class DaemonStartupManager(
         }
 
     private fun onAdbConnectionReestablished(generation: Long) {
-        if (!healthCheckRunning.get()) return
+        if (!healthCheckRunning.get()) {
+            replayDeferredStarts(generation)
+            return
+        }
+        if (generation == 1L) {
+            // DI5 only, once per process; kept off the reconnect rate limit so a real adbd restart
+            // right after it still gets its immediate check.
+            log.warn(TAG, "ADB became available (gen=1) after the DI5 port was closed — " +
+                "running a health check.")
+            // A tick whose command made this connection is already relaunching: skip if one just got a snapshot.
+            healthCheckHandler.postDelayed({
+                if (healthCheckRunning.get()
+                    && System.currentTimeMillis() - lastHealthSnapshotAtMs >= RECONNECT_CHECK_MIN_INTERVAL_MS) {
+                    runHealthCheck()
+                }
+            }, 5_000L)
+            return
+        }
         val now = System.currentTimeMillis()
         if (now - lastReconnectHealthCheckAtMs < RECONNECT_CHECK_MIN_INTERVAL_MS) {
             log.info(TAG, "ADB reconnect (gen=$generation): immediate check ran recently — skipping")
@@ -1228,6 +1277,70 @@ class DaemonStartupManager(
         )
         healthCheckHandler.post {
             if (healthCheckRunning.get()) runHealthCheck()
+        }
+    }
+
+    /**
+     * DI5 boots with ADB off: keep a staged start that failed while the port is closed for the next
+     * connection, which on DI5 always notifies the reconnect listeners. A closed port means adbd is
+     * down and every daemon it spawned is gone at deferral time. Not on main.
+     */
+    private fun deferUntilAdbConnects(type: DaemonType, onAllowed: () -> Unit) {
+        if (supervisionStopped || healthCheckRunning.get()
+            || !com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+            || !AdbShellExecutor.wasDiLink5PortClosed()
+            || !AdbShellExecutor.isAdbPortClosedNow()) return
+        synchronized(deferredStarts) {
+            deferredStarts.removeAll { it.first == type }
+            deferredStarts.add(type to onAllowed)
+        }
+        AdbShellExecutor.addConnectionReestablishedListener(adbReconnectListener)
+        log.info(TAG, "DI5: ADB unreachable — ${type.displayName} starts when ADB connects")
+        if (supervisionStopped) {
+            AdbShellExecutor.removeConnectionReestablishedListener(adbReconnectListener)
+        } else if (AdbShellExecutor.isConnected()) {
+            // The connection came up before the listener was registered.
+            replayDeferredStarts(-1L)
+        }
+    }
+
+    /**
+     * Re-runs the deferred staged starts in their original order, 5 s apart like the staged start.
+     * Steps still pending once the health check is running are left to its first tick, which keeps
+     * the staged start's margin between a launch and the next liveness snapshot.
+     */
+    private fun replayDeferredStarts(generation: Long) {
+        val pending = synchronized(deferredStarts) {
+            ArrayList(deferredStarts).also { deferredStarts.clear() }
+        }
+        if (pending.isEmpty()) return
+        log.info(TAG, "ADB connected (gen=$generation) — running ${pending.size} staged start(s) " +
+            "it had blocked: ${pending.joinToString { it.first.displayName }}")
+        pending.forEachIndexed { index, (type, onAllowed) ->
+            handler.postDelayed({
+                if (supervisionStopped || healthCheckRunning.get()) return@postDelayed
+                // A stop while ADB was down may not have reached its sentinel; the staged start checks these too.
+                if (type in userStoppedDaemons) return@postDelayed
+                if (type in OPTIONAL_DAEMONS && !PreferencesManager.isDaemonEnabled(type)) return@postDelayed
+                ifNotUserStopped(type, onAllowed)
+            }, index * 5_000L)
+        }
+    }
+
+    /**
+     * Staged-start config gate for WireGuard: on DI5 a config probe the closed ADB port failed is
+     * retried when ADB connects instead of reading as "no config".
+     */
+    private fun ifWireGuardConfiguredForStart(action: () -> Unit) {
+        WireGuardLauncher(context, adbLauncher.adbShellExecutor, log).hasConfig { configured ->
+            if (configured) {
+                action()
+            } else if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+                && !AdbShellExecutor.isConnected() && AdbShellExecutor.isAdbPortClosedNow()) {
+                deferUntilAdbConnects(DaemonType.WIREGUARD_TUNNEL) { ifWireGuardConfiguredForStart(action) }
+            } else {
+                log.debug(TAG, "WireGuard has no config, not starting")
+            }
         }
     }
 
@@ -1297,6 +1410,7 @@ class DaemonStartupManager(
                 log.warn(TAG, "Health check: ps snapshot unavailable — skipping this tick")
                 return@snapshotProcessTable
             }
+            lastHealthSnapshotAtMs = System.currentTimeMillis()
             for (type in candidates) {
                 if (!adbLauncher.processAliveIn(snapshot, type.processName)) {
                     if (type == DaemonType.WIREGUARD_TUNNEL) {
@@ -1308,6 +1422,8 @@ class DaemonStartupManager(
                         log.warn(TAG, "Health check: ${type.displayName} is DEAD — relaunching...")
                         relaunchDaemon(type)
                     }
+                } else {
+                    daemonsViewModel?.clearExternalStop(type)
                 }
             }
         }
@@ -1322,6 +1438,8 @@ class DaemonStartupManager(
                 if (!managed) {
                     log.warn(TAG, "Health check: Zrok share and watchdog are DEAD — relaunching...")
                     relaunchDaemon(type)
+                } else {
+                    daemonsViewModel?.clearExternalStop(type)
                 }
             }
             return
@@ -1334,7 +1452,13 @@ class DaemonStartupManager(
         }
     }
 
+    // Appended to the health-check probe: tells a user stop (UI, Telegram, empty file) from the app's own markers.
+    private fun userStopClassifier(type: DaemonType): String =
+        "; S='${type.sentinelPath}'; if [ -f \"\$S\" ]; then R=\$(head -1 \"\$S\" 2>/dev/null); " +
+            "case \"\$R\" in 'disabled by ui'*|'disabled by telegram'*|'disabled by user'*|'') echo USER_STOP;; esac; fi"
+
     private fun relaunchDaemon(type: DaemonType) {
+        val noteGeneration = daemonsViewModel?.userStartGeneration(type) ?: 0
         // FINAL cross-UID gate before any actual relaunch. The death we
         // detected might be a crash (no sentinel → revive, the whole point of
         // the health-check) OR a user-initiated stop from the Daemons UI or
@@ -1353,11 +1477,12 @@ class DaemonStartupManager(
         // acc_sentry_daemon, the parked ACC judge, which this health check is the
         // one periodic app-side mechanism able to revive mid-park.
         val parkedMarker = com.overdrive.app.ui.model.ParkedShutdown.MARKER_PATH
-        val stoppedProbe = if (type == DaemonType.ACC_SENTRY_DAEMON) {
+        val baseProbe = if (type == DaemonType.ACC_SENTRY_DAEMON) {
             "test -f ${type.sentinelPath} && echo STOPPED || echo OK"
         } else {
             "test -f ${type.sentinelPath} -o -f $parkedMarker && echo STOPPED || echo OK"
         }
+        val stoppedProbe = baseProbe + (if (type in OPTIONAL_DAEMONS) userStopClassifier(type) else "")
         adbLauncher.executeShellCommand(
             stoppedProbe,
             object : com.overdrive.app.launcher.AdbDaemonLauncher.LaunchCallback {
@@ -1368,10 +1493,15 @@ class DaemonStartupManager(
                         // terminated on park and MUST NOT be revived by the 30s health-check
                         // until the ACC-on edge clears the marker.
                         if (java.io.File(parkedMarker).exists()) noteParkObserved()
+                        else if (message.contains("USER_STOP")) daemonsViewModel?.noteExternalStop(type, noteGeneration)
+                        else daemonsViewModel?.clearExternalStop(type)
                         log.info(TAG, "Health check: ${type.displayName} is stopped " +
                             "(disable sentinel or parked-shutdown marker present) — NOT relaunching")
                     } else {
-                        doRelaunchDaemon(type)
+                        daemonsViewModel?.clearExternalStop(type)
+                        if (type != DaemonType.CLOUDFLARED_TUNNEL || !cloudflaredBackingOff("Health check")) {
+                            doRelaunchDaemon(type)
+                        }
                     }
                 }
                 override fun onLaunched() {}
@@ -1387,12 +1517,12 @@ class DaemonStartupManager(
         val vm = daemonsViewModel
         if (vm != null) {
             // userInitiated=false: a health-check revival must NOT clear the
-            // disable sentinel, flip the enabled-pref, or run tunnel mutual-
-            // exclusion. Those are destructive to durable stop intent — if the
-            // sentinel probe upstream false-negatived a real user stop (e.g.
-            // transient ADB error → defensive relaunch), the old unconditional
-            // vm.startDaemon(type) would wipe the sentinel AND flip the pref
-            // ON, making the false negative permanent for OPTIONAL daemons.
+            // disable sentinel or flip the enabled-pref. Those are destructive
+            // to durable stop intent — if the sentinel probe upstream
+            // false-negatived a real user stop (e.g. transient ADB error →
+            // defensive relaunch), the old unconditional vm.startDaemon(type)
+            // would wipe the sentinel AND flip the pref ON, making the false
+            // negative permanent for OPTIONAL daemons.
             // The non-user path relaunches the process only and re-gates on the
             // in-memory user-stopped set as a same-process race backstop.
             handler.post { vm.startDaemon(type, userInitiated = false) }
@@ -1424,20 +1554,18 @@ class DaemonStartupManager(
                         override fun onError(error: String) { log.error(TAG, "HealthCheck: Zrok restart failed: $error") }
                     })
                 }
-                DaemonType.WIREGUARD_TUNNEL -> {
-                    log.info(TAG, "HealthCheck: relaunching WireGuard via boot-path fallback")
-                    startWireGuardOnBoot()
-                }
                 DaemonType.CLOUDFLARED_TUNNEL -> {
-                    // Boot-path cloudflared recovery (no ViewModel), same launch the boot
-                    // start uses. Without it a cloudflared that dies while the app has no
-                    // Activity stays dead: every tick logged "no ADB fallback".
-                    log.info(TAG, "HealthCheck: relaunching Cloudflared via boot-path fallback")
+                    // Cloudflared has no shell watchdog; this is its only boot-path revival.
+                    log.info(TAG, "HealthCheck: relaunching Cloudflared tunnel via boot-path fallback")
                     adbLauncher.launchTunnel(object : AdbDaemonLauncher.TunnelCallback {
                         override fun onLog(message: String) { log.debug(TAG, "[Cloudflared HealthCheck] $message") }
                         override fun onTunnelUrl(url: String) { log.info(TAG, "HealthCheck: Cloudflared URL: $url") }
                         override fun onError(error: String) { log.error(TAG, "HealthCheck: Cloudflared restart failed: $error") }
                     })
+                }
+                DaemonType.WIREGUARD_TUNNEL -> {
+                    log.info(TAG, "HealthCheck: relaunching WireGuard via boot-path fallback")
+                    startWireGuardOnBoot()
                 }
                 else -> {
                     log.warn(TAG, "Health check: no ADB fallback for ${type.displayName}")
@@ -1479,6 +1607,7 @@ class DaemonStartupManager(
      * quit looper is a no-op).
      */
     fun stopHealthCheckThread() {
+        supervisionStopped = true
         healthCheckRunning.set(false)
         if (activityManager === this) activityManager = null
         AdbShellExecutor.removeConnectionReestablishedListener(adbReconnectListener)

@@ -119,6 +119,36 @@ class AdbShellExecutor(private val context: Context) {
          */
         private val probeInFlight = AtomicBoolean(false)
 
+        /** Process-wide rate limit for [requestDiLink5AdbReenable]. */
+        private const val DI5_ADB_REENABLE_INTERVAL_MS = 60_000L
+        private val lastDi5AdbReenableMs = java.util.concurrent.atomic.AtomicLong(0L)
+        // A connection after the last re-apply means ADB was switched off again (com.byd.ota does
+        // it once, ~18 s after boot), so the next re-apply may come sooner.
+        private const val DI5_ADB_REENABLE_AFTER_CONNECT_MS = 10_000L
+        private val di5ConnectedSinceReenable = AtomicBoolean(false)
+
+        // DiLink 5 user builds boot with adb_enabled=0 (BYD AdbService.systemReady).
+        private const val DI5_PORT_WATCH_POLL_MS = 2_000L
+        private const val DI5_PORT_WATCH_FAST_MS = 15L * 60_000L
+        private const val DI5_PORT_WATCH_SLOW_POLL_MS = 30_000L
+        private val di5PortWatchRunning = AtomicBoolean(false)
+        @Volatile
+        private var di5PortClosedSeen = false
+        /** Elapsed-realtime of the last successful ADB settings write, for the boot timeline log. */
+        private val lastDi5AdbSettingsAppliedMs = java.util.concurrent.atomic.AtomicLong(0L)
+
+        private fun secondsSinceBoot(): Long = android.os.SystemClock.elapsedRealtime() / 1000
+
+        /** DiLink 5 only: the ADB port was seen closed in this process. */
+        fun wasDiLink5PortClosed(): Boolean = di5PortClosedSeen
+
+        /** Quick TCP check; blocks briefly, so never call it on the main thread. */
+        fun isAdbPortClosedNow(): Boolean = try {
+            Socket("127.0.0.1", ADB_PORT).use { false }
+        } catch (e: Exception) {
+            true
+        }
+
         /**
          * Generation-tagged holder for the process-wide shared connection.
          * The generation uniquely identifies one Dadb instance for the life of
@@ -203,6 +233,9 @@ class AdbShellExecutor(private val context: Context) {
         }
 
         fun isAuthPending(): Boolean = isAuthPending.get()
+
+        /** True while a shared connection is installed. */
+        fun isConnected(): Boolean = sharedConn != null
     }
 
     interface AdbAuthCallback {
@@ -216,7 +249,8 @@ class AdbShellExecutor(private val context: Context) {
      * existed (generation > 1) — i.e. a genuine RE-connect, which on this
      * platform almost always means adbd died and took its whole cgroup (every
      * shell-spawned daemon) with it. First-ever connect does NOT fire (daemon
-     * startup is staged separately and must not be preempted). Listeners are
+     * startup is staged separately and must not be preempted), except on
+     * DiLink 5 after the port was seen closed (BYD boots with ADB off). Listeners are
      * invoked on a dedicated notifier thread and MUST NOT do blocking shell
      * work inline — post to your own handler.
      *
@@ -366,7 +400,8 @@ class AdbShellExecutor(private val context: Context) {
             // (any future script body containing the literal delimiter on
             // its own line would terminate the heredoc early).
             val nonce = "${System.nanoTime()}_${scriptSeq.incrementAndGet()}"
-            val scriptPath = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.adb_script_${nonce}.sh")
+            val scriptPath = com.overdrive.app.util.ScratchRoot
+                .path(".adb_script_${nonce}.sh")
             val eofMarker = "__ADB_SCRIPT_EOF_${nonce}__"
             try {
                 logger.debug(TAG, "Executing script via $scriptPath (${scriptBody.length} bytes)")
@@ -517,8 +552,12 @@ class AdbShellExecutor(private val context: Context) {
                     }
                 }, remaining, TimeUnit.MILLISECONDS)
                 try {
+                    // Same root/TMPDIR exports and path remap as the shared
+                    // lane (shellGuarded): the updater's wget/pm install must
+                    // stage in the live scratch root, not the legacy one.
                     val result = conn.adb.shell(
-                        com.overdrive.app.util.DaemonStorage.rebaseCommand(command))
+                        com.overdrive.app.util.ScratchRoot.prepare(command)
+                    )
                     if (settled.compareAndSet(false, true)) {
                         cmdWatchdog.cancel(false)
                         logger.debug(TAG, "adb#$seq DONE-BULK total=${System.currentTimeMillis() - t0}ms exit=${result.exitCode}")
@@ -679,6 +718,8 @@ class AdbShellExecutor(private val context: Context) {
 
             // Check if ADB port is even listening before trying to connect
             if (!isAdbPortOpen()) {
+                requestDiLink5AdbReenable()
+                watchDiLink5AdbPort()
                 logger.warn(TAG, "ADB port $ADB_PORT not open - ADB not enabled?")
                 throw Exception("ADB port not open")
             }
@@ -718,11 +759,15 @@ class AdbShellExecutor(private val context: Context) {
         wasAuthGranted.set(true)
         pollingStarted.set(false)
         logger.info(TAG, "ADB connection established successfully (gen=$gen)")
+        if (di5PortClosedSeen) di5ConnectedSinceReenable.set(true)
         authCallback?.onAuthGranted()
-        if (gen > 1) {
+        // DiLink 5's first connection after a closed port is the one the listeners wait for.
+        if (gen > 1 || di5PortClosedSeen) {
             reconnectNotifier.execute {
-                logger.info(TAG, "ADB connection RE-established (gen=$gen) — notifying " +
-                    "${reconnectListeners.size} listener(s)")
+                logger.info(TAG, "ADB connection " +
+                    (if (gen > 1) "RE-established"
+                     else "established after the DI5 port was closed, ${secondsSinceBoot()}s after boot") +
+                    " (gen=$gen) — notifying ${reconnectListeners.size} listener(s)")
                 for (listener in reconnectListeners) {
                     try {
                         listener.onConnectionReestablished(gen)
@@ -771,33 +816,37 @@ class AdbShellExecutor(private val context: Context) {
      */
     private fun shellGuarded(
         conn: SharedConn,
-        commandRaw: String,
+        command: String,
         deadlineMs: Long,
         seq: Int
     ): dadb.AdbShellResponse {
-        // Relocate the daemon working dir inside the command on platforms whose
-        // storage is locked (DiLink 5); no-op elsewhere. Single chokepoint so
-        // every embedded /data/local/tmp path in launch/watchdog scripts follows.
-        val command = com.overdrive.app.util.DaemonStorage.rebaseCommand(commandRaw)
         val settled = AtomicBoolean(false)
         val timedOut = AtomicBoolean(false)
+        val runner = Thread.currentThread()
+        val runnerGate = Object()
+        var runnerExited = false
+        var interruptedByWatchdog = false
         val watchdog = deadlineScheduler.schedule({
             if (settled.compareAndSet(false, true)) {
                 timedOut.set(true)
                 invalidateConnection(conn, "deadline ${deadlineMs}ms exceeded by adb#$seq")
-                // Close THIS command's connection even when it is no longer the shared one.
-                // invalidateConnection is gen-guarded and skips the close if the holder was
-                // already cleared or replaced — which is exactly the case when the command
-                // started on a connection that died at the same moment (adbd restart). The
-                // blocked read then had nothing to unblock it: on 2026-10-03 adb#2496, sent
-                // 04:59:14 as adbd restarted, sat for 5.4 h, and every daemon relaunch queued
-                // behind it until the next reboot. Closing a stale connection cannot touch
-                // the replacement: it is a different Dadb instance.
+                // The holder may already be cleared or replaced, so close this command's own
+                // connection too; a different Dadb instance cannot be the replacement.
                 try { conn.dadb.close() } catch (ignored: Exception) {}
+                // A command parked behind a stream reader that died sits in dadb's untimed
+                // Condition.await(), which no socket close wakes. Only an interrupt does.
+                synchronized(runnerGate) {
+                    if (!runnerExited) {
+                        interruptedByWatchdog = true
+                        runner.interrupt()
+                    }
+                }
             }
         }, deadlineMs, TimeUnit.MILLISECONDS)
         try {
-            val result = conn.dadb.shell(command)
+            val result = conn.dadb.shell(
+                com.overdrive.app.util.ScratchRoot.prepare(command)
+            )
             if (settled.compareAndSet(false, true)) {
                 watchdog.cancel(false)
             }
@@ -817,6 +866,140 @@ class AdbShellExecutor(private val context: Context) {
             // The exception is the consequence of our own deadline close.
             throw Exception("deadline ${deadlineMs}ms exceeded after adb#$seq " +
                 "(connection closed to unblock)", e)
+        } finally {
+            // Never hand the watchdog's interrupt on to the caller's callback.
+            synchronized(runnerGate) {
+                runnerExited = true
+                if (interruptedByWatchdog) Thread.interrupted()
+            }
+        }
+    }
+
+    /**
+     * DiLink 5 firmware can switch ADB off while parked, and AccSentryDaemon's recovery needs ADB to
+     * start in the first place. Re-apply the same settings through the app's WRITE_SECURE_SETTINGS
+     * grant; never blocks — the next attempt (health tick) connects. DiLink 5 only, once a minute
+     * (10 s once a connection was made since the last re-apply).
+     */
+    private fun requestDiLink5AdbReenable() {
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = lastDi5AdbReenableMs.get()
+        val interval = if (di5ConnectedSinceReenable.get()) DI5_ADB_REENABLE_AFTER_CONNECT_MS
+            else DI5_ADB_REENABLE_INTERVAL_MS
+        if (last != 0L && now - last < interval) return
+        if (!lastDi5AdbReenableMs.compareAndSet(last, now)) return
+        di5ConnectedSinceReenable.set(false)
+        if (context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            logger.warn(TAG, "DI5: ADB port closed and WRITE_SECURE_SETTINGS is not granted - cannot re-enable ADB")
+            return
+        }
+        try {
+            val resolver = context.contentResolver
+            val changed = mutableListOf<String>()
+            if (android.provider.Settings.Global.getInt(resolver, "adb_enabled", 0) != 1) {
+                android.provider.Settings.Global.putInt(resolver, "adb_enabled", 1)
+                changed += "adb_enabled"
+            }
+            if (android.provider.Settings.Global.getInt(resolver, "adb_wifi_enabled", 0) != 1) {
+                android.provider.Settings.Global.putInt(resolver, "adb_wifi_enabled", 1)
+                changed += "adb_wifi_enabled"
+            }
+            if (android.provider.Settings.Global.getLong(resolver, "adb_allowed_connection_time", -1L) != 0L) {
+                android.provider.Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L)
+                changed += "adb_allowed_connection_time"
+            }
+            if (changed.isNotEmpty()) lastDi5AdbSettingsAppliedMs.set(now)
+            logger.warn(TAG, "DI5: ADB port $ADB_PORT closed - re-applied ADB settings: " +
+                (if (changed.isEmpty()) "none needed (already set)" else changed.joinToString()) +
+                " (${secondsSinceBoot()}s after boot)")
+        } catch (e: Exception) {
+            logger.warn(TAG, "DI5: ADB re-enable failed: ${e.message}")
+        }
+    }
+
+    /**
+     * DiLink 5: after a closed-port hit, connect as soon as 5555 accepts instead of waiting for
+     * some caller's next command. Runs until a connection exists; slows down after 15 min.
+     */
+    private fun watchDiLink5AdbPort() {
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return
+        di5PortClosedSeen = true
+        if (!di5PortWatchRunning.compareAndSet(false, true)) return
+        val watcher = AdbShellExecutor(context.applicationContext ?: context)
+        try {
+            Thread({ watcher.runDiLink5PortWatch() }, "Di5AdbPortWatch").apply {
+                isDaemon = true
+                start()
+            }
+            logger.info(TAG, "DI5: watching ADB port $ADB_PORT until it connects " +
+                "(closed ${secondsSinceBoot()}s after boot)")
+        } catch (t: Throwable) {
+            di5PortWatchRunning.set(false)
+            logger.warn(TAG, "DI5: ADB port watch could not start: ${t.message}")
+        }
+    }
+
+    /**
+     * The escalation hooks called from this loop are O(1) and never block: the escalator runs any
+     * OEM fallback on its own "Di5AdbRecoveryEscalation" thread, off [sharedDadbLock]. Settings
+     * re-enable ([requestDiLink5AdbReenable]) still runs first and unchanged on every closed hit.
+     */
+    private fun runDiLink5PortWatch() {
+        val fastUntil = android.os.SystemClock.elapsedRealtime() + DI5_PORT_WATCH_FAST_MS
+        val appContext = context.applicationContext ?: context
+        var slowLogged = false
+        var openLogged = false
+        var nextSleepMs = DI5_PORT_WATCH_POLL_MS
+        try {
+            while (true) {
+                Thread.sleep(nextSleepMs)
+                val fast = android.os.SystemClock.elapsedRealtime() < fastUntil
+                nextSleepMs = if (fast) DI5_PORT_WATCH_POLL_MS else DI5_PORT_WATCH_SLOW_POLL_MS
+                if (!fast && !slowLogged) {
+                    slowLogged = true
+                    logger.warn(TAG, "DI5: no ADB connection after ${DI5_PORT_WATCH_FAST_MS / 60_000} min " +
+                        "— checking every ${DI5_PORT_WATCH_SLOW_POLL_MS / 1000}s")
+                }
+                sharedConn?.let { DiLink5AdbRecoveryEscalator.onConnectionObserved(it.generation); return }
+                // The auth poll owns the open port while it runs (a later pass restarts it if it gives up);
+                // the port is still checked, slowly, so ADB switched off again meanwhile is re-enabled.
+                if (isAuthPending.get()) {
+                    nextSleepMs = DI5_PORT_WATCH_SLOW_POLL_MS
+                    if (!isAdbPortOpen()) requestDiLink5AdbReenable()
+                    continue
+                }
+                if (!isAdbPortOpen()) {
+                    requestDiLink5AdbReenable()
+                    DiLink5AdbRecoveryEscalator.onPortClosedObservation(
+                        appContext, lastDi5AdbSettingsAppliedMs.get(), isAuthPending.get(), sharedConn != null)
+                    continue
+                }
+                DiLink5AdbRecoveryEscalator.onPortOpenObservation()
+                if (!openLogged) {
+                    openLogged = true
+                    val applied = lastDi5AdbSettingsAppliedMs.get()
+                    logger.info(TAG, "DI5: ADB port $ADB_PORT accepting ${secondsSinceBoot()}s after boot (" +
+                        (if (applied > 0L) "OverDrive changed ADB settings " +
+                            "${(android.os.SystemClock.elapsedRealtime() - applied) / 1000}s earlier"
+                         else "OverDrive had not changed ADB settings") + ")")
+                }
+                try {
+                    val conn = acquireConnection()
+                    // The lock is released by now; tell the escalator the primary success path closed the loop.
+                    DiLink5AdbRecoveryEscalator.onConnectionObserved(conn.generation)
+                    return
+                } catch (e: Exception) {
+                    // adbd may accept before it serves the handshake; back off before the next try.
+                    nextSleepMs = DI5_PORT_WATCH_SLOW_POLL_MS
+                }
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } finally {
+            di5PortWatchRunning.set(false)
         }
     }
 

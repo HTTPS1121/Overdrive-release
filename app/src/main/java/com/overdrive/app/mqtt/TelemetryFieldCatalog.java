@@ -146,7 +146,7 @@ public final class TelemetryFieldCatalog {
         add("cell_t_delta",        "Cell Temp Delta",     SENSOR, "temperature", MEAS, "°C", "mdi:thermometer-lines", true,  0.1);
 
         // ---------- HV battery / cells / SOH ----------
-        add("soh",        "Battery Health (est)", SENSOR, "battery", MEAS, "%",  "mdi:battery-heart",     false, 0.1);
+        add("soh",        "Battery Health",       SENSOR, "battery", MEAS, "%",  "mdi:battery-heart",     false, 0.1);
         add("soh_oem",    "Battery Health (OEM)", SENSOR, "battery", MEAS, "%",  "mdi:battery-heart",     true,  0.1);
         add("capacity",   "Usable Capacity",      SENSOR, "energy_storage", MEAS, "kWh", "mdi:battery",   false, 0.1);
         add("capacity_ah", "Capacity",            SENSOR, null,      MEAS, "Ah", "mdi:battery",           true,  0.1);
@@ -195,6 +195,8 @@ public final class TelemetryFieldCatalog {
         // see MqttConnectionManager — so this stays unavailable on a trim that cannot read it
         // rather than reporting a false "off". The controllable twin is the ambient_power switch.
         add("ambient_enabled", "Ambient Lights State",   BINARY, "light", null, null, "mdi:track-light", true, 0);
+        // Cabin (reading) light state, published only when the trim reports it; the reading_light switch controls it.
+        add("reading_light",   "Cabin Light State",      BINARY, "light", null, null, "mdi:ceiling-light", true, 0);
         add("light_left_turn", "Left Turn Signal",  SENSOR, "enum", null, null, "mdi:arrow-left-bold", true, 0);
         add("light_right_turn","Right Turn Signal", SENSOR, "enum", null, null, "mdi:arrow-right-bold", true, 0);
 
@@ -245,6 +247,12 @@ public final class TelemetryFieldCatalog {
         add("key_detection_reminder", "Key Detection",      SENSOR, "enum", null, null, "mdi:key-wireless", true, 0);
         add("smart_key_warn",         "Smart Key Warning",  SENSOR, "enum", null, null, "mdi:key-alert",    true, 0);
         add("vin",                    "VIN",                SENSOR, null,   null, null, "mdi:identifier",   true, 0);
+
+        // ---------- Doors / locks ----------
+        // door_open: any door, the hood or the trunk. locked: 1 = locked (payloads inverted for
+        // HA's lock class in HomeAssistantDiscovery).
+        add("door_open", "Doors", BINARY, "door", null, null, null, false, 0);
+        add("locked",    "Lock",  BINARY, "lock", null, null, null, false, 0);
 
         // ---------- Arrays / time: present but not mapped to entities ----------
         add("door_lock",            "Door Lock",            NONE, null, null, null, null, true, 0);

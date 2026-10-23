@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Glass navigation HUD. Arrays follow navmap.ui.HudVerb order (24 items). -->
+    <string-array name="nav_hud_verbs_bare">
+        <item>Devam edin</item>
+        <item>Yola çıkın</item>
+        <item>Hedefe varış</item>
+        <item>Hedef sağda</item>
+        <item>Hedef solda</item>
+        <item>Hafif sağa dönün</item>
+        <item>Sağa dönün</item>
+        <item>Keskin sağa dönün</item>
+        <item>U dönüşü yapın</item>
+        <item>Keskin sola dönün</item>
+        <item>Sola dönün</item>
+        <item>Hafif sola dönün</item>
+        <item>Rampaya girin</item>
+        <item>Çıkışı kullanın</item>
+        <item>Düz devam edin</item>
+        <item>Sağdan devam edin</item>
+        <item>Soldan devam edin</item>
+        <item>Trafiğe katılın</item>
+        <item>Sağdan katılın</item>
+        <item>Soldan katılın</item>
+        <item>Döner kavşağa girin</item>
+        <item>Döner kavşaktan çıkın</item>
+        <item>Feribota binin</item>
+        <item>Feribottan inin</item>
+    </string-array>
+    <!-- The same verbs as a lead-in to a road name shown on the next line. -->
+    <string-array name="nav_hud_verbs_onto">
+        <item>Devam edin:</item>
+        <item>Yola çıkın:</item>
+        <item>Varış:</item>
+        <item>Hedef sağda:</item>
+        <item>Hedef solda:</item>
+        <item>Hafif sağa dönün:</item>
+        <item>Sağa dönün:</item>
+        <item>Keskin sağa dönün:</item>
+        <item>U dönüşü yapın:</item>
+        <item>Keskin sola dönün:</item>
+        <item>Sola dönün:</item>
+        <item>Hafif sola dönün:</item>
+        <item>Rampadan girin:</item>
+        <item>Çıkışı kullanın:</item>
+        <item>Düz devam edin:</item>
+        <item>Sağdan devam edin:</item>
+        <item>Soldan devam edin:</item>
+        <item>Yola katılın:</item>
+        <item>Sağdan katılın:</item>
+        <item>Soldan katılın:</item>
+        <item>Döner kavşağa girin:</item>
+        <item>Döner kavşaktan çıkın:</item>
+        <item>Feribota binin:</item>
+        <item>Feribottan inin:</item>
+    </string-array>
+    <string-array name="nav_hud_ordinals">
+        <item>1.</item>
+        <item>2.</item>
+        <item>3.</item>
+        <item>4.</item>
+        <item>5.</item>
+        <item>6.</item>
+        <item>7.</item>
+        <item>8.</item>
+        <item>9.</item>
+        <item>10.</item>
+    </string-array>
+    <!-- %1$s is an ordinal from nav_hud_ordinals. -->
+    <string name="nav_hud_roundabout_exit">%1$s çıkıştan çıkın</string>
+    <string name="nav_hud_roundabout_exit_onto">%1$s çıkıştan çıkın:</string>
+    <string name="nav_hud_towards">Yön:</string>
+    <!-- %1$s is the signed exit number, e.g. 9. -->
+    <string name="nav_hud_exit">Çıkış %1$s</string>
+    <string name="nav_hud_then">Sonra</string>
+    <string name="nav_hud_arrive">Varış</string>
+    <string name="nav_hud_recenter">Ortala</string>
+    <string name="nav_hud_end">Bitir</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_delay">+%1$s</string>
+    <string name="nav_hud_unit_m">m</string>
+    <string name="nav_hud_unit_km">km</string>
+    <string name="nav_hud_unit_ft">ft</string>
+    <string name="nav_hud_unit_mi">mi</string>
+    <string name="nav_hud_unit_kmh">km/h</string>
+    <string name="nav_hud_unit_mph">mph</string>
+    <string name="nav_hud_cd_mute">Sesli yönlendirmeyi kapat</string>
+    <string name="nav_hud_cd_unmute">Sesli yönlendirmeyi aç</string>
+    <string name="nav_hud_cd_overview">Rotanın tamamını göster</string>
+    <string name="nav_hud_cd_overview_exit">Sürüş görünümüne dön</string>
+    <string name="nav_hud_cd_end">Navigasyonu bitir</string>
+    <string name="nav_hud_cd_recenter">Haritayı araca ortala</string>
+    <string name="nav_hud_cd_compass_heading_up">Pusula: gidiş yönü yukarıda. Kuzeyi yukarı almak için dokunun</string>
+    <string name="nav_hud_cd_compass_north_up">Pusula: kuzey yukarıda. Gidiş yönünü yukarı almak için dokunun</string>
+    <string name="nav_hud_cd_back">Haritadan çık</string>
+    <!-- %1$s is the next maneuver ("Turn left"), %2$s its distance ("650 m"). -->
+    <string name="nav_hud_cd_then">Ardından %2$s sonra: %1$s</string>
+    <!-- %1$s arrival time, %2$s time left ("26 min"), %3$s distance left ("6.6 km"). -->
+    <string name="nav_hud_cd_trip">Varış saati %1$s, %2$s ve %3$s kaldı</string>
+    <!-- %1$s is a duration such as "4 min". -->
+    <string name="nav_hud_cd_delay">Trafik nedeniyle %1$s gecikme</string>
+</resources>

@@ -7,7 +7,7 @@ import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.view.Display
-import com.overdrive.app.camera.dilink5.DiLink5Platform
+import com.overdrive.app.camera.dilink5.ClusterTransport
 import com.overdrive.app.config.UnifiedConfigManager
 import com.overdrive.app.daemon.CameraDaemon
 import com.overdrive.app.logging.DaemonLogger
@@ -78,6 +78,13 @@ object DiLink5ClusterCast {
         "di5ClusterProjectionTeardownBootId"
     private const val MARKER_PACKAGE = "di5ClusterProjectionPackage"
     private const val PREFER_FULL_KEY = "di5PreferFullCluster"
+    /** projection.<key>: the shared display that last survived an OEM takeover
+     *  fallback (empty = none learned). First choice on later casts. */
+    private const val SHARED_DISPLAY_PREFERENCE_KEY = "di5SharedDisplayPreference"
+    /** How long a display reclaimed by an OEM cluster app is skipped when an
+     *  alternative shared display exists. Long enough to cover a drive; short
+     *  enough that a once-off OEM re-front does not pin us to the other surface. */
+    private const val RECLAIMED_DISPLAY_MEMORY_MS = 30 * 60_000L
     private const val LEGACY_RECOVERY_RESUME_POLL_MS = 250L
     private val RECOVERY_RETRY_DELAYS_MS =
         longArrayOf(1_000L, 3_000L, 8_000L)
@@ -111,6 +118,9 @@ object DiLink5ClusterCast {
     @Volatile private var legacyProjectionRecoveryBlocked = false
     @Volatile private var legacyRecoveryResumeScheduled = false
     @Volatile private var recoveryRetryTicket = 0L
+    /** Shared display name (lowercase) → elapsedRealtime when an OEM cluster app
+     *  last reclaimed its foreground from our session. Guarded by [stateLock]. */
+    private val reclaimedDisplays = HashMap<String, Long>()
 
     private enum class SessionKind { APP, MAP }
     private enum class SessionPhase {
@@ -146,7 +156,16 @@ object DiLink5ClusterCast {
 
     internal data class LegacyBootRecoveryOutcome(
         val recovered: Boolean,
-        val sameBootIndeterminate: Boolean
+        val sameBootIndeterminate: Boolean,
+        /**
+         * The gauge restore reached a definitive verdict (recovered, or the
+         * legacy protocol is unsupported/absent on this firmware). Terminal
+         * outcomes end the bounded retry ladder AND release the cross-mode
+         * legacy fence: the fence exists to order recovery against new
+         * projections, not to encode "this firmware can't do it" forever.
+         */
+        val terminal: Boolean,
+        val unsupported: Boolean = false
     )
 
     @JvmStatic
@@ -158,7 +177,14 @@ object DiLink5ClusterCast {
         return LegacyBootRecoveryOutcome(
             recovered = taskRecovered && gaugeRecovery.isRecovered,
             sameBootIndeterminate =
-                gaugeRecovery.isSameBootIndeterminate
+                gaugeRecovery.isSameBootIndeterminate,
+            // The stranded-task half must also have settled: an unsupported
+            // gauge verdict with an unrecovered task still ends the ladder
+            // (the task sweep is idempotent and re-runs at the next boot),
+            // but a plain task failure with a recovered gauge stays retryable.
+            terminal = gaugeRecovery.isTerminal &&
+                (taskRecovered || gaugeRecovery.isUnsupported),
+            unsupported = gaugeRecovery.isUnsupported
         )
     }
 
@@ -199,12 +225,18 @@ object DiLink5ClusterCast {
     private data class ForegroundVerification(
         val stable: Boolean,
         val stateKnown: Boolean,
-        val lastForeignPackage: String?
+        val lastForeignPackage: String?,
+        /** An OEM cluster app re-fronted itself AGAIN after we had already
+         *  corrected once: on this surface the OEM wins by design. */
+        val oemReclaimedAfterCorrection: Boolean = false
     )
 
     private data class LaunchVerification(
         val succeeded: Boolean,
-        val reason: String = ""
+        val reason: String = "",
+        /** Package that kept taking the target display's foreground, when that
+         *  is why verification failed (drives the shared-display fallback). */
+        val foreignPackage: String? = null
     )
 
     @JvmStatic
@@ -215,10 +247,17 @@ object DiLink5ClusterCast {
 
     @JvmStatic
     fun startAndAwait(pkg: String?, timeoutMs: Long): Boolean {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         val target = resolveAppTarget(pkg) ?: return false
+        if (!awaitSettledBeforeStart(minOf(timeoutMs, OPERATION_TIMEOUT_MS + 2_500L))) {
+            lastFailureReason = "projection start cancelled"
+            return false
+        }
         val ticket = startTarget(target) ?: return false
+        val remainingMs =
+            timeoutMs - (android.os.SystemClock.elapsedRealtime() - startedAt)
         val completed = try {
-            ticket.completion.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+            ticket.completion.await(remainingMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
             false
@@ -237,8 +276,42 @@ object DiLink5ClusterCast {
         return ticket.succeeded.get()
     }
 
+    /**
+     * A request-driven start waits out a previous stop's cleanup or recovery instead of failing.
+     * @return false only when interrupted, i.e. the caller cancelled the start.
+     */
+    private fun awaitSettledBeforeStart(timeoutMs: Long): Boolean {
+        val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0L)
+        var logged = false
+        while (true) {
+            val cleanup: CleanupTicket?
+            val recovering: Boolean
+            synchronized(stateLock) {
+                cleanup = activeCleanup
+                recovering = phase == SessionPhase.RECOVERING
+            }
+            if (cleanup == null && !recovering) return true
+            val remaining = deadline - android.os.SystemClock.elapsedRealtime()
+            if (remaining <= 0L) return true
+            if (!logged) {
+                logged = true
+                logger.info("DI5 cluster cast: start waiting for the previous cleanup to settle")
+            }
+            try {
+                if (cleanup != null) {
+                    cleanup.completion.await(minOf(remaining, 250L), TimeUnit.MILLISECONDS)
+                } else {
+                    Thread.sleep(minOf(remaining, 200L))
+                }
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+    }
+
     private fun resolveAppTarget(pkg: String?): LaunchTarget? {
-        if (!DiLink5Platform.isSelected()) return null
+        if (!ClusterTransport.isDiLink5()) return null
         val normalized = pkg?.trim().orEmpty()
         if (!AppLauncher.isValidPackageName(normalized)) {
             logger.warn("DI5 cluster cast: missing or invalid package")
@@ -274,7 +347,7 @@ object DiLink5ClusterCast {
 
     @JvmStatic
     fun startMap(): Boolean {
-        if (!DiLink5Platform.isSelected()) return false
+        if (!ClusterTransport.isDiLink5()) return false
         return startTarget(
             LaunchTarget(DI5_MAP_PACKAGE, DI5_MAP_COMPONENT, SessionKind.MAP)
         ) != null
@@ -298,6 +371,42 @@ object DiLink5ClusterCast {
                 )
                 return null
             }
+        }
+        val unresolvedCleanup = synchronized(stateLock) {
+            activePackage == null &&
+                phase == SessionPhase.FAILED &&
+                (poweredGeneration > 0L ||
+                        enableIndeterminateGeneration > 0L ||
+                        teardownIndeterminateGeneration > 0L ||
+                        appMovedGeneration > 0L ||
+                        cleanupUncertain)
+        }
+        if (unresolvedCleanup) {
+            // Re-run the orphaned-state recovery instead of demanding a daemon
+            // restart: it re-homes (or force-stops) the stranded task and powers
+            // the compositor down with the same marker-guarded steps the
+            // shutdown path uses. Only an unrecoverable residue still refuses.
+            logger.warn(
+                "DI5 cluster cast: recovering unresolved cleanup state before start"
+            )
+            val recovered = try {
+                recoverOrphanedStateSynchronously()
+            } catch (t: Throwable) {
+                logger.warn(
+                    "DI5 cluster cast: pre-start recovery failed: ${t.message}"
+                )
+                false
+            }
+            if (!recovered) {
+                synchronized(stateLock) {
+                    lastFailureReason =
+                        "previous DI5 projection cleanup is incomplete; restart required"
+                }
+                logger.warn("DI5 cluster cast: refusing start with unresolved cleanup state")
+                return null
+            }
+        }
+        synchronized(stateLock) {
             if (phase == SessionPhase.FAILED &&
                 (poweredGeneration > 0L ||
                         enableIndeterminateGeneration > 0L ||
@@ -436,6 +545,21 @@ object DiLink5ClusterCast {
                 phase == SessionPhase.ACTIVE &&
                 !stopping
 
+    /** Physical APP/MAP state for optional overlay work; no probing or hardware commands. */
+    @JvmStatic
+    fun clusterAdasState(): com.overdrive.app.surveillance.ClusterAdasLifecycle.Source =
+        synchronized(stateLock) {
+            val active = activePackage != null &&
+                    session?.generation == generation &&
+                    phase == SessionPhase.ACTIVE && !stopping
+            val busy = phase == SessionPhase.PREPARING ||
+                    phase == SessionPhase.STOPPING || phase == SessionPhase.RECOVERING ||
+                    activeCleanup != null || poweredGeneration != 0L ||
+                    enableIndeterminateGeneration != 0L || teardownIndeterminateGeneration != 0L ||
+                    legacyProjectionRecoveryBlocked
+            com.overdrive.app.surveillance.ClusterAdasLifecycle.Source(generation, active, busy)
+        }
+
     /** OEM display that owns the projected task; input must target this id, not the plain debug id. */
     @JvmStatic
     fun currentTargetDisplayId(): Int =
@@ -506,7 +630,7 @@ object DiLink5ClusterCast {
 
     @JvmStatic
     fun resize(left: Int, top: Int, right: Int, bottom: Int, commit: Boolean): Boolean {
-        if (!DiLink5Platform.isSelected()) return false
+        if (!ClusterTransport.isDiLink5()) return false
         val live = session ?: return false
         if (live.kind != SessionKind.APP ||
             activePackage != live.pkg ||
@@ -647,7 +771,7 @@ object DiLink5ClusterCast {
         retryAttempt: Int,
         reservedRetryTicket: Long?
     ) {
-        if (!DiLink5Platform.isSelected() && !allowInactiveCleanup) return
+        if (!ClusterTransport.isDiLink5() && !allowInactiveCleanup) return
         // `allowInactiveCleanup` is also the explicit cross-mode recovery
         // authority while DI5 itself is selected. A stale legacy marker was
         // already deferred by ClusterProjectionController; after DI5 ownership
@@ -742,30 +866,46 @@ object DiLink5ClusterCast {
                 val legacyRecovery =
                     completeLegacyBootRecoveryAfterDiLink5()
                 val legacyRecovered = legacyRecovery.recovered
+                val legacySettled = legacyRecovery.terminal
                 synchronized(stateLock) {
                     if (probeTicket == recoveryRetryTicket &&
                         phase == SessionPhase.RECOVERING
                     ) {
-                        cleanupUncertain = !legacyRecovered
-                        phase = if (legacyRecovered) {
+                        // A terminal-but-unsupported verdict is NOT cleanup
+                        // uncertainty: there is no DI5 residue in this branch
+                        // and the legacy verdict is definitive. Holding
+                        // phase=FAILED here permanently refused DI5 starts
+                        // (and the fence blocked every legacy consumer) on
+                        // firmware whose AutoContainer simply rejects the
+                        // legacy protocol — the 2026-09-23 field wedge.
+                        cleanupUncertain = !legacySettled
+                        phase = if (legacySettled) {
                             SessionPhase.IDLE
                         } else {
                             SessionPhase.FAILED
                         }
-                        lastFailureReason = if (legacyRecovered) {
-                            ""
-                        } else {
-                            "legacy projection boot recovery incomplete"
+                        lastFailureReason = when {
+                            legacyRecovered -> ""
+                            legacyRecovery.unsupported ->
+                                "legacy cluster protocol unsupported on " +
+                                    "this firmware"
+                            else ->
+                                "legacy projection boot recovery incomplete"
                         }
-                        legacyProjectionRecoveryBlocked =
-                            !legacyRecovered
-                        if (legacyRecovered) {
+                        legacyProjectionRecoveryBlocked = !legacySettled
+                        if (legacySettled) {
                             recoveryRetryTicket++
                         }
                     }
                 }
                 if (legacyRecovered) {
                     retryClusterAutoProjectionAfterRecovery()
+                } else if (legacySettled) {
+                    logger.warn(
+                        "DI5 cluster cast: legacy boot recovery ended with " +
+                            "a terminal unsupported verdict; releasing the " +
+                            "cross-mode projection fence (marker retained)"
+                    )
                 } else {
                     scheduleBootRecoveryRetry(
                         allowInactiveCleanup,
@@ -940,10 +1080,14 @@ object DiLink5ClusterCast {
                         recoveryRetryTicket++
                     }
                 }
+                var legacySettled = false
+                var legacyUnsupported = false
                 if (blockingLegacyProjection && recovered) {
                     val legacyRecovery =
                         completeLegacyBootRecoveryAfterDiLink5()
                     fullyRecovered = legacyRecovery.recovered
+                    legacySettled = legacyRecovery.terminal
+                    legacyUnsupported = legacyRecovery.unsupported
                     retryBlockedBySameBootIndeterminate =
                         retryBlockedBySameBootIndeterminate ||
                                 legacyRecovery.sameBootIndeterminate
@@ -953,31 +1097,48 @@ object DiLink5ClusterCast {
                             activePackage == null &&
                             phase == SessionPhase.RECOVERING
                         ) {
-                            cleanupUncertain = !fullyRecovered
-                            phase = if (fullyRecovered) {
+                            // The DI5 residue is already proven clean here
+                            // (recovered==true); an unsupported legacy verdict
+                            // is definitive, not cleanup uncertainty.
+                            cleanupUncertain = !legacySettled
+                            phase = if (legacySettled) {
                                 SessionPhase.IDLE
                             } else {
                                 SessionPhase.FAILED
                             }
-                            lastFailureReason = if (fullyRecovered) {
-                                ""
-                            } else {
-                                "legacy projection boot recovery incomplete"
+                            lastFailureReason = when {
+                                fullyRecovered -> ""
+                                legacyUnsupported ->
+                                    "legacy cluster protocol unsupported " +
+                                        "on this firmware"
+                                else ->
+                                    "legacy projection boot recovery " +
+                                        "incomplete"
                             }
-                            legacyProjectionRecoveryBlocked =
-                                !fullyRecovered
-                            if (fullyRecovered) {
+                            legacyProjectionRecoveryBlocked = !legacySettled
+                            if (legacySettled) {
                                 recoveryRetryTicket++
                             }
                         }
                     }
                     if (fullyRecovered) {
                         retryClusterAutoProjectionAfterRecovery()
+                    } else if (legacySettled) {
+                        logger.warn(
+                            "DI5 cluster cast: legacy boot recovery ended " +
+                                "with a terminal unsupported verdict; " +
+                                "releasing the cross-mode projection fence " +
+                                "(marker retained)"
+                        )
                     }
                 }
-                cleanupTicket.succeeded.set(fullyRecovered)
+                // The ticket reports the DI5-side cleanup: a terminal legacy
+                // verdict leaves nothing for a retry to do, so the cleanup is
+                // settled even when the gauges were not confirmed restored.
+                cleanupTicket.succeeded.set(fullyRecovered ||
+                        (recovered && legacySettled))
                 cleanupTicket.completion.countDown()
-                if (!fullyRecovered) {
+                if (!fullyRecovered && !(recovered && legacySettled)) {
                     scheduleBootRecoveryRetry(
                         allowInactiveCleanup,
                         retryAttempt,
@@ -1065,6 +1226,7 @@ object DiLink5ClusterCast {
                     "DI5 cluster cast: bounded recovery retries exhausted " +
                             "($reason)"
                 )
+                releaseLegacyFenceAfterExhaustedRecovery()
             }
             return
         }
@@ -1110,8 +1272,49 @@ object DiLink5ClusterCast {
         legacyProjectionRecoveryBlocked
 
     @JvmStatic
+    fun isRecovering(): Boolean = phase == SessionPhase.RECOVERING
+
+    /**
+     * The bounded recovery ladder ended without a same-boot indeterminate
+     * lockout. The cross-mode fence exists to order an ACTIVE recovery
+     * against new legacy projections; once no retry is scheduled it can only
+     * deny service (the 2026-09-23 field wedge: every cluster consumer
+     * permanently refused on firmware whose AutoContainer rejects the legacy
+     * protocol). Release the fence and the controller-side admission block;
+     * the durable marker stays for the next boot's restore, and a definitive
+     * REJECTED never arms the late-resolution watchers, so no deferred 18→0
+     * can fire against a projection admitted after this release.
+     */
+    private fun releaseLegacyFenceAfterExhaustedRecovery() {
+        val released = synchronized(stateLock) {
+            if (!legacyProjectionRecoveryBlocked) {
+                false
+            } else {
+                legacyProjectionRecoveryBlocked = false
+                true
+            }
+        }
+        if (!released) return
+        val admissionReleased = try {
+            ClusterProjectionController
+                .releaseLegacyBootAdmissionAfterExhaustedRecovery()
+        } catch (t: Throwable) {
+            logger.warn(
+                "DI5 cluster cast: legacy admission release failed: " +
+                        "${t.message}"
+            )
+            false
+        }
+        logger.warn(
+            "DI5 cluster cast: released cross-mode legacy projection fence " +
+                    "after exhausted recovery (admissionReleased=" +
+                    "$admissionReleased, durable marker retained)"
+        )
+    }
+
+    @JvmStatic
     fun shutdownIfActive(): Boolean {
-        if (!DiLink5Platform.isSelected()) return true
+        if (!ClusterTransport.isDiLink5()) return true
         synchronized(stateLock) { activeCleanup }?.let {
             if (!awaitCleanupCompletion(it, "active projection cleanup")) {
                 return false
@@ -1444,7 +1647,8 @@ object DiLink5ClusterCast {
             }
             if (!isCurrent(expectedGeneration, pkg)) return
 
-            val live = Session(
+            var activeTarget = projectionTarget
+            var live = Session(
                 expectedGeneration,
                 pkg,
                 target.component,
@@ -1457,11 +1661,77 @@ object DiLink5ClusterCast {
             session = live
             ClusterFreeformWindow.invalidateTaskCache()
 
-            val launch = launchAndVerify(
+            var launch = launchAndVerify(
                 target, targetDisplayId, expectedGeneration
             )
+            if (!launch.succeeded && launch.foreignPackage != null) {
+                // An OEM cluster app keeps re-fronting itself on this shared
+                // surface (DiLink 5.0 Atto 3: com.byd.sr on _0 every ~2-9 s).
+                // Fighting it fails by design after a bounded number of
+                // takeovers; instead move to the sibling shared surface the
+                // container service also exposes, and remember what worked.
+                markDisplayReclaimed(activeTarget.name)
+                val alternative = if (isCurrent(expectedGeneration, pkg)) {
+                    resolveAlternativeSharedDisplay(
+                        context.getSystemService(Context.DISPLAY_SERVICE)
+                            as DisplayManager,
+                        readPreferFullCluster(),
+                        activeTarget.name
+                    )
+                } else {
+                    null
+                }
+                if (alternative != null &&
+                    alternative.displayId > Display.DEFAULT_DISPLAY &&
+                    alternative.width > 1 && alternative.height > 1
+                ) {
+                    logger.warn(
+                        "DI5 cluster cast: ${activeTarget.name} (display " +
+                                "${activeTarget.displayId}) was reclaimed by " +
+                                "${launch.foreignPackage}; retrying $pkg on " +
+                                "${alternative.name} (display ${alternative.displayId})"
+                    )
+                    if (target.kind == SessionKind.APP) {
+                        // A running task keeps its old display affinity through
+                        // `am start --display`; start it fresh on the new surface.
+                        AppLauncher.forceStopPackage(pkg)
+                        Thread.sleep(CONTAINER_SETTLE_MS)
+                    }
+                    if (!isCurrent(expectedGeneration, pkg)) return
+                    activeTarget = alternative
+                    live = live.copy(
+                        targetDisplayId = alternative.displayId,
+                        targetDisplayName = alternative.name,
+                        displayWidth = alternative.width,
+                        displayHeight = alternative.height
+                    )
+                    session = live
+                    ClusterFreeformWindow.invalidateTaskCache()
+                    launch = launchAndVerify(
+                        target, alternative.displayId, expectedGeneration
+                    )
+                    if (!launch.succeeded && launch.foreignPackage != null) {
+                        markDisplayReclaimed(alternative.name)
+                    }
+                } else {
+                    logger.warn(
+                        "DI5 cluster cast: ${activeTarget.name} was reclaimed by " +
+                                "${launch.foreignPackage} and no alternative shared " +
+                                "display is available on this firmware"
+                    )
+                }
+            }
             if (!launch.succeeded) {
                 throw IllegalStateException(launch.reason)
+            }
+            try {
+                rememberStableSharedDisplay(
+                    context.getSystemService(Context.DISPLAY_SERVICE)
+                        as DisplayManager,
+                    readPreferFullCluster(),
+                    activeTarget.name
+                )
+            } catch (_: Throwable) {
             }
             if (target.kind == SessionKind.APP) {
                 applyPersistedBounds(live)
@@ -1491,7 +1761,7 @@ object DiLink5ClusterCast {
             completeStart(expectedGeneration, success = true, reason = "")
             logger.info(
                 "DI5 cluster cast: $pkg remained foreground on OEM display " +
-                        "$targetDisplayId via ${projectionTarget.name}"
+                        "${live.targetDisplayId} via ${activeTarget.name}"
             )
             startTaskGuardian(live, target)
         } catch (interrupted: InterruptedException) {
@@ -1537,13 +1807,24 @@ object DiLink5ClusterCast {
                 return LaunchVerification(false, "projection start superseded")
             }
             launchTarget(target, displayId)
-            if (remember(
-                    awaitStableTargetForeground(
-                        target, displayId, expectedGeneration
-                    )
-                )
-            ) {
+            val verification = awaitStableTargetForeground(
+                target, displayId, expectedGeneration
+            )
+            if (remember(verification)) {
                 return LaunchVerification(true)
+            }
+            if (verification.oemReclaimedAfterCorrection) {
+                // Definitive: the OEM owns this surface. A second attempt and
+                // the stale-task restart below would only flicker the cluster
+                // again; hand the takeover straight to the shared-display
+                // fallback in startSession.
+                return LaunchVerification(
+                    false,
+                    foregroundFailureReason(
+                        target.pkg, displayId, stateKnown, lastForeignPackage
+                    ),
+                    foreignPackage = lastForeignPackage
+                )
             }
         }
 
@@ -1593,7 +1874,8 @@ object DiLink5ClusterCast {
                 displayId,
                 stateKnown,
                 lastForeignPackage
-            )
+            ),
+            foreignPackage = lastForeignPackage?.takeIf { it.isNotEmpty() }
         )
     }
 
@@ -1616,6 +1898,13 @@ object DiLink5ClusterCast {
         var lastForeignPackage: String? = null
         var lastObservedForeground: String? = null
         var nextCorrectionAt = started
+        // Corrections issued while an OEM cluster app covered us. One correction
+        // is legitimate (the OEM re-fronts its meter once ~1-2 s after a foreign
+        // launch and then yields); if the OEM takes the surface back AGAIN after
+        // that, it owns this surface and every further refocus/relaunch is one
+        // more visible flicker for the driver (field log 2026-09-24 03:01:46-57:
+        // five flickers on shared _0 before the fallback to _1 was reached).
+        var oemCorrections = 0
 
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
             Thread.sleep(START_FOREGROUND_POLL_MS)
@@ -1649,6 +1938,17 @@ object DiLink5ClusterCast {
                                 "from ${lastObservedForeground ?: "unknown"} to " +
                                 "$foreground while starting ${target.pkg}"
                     )
+                    if (oemCorrections > 0 && isOemClusterForeground(foreground)) {
+                        logger.warn(
+                            "DI5 cluster cast: $foreground reclaimed display " +
+                                    "$displayId again after a correction; this " +
+                                    "surface belongs to the OEM — stop fighting it"
+                        )
+                        return ForegroundVerification(
+                            false, stateKnown, foreground,
+                            oemReclaimedAfterCorrection = true
+                        )
+                    }
                 }
             }
             lastObservedForeground = foreground
@@ -1677,6 +1977,9 @@ object DiLink5ClusterCast {
                             "task=${location.taskId} from=${location.displayId} " +
                             "to=$displayId coveredBy=${foreground ?: "unknown"}"
                 )
+                if (!foreground.isNullOrEmpty() && isOemClusterForeground(foreground)) {
+                    oemCorrections++
+                }
             }
             nextCorrectionAt = now + START_CORRECTION_COOLDOWN_MS
         }
@@ -1710,11 +2013,15 @@ object DiLink5ClusterCast {
 
     private fun isOemClusterForeground(pkg: String): Boolean {
         val normalized = pkg.lowercase(Locale.US)
+        // The shared cluster displays are owned by BYD's container service; any
+        // com.byd.* app fronting there is an OEM cluster owner. Seen in the field:
+        // com.byd.launchermap (nav projection) and com.byd.sr (the ADAS "SR"
+        // rendering view on DiLink 5.0 Atto 3 units, which re-fronts itself on
+        // shared display _0 every few seconds).
         return normalized == "com.byd.launchermap" ||
+                normalized == "com.byd.sr" ||
                 normalized == "com.example.amapservice" ||
-                (normalized.startsWith("com.byd.") &&
-                        (normalized.contains("map") ||
-                                normalized.contains("projection")))
+                normalized.startsWith("com.byd.")
     }
 
     private fun markAppMayMove(expectedGeneration: Long, pkg: String): Boolean {
@@ -1877,7 +2184,7 @@ object DiLink5ClusterCast {
                         true,
                         foreground
                     )
-                    failGuardedSession(live, reason)
+                    failGuardedSession(live, reason, foreground, target)
                     return@Thread
                 }
 
@@ -1992,7 +2299,9 @@ object DiLink5ClusterCast {
                 }
                 failGuardedSession(
                     live,
-                    reason
+                    reason,
+                    lastForeignPackage?.takeIf { it.isNotEmpty() },
+                    target
                 )
             }
         }, "DiLink5TaskGuardian-${live.generation}").apply {
@@ -2023,15 +2332,72 @@ object DiLink5ClusterCast {
                 location.displayId < 0
     }
 
-    private fun failGuardedSession(live: Session, reason: String) {
+    private fun failGuardedSession(
+        live: Session,
+        reason: String,
+        foreignPackage: String? = null,
+        target: LaunchTarget? = null
+    ) {
         if (!isLiveSession(live)) return
         logger.warn("DI5 task guardian failed: $reason")
+        // An OEM cluster app reclaimed the surface AFTER the start had verified
+        // stable (com.byd.sr re-fronts on _0 every few seconds on DiLink 5.0
+        // Atto 3 units). Resolve the sibling shared surface BEFORE tearing down
+        // so the restart below is steered onto it; the reclaimed one is skipped
+        // for RECLAIMED_DISPLAY_MEMORY_MS, which bounds this to one migration
+        // per surface instead of an endless ping-pong.
+        var migrateTo: ProjectionTarget? = null
+        if (!foreignPackage.isNullOrEmpty() && target != null) {
+            markDisplayReclaimed(live.targetDisplayName)
+            migrateTo = try {
+                val context = CameraDaemon.getAppContext()
+                if (context == null) {
+                    null
+                } else {
+                    resolveAlternativeSharedDisplay(
+                        context.getSystemService(Context.DISPLAY_SERVICE)
+                            as DisplayManager,
+                        readPreferFullCluster(),
+                        live.targetDisplayName
+                    )
+                }
+            } catch (_: Throwable) {
+                null
+            }
+        }
         val stopped = stopInternal(
             live.generation,
             rehome = true,
             foreground = false,
             expectedKind = live.kind
         )
+        if (stopped && migrateTo != null && target != null) {
+            val idle = synchronized(stateLock) {
+                activePackage == null &&
+                        activeCleanup == null &&
+                        phase == SessionPhase.IDLE
+            }
+            if (idle) {
+                logger.warn(
+                    "DI5 cluster cast: migrating ${live.pkg} from " +
+                            "${live.targetDisplayName} to ${migrateTo.name} " +
+                            "(display ${migrateTo.displayId}) after " +
+                            "$foreignPackage reclaimed the foreground"
+                )
+                if (live.kind == SessionKind.APP) {
+                    // The re-homed task keeps its display-0 affinity through
+                    // `am start --display`; a fresh task lands on the new surface.
+                    AppLauncher.forceStopPackage(live.pkg)
+                    try {
+                        Thread.sleep(CONTAINER_SETTLE_MS)
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                }
+                if (startTarget(target) != null) return
+                logger.warn("DI5 cluster cast: migration start was not admitted")
+            }
+        }
         synchronized(stateLock) {
             if (activePackage == null &&
                 phase == SessionPhase.IDLE
@@ -2094,6 +2460,14 @@ object DiLink5ClusterCast {
             rehomed = !appMayBeMoved ||
                     failedKind == SessionKind.MAP ||
                     rehomeTask(pkg, foreground = false)
+            if (!rehomed && failedKind == SessionKind.APP) {
+                // Same last resort boot recovery already uses: the app was launched
+                // by us seconds ago and never became a usable session, so removing
+                // its task is strictly better than leaving the cluster-affinity
+                // residue that made every following start refuse with "cleanup
+                // incomplete; restart required" until the daemon was restarted.
+                rehomed = forceStopAndConfirmAbsent(pkg)
+            }
             ClusterFreeformWindow.invalidateTaskCache()
             poweredDown = !compositorPowered || powerDownCompositor(
                 ownershipGeneration = expectedGeneration,
@@ -2309,9 +2683,16 @@ object DiLink5ClusterCast {
                     } catch (_: Throwable) {
                     }
                 }
-                val rehomed = !appMayBeMoved ||
+                var rehomed = !appMayBeMoved ||
                         stoppingKind == SessionKind.MAP ||
                         (rehome && rehomeTask(pkg, foreground))
+                if (!rehomed && rehome && stoppingKind == SessionKind.APP) {
+                    // The deferred (ACC-off) recovery path already accepts a
+                    // force-stop when the task cannot be moved; apply the same
+                    // last resort inline so a failed move never strands the
+                    // state machine in "cleanup incomplete; restart required".
+                    rehomed = forceStopAndConfirmAbsent(pkg)
+                }
                 val taskCleanupSatisfied = !rehome || rehomed
                 val appStillMoved = appMayBeMoved && !rehomed
                 if (!cleanupStillOwned(
@@ -2585,17 +2966,7 @@ object DiLink5ClusterCast {
         pkg: String
     ): ProjectionTarget {
         val manager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-        val preferFull = try {
-            UnifiedConfigManager.loadConfig()
-                .optJSONObject("projection")
-                ?.optBoolean(PREFER_FULL_KEY, true)
-                ?: true
-        } catch (_: Throwable) {
-            // Match the configured/default behavior on transient config-read
-            // failures. Falling back to the standard display here could route
-            // a cast to the wrong physical cluster surface.
-            true
-        }
+        val preferFull = readPreferFullCluster()
         val propertyProduct = readDiLink5SystemProperty("ro.product.name")
         val propertyDevice = readDiLink5SystemProperty("ro.product.device")
         val propertyFingerprint =
@@ -2737,25 +3108,41 @@ object DiLink5ClusterCast {
         }
 
         if (requireShared) {
-            resolveVisibleProjectionDisplay(
-                manager, preferFull, true
-            )?.let {
+            // Steer around a shared surface an OEM cluster app reclaimed within
+            // the last RECLAIMED_DISPLAY_MEMORY_MS and honour the learned
+            // preference; if every shared surface is excluded, fall back to
+            // the unconstrained ranking so a cast is still attempted.
+            val preferredName = readSharedDisplayPreference()
+            val reclaimed = recentlyReclaimedDisplayNames()
+            if (preferredName != null || reclaimed.isNotEmpty()) {
                 logger.info(
-                    "DI5 cluster cast: using live OEM shared projection " +
-                            "display ${it.displayId} (${it.name}); " +
-                            "sendInfo16=$commandResult"
+                    "DI5 cluster cast: shared display steering preferred=" +
+                            (preferredName ?: "<none>") +
+                            " reclaimed=" + reclaimed.joinToString().ifEmpty { "<none>" }
                 )
-                return it
             }
-            resolveAuthoritativeProjectionDisplay(
-                manager, preferFull, true
-            )?.let {
-                logger.info(
-                    "DI5 cluster cast: using authoritative OEM shared " +
-                            "projection display ${it.displayId} (${it.name}); " +
-                            "sendInfo16=$commandResult"
-                )
-                return it
+            for (excluded in listOf(reclaimed, emptySet())) {
+                resolveVisibleProjectionDisplay(
+                    manager, preferFull, true, preferredName, excluded
+                )?.let {
+                    logger.info(
+                        "DI5 cluster cast: using live OEM shared projection " +
+                                "display ${it.displayId} (${it.name}); " +
+                                "sendInfo16=$commandResult"
+                    )
+                    return it
+                }
+                resolveAuthoritativeProjectionDisplay(
+                    manager, preferFull, true, preferredName, excluded
+                )?.let {
+                    logger.info(
+                        "DI5 cluster cast: using authoritative OEM shared " +
+                                "projection display ${it.displayId} (${it.name}); " +
+                                "sendInfo16=$commandResult"
+                    )
+                    return it
+                }
+                if (excluded.isEmpty()) break
             }
         }
 
@@ -2912,10 +3299,126 @@ object DiLink5ClusterCast {
         }
     }
 
+    // ── OEM takeover memory + learned shared-display preference ─────────────
+
+    private fun markDisplayReclaimed(displayName: String) {
+        if (displayName.isBlank()) return
+        synchronized(stateLock) {
+            reclaimedDisplays[displayName.lowercase(Locale.US)] =
+                android.os.SystemClock.elapsedRealtime()
+        }
+    }
+
+    private fun recentlyReclaimedDisplayNames(): Set<String> {
+        val now = android.os.SystemClock.elapsedRealtime()
+        synchronized(stateLock) {
+            reclaimedDisplays.entries.removeAll { (_, at) ->
+                now - at > RECLAIMED_DISPLAY_MEMORY_MS
+            }
+            return reclaimedDisplays.keys.toSet()
+        }
+    }
+
+    private fun readPreferFullCluster(): Boolean =
+        try {
+            UnifiedConfigManager.loadConfig()
+                .optJSONObject("projection")
+                ?.optBoolean(PREFER_FULL_KEY, true)
+                ?: true
+        } catch (_: Throwable) {
+            // Match the configured/default behavior on transient config-read
+            // failures. Falling back to the standard display here could route
+            // a cast to the wrong physical cluster surface.
+            true
+        }
+
+    private fun readSharedDisplayPreference(): String? =
+        try {
+            UnifiedConfigManager.loadConfig()
+                .optJSONObject("projection")
+                ?.optString(SHARED_DISPLAY_PREFERENCE_KEY, "")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() && isSharedDiLink5ProjectionDisplayName(it) }
+        } catch (_: Throwable) {
+            null
+        }
+
+    private fun persistSharedDisplayPreference(displayName: String) {
+        try {
+            val persisted = UnifiedConfigManager.updateValues(
+                "projection",
+                mapOf<String, Any>(SHARED_DISPLAY_PREFERENCE_KEY to displayName)
+            )
+            logger.info(
+                "DI5 cluster cast: shared display preference " +
+                        (if (displayName.isEmpty()) "cleared" else "= $displayName") +
+                        " (persisted=$persisted)"
+            )
+        } catch (t: Throwable) {
+            logger.warn(
+                "DI5 cluster cast: shared display preference not persisted: ${t.message}"
+            )
+        }
+    }
+
+    /**
+     * After a session on [chosenName] proved stable, remember it when it is not
+     * the default-ranked surface (so the next cast starts there directly), and
+     * forget a stale preference when the default surface worked again.
+     */
+    private fun rememberStableSharedDisplay(
+        manager: DisplayManager,
+        preferFull: Boolean,
+        chosenName: String
+    ) {
+        if (!isSharedDiLink5ProjectionDisplayName(chosenName)) return
+        val defaultName = try {
+            selectDiLink5ProjectionDisplayName(
+                manager.displays
+                    .filter { isUsableDiLink5ProjectionDisplay(it.isValid, it.state) }
+                    .map { it.name },
+                preferFull,
+                requireShared = true
+            )
+        } catch (_: Throwable) {
+            null
+        }
+        val current = readSharedDisplayPreference()
+        val desired =
+            if (defaultName != null && defaultName.equals(chosenName, ignoreCase = true)) {
+                ""
+            } else {
+                chosenName
+            }
+        if ((current ?: "") != desired) {
+            persistSharedDisplayPreference(desired)
+        }
+    }
+
+    /**
+     * A shared display other than [excludeName] (and any recently reclaimed one)
+     * that a projection can move to. Null when this firmware exposes no usable
+     * alternative — the caller then reports the OEM takeover as the failure.
+     */
+    private fun resolveAlternativeSharedDisplay(
+        manager: DisplayManager,
+        preferFull: Boolean,
+        excludeName: String
+    ): ProjectionTarget? {
+        val excluded = recentlyReclaimedDisplayNames() + excludeName.lowercase(Locale.US)
+        return resolveVisibleProjectionDisplay(
+            manager, preferFull, true, null, excluded
+        ) ?: resolveAuthoritativeProjectionDisplay(
+            manager, preferFull, true, null, excluded
+        )
+    }
+
     private fun resolveVisibleProjectionDisplay(
         manager: DisplayManager,
         preferFull: Boolean,
-        requireShared: Boolean
+        requireShared: Boolean,
+        preferredName: String? = null,
+        excludedNames: Set<String> = emptySet()
     ): ProjectionTarget? {
         val displays = manager.displays
         val usableDisplays = displays.filter {
@@ -2924,7 +3427,9 @@ object DiLink5ClusterCast {
         val selected = selectDiLink5ProjectionDisplayName(
             usableDisplays.map { it.name },
             preferFull,
-            requireShared
+            requireShared,
+            preferredName,
+            excludedNames
         ) ?: return null
         val target = usableDisplays.firstOrNull {
             it.name.equals(selected, ignoreCase = true)
@@ -2949,14 +3454,18 @@ object DiLink5ClusterCast {
     private fun resolveAuthoritativeProjectionDisplay(
         manager: DisplayManager,
         preferFull: Boolean,
-        requireShared: Boolean
+        requireShared: Boolean,
+        preferredName: String? = null,
+        excludedNames: Set<String> = emptySet()
     ): ProjectionTarget? {
         val lines = readAuthoritativeDisplayLines() ?: return null
         val refs = parseDiLink5ProjectionDisplays(lines)
         val selectedName = selectDiLink5ProjectionDisplayName(
             refs.map { it.name },
             preferFull,
-            requireShared
+            requireShared,
+            preferredName,
+            excludedNames
         ) ?: return null
         val selected = refs.firstOrNull {
             it.name.equals(selectedName, ignoreCase = true)
@@ -3101,6 +3610,25 @@ object DiLink5ClusterCast {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    /**
+     * Last-resort task cleanup shared by the failed-start, stop and recovery
+     * paths: remove the third-party task whose cluster-display affinity could
+     * not be moved back, then require a PARSED proof that it is gone
+     * (TASK_LOOKUP_FAILED never passes for absence). Never touches our own map.
+     */
+    private fun forceStopAndConfirmAbsent(pkg: String): Boolean {
+        if (pkg == DI5_MAP_PACKAGE || !AppLauncher.isValidPackageName(pkg)) {
+            return false
+        }
+        if (!AppLauncher.forceStopPackage(pkg)) return false
+        val absent = AppLauncher.taskConfirmedAbsent(pkg)
+        logger.warn(
+            "DI5 cluster cast: task re-home fell back to force-stop for $pkg " +
+                    "(confirmedAbsent=$absent)"
+        )
+        return absent
     }
 
     private fun rehomeTask(pkg: String, foreground: Boolean): Boolean =
@@ -3558,15 +4086,54 @@ internal fun resolveDiLink5ProjectionPanelSize(
     }?.let { it.width to it.height }
 }
 
+internal fun isSharedDiLink5ProjectionDisplayName(name: String): Boolean =
+    name.contains("shared_", ignoreCase = true) &&
+            name.contains("xdjascreenprojection", ignoreCase = true) &&
+            (name.endsWith("_0", ignoreCase = true) ||
+                    name.endsWith("_1", ignoreCase = true))
+
+/**
+ * @param preferredName a shared display that previously survived an OEM
+ *   takeover (learned, persisted); wins when present and not excluded.
+ * @param excludedNames displays an OEM cluster app recently reclaimed; they are
+ *   skipped entirely, so a caller wanting an ALTERNATIVE gets null rather than
+ *   the same reclaimed surface again.
+ */
 internal fun selectDiLink5ProjectionDisplayName(
     names: List<String>,
     preferFull: Boolean,
-    requireShared: Boolean = false
+    requireShared: Boolean = false,
+    preferredName: String? = null,
+    excludedNames: Set<String> = emptySet()
+): String? {
+    val candidates = if (excludedNames.isEmpty()) {
+        names
+    } else {
+        names.filterNot { name ->
+            excludedNames.any { it.equals(name, ignoreCase = true) }
+        }
+    }
+    if (!preferredName.isNullOrBlank()) {
+        candidates.firstOrNull { it.equals(preferredName, ignoreCase = true) }
+            ?.let { return it }
+    }
+    return selectDefaultDiLink5ProjectionDisplayName(
+        candidates, preferFull, requireShared
+    )
+}
+
+private fun selectDefaultDiLink5ProjectionDisplayName(
+    names: List<String>,
+    preferFull: Boolean,
+    requireShared: Boolean
 ): String? {
     // OEM BydProjectionService explicitly launches its meter activity on shared ..._0;
     // upstream field evidence also ranks _0 above _1. Keep that physical-routing
     // primitive deterministic regardless of an old/manual size preference. `_1`
-    // remains a fallback when `_0` is genuinely absent.
+    // remains a fallback when `_0` is genuinely absent — or, via the caller's
+    // exclusion set, when an OEM cluster app keeps reclaiming `_0` (DiLink 5.0
+    // Atto 3: com.byd.sr re-fronts on _0 every few seconds while _1 carries the
+    // container service's 1920x480 app-projection override).
     listOf(DI5_SHARED_DISPLAY_FULL, DI5_SHARED_DISPLAY_STANDARD).forEach { expected ->
         names.firstOrNull { it.equals(expected, ignoreCase = true) }?.let { return it }
     }

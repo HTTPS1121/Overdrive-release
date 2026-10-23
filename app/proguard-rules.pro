@@ -46,6 +46,9 @@
 -keepclassmembers class * extends android.hardware.bydauto.statistic.AbsBYDAutoStatisticListener { *; }
 -keepclassmembers class * extends android.hardware.bydauto.collectdata.AbsBYDAutoCollectDataListener { *; }
 -keepclassmembers class * extends android.hardware.bydauto.setting.AbsBYDAutoSettingListener { *; }
+-keepclassmembers class * extends android.hardware.bydauto.radar.AbsBYDAutoRadarListener { *; }
+# The vendor base class calls these device methods by name; the stub does not declare them.
+-keep class com.overdrive.app.byd.FourDoorUnlockWriter { *; }
 
 # ==================== Daemon Entry Points (app_process) ====================
 # ONLY keep class names and main() - everything else gets obfuscated
@@ -162,6 +165,13 @@
     public static java.lang.String get();
 }
 
+# Device handles AmbientProbe.collectorField (and the auto-service debug dump) read by field name
+-keepclassmembers class com.overdrive.app.byd.BydDataCollector {
+    java.lang.Object settingDevice;
+    java.lang.Object lightDevice;
+    java.lang.Object bodyworkDevice;
+}
+
 # Keep class names for daemon subpackages (for Class.forName if used internally)
 # but allow method/field renaming
 -keepnames class com.overdrive.app.daemon.** { }
@@ -186,8 +196,25 @@
 -keep class com.overdrive.app.od.Od {
     native <methods>;
 }
+-keep class com.overdrive.app.power.ParkedLink {
+    native <methods>;
+}
+-keep class com.overdrive.app.power.ParkedLink$Connection {
+    <init>(long);
+    native <methods>;
+}
+-keep class com.overdrive.app.power.ParkedLink$Callback {
+    <init>();
+    native <methods>;
+}
 -keep class com.overdrive.app.camera.dilink5.DiLink5QCarCamBackend {
     public static void onNativeFrameAvailable(long);
+    native <methods>;
+}
+-keep class com.overdrive.app.camera.camera2.Camera2AvmBackend {
+    native <methods>;
+}
+-keep class com.overdrive.app.audio.VoiceFrontend {
     native <methods>;
 }
 # JNI method names must match native function signatures exactly
@@ -216,6 +243,17 @@
 -keep class org.eclipse.paho.mqttv5.** { *; }
 -keep class org.eclipse.paho.mqttv5.client.logging.** { *; }
 -dontwarn org.eclipse.paho.mqttv5.**
+
+# ==================== JSch (SafeKeep SFTP) ====================
+# Ciphers/kex/signatures are instantiated reflectively by class name from JSch's
+# config table; stripping or renaming them breaks the SSH handshake at runtime.
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+-dontwarn org.bouncycastle.**
+-dontwarn com.sun.jna.**
+-dontwarn org.newsclub.net.unix.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn org.slf4j.**
 
 # ==================== RTMP client ====================
 -keep class com.pedro.** { *; }
@@ -385,3 +423,11 @@
 -dontwarn sun.misc.Unsafe
 -dontwarn java.nio.file.**
 -dontwarn java.util.spi.ToolProvider
+
+# SafeKeep reads its built-in sign-in app IDs from BuildConfig by name (absent in source builds).
+-keep class com.overdrive.app.BuildConfig {
+    public static final java.lang.String SAFEKEEP_*;
+}
+
+# sherpa-onnx native code reads its Kotlin config classes' fields by name.
+-keep class com.k2fsa.sherpa.onnx.** { *; }

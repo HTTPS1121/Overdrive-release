@@ -11,7 +11,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import com.overdrive.app.R
@@ -52,8 +54,17 @@ class DaemonKeepaliveService : Service() {
         // the three children temporarily disappearing (e.g. permission flap
         // killing LocationSidecarService).
         const val NOTIFICATION_GROUP_KEY = "com.overdrive.app.STATUS"
+        const val ACTION_VEHICLE_MODE_SYNC =
+            "com.overdrive.app.action.VEHICLE_MODE_SYNC"
+        const val EXTRA_ACTIVE_MODE = "active_mode"
         private const val SUMMARY_NOTIFICATION_ID = 19875
         private const val SUMMARY_CHANNEL_ID = "overdrive_status_summary"
+        private const val VEHICLE_MODE_SYNC_MAX_ATTEMPTS = 3
+        private const val VEHICLE_MODE_SYNC_RETRY_MS = 10_000L
+        private const val VEHICLE_MODE_SYNC_PREFS =
+            "daemon_keepalive_internal"
+        private const val VEHICLE_MODE_SYNC_PENDING =
+            "acc_watchdog_mode_sync_pending"
 
         fun start(context: Context) {
             val intent = Intent(context, DaemonKeepaliveService::class.java)
@@ -73,6 +84,10 @@ class DaemonKeepaliveService : Service() {
     private var screenOffReceiver: ScreenOffReceiver? = null
     private var powerStateReceiver: BroadcastReceiver? = null
     private var startupOnOnlySnapshot: Boolean? = null
+    private val vehicleModeSyncLock = Any()
+    private val vehicleModeSyncHandler = Handler(Looper.getMainLooper())
+    private var vehicleModeSyncRequestedVersion = 0L
+    private var vehicleModeSyncRunning = false
 
     override fun onCreate() {
         super.onCreate()
@@ -131,6 +146,13 @@ class DaemonKeepaliveService : Service() {
         // marker before issuing the request; use that lock-free source here.
         com.overdrive.app.camera.dilink5.DiLink5Platform
             .refreshActiveModeFromCommittedMarker()
+        val vehicleModeSync =
+            intent?.action == ACTION_VEHICLE_MODE_SYNC
+        val requestedActiveMode =
+            intent?.getStringExtra(EXTRA_ACTIVE_MODE)
+        if (vehicleModeSync) {
+            markAccSentryWatchdogModeSyncPending()
+        }
         val startDiLink5Avm = intent?.action ==
             com.overdrive.app.camera.dilink5.TsAvmCoordinator.ACTION_START_AVM
         val stopDiLink5Avm = intent?.action ==
@@ -209,6 +231,13 @@ class DaemonKeepaliveService : Service() {
             }
         } catch (e: Exception) {
             Log.w(TAG, "parked-marker onStartCommand gate failed (${e.message}) — proceeding")
+        }
+
+        if (vehicleModeSync) {
+            requestAccSentryWatchdogModeSync(requestedActiveMode)
+        } else if (isAccSentryWatchdogModeSyncPending()
+            && !isVehicleModeSyncRunning()) {
+            requestAccSentryWatchdogModeSync(null)
         }
 
         if (stopDiLink5Avm) {
@@ -307,6 +336,11 @@ class DaemonKeepaliveService : Service() {
                 .syncWithConfig(applicationContext)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to kick RoadSense overlay: ${e.message}")
+        }
+        try {
+            com.overdrive.app.overlay.GlassWidgetsOverlayService.syncWithConfig(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to kick glass widgets overlay: ${e.message}")
         }
         
         // START_STICKY ensures service restarts if killed
@@ -567,6 +601,18 @@ class DaemonKeepaliveService : Service() {
                     Intent.ACTION_SCREEN_ON,
                     "com.byd.action.ACC_ON",
                     "com.byd.action.IGN_ON" -> {
+                        // Some DiLink 5 builds deliver the vendor ignition edge
+                        // only to registered receivers. Mirror BootReceiver's
+                        // publication from this long-lived dynamic receiver so
+                        // acc_sentry_daemon gets the independent ON evidence.
+                        // Only the selected DiLink 5 heartbeat consumes it.
+                        if ((intent.action == "com.byd.action.ACC_ON"
+                            || intent.action == "com.byd.action.IGN_ON")
+                            && com.overdrive.app.camera.dilink5.DiLink5Platform
+                                .isSelected()) {
+                            com.overdrive.app.power.IgnitionBroadcastHint
+                                .publishAsync(applicationContext)
+                        }
                         com.overdrive.app.byd.BydDataCollector
                             .updateDiLink5ProducerAccState(true)
                         // Re-acquire for the awake/ON session. Idempotent (acquireWakeLock
@@ -605,6 +651,259 @@ class DaemonKeepaliveService : Service() {
         }
     }
 
+    /**
+     * Coalesce vehicle-mode transitions into one serialized ACC-watchdog
+     * redeployment. A second transition that lands while ADB cleanup is in
+     * flight is replayed from the latest committed marker after the first
+     * deployment finishes, so an older mode can never win the race.
+     */
+    private fun markAccSentryWatchdogModeSyncPending() {
+        try {
+            val committed = getSharedPreferences(
+                VEHICLE_MODE_SYNC_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(VEHICLE_MODE_SYNC_PENDING, true)
+                .commit()
+            if (!committed) {
+                Log.w(TAG, "Could not persist pending ACC watchdog mode sync")
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not mark ACC watchdog mode sync pending: ${t.message}")
+        }
+    }
+
+    private fun clearAccSentryWatchdogModeSyncPending() {
+        try {
+            val committed = getSharedPreferences(
+                VEHICLE_MODE_SYNC_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .remove(VEHICLE_MODE_SYNC_PENDING)
+                .commit()
+            if (!committed) {
+                Log.w(TAG, "Could not clear pending ACC watchdog mode sync")
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not clear ACC watchdog mode sync pending: ${t.message}")
+        }
+    }
+
+    private fun isAccSentryWatchdogModeSyncPending(): Boolean {
+        return try {
+            getSharedPreferences(
+                VEHICLE_MODE_SYNC_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(VEHICLE_MODE_SYNC_PENDING, false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not read pending ACC watchdog mode sync: ${t.message}")
+            false
+        }
+    }
+
+    private fun isVehicleModeSyncRunning(): Boolean {
+        synchronized(vehicleModeSyncLock) {
+            return vehicleModeSyncRunning
+        }
+    }
+
+    private fun requestAccSentryWatchdogModeSync(
+        requestedActiveMode: String?
+    ) {
+        val requestVersion: Long
+        synchronized(vehicleModeSyncLock) {
+            vehicleModeSyncRequestedVersion++
+            requestVersion = vehicleModeSyncRequestedVersion
+            if (vehicleModeSyncRunning) {
+                Log.i(
+                    TAG,
+                    "Vehicle-mode ACC watchdog sync coalesced at request "
+                        + requestVersion)
+                return
+            }
+            vehicleModeSyncRunning = true
+        }
+        Log.i(
+            TAG,
+            "Vehicle-mode ACC watchdog sync requested"
+                + (requestedActiveMode?.let { " for $it" } ?: ""))
+        runAccSentryWatchdogModeSync(
+            requestVersion, 1, requestedActiveMode)
+    }
+
+    private fun runAccSentryWatchdogModeSync(
+        requestVersion: Long,
+        attempt: Int,
+        requestedActiveMode: String?
+    ) {
+        if (!isVehicleModeSyncCurrent(requestVersion)) {
+            finishAccSentryWatchdogModeSync(
+                requestVersion, null, null)
+            return
+        }
+
+        com.overdrive.app.camera.dilink5.DiLink5Platform
+            .refreshActiveModeFromCommittedMarker()
+        val committedMode =
+            com.overdrive.app.camera.dilink5.DiLink5Platform
+                .currentActiveMode()
+        val committedGeneration =
+            com.overdrive.app.camera.dilink5.DiLink5Platform
+                .currentActiveModeGeneration()
+        if (committedGeneration == null) {
+            retryOrFinishAccSentryWatchdogModeSync(
+                requestVersion,
+                attempt,
+                null,
+                "committed vehicle-mode generation is unavailable")
+            return
+        }
+        if (requestedActiveMode != null
+            && !com.overdrive.app.camera.dilink5.DiLink5Platform
+                .isSameMode(requestedActiveMode, committedMode)) {
+            Log.i(
+                TAG,
+                "Vehicle-mode sync request for $requestedActiveMode "
+                    + "coalesced to committed $committedMode")
+        }
+
+        val enableDi5HealthSupervision =
+            com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
+        Log.i(
+            TAG,
+            "Redeploying ACC watchdog for committed mode=$committedMode "
+                + "generation=$committedGeneration attempt=$attempt")
+
+        val launcher = com.overdrive.app.launcher.AdbDaemonLauncher(
+            applicationContext)
+        launcher.redeployAccSentryDaemonForVehicleMode(
+            enableDi5HealthSupervision,
+            onSuccess = {
+                try {
+                    launcher.releasePerInstanceResources()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Vehicle-mode launcher cleanup failed: ${t.message}")
+                }
+                finishAccSentryWatchdogModeSync(
+                    requestVersion, committedGeneration, null)
+            },
+            onError = { error ->
+                try {
+                    launcher.releasePerInstanceResources()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Vehicle-mode launcher cleanup failed: ${t.message}")
+                }
+                retryOrFinishAccSentryWatchdogModeSync(
+                    requestVersion,
+                    attempt,
+                    committedGeneration,
+                    error)
+            }
+        )
+    }
+
+    private fun retryOrFinishAccSentryWatchdogModeSync(
+        requestVersion: Long,
+        attempt: Int,
+        committedGeneration: String?,
+        error: String
+    ) {
+        vehicleModeSyncHandler.post {
+            if (!isVehicleModeSyncCurrent(requestVersion)) {
+                finishAccSentryWatchdogModeSync(
+                    requestVersion, committedGeneration, error)
+                return@post
+            }
+            if (attempt < VEHICLE_MODE_SYNC_MAX_ATTEMPTS) {
+                Log.w(
+                    TAG,
+                    "ACC watchdog mode sync attempt $attempt failed: $error; "
+                        + "retrying in ${VEHICLE_MODE_SYNC_RETRY_MS}ms")
+                vehicleModeSyncHandler.postDelayed(
+                    {
+                        runAccSentryWatchdogModeSync(
+                            requestVersion, attempt + 1, null)
+                    },
+                    VEHICLE_MODE_SYNC_RETRY_MS)
+            } else {
+                finishAccSentryWatchdogModeSync(
+                    requestVersion, committedGeneration, error)
+            }
+        }
+    }
+
+    private fun finishAccSentryWatchdogModeSync(
+        completedVersion: Long,
+        deployedGeneration: String?,
+        error: String?
+    ) {
+        vehicleModeSyncHandler.post {
+            com.overdrive.app.camera.dilink5.DiLink5Platform
+                .refreshActiveModeFromCommittedMarker()
+            val currentGeneration =
+                com.overdrive.app.camera.dilink5.DiLink5Platform
+                    .currentActiveModeGeneration()
+            val nextVersion: Long?
+            synchronized(vehicleModeSyncLock) {
+                if (deployedGeneration != null
+                    && deployedGeneration != currentGeneration
+                    && vehicleModeSyncRequestedVersion == completedVersion) {
+                    // The marker changed while the old-mode deployment was
+                    // running, even if the replacement service intent has not
+                    // reached us yet. Manufacture a coalesced request now.
+                    vehicleModeSyncRequestedVersion++
+                }
+                if (vehicleModeSyncRequestedVersion != completedVersion) {
+                    nextVersion = vehicleModeSyncRequestedVersion
+                } else {
+                    vehicleModeSyncRunning = false
+                    nextVersion = null
+                }
+            }
+
+            if (nextVersion != null) {
+                Log.i(
+                    TAG,
+                    "Replaying ACC watchdog sync for newer request "
+                        + nextVersion)
+                runAccSentryWatchdogModeSync(nextVersion, 1, null)
+            } else if (error == null) {
+                val parkedNow = try {
+                    java.io.File(
+                        com.overdrive.app.ui.model.ParkedShutdown.MARKER_PATH)
+                        .exists()
+                } catch (_: Throwable) {
+                    false
+                }
+                if (parkedNow) {
+                    // Cleanup may have observed a park that began after
+                    // onStartCommand's initial gate. Keep the one-shot pending
+                    // bit; the first post-park service start will redeploy.
+                    Log.i(
+                        TAG,
+                        "ACC watchdog mode sync deferred by parked shutdown; "
+                            + "pending reconciliation retained")
+                } else {
+                    clearAccSentryWatchdogModeSyncPending()
+                    Log.i(
+                        TAG,
+                        "ACC watchdog mode sync complete for generation "
+                            + deployedGeneration)
+                }
+            } else {
+                Log.e(
+                    TAG,
+                    "ACC watchdog mode sync failed after "
+                        + VEHICLE_MODE_SYNC_MAX_ATTEMPTS
+                        + " attempts: $error")
+            }
+        }
+    }
+
+    private fun isVehicleModeSyncCurrent(requestVersion: Long): Boolean {
+        synchronized(vehicleModeSyncLock) {
+            return vehicleModeSyncRunning
+                && vehicleModeSyncRequestedVersion == requestVersion
+        }
+    }
+
     private fun syncVehicleTelemetry() {
         Thread({
             try {
@@ -615,6 +914,8 @@ class DaemonKeepaliveService : Service() {
                 if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
                     com.overdrive.app.byd.BydDataCollector
                         .syncDiLink5Producer(applicationContext)
+                    // DI5 wheel keys bypass Android input; Key Mapping gets them from BYD's key service.
+                    com.overdrive.app.byd.dilink5.Dilink5KeySource.start(applicationContext)
                 } else {
                     com.overdrive.app.byd.BydDataCollector
                         .stopDiLink5Producer()

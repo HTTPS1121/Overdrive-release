@@ -126,6 +126,10 @@ class SettingsAboutFragment : Fragment() {
             shareOverdrive()
         }
 
+        view.findViewById<View>(R.id.cardYoutube).setOnClickListener {
+            openExternal(getString(R.string.settings_about_youtube_url))
+        }
+
         view.findViewById<View>(R.id.cardSupport).setOnClickListener {
             openExternal(getString(R.string.settings_about_support_kofi_url))
         }

@@ -10,15 +10,16 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
-    <script src="../shared/theme.js?v=10"></script>
-    <script src="../shared/app-shell.js?v=7"></script>
+    <script src="../shared/theme.js?v=11"></script>
+    <script src="../shared/app-shell.js?v=18"></script>
     <!--
-      Per-page bottom-tab manifest. Five tabs grouped by user task:
+      Per-page bottom-tab manifest. Tabs grouped by user task:
         General   — mode toggle + schedule + deterrent (when/how surveillance runs)
         Detection — detection settings, ROI zones, safe locations (what + where)
         Recording — pre/post buffer, codec, fps (how events are captured)
-        Storage   — limit, location, BYD dashcam cleanup (where files live)
-        Advanced  — developer / debug switches
+        Dashcam   — OEM dashcam surveillance mode + native DVR app
+      Storage (limit, location, BYD dashcam cleanup) lives on storage.html,
+      linked from the Recording tab.
       BYD Cloud account is its own page (byd-cloud.html) — accessed from the
       sidebar Integrations group, since it belongs with ABRP and MQTT.
       Cards are tagged via `data-tab` attributes on each <div class="card">.
@@ -28,24 +29,33 @@
             { id: 'general',   label: 'General',   i18n: 'surveillance.tab_general',   svg: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>' },
             { id: 'detection', label: 'Detection', i18n: 'surveillance.tab_detection', svg: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
             { id: 'recording', label: 'Recording', i18n: 'surveillance.tab_recording', svg: '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>' },
-            { id: 'oem',       label: 'Dashcam',   i18n: 'surveillance.tab_oem',     svg: '<rect x="3" y="6" width="14" height="12" rx="2"/><path d="M17 10l4-2v8l-4-2"/><circle cx="10" cy="12" r="2.5"/>' },
-            { id: 'storage',   label: 'Storage',   i18n: 'surveillance.tab_storage',   svg: '<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' }
+            { id: 'oem',       label: 'Dashcam',   i18n: 'surveillance.tab_oem',     svg: '<rect x="3" y="6" width="14" height="12" rx="2"/><path d="M17 10l4-2v8l-4-2"/><circle cx="10" cy="12" r="2.5"/>' }
         ];
     </script>
-    <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=36">
+    <script src="../shared/app-tabs.js?v=3"></script>
+    <link rel="stylesheet" href="../shared/styles.css?v=38">
+    <link rel="stylesheet" href="../shared/revamp.css?v=2">
     <style>
-        /* Per-camera detection toggles — 2-column on tablets, single column on
-           narrow phones so the toggle never runs out of room next to the label. */
+        /* Per-camera detection toggles: 2-up tiles, one column under 600px. */
         .surv-camera-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-gap: 8px;
+            gap: 8px;
             padding-bottom: 16px;
         }
-        @media (max-width: 540px) {
-            .surv-camera-grid { grid-template-columns: 1fr; gap: 4px; }
+        @media (max-width: 599px) {
+            .surv-camera-grid { grid-template-columns: minmax(0, 1fr); }
         }
+        .surv-camera-grid > .setting-row {
+            min-width: 0;
+            padding: 4px 8px 4px 16px;
+            border-bottom: 0;
+            border-radius: var(--radius-md);
+            background-color: var(--well);
+        }
+        [dir="rtl"] .surv-camera-grid > .setting-row { padding: 4px 16px 4px 8px; }
+        .surv-camera-grid .setting-name { margin-bottom: 0; font-size: var(--fs-body); overflow-wrap: break-word; }
         /* BYD Cloud credential inputs — let them stretch on narrow viewports
            rather than the inline 240px/200px caps that make the field look
            tiny with a wrapped label above. */
@@ -53,19 +63,211 @@
             .byd-input { max-width: none !important; width: 100%; }
             .byd-pin-input { max-width: 100% !important; }
         }
+
+        /* Sub-settings indent under their parent switch. */
+        .surv-sub-row,
+        .surv-sub-group {
+            padding-left: 16px;
+            box-shadow: inset 2px 0 0 var(--outline-variant);
+        }
+        .surv-sub-group { padding-bottom: 16px; }
+        .surv-sub-group .setting-name { font-size: var(--fs-label); }
+        :root[data-android-embed="1"] .surv-sub-group .setting-name { font-size: var(--fs-body); }
+        .surv-sub-hint { margin-left: 16px; }
+        [dir="rtl"] .surv-sub-row,
+        [dir="rtl"] .surv-sub-group {
+            padding-left: 0;
+            padding-right: 16px;
+            box-shadow: inset -2px 0 0 var(--outline-variant);
+        }
+        [dir="rtl"] .surv-sub-hint { margin-left: 0; margin-right: 16px; }
+
+        /* Segmented options fill the row once it stacks or wraps. */
+        .setting-control > .btn-group > .btn-toggle,
+        .surv-roi-bar .btn-toggle { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+
+        /* Status readouts as small stat tiles. */
+        .surv-stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-gap: 8px;
+            gap: 8px;
+            padding: 0;
+            background-color: transparent;
+        }
+        .surv-stats > .info-row {
+            display: block;
+            min-width: 0;
+            margin: 0;
+            padding: 12px 14px;
+            border-radius: var(--radius-md);
+            background-color: var(--well);
+        }
+        .surv-stats .label { display: block; color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .surv-stats .value { display: block; margin-top: 2px; font-size: var(--fs-body); font-weight: 600; overflow-wrap: break-word; }
+        .surv-stats .safe-loc-status { display: flex; justify-content: flex-start; max-width: none; text-align: left; }
+        [dir="rtl"] .surv-stats .safe-loc-status { text-align: right; }
+        .surv-stats > .info-row > .value { margin-left: 0; text-align: left; }
+        [dir="rtl"] .surv-stats > .info-row > .value { margin-right: 0; text-align: right; }
+        .surv-info-sm { font-size: var(--fs-caption); }
+        .surv-info-dim .value { color: var(--on-surface-variant); }
+
+        /* Summary tile (mock): icon | title + badge | master switch; readouts below.
+           The switch row's label stays for screen readers. */
+        .surv-hero { grid-template-columns: auto minmax(0, 1fr) auto; grid-row-gap: 0; }
+        .surv-hero > .r-hero-icon { grid-column: 1; grid-row: 1; }
+        .surv-hero > .card-header {
+            grid-column: 2;
+            grid-row: 1;
+            flex-wrap: wrap;
+            justify-content: flex-start;
+            min-width: 0;
+            padding: 0;
+        }
+        .surv-hero > .card-header > .card-title { margin-right: 12px; }
+        [dir="rtl"] .surv-hero > .card-header > .card-title { margin-right: 0; margin-left: 12px; }
+        .surv-hero > .card-header > .status-badge { margin: 2px 0; }
+        .surv-hero > .setting-row {
+            position: relative;
+            grid-column: 3;
+            grid-row: 1;
+            min-width: 0;
+            margin: 0;
+            padding: 0;
+            border-bottom: 0;
+        }
+        .surv-hero > .setting-row > .setting-info {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+        }
+        .surv-hero > .setting-row > .setting-control { margin: 0; }
+        .surv-hero > .r-hero-stats { grid-column: 1 / -1; grid-row: 2; margin-top: 18px; }
+        /* The whole Events Today tile opens the link. */
+        .surv-stat-link { position: relative; transition: background-color var(--duration-fast) var(--easing-standard); }
+        .surv-stat-link > .link-value::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+        @media (hover: hover) {
+            .surv-stat-link:hover { background-color: var(--well-2); }
+        }
+        @media (max-width: 480px) {
+            .surv-hero { grid-template-columns: auto minmax(0, 1fr) auto; }
+            .surv-hero > .r-hero-ctl, .surv-hero > .setting-row { grid-column: 3; grid-row: 1; justify-self: end; }
+            .surv-hero > .r-hero-stats { grid-column: 1 / -1; grid-row: 2; margin-top: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        .card-body > .setting-hint:last-child { margin-bottom: 0; }
+
+        .surv-warn {
+            padding: 12px 14px;
+            border: 0;
+            border-radius: var(--radius-md);
+            background-color: var(--warning-soft);
+            color: var(--warning);
+        }
+        .surv-warn-row { display: flex; align-items: center; color: var(--warning); font-size: var(--fs-label); line-height: 1.45; }
+        :root[data-android-embed="1"] .surv-warn-row { font-size: var(--fs-body); }
+        .surv-warn-row > svg { flex-shrink: 0; margin-right: 10px; }
+        [dir="rtl"] .surv-warn-row > svg { margin-right: 0; margin-left: 10px; }
+
+        /* Screen deterrent custom content. */
+        .surv-panel { margin-top: 8px; padding: 12px 16px; border-radius: var(--radius-md); background-color: var(--well); }
+        .surv-panel > .surv-warn { margin-bottom: 12px; }
+        .surv-panel-title { margin-bottom: 4px; color: var(--on-surface); font-size: var(--fs-body); font-weight: 600; }
+        .surv-panel-help { margin-bottom: 12px; color: var(--on-surface-variant); font-size: var(--fs-label); line-height: 1.45; }
+        .surv-or {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+            color: var(--on-surface-variant);
+            font-size: var(--fs-caption);
+            font-weight: 700;
+            letter-spacing: 0.08em;
+        }
+        .surv-or > span { margin: 0 12px; }
+        .surv-or-line { flex: 1 1 0; height: 1px; background-color: var(--outline-variant); }
+        .surv-themes { margin-top: 12px; color: var(--on-surface); }
+        .surv-themes-title { margin-bottom: 8px; font-weight: 600; }
+        .surv-theme-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            grid-gap: 8px;
+            gap: 8px;
+        }
+        .surv-theme { min-width: 0; padding: 10px; border-radius: var(--radius-md); background-color: var(--well-2); text-align: center; }
+        .surv-theme-name { margin-bottom: 8px; font-size: var(--fs-label); font-weight: 600; overflow-wrap: break-word; }
+        .btn.surv-theme-btn { width: 100%; padding: 8px 12px; font-size: var(--fs-label); }
+        .surv-asset { max-width: 100%; max-height: 180px; border-radius: var(--radius-md); background-color: var(--well-2); }
+        .surv-caption { margin-top: 4px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .btn > .surv-btn-ic { width: 14px; height: 14px; margin-right: 6px; }
+        [dir="rtl"] .btn > .surv-btn-ic { margin-right: 0; margin-left: 6px; }
+        .surv-btn-row > .btn + .btn { margin-left: 8px; }
+        [dir="rtl"] .surv-btn-row > .btn + .btn { margin-left: 0; margin-right: 8px; }
+        .btn.surv-btn-danger,
+        .btn.surv-btn-danger:hover { border-color: transparent; background-color: var(--danger-soft); color: var(--danger); }
+        @media (max-width: 768px) {
+            .surv-btn-row > .btn { width: 100%; }
+            .surv-btn-row > .btn + .btn,
+            [dir="rtl"] .surv-btn-row > .btn + .btn { margin: 8px 0 0; }
+        }
+
+        /* Detection zones editor and schedule. */
+        .surv-roi-bar { display: flex; align-items: center; margin-bottom: 12px; }
+        .surv-roi-bar > .unsaved-indicator { margin-left: 8px; }
+        [dir="rtl"] .surv-roi-bar > .unsaved-indicator { margin-left: 0; margin-right: 8px; }
+        .surv-roi-actions { display: flex; margin-top: 8px; }
+        .surv-roi-actions > .btn + .btn { margin-left: 8px; }
+        [dir="rtl"] .surv-roi-actions > .btn + .btn { margin-left: 0; margin-right: 8px; }
+        .surv-roi-actions > .btn-secondary { flex: 0 0 auto; padding: 10px 16px; }
+        .surv-status-line { margin-top: 8px; color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .btn.surv-block-btn { width: 100%; }
+
+        /* Safe locations list. */
+        .safe-zone-range-labels { color: var(--on-surface-variant); font-size: var(--fs-caption); }
+        .safe-zone-list { border-top: 0; }
+        .safe-zone-row { border-bottom: 0; }
+        .safe-zone-row + .safe-zone-row { border-top: 1px solid var(--hairline); }
+        .safe-zone-empty {
+            margin-top: 4px;
+            padding: 16px;
+            border-bottom: 0;
+            border-radius: var(--radius-md);
+            background-color: var(--well);
+            color: var(--on-surface-variant);
+            text-align: center;
+        }
+        .safe-zone-icon-btn { border-radius: var(--radius-full); }
+        @media (hover: hover) {
+            .safe-zone-icon-btn:hover { border-color: transparent; background-color: var(--well-2); color: var(--on-surface); }
+            .safe-zone-icon-btn.is-danger:hover { background-color: var(--danger-soft); color: var(--danger); }
+        }
+
+        /* Slider range ends sit under the slider track. */
+        .surv-range-under { width: 120px; margin-left: auto; padding: 0; }
+        [dir="rtl"] .surv-range-under { margin-left: 0; margin-right: auto; }
+        @media (max-width: 768px) {
+            .surv-range-under { width: auto; margin-left: 82px; }
+            [dir="rtl"] .surv-range-under { margin-left: 0; margin-right: 82px; }
+        }
+        /* Event timeline. */
+        .timeline-visual { height: 40px; margin: 16px 0 0; border-radius: var(--radius-sm); background: none; }
+        .timeline-segment { padding: 0 8px; font-size: var(--fs-caption); font-weight: 700; }
+        .timeline-segment + .timeline-segment { margin-left: 2px; }
+        [dir="rtl"] .timeline-segment + .timeline-segment { margin-left: 0; margin-right: 2px; }
+        .timeline-pre { background-color: var(--tertiary-soft); color: var(--tertiary); }
+        .timeline-event { background-color: var(--primary); color: var(--on-primary); }
+        .timeline-post { background-color: var(--warning-soft); color: var(--warning); }
+        .timeline-labels { color: var(--on-surface-variant); font-size: var(--fs-caption); }
+
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/jmuxer@2.0.4/dist/jmuxer.min.js"></script>
     <link rel="stylesheet" href="../shared/leaflet.css" />
     <script src="../shared/leaflet.js"></script>
-    <script src="../shared/SotaPlayer.js?v=13"></script>
-    <script src="../shared/Decoder.js"></script>
-    <script src="../shared/YUVCanvas.js"></script>
-    <script src="../shared/Player.js"></script>
 </head>
-<body>
+<body class="r-settings">
     <div class="app-layout">
         <!-- Sidebar -->
-        <!-- App shell sidebar (rendered by ../shared/app-shell.js) -->
+        <!-- App shell sidebar (rendered by ../shared/app-shell.js?v=18) -->
         <div id="app-shell-mount"></div>
         <!-- Main Content -->
         <main class="main-content" aria-busy="true" inert style="pointer-events:none">
@@ -80,7 +282,7 @@
             </div>
 
             <header class="page-header">
-                <h1 class="page-title" data-i18n="surveillance.page_title">Surveillance Settings</h1>
+                <h1 class="page-title" data-i18n="nav.surveillance">Surveillance</h1>
                 <div class="header-actions">
                     <div class="header-badge">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -89,16 +291,39 @@
                 </div>
             </header>
 
-            <div class="page-body">
-                <!-- Surveillance Mode -->
-                <div class="card" data-tab="general">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                            <span data-i18n="surveillance.mode">Surveillance Mode</span>
-                        </div>
-                        <span class="status-badge inactive" id="survStatusBadge" data-i18n="status.off">OFF</span>
+            <!-- Summary tile above the section tabs: title + badge, master switch, today's readouts. -->
+            <div class="r-hero surv-hero" data-hero-badge="survStatusBadge">
+                <span class="r-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+                <div class="card-header">
+                    <div class="card-title r-hero-title">
+                        <span data-i18n="surveillance.mode">Surveillance Mode</span>
                     </div>
+                    <span class="status-badge inactive" id="survStatusBadge" data-i18n="status.off">OFF</span>
+                </div>
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-name" data-i18n="surveillance.enable">Enable Surveillance</div>
+                        <div class="setting-desc" data-i18n="surveillance.enable_desc">Monitor cameras for motion and object detection</div>
+                    </div>
+                    <div class="setting-control">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="survEnabled" disabled onchange="SurvSettings.toggleSurveillance()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="info-box surv-stats r-hero-stats">
+                    <div class="info-row r-hero-stat"><span class="label r-hero-stat-label" data-i18n="surveillance.status_label">Status</span><span class="value r-hero-stat-value" id="survState" data-i18n="common.idle">Idle</span></div>
+                    <div class="info-row r-hero-stat surv-stat-link">
+                        <span class="label r-hero-stat-label" data-i18n="surveillance.events_today">Events Today</span>
+                        <a href="events.html?filter=sentry" class="value link-value r-hero-stat-value num" id="eventsToday">0 →</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page-body">
+                <!-- Surveillance Mode settings -->
+                <div class="card" data-tab="general">
                     <div class="card-body">
                         <!-- Operating mode: ON+OFF (keep working while parked) vs ON only (sleep after car off) -->
                         <div class="setting-row">
@@ -124,19 +349,6 @@
                             <div class="info-note" data-i18n="surveillance.operating_mode_postoff_disabled_note">These settings control surveillance after the car is off. In On Only mode Overdrive shuts down when parked, so they don't apply. Switch to On &amp; Off to use them.</div>
                         </div>
 
-                        <div class="setting-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="surveillance.enable">Enable Surveillance</div>
-                                <div class="setting-desc" data-i18n="surveillance.enable_desc">Monitor cameras for motion and object detection</div>
-                            </div>
-                            <div class="setting-control">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="survEnabled" disabled onchange="SurvSettings.toggleSurveillance()">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-
                         <!-- Arm mode: Lock (arm on door-lock) vs Power (arm on power-off) -->
                         <div class="setting-row">
                             <div class="setting-info">
@@ -153,19 +365,19 @@
                         <div class="setting-hint" id="armModeHint" data-i18n="surveillance.arm_hint_lock">Arms when you lock the doors and disarms when you unlock (so it won't record you). If your car can't report lock status, it arms 60s after power-off as a fallback.</div>
 
                         <!-- ACC-OFF mode: Smart (motion + AI events) vs Continuous (plain rolling) -->
-                        <div class="setting-row">
+                        <div class="setting-row r-choice-row">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="surveillance.accoff_mode">ACC-OFF Mode</div>
                                 <div class="setting-desc" data-i18n="surveillance.accoff_mode_desc">Smart records motion-triggered events. Continuous records the whole time the car is parked, with no filters and no AI.</div>
                             </div>
                             <div class="setting-control">
-                                <div class="btn-group" id="accOffModeBtns">
-                                    <button class="btn-toggle" data-value="smart" onclick="SurvSettings.setAccOffMode('smart')" data-i18n="surveillance.accoff_smart">Smart</button>
-                                    <button class="btn-toggle" data-value="continuous" onclick="SurvSettings.setAccOffMode('continuous')" data-i18n="surveillance.accoff_continuous">Continuous</button>
+                                <div class="btn-group r-choice-cards" id="accOffModeBtns">
+                                    <button class="btn-toggle" data-value="smart" onclick="SurvSettings.setAccOffMode('smart')" data-i18n="surveillance.accoff_smart"><span class="r-choice-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6 4.6 1.9-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg></span>Smart<span class="r-choice-desc" data-i18n="surveillance.accoff_hint_smart">Motion + AI gating. Recordings begin only when something moves and AI confirms a person, vehicle, or other relevant object.</span></button>
+                                    <button class="btn-toggle" data-value="continuous" onclick="SurvSettings.setAccOffMode('continuous')" data-i18n="surveillance.accoff_continuous"><span class="r-choice-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 4v16M17 4v16M2 9h5M2 15h5M17 9h5M17 15h5"/></svg></span>Continuous<span class="r-choice-desc" data-i18n="surveillance.accoff_hint_continuous">Plain rolling recording. All four cameras record from arm to disarm with no motion filters.</span></button>
                                 </div>
                             </div>
                         </div>
-                        <div class="setting-hint" id="accOffModeHint" data-i18n="surveillance.accoff_hint_smart">Motion + AI gating. Recordings begin only when something moves and AI confirms a person, vehicle, or other relevant object.</div>
+                        <div class="setting-hint r-choice-hint" id="accOffModeHint" data-i18n="surveillance.accoff_hint_smart">Motion + AI gating. Recordings begin only when something moves and AI confirms a person, vehicle, or other relevant object.</div>
 
                         <!-- Keep USB ports powered while parked. Default ON. Off lets the
                              head unit sleep on the next ACC-OFF cycle to save the 12V
@@ -206,6 +418,19 @@
                             </div>
                         </div>
 
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.bluetooth_keepalive">Keep Bluetooth on while parked</div>
+                                <div class="setting-desc" data-i18n="surveillance.bluetooth_keepalive_desc">Shared with Proximity, Automations and key bindings. Saves immediately, independently of surveillance and proximity monitoring. Turning this off disables Bluetooth while vehicle power is off.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="survBluetoothKeepAlive" disabled onchange="SurvSettings.toggleBluetoothKeepAlive()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
                         <!-- DiLink 5 only: opt-in BYD-cloud realtime heartbeat. Hidden
                              on other camera modes; disabled until BYD Cloud is verified.
                              The daemon owns the runtime lifecycle and cancels the
@@ -224,33 +449,9 @@
                         </div>
                         <div class="setting-hint" id="survDi5CloudKeepAliveCloudNote" style="display:none;" data-i18n="surveillance.di5_cloud_keepalive_requires_cloud">Connect and verify your BYD Cloud account before enabling this option.</div>
 
-                        <!-- DiLink 5 (Desay SV) QNX common-network keep-alive. Shown only
-                             when the firmware exposes the QnxMessage service. The ACC
-                             sentry daemon re-reads both values on its next parked tick. -->
-                        <div class="setting-row" id="survDi5QnxNetworkKeepAliveRow" style="display:none;">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="surveillance.di5_qnx_keepalive">Experimental: Keep DI5 awake via the QNX vehicle network</div>
-                                <div class="setting-desc" data-i18n="surveillance.di5_qnx_keepalive_desc">While the car is off, asks the head unit's QNX system every 30 seconds to keep the vehicle network awake (the same request the firmware uses during over-the-air updates). No cloud or internet needed. Uses more 12V battery: it stops after the time limit below, or when the 12V reading drops below 12 V.</div>
-                            </div>
-                            <div class="setting-control">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="survDi5QnxNetworkKeepAlive" disabled onchange="SurvSettings.toggleDi5QnxNetworkKeepAlive()">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="setting-row" id="survDi5QnxNetworkKeepAliveMinutesRow" style="display:none;">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="surveillance.di5_qnx_keepalive_minutes">Keep awake for at most (minutes)</div>
-                            </div>
-                            <div class="setting-control">
-                                <input type="number" id="survDi5QnxNetworkKeepAliveMinutes" min="5" max="480" step="5" style="width:5em;" disabled onchange="SurvSettings.setDi5QnxNetworkKeepAliveMinutes()">
-                            </div>
-                        </div>
-
-                        <!-- Opt-in DiLink 5 parked keep-alive (Experimental). ONE master
-                             switch; the individual levers (MCU/sentry hold, panorama
-                             heartbeat, AP hold) are config-only diagnostics and never
+                        <!-- Opt-in DiLink 5 parked keep-alive. ONE master
+                             switch; the individual keep-alive levers are
+                             config-only diagnostics and never
                              appear here. Always visible: DiLink 5 head units exist
                              with and without the QCarCam camera stack, so this row is
                              deliberately NOT tied to the camera-mode selection or to
@@ -260,8 +461,8 @@
                              confirmation (12 V battery cost). -->
                         <div class="setting-row" id="survDi5ParkedKeepAliveRow">
                             <div class="setting-info">
-                                <div class="setting-name" data-i18n="surveillance.di5_parked_keepalive">Experimental: DiLink 5 parked keep-alive</div>
-                                <div class="setting-desc" data-i18n="surveillance.di5_parked_keepalive_desc">For DiLink 5 head units, with any camera mode. Keeps the vehicle in sentry mode after the car is switched off so the MCU does not cut the camera and USB rails, and re-wakes the MCU if it drifts to sleep. Uses more 12V battery; it stops by itself below the configured voltage cutoff and stays off until the car is switched on or charging is detected. Takes effect on the next parked tick.</div>
+                                <div class="setting-name" data-i18n="surveillance.di5_parked_keepalive">DiLink 5 parked keep-alive</div>
+                                <div class="setting-desc" data-i18n="surveillance.di5_parked_keepalive_desc">For DiLink 5 head units, with any camera mode. Helps keep the head unit and vehicle systems awake while parked, without BYD Cloud or internet access. Uses more 12V battery and depends on the vehicle firmware; verify parked ADB and camera availability on your vehicle. Stops below the voltage cutoff and stays off until the car is switched on or charging is detected.</div>
                             </div>
                             <div class="setting-control">
                                 <label class="toggle-switch">
@@ -270,6 +471,67 @@
                                 </label>
                             </div>
                         </div>
+
+                        <!-- Opt-in DiLink 5 assist-off profile: FOUR independent per-control
+                             toggles (CPD, LDA/LKA mode, ELKA, DMS), all default OFF. Each one
+                             turns a driver-assistance feature off at every ignition, because the
+                             car re-enables them per power cycle. Available only when the DiLink 5
+                             mode is selected AND the vehicle model is explicitly confirmed as the
+                             Sealion 7 (assistOffAvailable from /api/surveillance/config); otherwise
+                             the inputs stay disabled and the hint below explains why. Inputs start
+                             disabled (hydration lock) and are enabled by applyAssistOffUI(). Turning
+                             any of them ON asks for confirmation (driver-assistance change). The
+                             rows are NOT part of the onOnly dimming: they act at ignition ON. -->
+                        <div class="setting-hint" id="survAssistOffSection" data-i18n="surveillance.assist_off_section">DiLink 5 (Sealion 7): turn driver-assistance features off at every ignition</div>
+                        <div class="setting-row" id="survAssistOffCpdRow">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.assist_off_cpd">Child presence detection off at every ignition</div>
+                                <div class="setting-desc" data-i18n="surveillance.assist_off_cpd_desc">For cars with no cabin-camera CPD switch, such as the Sealion 7 model: the DiPilot CPD setting is written to off once the car's assist service is ready after each power-on, then read back to confirm. Only applied while the car is stationary.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="survAssistOffCpd" disabled onchange="SurvSettings.toggleAssistOff('cpd')">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" id="survAssistOffLdaRow">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.assist_off_lda">Lane departure assist mode off at every ignition</div>
+                                <div class="setting-desc" data-i18n="surveillance.assist_off_lda_desc">Sets the lane departure assist mode (the car calls it LKA in its own dialog) to off after each power-on and reads it back to confirm. The car resets this mode at every power cycle, so the write repeats each ignition. Only applied while stationary.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="survAssistOffLda" disabled onchange="SurvSettings.toggleAssistOff('lda')">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" id="survAssistOffElkaRow">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.assist_off_elka">Emergency lane keeping assist off at every ignition</div>
+                                <div class="setting-desc" data-i18n="surveillance.assist_off_elka_desc">Turns emergency lane keeping assist (ELKA) off after each power-on and reads it back to confirm. ELKA can steer the car; disable it only if you accept that. Only applied while stationary.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="survAssistOffElka" disabled onchange="SurvSettings.toggleAssistOff('elka')">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" id="survAssistOffDmsRow">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.assist_off_dms">Driver monitoring (Cabin Perception) off at every ignition</div>
+                                <div class="setting-desc" data-i18n="surveillance.assist_off_dms_desc">Asks the car's settings service to turn the driver monitoring switches (monitoring, fatigue, attention) off after each power-on. This route has no readback, so the status can only say the request was sent; check Settings › Cabin Perception on the car.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="survAssistOffDms" disabled onchange="SurvSettings.toggleAssistOff('dms')">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-hint" id="survAssistOffUnavailableHint" style="display:none;" data-i18n="surveillance.assist_off_unavailable_hint">Available only in DiLink 5 mode with the vehicle model set to Sealion 7 in Settings.</div>
 
                         <!-- Shown only while USB power is OFF: SD card is unpowered while
                              parked, so surveillance records to Internal. Visibility driven
@@ -322,14 +584,6 @@
                             </div>
                         </div>
                         <div class="setting-hint" id="lowSocCutoffHint" data-i18n="surveillance.low_soc_cutoff_hint">Higher values protect the battery more but end surveillance sooner. Off keeps watching until the battery is critically low.</div>
-
-                        <div class="info-box">
-                            <div class="info-row"><span class="label" data-i18n="surveillance.status_label">Status</span><span class="value" id="survState" data-i18n="common.idle">Idle</span></div>
-                            <div class="info-row">
-                                <span class="label" data-i18n="surveillance.events_today">Events Today</span>
-                                <a href="events.html?filter=sentry" class="value link-value" id="eventsToday">0 →</a>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -358,7 +612,7 @@
 
                         <div id="safeLocContent" style="display:none;">
                             <!-- Status -->
-                            <div class="info-box" id="safeLocStatusBox" style="margin-top:8px;">
+                            <div class="info-box surv-stats" id="safeLocStatusBox" style="margin-top:8px;">
                                 <div class="info-row">
                                     <span class="label" data-i18n="surveillance.status_label">Status</span>
                                     <span class="value safe-loc-status is-pending" id="safeLocStatus">--</span>
@@ -371,7 +625,7 @@
 
                             <!-- Map with live edit circle -->
                             <div style="margin-top:12px;">
-                                <div id="safeLocMap" style="height:260px; border-radius:12px; border:1px solid var(--card-border); position:relative; overflow:hidden; z-index:1;"></div>
+                                <div id="safeLocMap" style="height:260px; border-radius:var(--radius-md); border:1px solid var(--hairline); position:relative; overflow:hidden; z-index:1;"></div>
                             </div>
 
                             <!-- Radius Slider -->
@@ -537,7 +791,7 @@
                         <div class="setting-hint" id="discardEmptyMotionHint" data-i18n="surveillance.discard_empty_motion_hint">Good if you get false alerts from shadows or tree-branch movement — these clips are deleted automatically when nothing real was tracked. Caution: in low light or unclear conditions it can occasionally discard a real threat the AI failed to identify. Leave off if you'd rather keep every recording.</div>
 
                         <!-- Also discard at night (sub-toggle of the above) -->
-                        <div class="setting-row" id="discardEmptyMotionNightRow" style="padding-left:16px;">
+                        <div class="setting-row surv-sub-row" id="discardEmptyMotionNightRow">
                             <div class="setting-info">
                                 <div class="setting-name" data-i18n="surveillance.discard_empty_motion_night">Also discard at night</div>
                                 <div class="setting-desc" data-i18n="surveillance.discard_empty_motion_night_desc">Extend the filter to dark scenes using motion shape instead of brightness</div>
@@ -549,7 +803,7 @@
                                 </label>
                             </div>
                         </div>
-                        <div class="setting-hint" id="discardEmptyMotionNightHint" data-i18n="surveillance.discard_empty_motion_night_hint">By default the filter only runs in daylight, because in the dark the AI can miss a real person entirely. With this on, night clips are discarded only when the motion looks like wind-blown foliage or a lighting change (headlights, reflections) and never translated across the scene like a person would. Higher chance of dropping a real night-time event than the daytime filter — leave off if in doubt.</div>
+                        <div class="setting-hint surv-sub-hint" id="discardEmptyMotionNightHint" data-i18n="surveillance.discard_empty_motion_night_hint">By default the filter only runs in daylight, because in the dark the AI can miss a real person entirely. With this on, night clips are discarded only when the motion looks like wind-blown foliage or a lighting change (headlights, reflections) and never translated across the scene like a person would. Higher chance of dropping a real night-time event than the daytime filter — leave off if in doubt.</div>
 
                         <!-- Camera Controls -->
                         <div class="setting-row" style="border-bottom:none;">
@@ -559,8 +813,8 @@
                             </div>
                         </div>
                         <div class="surv-camera-grid">
-                            <div class="setting-row" style="border-bottom:none;padding:8px 0;">
-                                <div class="setting-info"><div class="setting-name" style="font-size:13px;" data-i18n="surveillance.camera_front">Front</div></div>
+                            <div class="setting-row">
+                                <div class="setting-info"><div class="setting-name" data-i18n="surveillance.camera_front">Front</div></div>
                                 <div class="setting-control">
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2CameraFront" checked onchange="SurvSettings.updateV2Cameras()">
@@ -568,8 +822,8 @@
                                     </label>
                                 </div>
                             </div>
-                            <div class="setting-row" style="border-bottom:none;padding:8px 0;">
-                                <div class="setting-info"><div class="setting-name" style="font-size:13px;" data-i18n="surveillance.camera_right">Right</div></div>
+                            <div class="setting-row">
+                                <div class="setting-info"><div class="setting-name" data-i18n="surveillance.camera_right">Right</div></div>
                                 <div class="setting-control">
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2CameraRight" checked onchange="SurvSettings.updateV2Cameras()">
@@ -577,8 +831,8 @@
                                     </label>
                                 </div>
                             </div>
-                            <div class="setting-row" style="border-bottom:none;padding:8px 0;">
-                                <div class="setting-info"><div class="setting-name" style="font-size:13px;" data-i18n="surveillance.camera_left">Left</div></div>
+                            <div class="setting-row">
+                                <div class="setting-info"><div class="setting-name" data-i18n="surveillance.camera_left">Left</div></div>
                                 <div class="setting-control">
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2CameraLeft" checked onchange="SurvSettings.updateV2Cameras()">
@@ -586,8 +840,8 @@
                                     </label>
                                 </div>
                             </div>
-                            <div class="setting-row" style="border-bottom:none;padding:8px 0;">
-                                <div class="setting-info"><div class="setting-name" style="font-size:13px;" data-i18n="surveillance.camera_rear">Rear</div></div>
+                            <div class="setting-row">
+                                <div class="setting-info"><div class="setting-name" data-i18n="surveillance.camera_rear">Rear</div></div>
                                 <div class="setting-control">
                                     <label class="toggle-switch">
                                         <input type="checkbox" id="v2CameraRear" checked onchange="SurvSettings.updateV2Cameras()">
@@ -611,10 +865,10 @@
                                 </label>
                             </div>
                         </div>
-                        <div id="sideCamBoostControls" style="display:none;padding-bottom:16px;">
+                        <div id="sideCamBoostControls" class="surv-sub-group" style="display:none;">
                             <div class="setting-row">
                                 <div class="setting-info">
-                                    <div class="setting-name" style="font-size:13px;" data-i18n="surveillance.sidecam_sens">Side sensitivity</div>
+                                    <div class="setting-name" data-i18n="surveillance.sidecam_sens">Side sensitivity</div>
                                 </div>
                                 <div class="setting-control">
                                     <div class="slider-control">
@@ -625,7 +879,7 @@
                             </div>
                             <div class="setting-row" style="border-bottom:none;">
                                 <div class="setting-info">
-                                    <div class="setting-name" style="font-size:13px;" data-i18n="surveillance.sidecam_zone">Side zone</div>
+                                    <div class="setting-name" data-i18n="surveillance.sidecam_zone">Side zone</div>
                                 </div>
                                 <div class="setting-control">
                                     <div class="btn-group" id="sideCamZoneBtns">
@@ -710,7 +964,7 @@
                         <div class="setting-hint" style="margin-bottom:12px;" data-i18n="surveillance.detection_zones_hint">Limit motion detection to specific areas of each camera. When off, the full camera frame is used for detection.</div>
 
                         <!-- Camera tabs + unsaved indicator -->
-                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                        <div class="surv-roi-bar">
                             <div class="btn-group" id="roiCameraTabs" style="flex:1;">
                                 <button class="btn-toggle active" onclick="RoiEditor.selectCamera(0)" data-i18n="surveillance.camera_front">Front</button>
                                 <button class="btn-toggle" onclick="RoiEditor.selectCamera(1)" data-i18n="surveillance.camera_right">Right</button>
@@ -737,20 +991,20 @@
                         <!-- Drawing content (hidden when ROI disabled) -->
                         <div id="roiDrawingContent" style="display:none;">
                             <!-- Canvas container — 4:3 aspect ratio, responsive -->
-                            <div id="roiCanvasContainer" style="position:relative; width:100%; height:0; padding-bottom:75%; background:var(--bg-base); border-radius:8px; overflow:hidden; border:1px solid var(--border-default); z-index:0;">
+                            <div id="roiCanvasContainer" style="position:relative; width:100%; height:0; padding-bottom:75%; background:var(--well); border-radius:var(--radius-md); overflow:hidden; border:1px solid var(--hairline); z-index:0;">
                                 <canvas id="roiCanvas" style="position:absolute; top:0; left:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair;"></canvas>
                             </div>
 
                             <!-- Buttons -->
-                            <div style="display:flex; gap:8px; margin-top:8px;">
+                            <div class="surv-roi-actions">
                                 <button class="btn btn-primary" style="flex:1;" onclick="RoiEditor.save()" data-i18n="surveillance.roi_save">Save Zone</button>
-                                <button class="btn" style="flex:0 0 auto; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--card-border); padding:8px 12px; font-size:12px;" onclick="RoiEditor.selectAll()" data-i18n="surveillance.roi_all">All</button>
-                                <button class="btn" style="flex:0 0 auto; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--card-border); padding:8px 12px; font-size:12px;" onclick="RoiEditor.clear()" data-i18n="surveillance.roi_none">None</button>
+                                <button class="btn btn-secondary" onclick="RoiEditor.selectAll()" data-i18n="surveillance.roi_all">All</button>
+                                <button class="btn btn-secondary" onclick="RoiEditor.clear()" data-i18n="surveillance.roi_none">None</button>
                             </div>
                         </div>
 
                         <!-- ROI status (always visible) -->
-                        <div style="margin-top:8px; font-size:12px; color:var(--text-muted);" id="roiStatus">Front: Full frame (ROI off)</div>
+                        <div class="surv-status-line" id="roiStatus">Front: Full frame (ROI off)</div>
                     </div>
                 </div>
 
@@ -782,13 +1036,13 @@
 
                             <div id="scheduleRulesList"></div>
 
-                            <button class="btn" style="width:100%; margin-top:8px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--card-border);" onclick="ScheduleEditor.addRule()" data-i18n="surveillance.schedule_add_window">+ Add Time Window</button>
+                            <button class="btn btn-secondary surv-block-btn" style="margin-top:8px;" onclick="ScheduleEditor.addRule()" data-i18n="surveillance.schedule_add_window">+ Add Time Window</button>
 
                             <div style="margin-top:12px;">
                                 <button class="btn btn-primary" id="scheduleSaveBtn" style="width:100%;" onclick="ScheduleEditor.save()" data-i18n="surveillance.schedule_save">Save Schedule</button>
                             </div>
                             
-                            <div style="margin-top:8px; font-size:12px; color:var(--text-muted);" id="scheduleSummary"></div>
+                            <div class="surv-status-line" id="scheduleSummary"></div>
                         </div>
                     </div>
                 </div>
@@ -887,7 +1141,7 @@
                                     <div class="setting-name" data-i18n="parking.settings_retention">Keep sessions (days)</div>
                                 </div>
                                 <div class="setting-control">
-                                    <input type="number" class="input" id="parkingRetentionDays" min="7" max="730" step="1" style="width:90px;" onchange="ParkingSettings.save('retentionDays', parseInt(this.value, 10))">
+                                    <input type="number" class="text-input" id="parkingRetentionDays" min="7" max="730" step="1" style="width:96px;min-width:96px;" onchange="ParkingSettings.save('retentionDays', parseInt(this.value, 10))">
                                 </div>
                             </div>
                             <div class="setting-row" style="border-bottom:none;">
@@ -895,12 +1149,12 @@
                                     <div class="setting-name" data-i18n="parking.settings_cap">Stills &amp; frames cap (MB)</div>
                                 </div>
                                 <div class="setting-control">
-                                    <input type="number" class="input" id="parkingStorageCapMb" min="50" max="4096" step="50" style="width:90px;" onchange="ParkingSettings.save('storageCapMb', parseInt(this.value, 10))">
+                                    <input type="number" class="text-input" id="parkingStorageCapMb" min="50" max="4096" step="50" style="width:96px;min-width:96px;" onchange="ParkingSettings.save('storageCapMb', parseInt(this.value, 10))">
                                 </div>
                             </div>
                         </div>
                         <div style="margin-top:12px;">
-                            <a class="btn" href="parking.html" style="width:100%; display:block; text-align:center;" data-i18n="parking.settings_open_page">Open Parking</a>
+                            <a class="btn surv-block-btn" href="parking.html" data-i18n="parking.settings_open_page">Open Parking</a>
                         </div>
                     </div>
                 </div>
@@ -943,13 +1197,13 @@
                         <!-- Custom content: message OR image (mutually exclusive).
                              Stacked with explicit OR divider + override banner so
                              the mutex is unmissable. -->
-                        <div style="margin-top:8px; padding:12px; border:1px solid var(--card-border); border-radius:12px; background:var(--bg-secondary);">
-                            <div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:8px;" data-i18n="surveillance.screen_deterrent_content_heading">Custom content</div>
-                            <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;" data-i18n="surveillance.screen_deterrent_content_help">Pick ONE: a custom message overlaid on the default red screen, OR your own image, GIF or MP4 clip. The uploaded asset always wins if both are set.</div>
+                        <div class="surv-panel">
+                            <div class="surv-panel-title" data-i18n="surveillance.screen_deterrent_content_heading">Custom content</div>
+                            <div class="surv-panel-help" data-i18n="surveillance.screen_deterrent_content_help">Pick ONE: a custom message overlaid on the default red screen, OR your own image, GIF or MP4 clip. The uploaded asset always wins if both are set.</div>
 
                             <!-- Override banner: shown when image is set -->
-                            <div id="screenDeterrentOverrideBanner" style="display:none; padding:10px 12px; border:1px solid var(--warning); background:rgba(245,158,11,0.12); border-radius:8px; margin-bottom:12px;">
-                                <div style="display:flex; align-items:center; gap:8px; color:var(--warning); font-size:13px;">
+                            <div id="screenDeterrentOverrideBanner" class="surv-warn" style="display:none;">
+                                <div class="surv-warn-row">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px; height:16px; flex-shrink:0;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                                     <span data-i18n="surveillance.screen_deterrent_override_banner">An asset is set — the custom message is being ignored. Remove the asset to use a message instead.</span>
                                 </div>
@@ -967,10 +1221,10 @@
                             </div>
 
                             <!-- OR divider -->
-                            <div style="display:flex; align-items:center; gap:8px; margin:8px 0; color:var(--text-muted); font-size:11px; font-weight:600; letter-spacing:0.08em;">
-                                <div style="flex:1; height:1px; background:var(--card-border);"></div>
+                            <div class="surv-or">
+                                <div class="surv-or-line"></div>
                                 <span data-i18n="surveillance.screen_deterrent_or">OR</span>
-                                <div style="flex:1; height:1px; background:var(--card-border);"></div>
+                                <div class="surv-or-line"></div>
                             </div>
 
                             <!-- Image option -->
@@ -978,45 +1232,45 @@
                                 <div class="setting-info">
                                     <div class="setting-name" data-i18n="surveillance.screen_deterrent_image">Custom image, GIF or video</div>
                                     <div class="setting-desc" data-i18n="surveillance.screen_deterrent_image_desc">PNG / JPG / WebP / GIF up to 8 MB, or an MP4 clip up to 10 s, 1080p and 10 MB. Video loops while the warning is visible; audio is not played.</div>
-                                    <div class="setting-desc" style="margin-top: 12px; color: var(--text-primary);">
-                                        <div style="font-weight:600; margin-bottom:8px;" data-i18n="surveillance.themes_title">Themes by Giovanni Mirulla</div>
-                                        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                                    <div class="setting-desc surv-themes">
+                                        <div class="surv-themes-title" data-i18n="surveillance.themes_title">Themes by Giovanni Mirulla</div>
+                                        <div class="surv-theme-list">
                                             <!-- Theme 1 -->
-                                            <div style="border:1px solid var(--card-border); border-radius:8px; padding:8px; background:var(--bg-base); width: 140px; text-align: center;">
-                                                <div style="font-size:12px; font-weight:600; margin-bottom:8px;">Sentry 1</div>
-                                                <button type="button" class="btn btn-primary" style="width:100%; font-size:12px; padding:6px 0;" onclick="SurvSettings.downloadAndSetTheme('https://raw.githubusercontent.com/yash-srivastava/Overdrive-release/refs/heads/main/themes/sentry1.gif', 'sentry1.gif', this)">
+                                            <div class="surv-theme">
+                                                <div class="surv-theme-name">Sentry 1</div>
+                                                <button type="button" class="btn btn-primary surv-theme-btn" onclick="SurvSettings.downloadAndSetTheme('https://raw.githubusercontent.com/yash-srivastava/Overdrive-release/refs/heads/main/themes/sentry1.gif', 'sentry1.gif', this)">
                                                     <span data-i18n="surveillance.download_set">Download &amp; Set</span>
                                                 </button>
                                             </div>
                                             <!-- Theme 2 -->
-                                            <div style="border:1px solid var(--card-border); border-radius:8px; padding:8px; background:var(--bg-base); width: 140px; text-align: center;">
-                                                <div style="font-size:12px; font-weight:600; margin-bottom:8px;">Sentry 2</div>
-                                                <button type="button" class="btn btn-primary" style="width:100%; font-size:12px; padding:6px 0;" onclick="SurvSettings.downloadAndSetTheme('https://raw.githubusercontent.com/yash-srivastava/Overdrive-release/refs/heads/main/themes/sentry2.gif', 'sentry2.gif', this)">
+                                            <div class="surv-theme">
+                                                <div class="surv-theme-name">Sentry 2</div>
+                                                <button type="button" class="btn btn-primary surv-theme-btn" onclick="SurvSettings.downloadAndSetTheme('https://raw.githubusercontent.com/yash-srivastava/Overdrive-release/refs/heads/main/themes/sentry2.gif', 'sentry2.gif', this)">
                                                     <span data-i18n="surveillance.download_set">Download &amp; Set</span>
                                                 </button>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="setting-control">
+                                <div class="setting-control surv-btn-row">
                                     <input type="file" id="screenDeterrentFile" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4" style="display:none;" onchange="SurvSettings.uploadScreenDeterrentImage(this.files[0])">
                                     <button type="button" class="btn btn-secondary" onclick="document.getElementById('screenDeterrentFile').click()" id="screenDeterrentUploadBtn">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        <svg class="surv-btn-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                                         <span id="screenDeterrentUploadLabel" data-i18n="surveillance.screen_deterrent_upload">Upload</span>
                                     </button>
-                                    <button type="button" class="btn btn-secondary" id="screenDeterrentClearBtn" onclick="SurvSettings.clearScreenDeterrentImage()" style="display:none; margin-left:8px; color:var(--danger); border-color:var(--danger);">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                                    <button type="button" class="btn btn-secondary surv-btn-danger" id="screenDeterrentClearBtn" onclick="SurvSettings.clearScreenDeterrentImage()" style="display:none;">
+                                        <svg class="surv-btn-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                                         <span data-i18n="surveillance.screen_deterrent_remove">Remove asset</span>
                                     </button>
                                 </div>
                             </div>
 
                             <div id="screenDeterrentPreview" style="display:none; margin-top:12px; text-align:center;">
-                                <img id="screenDeterrentPreviewImg" alt="" style="max-width:100%; max-height:180px; border-radius:8px; border:1px solid var(--card-border); background:var(--bg-secondary);" />
-                                <video id="screenDeterrentPreviewVideo" muted loop playsinline controls preload="auto" style="display:none; max-width:100%; max-height:180px; border-radius:8px; border:1px solid var(--card-border); background:var(--bg-secondary);"></video>
-                                <div id="screenDeterrentPreviewLabel" style="font-size:12px; color:var(--text-muted); margin-top:4px;" data-i18n="surveillance.screen_deterrent_preview_label">Current asset</div>
-                                <button type="button" class="btn btn-secondary" style="margin-top:8px; font-size:12px;" onclick="SurvSettings.testScreenDeterrent()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                <img id="screenDeterrentPreviewImg" class="surv-asset" alt="" />
+                                <video id="screenDeterrentPreviewVideo" class="surv-asset" muted loop playsinline controls preload="auto" style="display:none;"></video>
+                                <div id="screenDeterrentPreviewLabel" class="surv-caption" data-i18n="surveillance.screen_deterrent_preview_label">Current asset</div>
+                                <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="SurvSettings.testScreenDeterrent()">
+                                    <svg class="surv-btn-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                                     <span data-i18n="surveillance.test_on_screen">Test on Screen</span>
                                 </button>
                             </div>
@@ -1048,11 +1302,62 @@
                                 </select>
                             </div>
                         </div>
+                        <div class="setting-row" id="deterrentTriggerRow" style="display:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.deterrent_trigger">Fire on</div>
+                                <div class="setting-desc" data-i18n="surveillance.deterrent_trigger_desc">Hold the lights and horn back until detection confirms what moved. "Any motion" keeps the previous behaviour.</div>
+                            </div>
+                            <div class="setting-control">
+                                <select class="select-control" id="deterrentTrigger" onchange="SurvSettings.updateDeterrentTrigger(this.value)">
+                                    <option value="any" data-i18n="surveillance.deterrent_trigger_any">Any motion</option>
+                                    <option value="person" data-i18n="surveillance.deterrent_trigger_person">Person only</option>
+                                    <option value="person_or_vehicle" data-i18n="surveillance.deterrent_trigger_person_vehicle">Person or vehicle</option>
+                                </select>
+                            </div>
+                        </div>
                         <div class="setting-hint" data-i18n="surveillance.deterrent_hint_v2">Flash Lights and Horn + Lights use BYD's cloud API. BYD Cloud account setup required — set it up on the BYD Cloud page (sidebar → Integrations → BYD Cloud).</div>
-                        <div id="deterrentWarning" class="info-box" style="display:none; border-color:var(--warning); background:rgba(245,158,11,0.08); margin-top:8px;">
-                            <div style="display:flex; align-items:center; gap:8px; color:var(--warning);">
+                        <div id="deterrentWarning" class="info-box surv-warn" style="display:none; margin-top:8px;">
+                            <div class="surv-warn-row">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;flex-shrink:0;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                                <span style="font-size:13px;"><span data-i18n="surveillance.deterrent_warning_v2">BYD Cloud account setup required.</span> <a href="byd-cloud.html" style="color:var(--warning); text-decoration:underline;" data-i18n="surveillance.deterrent_warning_link">Open BYD Cloud →</a></span>
+                                <span><span data-i18n="surveillance.deterrent_warning_v2">BYD Cloud account setup required.</span> <a href="byd-cloud.html" style="color:var(--warning); text-decoration:underline;" data-i18n="surveillance.deterrent_warning_link">Open BYD Cloud →</a></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Parked impact watch (opt-in). Reads the head unit's accelerometer only while
+                     the car is off and sentry is armed; sends a notification on a knock or bump. -->
+                <div class="card" data-tab="general">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                            <span data-i18n="surveillance.impact_title">Impact Detection</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.impact_enable">Detect knocks and bumps while parked</div>
+                                <div class="setting-desc" data-i18n="surveillance.impact_enable_desc">Uses the head unit's motion sensor while the car is off and sentry is armed, and sends a notification when the car is knocked. Experimental: not every vehicle keeps the sensor powered while parked.</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="impactDetection" onchange="SurvSettings.updateImpact('impactDetection', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" id="impactSensitivityRow" style="display:none;">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.impact_sensitivity">Sensitivity</div>
+                                <div class="setting-desc" data-i18n="surveillance.impact_sensitivity_desc">Higher sensitivity catches lighter knocks but may react to heavy traffic or wind.</div>
+                            </div>
+                            <div class="setting-control">
+                                <select class="select-control" id="impactSensitivity" onchange="SurvSettings.updateImpact('impactSensitivity', this.value)">
+                                    <option value="low" data-i18n="surveillance.impact_sensitivity_low">Low</option>
+                                    <option value="medium" data-i18n="surveillance.impact_sensitivity_medium">Medium</option>
+                                    <option value="high" data-i18n="surveillance.impact_sensitivity_high">High</option>
+                                </select>
                             </div>
                         </div>
                     </div>
@@ -1233,11 +1538,11 @@
                                 <span class="label" data-i18n="recording.active_estimate">At your settings</span>
                                 <span class="value" id="survActiveEstimate">— Mbps · — / hr · ~—</span>
                             </div>
-                            <div class="info-row" style="font-size: 0.85em; opacity: 0.7;">
+                            <div class="info-row surv-info-sm surv-info-dim">
                                 <span class="label" data-i18n="recording.native_resolution">Native</span>
                                 <span class="value">2560×1920 mosaic · 4 × 1280×960 cameras</span>
                             </div>
-                            <div class="info-row" id="survFpsClampRow" style="display: none; font-size: 0.85em;">
+                            <div class="info-row surv-info-sm" id="survFpsClampRow" style="display: none;">
                                 <span class="label" data-i18n="recording.fps_actual">Measured FPS</span>
                                 <span class="value" id="survFpsActual">—</span>
                             </div>
@@ -1374,7 +1679,7 @@
                                      and right-anchored under the slider (not flushed
                                      to the full row width). Mirrors the recording-page
                                      card layout. -->
-                                <div class="slider-range-labels" style="width:120px;margin-left:auto;padding:0;">
+                                <div class="slider-range-labels surv-range-under">
                                     <span data-i18n="recording.rectify_min">Off</span>
                                     <span data-i18n="recording.rectify_max">Max</span>
                                 </div>
@@ -1382,6 +1687,13 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Event storage location + limit live on the Storage page. -->
+                <a class="card r-link-card" href="storage.html" data-tab="recording">
+                    <span class="r-link-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></svg></span>
+                    <span class="r-link-text"><span class="r-link-title" data-i18n="recording.tab_storage">Storage</span><span class="r-link-desc" data-i18n="surveillance.storage_location_desc">Choose where to save surveillance events</span></span>
+                    <svg class="r-link-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                </a>
 
                 <!-- OEM Dashcam — surveillance-mode picker. Mirrors the
                      recording.html layout but binds to surveillanceMode.
@@ -1489,189 +1801,7 @@
                         </div>
                     </div>
                 </div>
-
-                <!-- Surveillance Storage -->
-                <div class="card" data-tab="storage">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="22" x2="2" y1="12" y2="12"/>
-                                <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
-                                <line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>
-                            </svg>
-                            <span data-i18n="surveillance.storage_title">Surveillance Storage</span>
-                            <span class="unsaved-indicator" id="storageUnsaved" data-i18n="surveillance.unsaved">● unsaved</span>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <!-- Storage Location Selection -->
-                        <div class="setting-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="trip.settings.storage_location">Storage Location</div>
-                                <div class="setting-desc" data-i18n="surveillance.storage_location_desc">Choose where to save surveillance events</div>
-                            </div>
-                            <div class="setting-control">
-                                <div class="btn-group" id="survStorageTypeBtns">
-                                    <button class="btn-toggle active" data-value="INTERNAL" onclick="SurvSettings.setStorageType('INTERNAL')" data-i18n="trip.settings.storage_internal">Internal</button>
-                                    <button class="btn-toggle" data-value="SD_CARD" onclick="SurvSettings.setStorageType('SD_CARD')" id="btnSurvSdCard" data-i18n="trip.settings.storage_sd">SD card</button>
-                                    <button class="btn-toggle" data-value="USB" onclick="SurvSettings.setStorageType('USB')" id="btnSurvUsb" data-i18n="trip.settings.storage_usb">USB</button>
-                                </div>
-                            </div>
-                        </div>
-                        <!-- SD Card Status -->
-                        <div class="sd-card-status" id="survSdCardStatus" style="display:none;">
-                            <div class="sd-status-row">
-                                <span class="sd-status-dot" id="survSdStatusDot"></span>
-                                <span class="sd-status-text" id="survSdStatusText" data-i18n="recording.sd_checking">SD Card: Checking...</span>
-                            </div>
-                            <div class="sd-space-info" id="survSdSpaceInfo" style="display:none;">
-                                <span id="survSdFree">-- free</span> / <span id="survSdTotal">-- total</span>
-                            </div>
-                        </div>
-                        <!-- USB Drive Status -->
-                        <div class="sd-card-status" id="survUsbStatus" style="display:none;">
-                            <div class="sd-status-row">
-                                <span class="sd-status-dot" id="survUsbStatusDot"></span>
-                                <span class="sd-status-text" id="survUsbStatusText" data-i18n="recording.usb_checking">USB: Checking...</span>
-                            </div>
-                            <div class="sd-space-info" id="survUsbSpaceInfo" style="display:none;">
-                                <span id="survUsbFree">-- free</span> / <span id="survUsbTotal">-- total</span>
-                            </div>
-                        </div>
-                        <div class="setting-row" style="border-bottom:none;padding-bottom:8px;">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="surveillance.storage_usage">Storage Usage</div>
-                                <div class="setting-desc" id="survStoragePath" data-i18n="surveillance.events_saved_to_default">Events saved to Overdrive/surveillance</div>
-                                <!-- Fallback warning: configured external volume (SD/USB) isn't
-                                     mounted (often because USB power is off and the SD rides that
-                                     rail) or is full, so clips silently land on internal storage.
-                                     Shown by surveillance.js updateStorageTypeUI; hidden otherwise. -->
-                                <div class="setting-desc storage-fallback-warning" id="survStorageFallbackWarning" style="display:none"></div>
-                            </div>
-                        </div>
-                        <div class="storage-bar">
-                            <div class="storage-fill" id="survStorageFill" style="width: 0%"></div>
-                        </div>
-                        <div class="storage-info">
-                            <span id="survStorageUsed" data-i18n="surveillance.size_used_dash">-- used</span>
-                            <span id="survStorageLimit" data-i18n="surveillance.size_limit_dash">-- limit</span>
-                        </div>
-                        <div class="setting-row" style="margin-top:16px;">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="recording.storage_limit">Storage Limit</div>
-                                <div class="setting-desc" data-i18n="recording.storage_limit_desc">Auto-delete oldest when limit reached</div>
-                            </div>
-                            <div class="setting-control">
-                                <div class="slider-control">
-                                    <span class="slider-value" id="survLimitValue">500 MB</span>
-                                    <input type="range" class="slider" id="survLimitSlider" min="100" max="100000" step="100" value="500" oninput="SurvSettings.updateSurvLimit(this.value)">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="slider-range-labels">
-                            <span id="survLimitMin" data-i18n="surveillance.limit_min_default">100 MB</span>
-                            <span id="survLimitMax" data-i18n="surveillance.limit_max_default">100 GB</span>
-                        </div>
-                        <!-- Combined-limit advisory — see recording.html for the
-                             rationale; same shared renderer, same server payload. -->
-                        <div class="storage-fallback-banner" id="survBudgetBanner" style="display:none;" role="status" aria-live="polite">
-                            <span class="sd-status-dot" style="background:#f0a020;"></span>
-                            <span data-budget-text></span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- BYD Dashcam Cleanup (shown when SD card selected) -->
-                <div class="card" data-tab="storage" id="cdrCleanupCard" style="display:none;">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-                                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-                            </svg>
-                            <span data-i18n="recording.cdr_title">BYD Dashcam Auto-Cleanup</span>
-                            <span class="status-badge" id="cdrCleanupBadge" data-i18n="status.off">OFF</span>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="setting-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="recording.cdr_auto_delete">Auto-Delete Old Dashcam Files</div>
-                                <div class="setting-desc" data-i18n="recording.cdr_auto_delete_desc">Free up SD card space by removing oldest BYD dashcam recordings</div>
-                            </div>
-                            <div class="setting-control">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="cdrCleanupEnabled" disabled onchange="SurvSettings.toggleCdrCleanup()">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <!-- Recommend banner (shown only when API says recommendAutoCleanup) -->
-                        <div class="info-box-warning" id="cdrRecommendBanner" style="display:none;">
-                            <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            <div class="info-row" style="color:var(--warning);">
-                                <span class="label" data-i18n="recording.cdr_recommend_label_v2">Recommended</span>
-                                <span class="value" data-i18n="recording.cdr_recommend_text">Overdrive uses SD — enable cleanup to keep space free</span>
-                            </div>
-                        </div>
-                        <!-- CDR Status -->
-                        <div class="info-box" id="cdrInfoBox">
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_path">Dashcam Path</span><span class="value" id="cdrPath">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_usage">Dashcam Usage</span><span class="value" id="cdrUsage">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_files">Files</span><span class="value" id="cdrFileCount">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_protected">Protected</span><span class="value" id="cdrProtected">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_deletable">Deletable</span><span class="value" id="cdrDeletable">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_bg_monitor">Background monitor</span><span class="value" id="cdrMonitoring">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_last_cleanup">Last cleanup</span><span class="value" id="cdrLastCleanup">--</span></div>
-                        </div>
-                        <div class="setting-row" style="margin-top:12px;">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="recording.cdr_reserved">Reserved Space for Overdrive</div>
-                                <div class="setting-desc" data-i18n="recording.cdr_reserved_desc">Keep this much free on SD card</div>
-                            </div>
-                            <div class="setting-control">
-                                <div class="slider-control">
-                                    <span class="slider-value" id="cdrReservedValue">2 GB</span>
-                                    <input type="range" class="slider" id="cdrReservedSlider" min="100" max="20000" step="100" value="2000" disabled oninput="SurvSettings.updateCdrReserved(this.value)">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="setting-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="recording.cdr_protect_recent">Protect Recent Files</div>
-                                <div class="setting-desc" data-i18n="recording.cdr_protect_recent_desc">Don't delete dashcam files newer than this</div>
-                            </div>
-                            <div class="setting-control">
-                                <div class="slider-control">
-                                    <span class="slider-value" id="cdrProtectedValue">24h</span>
-                                    <input type="range" class="slider" id="cdrProtectedSlider" min="0" max="168" step="12" value="24" disabled oninput="SurvSettings.updateCdrProtected(this.value)">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="setting-row">
-                            <div class="setting-info">
-                                <div class="setting-name" data-i18n="recording.cdr_min_keep">Keep Minimum Files</div>
-                                <div class="setting-desc" data-i18n="recording.cdr_min_keep_desc">Always keep at least this many newest files</div>
-                            </div>
-                            <div class="setting-control">
-                                <div class="slider-control">
-                                    <span class="slider-value" id="cdrMinKeepValue">10</span>
-                                    <input type="range" class="slider" id="cdrMinKeepSlider" min="0" max="100" step="5" value="10" disabled oninput="SurvSettings.updateCdrMinKeep(this.value)">
-                                </div>
-                            </div>
-                        </div>
-                        <!-- Manual Cleanup Button -->
-                        <button class="btn btn-danger" id="cdrCleanupNow" disabled style="width:100%;margin-top:12px;" onclick="SurvSettings.triggerCdrCleanup()">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                            <span data-i18n="recording.cdr_cleanup_now_v2">Clean up now</span>
-                        </button>
-                        <!-- Stats -->
-                        <div class="info-box" style="margin-top:12px;">
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_total_freed">Total Freed</span><span class="value" id="cdrTotalFreed">--</span></div>
-                            <div class="info-row"><span class="label" data-i18n="recording.cdr_files_deleted">Files Deleted</span><span class="value" id="cdrTotalDeleted">--</span></div>
-                        </div>
-                    </div>
-                </div>
+                <a class="card r-link-card" href="storage.html" data-tab="oem"><span class="r-link-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></svg></span><span class="r-link-text"><span class="r-link-title" data-i18n="recording.tab_storage">Storage</span><span class="r-link-desc" data-i18n="recording.cdr_reserved">Reserved Space for Overdrive</span></span><svg class="r-link-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></a>
             </div>
         </main>
 
@@ -1689,14 +1819,14 @@
 
     <script src="../shared/auth.js"></script>
     <script src="../shared/pwa-init.js?v=index1"></script>
-    <script src="../shared/core.js?v=23"></script>
-    <script src="../shared/update-flow.js"></script>
+    <script src="../shared/core.js?v=24"></script>
+    <script src="../shared/update-flow.js?v=3"></script>
     <script src="../shared/storage-budget.js?v=8"></script>
     <script src="../shared/settings-hydration.js?v=1"></script>
-    <script src="../shared/surveillance.js?v=survtoggle10"></script>
-    <script src="../shared/safe-locations.js?v=4"></script>
-    <script src="../shared/roi-schedule.js?v=3"></script>
-    <script src="../shared/parking-settings.js?v=3"></script>
+    <script src="../shared/surveillance.js?v=survtoggle15"></script>
+    <script src="../shared/safe-locations.js?v=6"></script>
+    <script src="../shared/roi-schedule.js?v=4"></script>
+    <script src="../shared/parking-settings.js?v=5"></script>
     <script>
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');
@@ -1709,6 +1839,7 @@
         };
         var failSettings = function (error) {
             console.error('Failed to initialize surveillance settings:', error);
+            unlockSettings();
             if (BYD.utils && BYD.utils.toast) {
                 BYD.utils.toast(BYD.i18n.t('errors.load_failed'), 'error');
             }

@@ -8,23 +8,26 @@
  */
 :root {
     --vc-canvas-bg: var(--surface);
-    --vc-pill-bg: var(--surface-container);
-    --vc-pill-bg-strong: var(--surface-container);
-    --vc-pill-bg-hover: var(--surface-container-high);
-    --vc-bar-bg: var(--surface-container);
-    --vc-modal-bg: var(--surface-container);
+    /* Floating chrome and the control dock are tiles; controls inside are wells
+       carrying a --well-2 icon chip (mock quick controls). */
+    --vc-pill-bg: var(--tile);
+    --vc-pill-bg-strong: var(--tile-raised);
+    --vc-pill-bg-hover: var(--well);
+    --vc-bar-bg: var(--tile);
+    --vc-modal-bg: var(--tile-raised);
     --vc-modal-overlay: rgba(0, 0, 0, 0.55);
-    --vc-tile-bg: var(--surface-container-high);
-    --vc-tile-bg-disabled: var(--surface-container-low);
-    --vc-tile-bg-hover: var(--surface-container-highest);
+    --vc-tile-bg: var(--well);
+    --vc-tile-bg-disabled: transparent;
+    --vc-tile-bg-hover: var(--well-2);
+    --vc-chip-bg: var(--well-2);
     --vc-border: var(--outline-variant);
-    --vc-border-subtle: var(--outline-variant);
+    --vc-border-subtle: var(--hairline);
     --vc-border-faint: var(--outline-variant);
     --vc-text-primary: var(--on-surface);
     --vc-text-strong: var(--on-surface);
     --vc-text-soft: var(--on-surface-variant);
     --vc-text-secondary: var(--on-surface-variant);
-    --vc-text-muted: var(--outline);
+    --vc-text-muted: var(--on-surface-variant);
 }
 /* No prefers-color-scheme fallback by design — pages default DARK in
    Chrome / external browsers, matching the primary in-car experience and
@@ -61,17 +64,20 @@
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
     width: 48px; height: 48px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-full);
     border: none;
     background: var(--vc-pill-bg);
+    box-shadow: var(--tile-shadow);
     color: var(--vc-text-primary);
     cursor: pointer;
-    -webkit-transition: background .2s; transition: background .2s;
+    transition: background-color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
 }
 .vc-nav-btn svg { width: 22px; height: 22px; }
-.vc-nav-btn:hover { background: var(--vc-pill-bg-hover); }
+@media (hover: hover) {
+    .vc-nav-btn:hover { background: var(--vc-pill-bg-hover); }
+}
 .vc-nav-btn:active { -webkit-transform: scale(0.92); transform: scale(0.92); }
 
 .vc-status-bar {
@@ -101,8 +107,8 @@
     -webkit-justify-content: center; justify-content: center;
     min-width: 0;
 }
-.vc-status-slot--mid > * + * { margin-left: 6px; }
-[dir="rtl"] .vc-status-slot--mid > * + * { margin-left: 0; margin-right: 6px; }
+.vc-status-slot--mid > * + * { margin-left: 8px; }
+[dir="rtl"] .vc-status-slot--mid > * + * { margin-left: 0; margin-right: 8px; }
 [dir="rtl"] .vc-status-slot--start {
     -webkit-justify-content: flex-end; justify-content: flex-end;
 }
@@ -115,34 +121,36 @@
     -webkit-align-items: center; align-items: center;
     box-sizing: border-box;
     height: 48px;
-    background: var(--vc-pill-bg); border: 1px solid var(--vc-border);
-    border-radius: var(--radius-md); padding: 0 12px; font-size: 12px; font-weight: 600; color: var(--vc-text-primary);
+    background: var(--vc-pill-bg); border: 1px solid transparent;
+    box-shadow: var(--tile-shadow);
+    border-radius: var(--radius-full); padding: 0 16px; font-size: var(--fs-label); font-weight: 600; color: var(--vc-text-primary);
     white-space: nowrap; -webkit-flex-shrink: 0; flex-shrink: 0;
 }
 .vc-pill .dot { width: 8px; height: 8px; border-radius: 50%; }
 .dot.green { background: var(--status-success); }
-.dot.red { background: var(--status-danger); }
-.dot.amber { background: var(--status-warning); }
+.dot.red { background: var(--danger); }
+.dot.amber { background: var(--warning); }
 .dot.grey { background: var(--outline); }
 /* Partial reading (driver door only, no whole-vehicle confirmation): keep the
    lock colour but hollow the dot so it doesn't read as a full-car state. */
 .dot.partial { background: transparent; box-shadow: none; border: 1.5px solid currentColor; }
 .dot.green.partial { color: var(--status-success); }
-.dot.amber.partial { color: var(--status-warning); }
+.dot.amber.partial { color: var(--warning); }
 
 .vc-colors {
     display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center;
     box-sizing: border-box;
     height: 48px;
-    background: var(--vc-pill-bg); border: 1px solid var(--vc-border);
-    border-radius: var(--radius-md); padding: 0 8px;
+    background: var(--vc-pill-bg); border: 1px solid transparent;
+    box-shadow: var(--tile-shadow);
+    border-radius: var(--radius-full); padding: 0 10px;
 }
 .vc-swatch {
     width: 32px; height: 32px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     border: 1px solid var(--vc-border);
     cursor: pointer; margin: 0 3px;
-    -webkit-transition: box-shadow .15s; transition: box-shadow .15s;
+    transition: box-shadow var(--duration-fast) var(--easing-standard);
     -webkit-tap-highlight-color: transparent; touch-action: manipulation;
 }
 .vc-swatch.active { box-shadow: 0 0 0 2px var(--vc-pill-bg), 0 0 0 4px var(--primary); }
@@ -151,7 +159,7 @@
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
     width: 32px; height: 32px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     border: 1px dashed var(--outline);
     background: var(--vc-tile-bg);
     color: var(--vc-text-secondary);
@@ -176,12 +184,13 @@
     box-sizing: border-box;
     height: 48px;
     max-width: 160px;
-    padding: 0 10px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border);
+    padding: 0 14px;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
     background: var(--vc-pill-bg);
+    box-shadow: var(--tile-shadow);
     color: var(--vc-text-primary);
-    font-size: 12px; font-weight: 600;
+    font-size: var(--fs-label); font-weight: 600;
     cursor: pointer; touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
 }
@@ -210,10 +219,11 @@
     max-height: 240px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    padding: 4px;
+    padding: 6px;
     border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border);
-    background: var(--surface-container-high);
+    border: 0;
+    background: var(--vc-pill-bg-strong);
+    box-shadow: var(--tile-shadow);
     z-index: 60;
 }
 [dir="rtl"] .vc-model-menu__list { left: auto; right: 0; }
@@ -223,39 +233,41 @@
     -webkit-align-items: center; align-items: center;
     width: 100%;
     min-height: 44px;
-    padding: 0 10px;
+    padding: 0 12px;
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--vc-text-primary);
-    font-size: 12px; font-weight: 600;
+    font-size: var(--fs-label); font-weight: 600;
     text-align: left;
     white-space: nowrap;
     cursor: pointer;
 }
 [dir="rtl"] .vc-model-menu__option { text-align: right; }
-.vc-model-menu__option:hover { background: var(--vc-tile-bg); }
+@media (hover: hover) {
+    .vc-model-menu__option:hover { background: var(--vc-tile-bg); }
+}
 .vc-model-menu__option[aria-selected="true"] {
-    background: var(--primary-container);
-    color: var(--on-primary-container);
+    background: var(--secondary-container);
+    color: var(--on-secondary-container);
 }
 
 .vc-loading { position: absolute; top: 40%; left: 50%; -webkit-transform: translate(-50%,-50%); transform: translate(-50%,-50%); text-align: center; z-index: 20; }
-.vc-loading-spinner { width: 36px; height: 36px; margin: 0 auto 10px; border: 3px solid var(--vc-border-subtle); border-top-color: var(--primary); border-radius: 50%; -webkit-animation: spin .7s linear infinite; animation: spin .7s linear infinite; }
+.vc-loading-spinner { width: 36px; height: 36px; margin: 0 auto 10px; border: 3px solid var(--well-2); border-top-color: var(--primary); border-radius: 50%; -webkit-animation: spin .7s linear infinite; animation: spin .7s linear infinite; }
 @-webkit-keyframes spin { to { -webkit-transform: rotate(360deg); } }
 @keyframes spin { to { transform: rotate(360deg); } }
-.vc-loading-text { font-size: 12px; color: var(--vc-text-secondary); max-width: 280px; }
+.vc-loading-text { font-size: var(--fs-label); color: var(--vc-text-secondary); max-width: 280px; }
 .vc-loading.hidden { display: none; }
 .vc-loading-retry {
     display: none;
     margin-top: 14px;
     min-height: 48px;
     padding: 8px 22px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-full);
     border: none;
     background: var(--primary);
     color: var(--on-primary);
-    font-size: 13px;
+    font-size: var(--fs-label);
     font-weight: 600;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
@@ -278,26 +290,28 @@
     -webkit-justify-content: center; justify-content: center;
     box-sizing: border-box;
     height: 48px;
-    padding: 0 12px;
+    padding: 0 14px;
     -webkit-flex-shrink: 0; flex-shrink: 0;
     -webkit-flex-grow: 0; flex-grow: 0;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border);
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
     background: var(--vc-pill-bg);
-    color: var(--vc-text-secondary);
+    box-shadow: var(--tile-shadow);
+    color: var(--vc-text-primary);
     cursor: pointer;
-    -webkit-transition: background .15s, border-color .15s, color .15s;
-    transition: background .15s, border-color .15s, color .15s;
+    transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
 }
 .vc-3d-btn svg { width: 18px; height: 18px; -webkit-flex-shrink: 0; flex-shrink: 0; }
 .vc-3d-btn span {
     margin-left: 8px;
-    font-size: 12px; font-weight: 600;
+    font-size: var(--fs-label); font-weight: 600;
     text-transform: none; letter-spacing: 0;
 }
 [dir="rtl"] .vc-3d-btn span { margin-left: 0; margin-right: 8px; }
-.vc-3d-btn:hover { background: var(--vc-pill-bg-hover); color: var(--vc-text-primary); }
-.vc-3d-btn.on { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
+@media (hover: hover) {
+    .vc-3d-btn:hover { background: var(--vc-pill-bg-hover); }
+}
+.vc-3d-btn.on { background: var(--secondary-container); color: var(--on-secondary-container); }
 /* Both labels live in the chip; the page-mode class (set before first paint)
    picks which one shows, so a late i18n catalog cannot blank the text. */
 html.vc-mode-lite .vc-view-to-lite { display: none; }
@@ -312,10 +326,11 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     box-sizing: border-box;
     width: 100%;
     margin-bottom: 8px;
-    padding: 4px;
+    padding: 6px;
     background: var(--vc-bar-bg);
-    border: 1px solid var(--vc-border-subtle);
-    border-radius: var(--radius-md);
+    border: 0;
+    border-radius: var(--radius-tile);
+    box-shadow: var(--tile-shadow);
     color: var(--vc-text-strong);
 }
 .vc-tyre-cell {
@@ -323,10 +338,10 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-flex: 1; flex: 1;
     min-width: 0;
     box-sizing: border-box;
-    padding: 8px 10px;
-    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
     background: var(--vc-tile-bg);
-    font-family: var(--family-mono);
+    font-variant-numeric: tabular-nums;
 }
 /* Hairline gutters instead of `gap`, which the Chrome 58 WebView ignores. */
 .vc-tyre-cell + .vc-tyre-cell { margin-left: 4px; }
@@ -337,8 +352,8 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     display: -webkit-flex; display: flex;
     -webkit-align-items: center; align-items: center;
     width: 100%;
-    font-size: 11px;
-    font-weight: 600;
+    font-size: var(--fs-caption);
+    font-weight: 500;
     color: var(--vc-text-secondary);
 }
 .vc-tyre-dot {
@@ -346,21 +361,21 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     border-radius: 50%;
     background: var(--primary);
     -webkit-flex-shrink: 0; flex-shrink: 0;
-    -webkit-transition: background .2s; transition: background .2s;
+    transition: background-color var(--duration-med) var(--easing-standard);
 }
 .vc-tyre-label {
-    color: var(--vc-text-strong);
+    color: var(--vc-text-secondary);
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .vc-tyre-state {
     margin-left: auto;
     padding-left: 8px;
-    font-size: 10px;
+    font-size: var(--fs-caption);
     font-weight: 700;
-    letter-spacing: .4px;
+    letter-spacing: 0;
     color: var(--primary);
     -webkit-flex-shrink: 0; flex-shrink: 0;
-    -webkit-transition: color .2s; transition: color .2s;
+    transition: color var(--duration-med) var(--easing-standard);
 }
 [dir="rtl"] .vc-tyre-state { margin-left: 0; margin-right: auto; padding-left: 0; padding-right: 8px; }
 .vc-tyre-psi {
@@ -369,17 +384,17 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     margin-top: 6px;
 }
 .vc-tyre-psi-val {
-    font-size: 26px;
+    font-size: var(--fs-headline);
     font-weight: 700;
     color: var(--vc-text-primary);
     line-height: 1;
 }
 .vc-tyre-psi-unit {
     margin-left: 7px;
-    font-size: 11px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     color: var(--vc-text-muted);
-    letter-spacing: .8px;
+    letter-spacing: 0;
 }
 [dir="rtl"] .vc-tyre-psi-unit {
     margin-left: 0;
@@ -390,27 +405,27 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-align-items: baseline; align-items: baseline;
     -webkit-justify-content: space-between; justify-content: space-between;
     margin-top: 6px;
-    font-size: 11px;
+    font-size: var(--fs-caption);
     color: var(--vc-text-muted);
 }
-.vc-tyre-kpa { letter-spacing: .3px; }
+.vc-tyre-kpa { letter-spacing: 0; }
 .vc-tyre-temp {
     display: -webkit-inline-flex; display: inline-flex;
     -webkit-align-items: baseline; align-items: baseline;
     color: var(--vc-text-secondary);
 }
 .vc-tyre-temp-val {
-    font-size: 13px;
+    font-size: var(--fs-label);
     font-weight: 600;
     color: var(--vc-text-strong);
     line-height: 1;
 }
 .vc-tyre-temp-unit {
     margin-left: 3px;
-    font-size: 11px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     color: var(--vc-text-muted);
-    letter-spacing: .6px;
+    letter-spacing: 0;
 }
 [dir="rtl"] .vc-tyre-temp-unit {
     margin-left: 0;
@@ -422,25 +437,25 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 .vc-tyre-cell[data-state="normal"]  .vc-tyre-state   { color: var(--primary); }
 
 .vc-tyre-cell[data-state="caution"] .vc-tyre-dot,
-.vc-tyre-cell[data-state="warn"]    .vc-tyre-dot     { background: var(--status-warning); }
+.vc-tyre-cell[data-state="warn"]    .vc-tyre-dot     { background: var(--warning); }
 .vc-tyre-cell[data-state="caution"] .vc-tyre-state,
-.vc-tyre-cell[data-state="warn"]    .vc-tyre-state   { color: var(--status-warning); }
+.vc-tyre-cell[data-state="warn"]    .vc-tyre-state   { color: var(--warning); }
 .vc-tyre-cell[data-state="caution"] .vc-tyre-psi-val,
-.vc-tyre-cell[data-state="warn"]    .vc-tyre-psi-val { color: var(--status-warning); }
+.vc-tyre-cell[data-state="warn"]    .vc-tyre-psi-val { color: var(--warning); }
 .vc-tyre-cell[data-state="caution"],
-.vc-tyre-cell[data-state="warn"]    { background: var(--status-warning-container); }
+.vc-tyre-cell[data-state="warn"]    { background: var(--warning-soft); }
 
-.vc-tyre-cell[data-state="alert"]   .vc-tyre-dot     { background: var(--status-danger); }
-.vc-tyre-cell[data-state="alert"]   .vc-tyre-state   { color: var(--status-danger); }
-.vc-tyre-cell[data-state="alert"]   .vc-tyre-psi-val { color: var(--status-danger); }
+.vc-tyre-cell[data-state="alert"]   .vc-tyre-dot     { background: var(--danger); }
+.vc-tyre-cell[data-state="alert"]   .vc-tyre-state   { color: var(--danger); }
+.vc-tyre-cell[data-state="alert"]   .vc-tyre-psi-val { color: var(--danger); }
 .vc-tyre-cell[data-state="alert"]   { background: var(--status-danger-container); }
 
 .vc-tyre-cell[data-state="muted"]   .vc-tyre-dot     { background: var(--outline); }
 .vc-tyre-cell[data-state="muted"]   .vc-tyre-state   { color: var(--vc-text-muted); }
 
 /* First-load placeholders for the status pills and the tyre corners. */
-.vc-sk-pill { border-radius: var(--radius-md); }
-.vc-sk-tyre-fill { border-radius: var(--radius-sm); }
+.vc-sk-pill { border-radius: var(--radius-full); }
+.vc-sk-tyre-fill { border-radius: var(--radius-md); }
 
 /* Hidden only under Surround view; tyre data is independent of the GLB, so
    model load must not hide it. */
@@ -463,14 +478,14 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     [dir="rtl"] .vc-tyre-cell[data-corner="fr"],
     [dir="rtl"] .vc-tyre-cell[data-corner="rr"] { margin-left: 0; margin-right: 4px; }
     .vc-tyre-cell[data-corner="rl"], .vc-tyre-cell[data-corner="rr"] { margin-top: 4px; }
-    .vc-tyre-psi-val { font-size: 22px; }
+    .vc-tyre-psi-val { font-size: var(--fs-headline); }
 }
 
 /* Short landscape head units: drop the secondary line so the strip stays one
    row tall and the render keeps its height. */
 @media (max-height: 500px) {
-    .vc-tyre-cell { padding: 6px 8px; }
-    .vc-tyre-psi-val { font-size: 20px; }
+    .vc-tyre-cell { padding: 6px 10px; }
+    .vc-tyre-psi-val { font-size: var(--fs-title); }
     .vc-tyre-sub { display: none; }
 }
 
@@ -491,8 +506,9 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     width: 100%;
     overflow: hidden;
     background: var(--vc-bar-bg);
-    border: 1px solid var(--vc-border-subtle);
-    border-radius: var(--radius-md);
+    border: 0;
+    border-radius: var(--radius-tile);
+    box-shadow: var(--tile-shadow);
 }
 .vc-dock.is-open .vc-tabs {
     border-top: 1px solid var(--vc-border-subtle);
@@ -524,9 +540,10 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
        common case needs no scrolling at all; the rule above covers the rest. */
     max-height: 390px;
 }
+/* Stretch: tiles sharing a line keep one height when a label wraps. */
 .vc-panel-row {
     display: -webkit-flex; display: flex;
-    -webkit-align-items: center; align-items: center;
+    -webkit-align-items: stretch; align-items: stretch;
     -webkit-justify-content: center; justify-content: center;
     -webkit-flex-wrap: wrap; flex-wrap: wrap;
 }
@@ -541,10 +558,12 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-flex-basis: 100%; flex-basis: 100%;
     margin-top: 6px;
 }
+.vc-sound-engine > * + * { margin-left: 8px; }
+[dir="rtl"] .vc-sound-engine > * + * { margin-left: 0; margin-right: 8px; }
 .vc-sound-hint {
     -webkit-flex-basis: 100%; flex-basis: 100%;
     text-align: center;
-    font-size: 12px;
+    font-size: var(--fs-label);
     color: var(--vc-text-muted);
     padding: 8px 12px;
 }
@@ -565,9 +584,9 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     box-sizing: border-box;
     width: calc(50% - 8px);
     margin: 0 8px 8px 0;
-    padding: 10px;
+    padding: 10px 12px;
     border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border-subtle);
+    border: 0;
     background: var(--vc-tile-bg);
 }
 [dir="rtl"] .vc-window-row { margin: 0 0 8px 8px; }
@@ -579,39 +598,44 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     margin-bottom: 8px;
 }
 .vc-window-label .label-area {
-    font-size: 12px; font-weight: 600; color: var(--vc-text-strong);
-    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    min-width: 0;
+    font-size: var(--fs-label); font-weight: 600; color: var(--vc-text-strong);
+    overflow-wrap: break-word;
 }
 .vc-window-label .label-pct {
     -webkit-flex-shrink: 0; flex-shrink: 0;
     margin-left: 8px;
-    font-family: var(--family-mono);
-    font-size: 12px; font-weight: 600; color: var(--vc-text-secondary);
+    font-size: var(--fs-label); font-weight: 600; color: var(--vc-text-secondary);
+    font-variant-numeric: tabular-nums;
 }
 [dir="rtl"] .vc-window-label .label-pct { margin-left: 0; margin-right: 8px; }
 .vc-window-presets {
     display: -webkit-flex; display: flex;
     -webkit-align-items: center; align-items: center;
+    padding: 2px;
+    border-radius: var(--radius-full);
+    background: var(--vc-chip-bg);
 }
+.vc-window-row-wide .vc-window-presets { display: -webkit-inline-flex; display: inline-flex; }
 .vc-window-presets > .vc-preset { -webkit-flex: 1; flex: 1; }
 .vc-window-row-wide .vc-window-presets > .vc-preset { -webkit-flex: none; flex: none; padding: 0 16px; }
-.vc-window-presets > .vc-preset + .vc-preset { margin-left: 4px; }
-[dir="rtl"] .vc-window-presets > .vc-preset + .vc-preset { margin-left: 0; margin-right: 4px; }
+.vc-window-presets > .vc-preset + .vc-preset { margin-left: 2px; }
+[dir="rtl"] .vc-window-presets > .vc-preset + .vc-preset { margin-left: 0; margin-right: 2px; }
 .vc-preset {
     display: -webkit-inline-flex; display: inline-flex;
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
-    min-width: 48px; min-height: 48px;
-    padding: 0 4px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--vc-border-subtle);
-    background: var(--surface-container);
+    min-width: 44px; min-height: 44px;
+    padding: 0 6px;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
+    background: transparent;
     color: var(--vc-text-soft);
-    font-size: 12px; font-weight: 600;
-    font-family: var(--family-mono);
+    font-size: var(--fs-label); font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     cursor: pointer;
-    -webkit-transition: background .15s, border-color .15s, color .15s;
-    transition: background .15s, border-color .15s, color .15s;
+    transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
 }
 
 /* Stacked panels (Lights) — full-width rows. */
@@ -622,11 +646,15 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 }
 .vc-stack-row {
     display: -webkit-flex; display: flex;
-    -webkit-align-items: center; align-items: center;
+    -webkit-align-items: stretch; align-items: stretch;
 }
-.vc-preset:hover { color: var(--vc-text-primary); background: var(--vc-tile-bg-hover); }
-.vc-preset:active { -webkit-transform: scale(.9); transform: scale(.9); }
-.vc-preset.active { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
+.vc-stack-row > * + * { margin-left: 8px; }
+[dir="rtl"] .vc-stack-row > * + * { margin-left: 0; margin-right: 8px; }
+@media (hover: hover) {
+    .vc-preset:hover { color: var(--vc-text-primary); background: var(--vc-tile-bg); }
+}
+.vc-preset:active { -webkit-transform: scale(.95); transform: scale(.95); }
+.vc-preset.active { background: var(--secondary-container); color: var(--on-secondary-container); }
 .vc-preset.pending { opacity: .4; pointer-events: none; }
 
 /* Tab bar — always visible.
@@ -660,32 +688,44 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-flex-direction: column; flex-direction: column;
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
-    -webkit-flex: 1; flex: 1;
-    -webkit-flex-shrink: 0; flex-shrink: 0;
-    min-width: 56px;
+    -webkit-flex: 1 0 auto; flex: 1 0 auto;
+    min-width: 64px;
     min-height: 48px;
     height: 52px;
+    padding: 0 4px;
     border-radius: var(--radius-md);
-    border: 1px solid transparent;
+    border: 0;
     background: transparent;
-    color: var(--vc-text-muted);
+    color: var(--vc-text-secondary);
     cursor: pointer;
-    -webkit-transition: all .15s; transition: all .15s;
+    transition: color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
     position: relative;
 }
-.vc-tab svg { width: 20px; height: 20px; margin-bottom: 3px; }
-.vc-tab span { font-size: 10px; font-weight: 600; letter-spacing: 0; }
+.vc-tab svg {
+    -webkit-box-sizing: content-box; box-sizing: content-box;
+    width: 20px; height: 20px;
+    padding: 6px 18px;
+    margin-bottom: 2px;
+    border-radius: var(--radius-full);
+    -webkit-flex-shrink: 0; flex-shrink: 0;
+    transition: background-color var(--duration-med) var(--easing-standard), color var(--duration-med) var(--easing-standard);
+}
+.vc-tab span { font-size: var(--fs-caption); font-weight: 600; letter-spacing: 0; line-height: 1.2; white-space: nowrap; }
 .vc-tab:active { -webkit-transform: scale(.92); transform: scale(.92); }
-.vc-tab.active { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
+.vc-tab.active { color: var(--vc-text-primary); }
+.vc-tab.active svg { background: var(--secondary-container); color: var(--on-secondary-container); }
 .vc-tab.has-active { color: var(--vc-text-secondary); }
 .vc-tab .tab-dot {
-    position: absolute; top: 6px; right: 6px;
-    width: 6px; height: 6px; border-radius: 50%;
+    position: absolute; top: 4px; left: 50%;
+    margin-left: 8px;
+    width: 8px; height: 8px; border-radius: 50%;
     background: var(--primary);
+    box-shadow: 0 0 0 2px var(--vc-bar-bg);
     display: none;
 }
+[dir="rtl"] .vc-tab .tab-dot { left: auto; right: 50%; margin-left: 0; margin-right: 8px; }
 .vc-tab.has-active .tab-dot { display: block; }
 
 /* Group wrapper — inside expanded panel */
@@ -704,30 +744,84 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 /* Divider — hidden in tabbed layout */
 .vc-sep { display: none; }
 
-/* Square tile button: icon + label */
+/* Quick-control tile (mock .ctl): a well with an icon chip over the label.
+   No own margin, so the 4px .vc-panel-row gutter applies (8px between tiles). */
 .vc-tile {
+    position: relative;
     display: -webkit-inline-flex; display: inline-flex;
     -webkit-flex-direction: column; flex-direction: column;
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
-    width: 56px; height: 58px;
-    min-width: 48px; min-height: 48px;
+    box-sizing: border-box;
+    width: auto;
+    min-width: 96px; max-width: 160px;
+    min-height: 76px;
+    padding: 8px 6px;
     border-radius: var(--radius-md);
     /* Always-visible neutral background tier — tiles never disappear against
        the canvas (the body paint flash effect could otherwise wash them out). */
-    border: 1px solid var(--vc-border-subtle);
+    border: 1px solid transparent;
     background: var(--vc-tile-bg);
-    color: var(--vc-text-soft); cursor: pointer;
-    margin: 0 1px;
+    color: var(--vc-text-primary); cursor: pointer;
+    text-align: center;
     -webkit-flex-shrink: 0; flex-shrink: 0;
-    -webkit-transition: all .15s; transition: all .15s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard), opacity var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
 }
-.vc-tile svg { width: 22px; height: 22px; margin-bottom: 2px; }
-.vc-tile span { font-size: 10px; font-weight: 600; letter-spacing: 0; color: inherit; }
-.vc-tile:hover { color: var(--vc-text-primary); background: var(--vc-tile-bg-hover); }
-.vc-tile:active { -webkit-transform: scale(.9); transform: scale(.9); }
-.vc-tile.on { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
-.vc-tile.active { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
+.vc-tile svg {
+    -webkit-box-sizing: content-box; box-sizing: content-box;
+    width: 20px; height: 20px;
+    padding: 8px;
+    margin-bottom: 6px;
+    border-radius: 12px;
+    background: var(--vc-chip-bg);
+    -webkit-flex-shrink: 0; flex-shrink: 0;
+    transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
+}
+.vc-tile span {
+    max-width: 100%;
+    font-size: var(--fs-label); font-weight: 600; line-height: 1.2; letter-spacing: 0; color: inherit;
+    overflow-wrap: break-word;
+}
+@media (hover: hover) {
+    .vc-tile:hover { background: var(--vc-tile-bg-hover); }
+    .vc-tile:hover svg { background: var(--vc-tile-bg); }
+    .vc-tile.heat:hover { color: var(--danger); }
+    .vc-tile.cool:hover { color: var(--tertiary); }
+}
+.vc-tile:active { -webkit-transform: scale(.96); transform: scale(.96); }
+.vc-tile.on,
+.vc-tile.active { background: var(--primary-soft); color: var(--primary); }
+.vc-tile.on svg,
+.vc-tile.active svg { background: var(--primary); color: var(--on-primary); }
+.vc-tile.heat.on1, .vc-tile.heat.on2 { background: var(--danger-soft); color: var(--danger); }
+.vc-tile.heat.on1 svg, .vc-tile.heat.on2 svg { background: var(--danger); color: var(--on-primary); }
+.vc-tile.cool.on1, .vc-tile.cool.on2 { background: var(--tertiary-soft); color: var(--tertiary); }
+.vc-tile.cool.on1 svg, .vc-tile.cool.on2 svg { background: var(--tertiary); color: var(--on-primary); }
+/* State is never colour-only: a dot marks an engaged control, two dots seat level 2. */
+.vc-tile.on::before,
+.vc-tile.active::before,
+.vc-tile.on1::before,
+.vc-tile.on2::before {
+    content: "";
+    position: absolute;
+    top: 8px; right: 8px;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.vc-tile.on2::before { box-shadow: -10px 0 0 currentColor; }
+[dir="rtl"] .vc-tile.on::before,
+[dir="rtl"] .vc-tile.active::before,
+[dir="rtl"] .vc-tile.on1::before,
+[dir="rtl"] .vc-tile.on2::before { right: auto; left: 8px; }
+[dir="rtl"] .vc-tile.on2::before { box-shadow: 10px 0 0 currentColor; }
+/* The wheel heater is on/off (JS marks it on2), so it shows one dot. */
+#btnSteeringHeat.on2::before { box-shadow: none; }
+/* Reboot keeps its inline danger colour and outline; the fill makes it a danger-tonal tile. */
+#btnIviReboot,
+#btnIviReboot svg { background-color: var(--danger-soft); }
 /* Disable highlight stays readable: outline grey, not greyed-out invisible. */
 .vc-tile:disabled, .vc-tile[disabled] { color: var(--vc-text-muted); border-color: var(--vc-border-faint); background: var(--vc-tile-bg-disabled); cursor: not-allowed; }
 /* Cloud-only controls carry no per-button marker: a fixed badge cannot fit a
@@ -750,19 +844,23 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     background: var(--vc-tile-bg-disabled);
     color: var(--vc-text-muted);
 }
-.vc-tile.heat:hover { color: var(--status-danger); }
-.vc-tile.heat.on1, .vc-tile.heat.on2 { border-color: var(--status-danger); background: var(--status-danger-container); color: var(--status-danger); }
-.vc-tile.cool:hover { color: var(--status-info); }
-.vc-tile.cool.on1, .vc-tile.cool.on2 { border-color: var(--status-info); background: var(--status-info-container); color: var(--status-info); }
+/* Unavailable tiles go hollow, chip included. */
+.vc-tile:disabled svg,
+.vc-tile[disabled] svg,
+.vc-tile[data-cloud-state="not_configured"] svg,
+.vc-tile[data-cloud-state="unavailable"] svg { background: transparent; color: inherit; }
 .vc-tile.pending { opacity: .4; pointer-events: none; }
 
 /* Seat-memory tap-and-hold: TAP recalls, LONG-PRESS saves. The `.arming` class
    is added on press and drives a bottom-up fill whose duration matches the JS
    hold timer (var --vc-hold-ms). If the press completes, `.armed` flashes once. */
 .vc-tile.memory { position: relative; overflow: hidden; }
+/* The fill rises under the chip and label, so the tile stays readable while held. */
+.vc-tile.memory > * { position: relative; z-index: 1; }
 .vc-tile.memory::after {
     content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 0;
-    background: var(--primary-container); pointer-events: none;
+    z-index: 0;
+    background: var(--secondary-container); pointer-events: none;
     transition: height 0s;
 }
 .vc-tile.memory.arming::after {
@@ -780,17 +878,19 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-justify-content: center; justify-content: center;
     width: 48px; height: 48px;
     min-width: 48px; min-height: 48px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border-subtle);
-    background: transparent;
-    color: var(--vc-text-secondary); cursor: pointer;
-    margin: 0 1px;
+    border-radius: var(--radius-full);
+    border: 0;
+    background: var(--vc-tile-bg);
+    color: var(--vc-text-primary); cursor: pointer;
     -webkit-flex-shrink: 0; flex-shrink: 0;
-    -webkit-transition: all .12s; transition: all .12s;
+    transition: background-color var(--duration-fast) var(--easing-standard), transform var(--duration-fast) var(--easing-standard);
 }
-.vc-mini svg { width: 16px; height: 16px; }
-.vc-mini:hover { background: var(--vc-tile-bg-hover); color: var(--vc-text-primary); }
-.vc-mini:active { -webkit-transform: scale(.88); transform: scale(.88); }
+.vc-mini svg { width: 18px; height: 18px; }
+@media (hover: hover) {
+    .vc-mini:hover { background: var(--vc-tile-bg-hover); color: var(--vc-text-primary); }
+}
+.vc-mini:active { -webkit-transform: scale(.9); transform: scale(.9); }
+.vc-mini:disabled { opacity: .38; cursor: not-allowed; }
 
 /* Value readout */
 .vc-readout {
@@ -799,8 +899,8 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-justify-content: center; justify-content: center;
     min-width: 40px; height: 34px;
     padding: 0 4px;
-    font-size: 15px; font-weight: 700; color: var(--vc-text-primary);
-    font-family: var(--family-mono);
+    font-size: var(--fs-title); font-weight: 700; color: var(--vc-text-primary);
+    font-variant-numeric: tabular-nums;
     -webkit-flex-shrink: 0; flex-shrink: 0;
 }
 
@@ -811,9 +911,9 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     box-sizing: border-box;
     width: 100%;
     margin: 8px 0 0;
-    padding: 10px;
+    padding: 10px 12px;
     border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border-subtle);
+    border: 0;
     background: var(--vc-tile-bg);
 }
 .ambient-head {
@@ -822,10 +922,42 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     margin-bottom: 8px;
 }
 .ambient-title {
-    font-size: 12px;
+    font-size: var(--fs-label);
     font-weight: 600;
     color: var(--vc-text-strong);
 }
+/* Opens the native colour picker; the car snaps the pick to its nearest palette colour. */
+.vc-ambient-rgb {
+    position: relative;
+    margin-left: auto;
+    /* 24px of visible ramp, 44px of touch: the padding is clipped out of the paint
+       and the negative margins give the head row its height back. */
+    -webkit-box-sizing: content-box; box-sizing: content-box;
+    width: 44px; height: 24px;
+    padding: 10px 0;
+    margin-top: -10px; margin-bottom: -10px;
+    border-radius: var(--radius-full);
+    border: 0;
+    -webkit-background-clip: content-box;
+    background-clip: content-box;
+    background-image: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+    cursor: pointer;
+    overflow: hidden;
+}
+.vc-ambient-rgb input {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    margin: 0; padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+.vc-ambient-rgb.is-disabled {
+    opacity: .45;
+    pointer-events: none;
+}
+[dir="rtl"] .vc-ambient-rgb { margin-left: 0; margin-right: auto; }
 .ambient-track {
     position: relative;
     width: 100%;
@@ -845,8 +977,8 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     height: 44px;
     padding: 12px 0;
     margin: -12px 0;
-    border-radius: var(--radius-sm);
-    background: var(--vc-tile-bg);
+    border-radius: var(--radius-full);
+    background: var(--vc-chip-bg);
     -webkit-background-clip: content-box;
     background-clip: content-box;
     outline: none;
@@ -896,8 +1028,8 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 .vc-ambient-slider::-moz-range-track {
     height: 20px;
     border: 0;
-    border-radius: 3px;
-    background: var(--vc-tile-bg);
+    border-radius: 10px;
+    background: var(--vc-chip-bg);
 }
 .vc-ambient-slider:disabled::-webkit-slider-thumb {
     cursor: not-allowed;
@@ -944,13 +1076,18 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     margin-bottom: 8px;
 }
 .vc-block-title {
-    font-size: 12px;
+    font-size: var(--fs-label);
     font-weight: 600;
-    color: var(--vc-text-strong);
+    color: var(--vc-text-secondary);
+}
+/* Section heads (Schedule, Charge limit, AC current, Precondition) read as group titles. */
+.vc-block-head > .vc-block-title {
+    font-size: var(--fs-body);
+    color: var(--vc-text-primary);
 }
 .vc-block-caption {
     margin-top: 8px;
-    font-size: 11px;
+    font-size: var(--fs-caption);
     font-weight: 500;
     line-height: 1.4;
     color: var(--vc-text-muted);
@@ -990,9 +1127,9 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     box-sizing: border-box;
     height: 48px;
     padding: 0;
-    border: 1px solid var(--vc-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-container);
+    border: 0;
+    border-radius: var(--radius-full);
+    background: var(--vc-tile-bg);
 }
 .vc-stepper > .vc-readout { height: auto; }
 .vc-stepper > .vc-mini {
@@ -1001,25 +1138,14 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     margin: 0;
     border: none;
     background: transparent;
-    border-radius: 0;
-}
-.vc-stepper > .vc-mini:first-child {
-    border-radius: var(--radius-md) 0 0 var(--radius-md);
-}
-.vc-stepper > .vc-mini:last-child {
-    border-radius: 0 var(--radius-md) var(--radius-md) 0;
-}
-[dir="rtl"] .vc-stepper > .vc-mini:first-child {
-    border-radius: 0 var(--radius-md) var(--radius-md) 0;
-}
-[dir="rtl"] .vc-stepper > .vc-mini:last-child {
-    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    border-radius: var(--radius-full);
 }
 
 .vc-block-head .vc-readout {
     margin-left: auto;
     height: auto;
-    font-size: 14px;
+    font-size: var(--fs-body);
+    color: var(--primary);
 }
 [dir="rtl"] .vc-block-head .vc-readout { margin-left: 0; margin-right: auto; }
 .vc-block-head > .vc-charge-switch { margin-left: auto; }
@@ -1027,52 +1153,54 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 .vc-block-head .vc-readout + .vc-charge-switch { margin-left: 8px; }
 [dir="rtl"] .vc-block-head .vc-readout + .vc-charge-switch { margin-left: 0; margin-right: 8px; }
 .vc-charge-switch {
-    min-width: 56px; min-height: 40px;
+    min-width: 64px; min-height: 44px;
     margin-left: 8px;
-    padding: 0 12px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--vc-border-subtle);
-    background: var(--surface-container);
-    color: var(--vc-text-secondary);
-    font-size: 12px; font-weight: 600;
+    padding: 0 16px;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
+    background: var(--vc-chip-bg);
+    color: var(--vc-text-primary);
+    font-size: var(--fs-label); font-weight: 600;
     cursor: pointer;
 }
 [dir="rtl"] .vc-charge-switch { margin-left: 0; margin-right: 8px; }
 .vc-charge-switch.on {
     border-color: var(--primary);
-    background: var(--primary-container);
-    color: var(--on-primary-container);
+    background: var(--primary-soft);
+    color: var(--primary);
 }
 .vc-charge-switch:disabled { opacity: .45; cursor: not-allowed; }
 .vc-charge-action,
 .vc-charge-save {
     -webkit-box-sizing: border-box; box-sizing: border-box;
-    height: 40px;
-    padding: 0 14px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--vc-border-subtle);
-    background: var(--surface-container);
-    color: var(--vc-text-strong);
-    font-size: 13px; font-weight: 600;
+    height: 48px;
+    padding: 0 20px;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
+    background: var(--vc-chip-bg);
+    color: var(--vc-text-primary);
+    font-size: var(--fs-label); font-weight: 600;
     cursor: pointer;
 }
 .vc-charge-action.on,
 .vc-charge-save.on {
     border-color: var(--primary);
-    background: var(--primary-container);
-    color: var(--on-primary-container);
+    background: var(--primary-soft);
+    color: var(--primary);
 }
 .vc-charge-save {
     background: var(--primary);
     border-color: var(--primary);
     color: var(--on-primary);
 }
+.vc-charge-action:disabled,
+.vc-charge-save:disabled { opacity: .45; cursor: not-allowed; }
 .vc-segmented-full { width: 100%; }
 .vc-segmented-full .vc-seg { -webkit-flex: 1; flex: 1; }
 
 .vc-inline-control-label {
     color: var(--vc-text-secondary);
-    font-size: 11px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     white-space: nowrap;
 }
@@ -1084,28 +1212,30 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     /* The visible bar moves to the track so the input box can grow into a
        touch target without the border growing with it. 8px each way is the
        clearance the charge-limit toggle above leaves. */
-    height: 22px;
+    height: 44px;
     margin: -8px 0;
     border: 0;
     background: transparent;
+    cursor: pointer;
 }
+.vc-soc-slider:disabled { opacity: .45; cursor: not-allowed; }
 .vc-soc-slider::-webkit-slider-runnable-track {
     -webkit-box-sizing: border-box; box-sizing: border-box;
     height: 6px;
-    border: 1px solid var(--vc-border-subtle);
+    border: 0;
     border-radius: 3px;
-    background: var(--vc-tile-bg);
+    background: var(--vc-chip-bg);
 }
 .vc-soc-slider::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none;
-    width: 18px; height: 18px;
+    width: 20px; height: 20px;
     margin-top: -7px;
     border-radius: 50%;
     background: var(--primary);
     cursor: pointer;
 }
 .vc-soc-slider::-moz-range-thumb {
-    width: 18px; height: 18px;
+    width: 20px; height: 20px;
     border: none;
     border-radius: 50%;
     background: var(--primary);
@@ -1113,9 +1243,9 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 }
 .vc-soc-slider::-moz-range-track {
     height: 6px;
-    border: 1px solid var(--vc-border-subtle);
+    border: 0;
     border-radius: 3px;
-    background: var(--vc-tile-bg);
+    background: var(--vc-chip-bg);
 }
 
 /* Tiles inside the charging panel are inline-shaped: icon next to label,
@@ -1130,7 +1260,7 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 }
 .vc-schedule-bar .vc-tile svg { width: 18px; height: 18px; margin-bottom: 0; margin-right: 8px; }
 [dir="rtl"] .vc-schedule-bar .vc-tile svg { margin-right: 0; margin-left: 8px; }
-.vc-schedule-bar .vc-tile span { font-size: 13px; letter-spacing: normal; }
+.vc-schedule-bar .vc-tile span { font-size: var(--fs-label); letter-spacing: normal; }
 
 /* Charging schedule — stacked rows (window / repeat / days).
    Wraps the existing flex panel-row into a column grid for proper alignment
@@ -1157,18 +1287,19 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-flex-shrink: 0; flex-shrink: 0;
 }
 .vc-time {
-    height: 40px; min-width: 92px;
-    border: 1px solid var(--vc-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-container);
+    height: 48px; min-width: 96px;
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-sm);
+    background: var(--vc-tile-bg);
     color: var(--vc-text-primary);
-    font-family: var(--family-mono);
-    font-size: 14px; font-weight: 600;
-    padding: 0 8px;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--fs-body); font-weight: 600;
+    padding: 0 10px;
     outline: none;
     text-align: center;
 }
-.vc-time:focus { border-color: var(--primary); }
+.vc-time:focus { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .vc-time:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Segmented control — Once / Every day / Custom. Three-pill group sized to
@@ -1178,28 +1309,55 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     -webkit-align-items: center; align-items: center;
     min-height: 48px;
     background: var(--vc-tile-bg);
-    border: 1px solid var(--vc-border-subtle);
-    border-radius: var(--radius-md);
+    border: 0;
+    border-radius: var(--radius-full);
     padding: 2px;
-    gap: 2px;
 }
 .vc-seg {
-    height: 28px;
-    min-height: 48px;
-    padding: 0 12px;
-    border: none; border-radius: var(--radius-sm);
+    display: -webkit-inline-flex; display: inline-flex;
+    -webkit-align-items: center; align-items: center;
+    -webkit-justify-content: center; justify-content: center;
+    min-height: 44px;
+    padding: 0 14px;
+    border: none; border-radius: var(--radius-full);
     background: transparent;
     color: var(--vc-text-secondary);
-    font-size: 11px; font-weight: 600;
+    font-size: var(--fs-label); font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
     cursor: pointer;
-    -webkit-transition: background .12s, color .12s;
-    transition: background .12s, color .12s;
+    transition: background-color var(--duration-fast) var(--easing-standard), color var(--duration-fast) var(--easing-standard);
 }
-.vc-seg:hover { color: var(--vc-text-primary); }
+/* Margins, not flex gap (Chrome 58). */
+.vc-seg + .vc-seg { margin-left: 2px; }
+[dir="rtl"] .vc-seg + .vc-seg { margin-left: 0; margin-right: 2px; }
+@media (hover: hover) {
+    .vc-seg:hover { color: var(--vc-text-primary); }
+}
 .vc-seg.on {
-    background: var(--primary-container);
-    color: var(--on-primary-container);
+    background: var(--secondary-container);
+    color: var(--on-secondary-container);
 }
+.vc-seg:disabled { opacity: .4; cursor: not-allowed; }
+/* Selected segment, day and preset carry a check (shared .btn-toggle), so state is not colour-only. */
+.vc-seg.on::before,
+.vc-day.on::before,
+.vc-preset.active::before {
+    content: "";
+    display: inline-block;
+    -webkit-flex-shrink: 0; flex-shrink: 0;
+    width: 10px;
+    height: 5px;
+    margin: 0 6px 3px 0;
+    border-bottom: 2px solid currentColor;
+    border-left: 2px solid currentColor;
+    vertical-align: middle;
+    -webkit-transform: rotate(-45deg);
+    transform: rotate(-45deg);
+}
+[dir="rtl"] .vc-seg.on::before,
+[dir="rtl"] .vc-day.on::before,
+[dir="rtl"] .vc-preset.active::before { margin: 0 0 3px 6px; }
 .vc-seg:active { -webkit-transform: scale(.96); transform: scale(.96); }
 
 .vc-block--wide {
@@ -1220,7 +1378,6 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     width: 100%;
     height: 48px;
     min-height: 48px;
-    gap: 0;
     -webkit-box-sizing: border-box; box-sizing: border-box;
 }
 .vc-climate-schedule .vc-seg {
@@ -1244,36 +1401,42 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
     max-width: none;
     height: 48px;
     margin: 0;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-full);
 }
 .vc-climate-actions > * + * { margin-left: 6px; }
 [dir="rtl"] .vc-climate-actions > * + * { margin-left: 0; margin-right: 6px; }
 .vc-schedule-label {
     min-width: 64px;
-    font-size: 12px; font-weight: 600;
+    font-size: var(--fs-label); font-weight: 600;
     color: var(--vc-text-secondary);
     -webkit-flex-shrink: 0; flex-shrink: 0;
 }
 .vc-schedule-unit {
-    font-size: 10px; font-weight: 600; color: var(--vc-text-muted);
+    font-size: var(--fs-caption); font-weight: 600; color: var(--vc-text-muted);
     -webkit-flex-shrink: 0; flex-shrink: 0;
 }
-/* Day chips — only shown when repeat=custom. */
-.vc-day-chips > * { margin-right: 4px; }
-[dir="rtl"] .vc-day-chips > * { margin-right: 0; margin-left: 4px; }
+/* Day chips — only shown when repeat=custom. Filter-chip pills that wrap. */
+.vc-day-chips > * { margin: 0 6px 6px 0; }
+[dir="rtl"] .vc-day-chips > * { margin: 0 0 6px 6px; }
 .vc-day {
-    min-height: 48px; min-width: 48px;
-    padding: 0 8px;
-    border: 1px solid var(--vc-border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--surface-container);
-    color: var(--vc-text-secondary);
-    font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: .3px;
+    display: -webkit-inline-flex; display: inline-flex;
+    -webkit-align-items: center; align-items: center;
+    -webkit-justify-content: center; justify-content: center;
+    min-height: 44px; min-width: 48px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-full);
+    background: var(--vc-tile-bg);
+    color: var(--vc-text-primary);
+    font-size: var(--fs-label); font-weight: 600;
+    text-transform: none; letter-spacing: 0;
     cursor: pointer;
 }
-.vc-day:hover { background: var(--vc-tile-bg-hover); color: var(--vc-text-primary); }
-.vc-day.on { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
+@media (hover: hover) {
+    .vc-day:hover { background: var(--vc-tile-bg-hover); color: var(--vc-text-primary); }
+}
+.vc-day.on { background: var(--secondary-container); color: var(--on-secondary-container); }
+.vc-day:disabled { opacity: .4; cursor: not-allowed; }
 .vc-day:active { -webkit-transform: scale(.92); transform: scale(.92); }
 
 /* Reuse .vc-pill as a clickable chip in the schedule row.
@@ -1282,12 +1445,120 @@ html.vc-mode-immersive .vc-view-to-3d { display: none; }
 button.vc-pill {
     cursor: pointer;
     background: var(--vc-tile-bg);
+    box-shadow: none;
 }
 /* Inside the schedule bar, match the row's 48dp baseline. */
-.vc-schedule-bar button.vc-pill { height: 48px; min-height: 48px; padding: 0 12px; }
-button.vc-pill:hover { background: var(--vc-tile-bg-hover); color: var(--vc-text-primary); }
-button.vc-pill.on { border-color: var(--primary); background: var(--primary-container); color: var(--on-primary-container); }
+.vc-schedule-bar button.vc-pill { height: 48px; min-height: 48px; padding: 0 16px; }
+@media (hover: hover) {
+    button.vc-pill:hover { background: var(--vc-tile-bg-hover); color: var(--vc-text-primary); }
+}
+button.vc-pill.on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+button.vc-pill:disabled { opacity: .45; cursor: not-allowed; }
 button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
+
+/* Safety panel — one labelled switch per driving-safety guard. The switch is the
+   shared .toggle-switch from styles.css, which already carries a 48px hit area. */
+#panelSafety.vc-panel-row {
+    -webkit-justify-content: stretch; justify-content: stretch;
+    -webkit-align-items: stretch; align-items: stretch;
+}
+#panelSafety.vc-panel-row > * { margin: 0; width: 100%; }
+.vc-safety-note {
+    margin-bottom: 6px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--warning-soft);
+    font-size: var(--fs-label);
+    font-weight: 500;
+    line-height: 1.45;
+    color: var(--vc-text-primary);
+}
+#panelSafety .vc-safety-note { margin-bottom: 8px; }
+.vc-safety-status {
+    padding: 12px 0;
+    font-size: var(--fs-label);
+    color: var(--vc-text-muted);
+    text-align: center;
+}
+.vc-safety-status.is-error { color: var(--danger); }
+.vc-safety-row {
+    display: -webkit-flex; display: flex;
+    -webkit-align-items: center; align-items: center;
+    padding: 6px 0;
+    border-top: 1px solid var(--vc-border-subtle);
+}
+.vc-safety-info {
+    display: -webkit-flex; display: flex;
+    -webkit-flex-direction: column; flex-direction: column;
+    -webkit-flex: 1; flex: 1;
+    min-width: 0;
+}
+.vc-safety-name {
+    font-size: var(--fs-body);
+    font-weight: 600;
+    color: var(--vc-text-strong);
+    overflow-wrap: break-word;
+}
+.vc-safety-desc,
+.vc-safety-fixed {
+    font-size: var(--fs-label);
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--vc-text-muted);
+}
+.vc-safety-desc { margin-top: 2px; }
+.vc-safety-fixed {
+    padding-top: 12px;
+    border-top: 1px solid var(--vc-border-subtle);
+}
+
+/* Remote-key diagnostics (experimental) panel. Chrome 58 WebView: no flex gap, so
+   gutters are padding; -webkit- flex prefixes to match the rest of this stylesheet. */
+.vc-rkdiag-body {
+    display: -webkit-flex; display: flex;
+    -webkit-flex-direction: column; flex-direction: column;
+    width: 100%;
+}
+.vc-rkdiag-row {
+    display: -webkit-flex; display: flex;
+    -webkit-flex-direction: column; flex-direction: column;
+    padding: 8px 0;
+}
+.vc-rkdiag-select {
+    margin: 8px 0 4px;
+    min-height: 44px;
+    border-radius: 10px;
+    padding: 0 12px;
+    background: var(--vc-tile-bg);
+    color: var(--vc-text-primary);
+    border: 1px solid var(--vc-border-subtle);
+    font-size: 14px;
+}
+.vc-rkdiag-status-grid {
+    display: -webkit-flex; display: flex;
+    -webkit-flex-wrap: wrap; flex-wrap: wrap;
+    padding-top: 10px;
+    border-top: 1px solid var(--vc-border-subtle);
+}
+.vc-rkdiag-stat {
+    display: -webkit-flex; display: flex;
+    -webkit-flex-direction: column; flex-direction: column;
+    -webkit-flex: 1 1 33%; flex: 1 1 33%;
+    padding: 4px 0;
+}
+.vc-rkdiag-stat > span:last-child {
+    color: var(--vc-text-primary);
+    font-weight: 600;
+    margin-top: 2px;
+}
+.vc-safety-row > .toggle-switch {
+    -webkit-flex-shrink: 0; flex-shrink: 0;
+    margin-left: 16px;
+}
+[dir="rtl"] .vc-safety-row > .toggle-switch { margin-left: 0; margin-right: 16px; }
+.vc-safety-row input:disabled + .toggle-slider { opacity: .45; cursor: not-allowed; }
+/* A guard switched off is worth noticing, so the Safety tab's dot is amber. */
+.vc-tab[data-panel="panelSafety"] .tab-dot { background: var(--warning); }
 
 /* ===== MOBILE RESPONSIVE ===== */
 @media (max-width: 768px) {
@@ -1349,32 +1620,34 @@ button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
         text-overflow: ellipsis;
     }
     .vc-bar { left: 0; right: 0; bottom: 0; }
+    /* The dock meets the screen edge; the tyre tile floats inset above it. */
+    .vc-tyre-strip { width: calc(100% - 16px); }
     .vc-dock {
         border-bottom: 0;
-        border-radius: var(--radius-md) var(--radius-md) 0 0;
+        border-radius: var(--radius-tile) var(--radius-tile) 0 0;
     }
     .vc-tabs { padding-bottom: 6px; }
     .vc-tab { height: 48px; }
-    .vc-tab svg { width: 18px; height: 18px; }
-    .vc-tile { width: 50px; height: 52px; }
+    .vc-tab svg { width: 18px; height: 18px; padding: 4px 16px; }
+    .vc-tile { min-width: 80px; max-width: 140px; }
     .vc-tile svg { width: 20px; height: 20px; }
     .vc-mini { width: 32px; height: 32px; }
-    .vc-readout { font-size: 14px; min-width: 36px; }
-    .vc-pill { padding: 0 10px; font-size: 11px; }
+    .vc-readout { font-size: var(--fs-body); min-width: 36px; }
+    .vc-pill { padding: 0 12px; font-size: var(--fs-caption); }
     .vc-colors { padding: 0 6px; }
     .vc-swatch { width: 28px; height: 28px; margin: 0 2px; }
     .vc-swatch-custom { width: 28px; height: 28px; margin: 0 2px; }
-    .vc-model-menu__trigger { font-size: 11px; max-width: 140px; }
-    .vc-3d-btn { padding: 0 10px; }
+    .vc-model-menu__trigger { font-size: var(--fs-caption); max-width: 140px; }
+    .vc-3d-btn { padding: 0 12px; }
     .vc-3d-btn svg { width: 16px; height: 16px; }
 
     /* Charging panel — narrow the readouts but keep the 48dp touch targets. */
     .vc-panel.open.vc-panel-tall { max-height: 390px; }
-    .vc-time { min-width: 76px; font-size: 13px; }
-    .vc-seg { padding: 0 10px; font-size: 11px; }
+    .vc-time { min-width: 84px; font-size: var(--fs-label); }
+    .vc-seg { padding: 0 12px; }
     #climateDurationSegmented .vc-seg { padding: 0 6px; }
-    .vc-day { padding: 0 6px; }
-    .vc-schedule-label { min-width: 56px; font-size: 11px; }
+    .vc-day { padding: 0 10px; }
+    .vc-schedule-label { min-width: 56px; font-size: var(--fs-caption); }
     .vc-soc-slider { width: 100%; }
 
     /* Windows go single-column: two aperture cards side by side leave no room
@@ -1392,48 +1665,46 @@ button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
 
 @media (max-width: 480px) {
     .vc-status-bar { left: 66px; right: 8px; }
-    .vc-pill { padding: 0 8px; font-size: 10px; }
-    .vc-pill .dot { width: 5px; height: 5px; }
+    .vc-pill { padding: 0 10px; font-size: var(--fs-caption); }
+    .vc-pill .dot { width: 6px; height: 6px; }
     .vc-colors { padding: 0 5px; }
     .vc-swatch { width: 26px; height: 26px; margin: 0 1px; }
     .vc-swatch-custom { width: 26px; height: 26px; margin: 0 1px; }
-    .vc-model-menu__trigger { font-size: 11px; max-width: 110px; }
-    .vc-3d-btn { padding: 0 9px; }
+    .vc-model-menu__trigger { font-size: var(--fs-caption); max-width: 110px; }
+    .vc-3d-btn { padding: 0 10px; }
     .vc-3d-btn svg { width: 14px; height: 14px; }
-    .vc-3d-btn span { font-size: 11px; margin-left: 6px; }
+    .vc-3d-btn span { font-size: var(--fs-caption); margin-left: 6px; }
     .vc-bar { left: 0; right: 0; }
     .vc-tabs {
         padding: 5px 6px;
     }
     .vc-tabs > * { margin: 0 1px; }
-    .vc-tab { height: 44px; }
-    .vc-tab svg { width: 16px; height: 16px; }
-    .vc-tab span { font-size: 7px; }
-    .vc-tile { width: 44px; height: 48px; }
-    .vc-tile svg { width: 18px; height: 18px; }
-    .vc-tile span { font-size: 7px; }
+    .vc-tab { height: 44px; min-width: 60px; }
+    .vc-tab svg { width: 18px; height: 18px; padding: 3px 14px; }
+    .vc-tab span { font-size: var(--fs-caption); }
+    .vc-tile { min-width: 64px; max-width: 120px; min-height: 70px; padding: 6px 2px; }
+    .vc-tile svg { width: 18px; height: 18px; padding: 7px; border-radius: 10px; margin-bottom: 4px; }
+    .vc-tile span { font-size: var(--fs-caption); }
     .vc-mini { width: 28px; height: 28px; }
-    .vc-readout { font-size: 12px; min-width: 30px; }
+    .vc-readout { font-size: var(--fs-body); min-width: 32px; }
 
     /* Charging panel at phone scale — fit everything in 320..480px. */
-    .vc-charging-grid { padding: 0 6px; gap: 5px; }
-    .vc-schedule-bar { gap: 4px; }
-    .vc-time { min-width: 64px; height: 30px; font-size: 12px; padding: 0 4px; }
+    .vc-charging-grid { padding: 0 6px; }
+    .vc-time { min-width: 76px; height: 44px; font-size: var(--fs-label); padding: 0 6px; }
     .vc-schedule-arrow { font-size: 13px; }
-    .vc-segmented { padding: 1px; gap: 1px; }
-    .vc-seg { padding: 0 7px; height: 24px; font-size: 9px; }
-    .vc-day { height: 26px; min-width: 28px; font-size: 8px; padding: 0 4px; }
+    .vc-seg { padding: 0 10px; font-size: var(--fs-caption); }
+    .vc-day { min-width: 44px; font-size: var(--fs-caption); padding: 0 8px; }
 }
 
 /* Ultra-short viewports (landscape phone) — keep labels but compact heights. */
 @media (max-height: 500px) {
     .vc-tab { height: 40px; min-width: 56px; }
-    .vc-tab svg { width: 14px; height: 14px; margin-bottom: 0; }
-    .vc-tab span { font-size: 8px; }
+    .vc-tab svg { width: 16px; height: 16px; padding: 2px 12px; margin-bottom: 0; }
+    .vc-tab span { font-size: var(--fs-caption); }
     .vc-panel.open { max-height: 160px; padding: 10px 8px; }
     .vc-panel.open.vc-panel-tall { max-height: 220px; }
-    .vc-tile { width: 40px; height: 42px; }
-    .vc-tile svg { width: 16px; height: 16px; }
+    .vc-tile { min-width: 88px; min-height: 56px; padding: 4px; }
+    .vc-tile svg { width: 16px; height: 16px; padding: 6px; border-radius: 10px; margin-bottom: 2px; }
     .vc-mini { width: 26px; height: 26px; }
 }
 
@@ -1455,15 +1726,15 @@ button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
 }
 .vc-modal {
     background: var(--vc-modal-bg);
-    border: 1px solid var(--vc-border);
-    border-radius: var(--radius-md);
+    border: 0;
+    border-radius: var(--radius-xl);
     padding: 24px 24px 20px;
     max-width: 360px;
     width: 90%;
     -webkit-transform: scale(0.96);
     transform: scale(0.96);
-    -webkit-transition: transform .2s ease; transition: transform .2s ease;
-    box-shadow: var(--shadow-lg);
+    transition: transform var(--duration-med) var(--easing-emphasized);
+    box-shadow: var(--tile-shadow);
 }
 .vc-modal-overlay.visible .vc-modal {
     -webkit-transform: scale(1); transform: scale(1);
@@ -1472,23 +1743,25 @@ button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
     width: 48px; height: 48px;
     margin-bottom: 16px;
     border-radius: var(--radius-md);
-    background: var(--status-info-container);
+    background: var(--tertiary-soft);
     display: -webkit-flex; display: flex;
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
 }
 .vc-modal-icon svg {
     width: 26px; height: 26px;
-    color: var(--status-info);
+    color: var(--tertiary);
 }
 .vc-modal-title {
-    font-size: 18px;
-    font-weight: 600;
+    font-size: var(--fs-headline);
+    font-weight: 700;
+    line-height: 1.25;
     color: var(--vc-text-primary);
     margin-bottom: 8px;
+    overflow-wrap: break-word;
 }
 .vc-modal-text {
-    font-size: 14px;
+    font-size: var(--fs-body);
     color: var(--vc-text-secondary);
     line-height: 1.5;
     margin-bottom: 20px;
@@ -1501,19 +1774,19 @@ button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
     -webkit-justify-content: flex-end; justify-content: flex-end;
     -webkit-flex-wrap: wrap; flex-wrap: wrap;
 }
-.vc-modal-actions > * { margin-left: 8px; }
-[dir="rtl"] .vc-modal-actions > * { margin-left: 0; margin-right: 8px; }
+.vc-modal-actions > * { margin: 8px 0 0 8px; }
+[dir="rtl"] .vc-modal-actions > * { margin: 8px 8px 0 0; }
 .vc-modal-btn {
     display: -webkit-inline-flex; display: inline-flex;
     -webkit-align-items: center; align-items: center;
     -webkit-justify-content: center; justify-content: center;
-    padding: 0 20px;
+    padding: 0 22px;
     min-height: 48px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-full);
     border: none;
-    background: var(--surface-container-highest);
+    background: var(--well-2);
     color: var(--vc-text-primary);
-    font-size: 14px;
+    font-size: var(--fs-label);
     font-weight: 600;
     cursor: pointer;
 }
@@ -1627,18 +1900,18 @@ button.vc-pill:active { -webkit-transform: scale(.95); transform: scale(.95); }
     height: 48px;
     margin-left: 12px;
     padding: 0 12px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     border: 1px solid var(--vc-border);
     background: var(--vc-tile-bg);
     color: var(--vc-text-primary);
     font-family: var(--family-mono);
-    font-size: 15px;
+    font-size: var(--fs-body);
     text-transform: uppercase;
     outline: none;
 }
 [dir="rtl"] .vc-color-hex { margin-left: 0; margin-right: 12px; }
-.vc-color-hex:focus { border-color: var(--primary); }
-.vc-color-hex.invalid { border-color: var(--status-danger); }
+.vc-color-hex:focus { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.vc-color-hex.invalid { border-color: var(--danger); }
 
 @media (max-width: 480px), (max-height: 650px) {
     #colorModal .vc-modal {
@@ -1704,4 +1977,77 @@ html.vc-mode-lite .vc-lite-hero {
 .vc-lite-hero.has-art img { display: block; }
 @media (max-height: 560px) {
     .vc-lite-hero { padding: 96px 16px 150px; }
+}
+
+/* ==================== CAR DENSITY ====================
+   The head unit gets 56px targets on every control; the type tokens already
+   step up there. Panel ceilings are unchanged: tiles keep their 76px height. */
+:root[data-android-embed="1"] .vc-status-bar,
+:root[data-android-embed="1"] .vc-status-slot { height: 56px; }
+:root[data-android-embed="1"] .vc-pill,
+:root[data-android-embed="1"] .vc-colors,
+:root[data-android-embed="1"] .vc-3d-btn,
+:root[data-android-embed="1"] .vc-model-menu__trigger { height: 56px; }
+:root[data-android-embed="1"] .vc-model-menu__option { min-height: 56px; }
+:root[data-android-embed="1"] .vc-swatch,
+:root[data-android-embed="1"] .vc-swatch-custom { width: 36px; height: 36px; }
+:root[data-android-embed="1"] .vc-tab { height: 56px; min-width: 72px; }
+:root[data-android-embed="1"] .vc-tab svg { width: 22px; height: 22px; padding: 4px 18px; }
+:root[data-android-embed="1"] .vc-tile { min-width: 104px; max-width: 176px; }
+:root[data-android-embed="1"] .vc-preset { min-width: 56px; min-height: 56px; }
+:root[data-android-embed="1"] .vc-segmented { min-height: 60px; }
+:root[data-android-embed="1"] .vc-seg { min-height: 56px; }
+:root[data-android-embed="1"] .vc-climate-schedule .vc-segmented { height: 60px; min-height: 60px; }
+:root[data-android-embed="1"] .vc-climate-schedule .vc-seg { height: 56px; min-height: 56px; }
+:root[data-android-embed="1"] .vc-day { min-width: 56px; min-height: 56px; }
+:root[data-android-embed="1"] .vc-mini { width: 56px; height: 56px; min-width: 56px; min-height: 56px; }
+:root[data-android-embed="1"] .vc-stepper,
+:root[data-android-embed="1"] .vc-time,
+:root[data-android-embed="1"] .vc-climate-actions,
+:root[data-android-embed="1"] .vc-climate-actions > *,
+:root[data-android-embed="1"] .vc-charge-action,
+:root[data-android-embed="1"] .vc-charge-save { height: 56px; }
+:root[data-android-embed="1"] .vc-charge-switch { min-height: 56px; }
+:root[data-android-embed="1"] .vc-schedule-bar button.vc-pill { height: 56px; min-height: 56px; }
+:root[data-android-embed="1"] .vc-soc-slider { height: 56px; }
+:root[data-android-embed="1"] .vc-soc-slider::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -9px; }
+:root[data-android-embed="1"] .vc-soc-slider::-moz-range-thumb { width: 24px; height: 24px; }
+:root[data-android-embed="1"] .vc-ambient-slider { height: 56px; padding: 18px 0; margin: -18px 0; }
+:root[data-android-embed="1"] .vc-ambient-rgb { padding: 16px 0; margin-top: -16px; margin-bottom: -16px; }
+:root[data-android-embed="1"] .vc-modal-btn,
+:root[data-android-embed="1"] .vc-loading-retry { min-height: 56px; }
+:root[data-android-embed="1"] .vc-color-cell { width: 48px; height: 48px; }
+@media (max-width: 768px) {
+    :root[data-android-embed="1"] .vc-status-bar { height: auto; min-height: 56px; }
+    :root[data-android-embed="1"] .vc-status-slot--mid { height: auto; min-height: 56px; }
+}
+
+/* ==================== REDUCED MOTION ====================
+   The seat-memory hold fill keeps its sweep: it is the hold progress, not decoration. */
+@media (prefers-reduced-motion: reduce) {
+    .vc-panel,
+    .vc-nav-btn,
+    .vc-3d-btn,
+    .vc-swatch,
+    .vc-model-menu__chevron,
+    .vc-tab,
+    .vc-tab svg,
+    .vc-tile,
+    .vc-tile svg,
+    .vc-mini,
+    .vc-preset,
+    .vc-seg,
+    .vc-tyre-dot,
+    .vc-tyre-state,
+    .vc-modal-overlay,
+    .vc-modal { -webkit-transition: none; transition: none; }
+    .vc-nav-btn:active,
+    .vc-tab:active,
+    .vc-tile:active,
+    .vc-mini:active,
+    .vc-preset:active,
+    .vc-seg:active,
+    .vc-day:active,
+    button.vc-pill:active,
+    .vc-modal-btn:active { -webkit-transform: none; transform: none; }
 }

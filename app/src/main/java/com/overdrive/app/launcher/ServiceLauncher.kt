@@ -80,8 +80,8 @@ class ServiceLauncher(
             "appops set $PACKAGE_NAME RUN_ANY_IN_BACKGROUND allow",
             "dumpsys deviceidle whitelist +$PACKAGE_NAME"
         )
-        
-        executeCommandSequence(commands, 0, callback) {
+
+        executeCommandSequence(withoutDiLink5DeadCommands(commands), 0, callback) {
             logManager.info(TAG, "Location permissions configured")
             callback.onLog("Location permissions configured")
             callback.onLaunched()
@@ -227,8 +227,8 @@ class ServiceLauncher(
             "cmd appops set $packageName AUTO_START allow 2>/dev/null",
             "cmd appops set $packageName BOOT_COMPLETED allow 2>/dev/null"
         )
-        
-        executeCommandSequence(commands, 0, callback) {
+
+        executeCommandSequence(withoutDiLink5DeadCommands(commands), 0, callback) {
             logManager.info(TAG, "ACC whitelist injection complete")
             callback.onLog("ACC whitelist injection complete")
             callback.onLaunched()
@@ -352,7 +352,28 @@ class ServiceLauncher(
     }
     
     // ==================== HELPER METHODS ====================
-    
+
+    /**
+     * DiLink 5 drops commands that fail there: appops rejects the ACCESS_* names, accmodemanager and
+     * persist.sys.acc.whitelist are DiLink 3/4 only, and the appstartup/AUTO_START/BOOT_COMPLETED grants
+     * run daemon-side (AccSentryDaemon.applyBackgroundAccess) instead of blocking the shared ADB lane here.
+     */
+    private fun withoutDiLink5DeadCommands(commands: List<String>): List<String> {
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) return commands
+        val kept = commands.filterNot { command ->
+            (command.startsWith("appops set ") && command.contains(" ACCESS_"))
+                || command.contains("persist.sys.acc.whitelist")
+                || command.contains("service call accmodemanager")
+                || command.contains("content://com.byd.appstartup/")
+                || command.contains(" AUTO_START allow")
+                || command.contains(" BOOT_COMPLETED allow")
+        }
+        if (kept.size != commands.size) {
+            logManager.info(TAG, "DiLink 5: skipping ${commands.size - kept.size} command(s) this firmware does not support")
+        }
+        return kept
+    }
+
     private fun executeCommandSequence(
         commands: List<String>,
         index: Int,

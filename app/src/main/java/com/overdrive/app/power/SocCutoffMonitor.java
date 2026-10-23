@@ -29,6 +29,9 @@ import java.lang.reflect.Method;
  *       {@code Runtime.exit(0)}.</li>
  * </ol>
  *
+ * <p>The watchdogs respawn the daemons, so the cutoff is first latched in
+ * {@code ParkedShutdown.SOC_CUTOFF_PATH}: the rest of the park then runs as "Vehicle ON only".
+ *
  * <p>The "is the device currently charging" guard prevents shutdown when SoC
  * is rising — same SoC reading, opposite intent.
  */
@@ -39,6 +42,7 @@ public final class SocCutoffMonitor {
 
     private static final int DEFAULT_CUTOFF_PERCENT = 10;
     private static final long GRACE_DELAY_MS = 60_000L;
+    private static final long NOTICE_DRAIN_MS = 4_000L;
 
     private static volatile boolean running = false;
     private static volatile Double lastSocPercent = null;
@@ -153,6 +157,14 @@ public final class SocCutoffMonitor {
 
         int cutoff = cutoffPercent();
         if (pct <= cutoff) {
+            if (isChargingOrPluggedIn()) {
+                if (pendingShutdownTriggerAt != 0L) {
+                    logger.info("LOW SoC " + pct + "% but charging — cancelling pending shutdown");
+                    pendingShutdownTriggerAt = 0L;
+                }
+                lastSocPercent = pct;
+                return;
+            }
             long now = System.currentTimeMillis();
             if (pendingShutdownTriggerAt == 0L) {
                 pendingShutdownTriggerAt = now + GRACE_DELAY_MS;
@@ -162,6 +174,26 @@ public final class SocCutoffMonitor {
             }
         }
         lastSocPercent = pct;
+    }
+
+    /**
+     * A rising SoC is too slow a charging signal: whole-percent firmware on a slow AC charge can
+     * hold the same value for minutes. Use the fused verdict, and a plugged-in gun as a backstop
+     * (2=AC, 3=DC, 4=AC_DC; 5 is V2L, which discharges, so it does not count).
+     */
+    static boolean isChargingOrPluggedIn() {
+        try {
+            if (com.overdrive.app.monitor.ChargingDetector.getInstance().isCharging()) return true;
+        } catch (Throwable ignored) {}
+        try {
+            com.overdrive.app.byd.BydVehicleData d =
+                    com.overdrive.app.byd.BydDataCollector.getInstance().getData();
+            if (d != null) {
+                int gun = d.chargingGunState;
+                return gun == 2 || gun == 3 || gun == 4;
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     private static void scheduleGraceCheck() {
@@ -182,6 +214,11 @@ public final class SocCutoffMonitor {
                 pendingShutdownTriggerAt = 0L;
                 return;
             }
+            if (isChargingOrPluggedIn()) {
+                logger.info("grace expired but vehicle is charging — abort");
+                pendingShutdownTriggerAt = 0L;
+                return;
+            }
             performShutdown(soc);
         }, "SocCutoffGrace");
         t.setDaemon(true);
@@ -194,6 +231,14 @@ public final class SocCutoffMonitor {
      */
     private static void performShutdown(double finalSoc) {
         logger.warn("performShutdown: SoC=" + finalSoc + "% — beginning voluntary exit");
+        latchForThisPark();
+        // Before anything is torn down: the daemon that delivers the notice is about to stop.
+        boolean noticeQueued = PowerNotice.send(PowerNotice.KIND_SOC_CUTOFF,
+                "SoC " + Math.round(finalSoc) + "% (cutoff " + cutoffPercent() + "%)");
+        if (noticeQueued) {
+            // Push/Telegram deliver asynchronously and the force-stop below kills that daemon.
+            try { Thread.sleep(NOTICE_DRAIN_MS); } catch (InterruptedException ignored) {}
+        }
 
         // 1. Stop the V2 monitor's wake-lock + handler.
         try {
@@ -240,9 +285,8 @@ public final class SocCutoffMonitor {
             logger.warn("powerManagerGoToSleep failed: " + t.getMessage());
         }
 
-        // 3. Force-stop the whole app package — takes out every daemon
-        //    process under its UID at once (cam_daemon, acc_sentry, etc.),
-        //    so we don't need a separate pkill for each.
+        // 3. Force-stop the app package (UI keep-alive, revival alarms). The
+        //    shell-UID daemons survive it; their watchdogs respawn them into the latched park.
         try {
             String pkg = (appContext != null) ? appContext.getPackageName() : "com.overdrive.app";
             execShell("am force-stop " + pkg);
@@ -281,11 +325,26 @@ public final class SocCutoffMonitor {
 
     private static void execShell(String cmd) {
         try {
-            Process p = Runtime.getRuntime().exec(new String[] { "sh", "-c", cmd });
+            Process p = Runtime.getRuntime().exec(new String[] { "sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd) });
             p.waitFor();
         } catch (Throwable t) {
             logger.debug("execShell '" + cmd + "': " + t.getMessage());
         }
+    }
+
+    private static void latchForThisPark() {
+        java.io.File latch = new java.io.File(
+                com.overdrive.app.ui.model.ParkedShutdown.SOC_CUTOFF_PATH);
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(latch, false)) {
+            out.write(Long.toString(System.currentTimeMillis())
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        } catch (Throwable t) {
+            logger.warn("cutoff latch write failed (" + latch.getPath() + "): " + t.getMessage());
+            return;
+        }
+        // The app UID reads it through UnifiedConfigManager.isVehicleOnOnlyMode().
+        latch.setReadable(true, false);
+        logger.info("cutoff latched for this park: " + latch.getPath());
     }
 
     // ── BYD listener registration ───────────────────────────────────

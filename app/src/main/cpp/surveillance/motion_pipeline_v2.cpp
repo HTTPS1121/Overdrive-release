@@ -309,13 +309,14 @@ static int stage2_blockAnalysis(
             
             int startX = bx * V2_BLOCK_SIZE;
             int startY = by * V2_BLOCK_SIZE;
+            int blockHeight = std::min(V2_BLOCK_SIZE, V2_QUADRANT_HEIGHT - startY);
             int lumaChangedCount = 0;
             int edgeChangedCount = 0;
             int shadowPixelCount = 0;   // Pixels that changed but look like shadow
             int totalChangedPixels = 0; // All pixels that passed luma gate
             
-            // Stride-4 sampling: 8×8 = 64 samples per block
-            for (int y = 0; y < V2_BLOCK_SIZE; y += 4) {
+            // Full cells retain 64 stride-4 samples. The 16 px last row has 32.
+            for (int y = 0; y < blockHeight; y += 4) {
                 int gy = startY + y;
                 if (gy >= V2_QUADRANT_HEIGHT) break;
                 
@@ -430,7 +431,18 @@ static int stage2_blockAnalysis(
                 }
             }
             
-            bool hasEnoughLuma = (lumaChangedCount >= config->densityThreshold);
+            // The configured density is calibrated for 64 samples. Preserve it
+            // exactly on existing rows and use the same changed fraction on the
+            // partial cell, rounding up so a fractional sample never admits it.
+            const int fullSamples = (V2_BLOCK_SIZE / 4) * (V2_BLOCK_SIZE / 4);
+            int density = config->densityThreshold;
+            if (blockHeight < V2_BLOCK_SIZE) {
+                int samples = ((blockHeight + 3) / 4) * (V2_BLOCK_SIZE / 4);
+                int64_t scaled = static_cast<int64_t>(density) * samples;
+                if (scaled > 0) scaled += fullSamples - 1;
+                density = static_cast<int>(scaled / fullSamples);
+            }
+            bool hasEnoughLuma = (lumaChangedCount >= density);
             bool hasEdgeEvidence = (edgeChangedCount >= 2);
             
             if (hasEnoughLuma && hasEdgeEvidence) {
@@ -474,7 +486,7 @@ static int stage3_temporalDecay(
 }
 
 // ============================================================================
-// Stage 4: Connected Component Analysis (flood-fill on 10×7 grid)
+// Stage 4: Connected Component Analysis (including the partial bottom row)
 // ============================================================================
 
 static int stage4_connectedComponents(
@@ -494,7 +506,7 @@ static int stage4_connectedComponents(
     int largestLabel = -1;
     int currentLabel = 0;
     
-    // Simple flood-fill BFS using a stack (grid is tiny, 70 cells max)
+    // Simple flood-fill BFS using a stack (grid is tiny, 80 cells max)
     int stack[V2_TOTAL_BLOCKS];
     
     for (int i = 0; i < V2_TOTAL_BLOCKS; i++) {
@@ -515,7 +527,11 @@ static int stage4_connectedComponents(
             int bx = idx % V2_GRID_COLS;
             int by = idx / V2_GRID_COLS;
             sumX += bx;
-            sumY += by;
+            // Keep the old rows' coordinates exactly. A partial last cell is
+            // centered at 232 px, represented as 6.75 so the existing Java crop
+            // transform (centroid + .5) * 32 remains correct.
+            int rowHeight = std::min(V2_BLOCK_SIZE, V2_QUADRANT_HEIGHT - by * V2_BLOCK_SIZE);
+            sumY += by + (rowHeight / (2.0f * V2_BLOCK_SIZE)) - 0.5f;
             
             // Check 4 neighbors
             int neighbors[4] = {
@@ -606,6 +622,7 @@ static float stage4b_flowCoherence(
         int by = blockIdx / V2_GRID_COLS;
         int startX = bx * V2_BLOCK_SIZE;
         int startY = by * V2_BLOCK_SIZE;
+        int blockHeight = std::min(V2_BLOCK_SIZE, V2_QUADRANT_HEIGHT - startY);
 
         // Keep the ±R search window inside the quadrant.
         int x0 = startX, y0 = startY;
@@ -614,7 +631,18 @@ static float stage4b_flowCoherence(
         int xMax = V2_QUADRANT_WIDTH  - V2_BLOCK_SIZE - V2_FLOW_SEARCH_RADIUS;
         int yMax = V2_QUADRANT_HEIGHT - V2_BLOCK_SIZE - V2_FLOW_SEARCH_RADIUS;
         if (x0 > xMax) x0 = xMax;
-        if (y0 > yMax) y0 = yMax;
+        int patchHeight = V2_BLOCK_SIZE;
+        if (blockHeight == V2_BLOCK_SIZE) {
+            if (y0 > yMax) y0 = yMax;
+        } else {
+            // Never move a bottom-row flow probe into a different cell. Reserve
+            // R px below the sampled patch for a symmetric reference search.
+            // Untextured/too-short patches return unavailable, preserving the
+            // existing fail-open handling of absent coherence.
+            y0 = startY;
+            patchHeight = std::min(blockHeight, V2_QUADRANT_HEIGHT - y0 - V2_FLOW_SEARCH_RADIUS);
+            if (patchHeight <= 0) continue;
+        }
         if (x0 < 0 || y0 < 0) continue;  // block too close to edge to search
 
         // Cache the current block's stride-4 grayscale samples ONCE: they are
@@ -623,7 +651,7 @@ static float stage4b_flowCoherence(
         const int SPB = V2_BLOCK_SIZE / 4;  // samples per block axis (8)
         int curSamp[SPB * SPB];
         int n = 0, sampleSum = 0;
-        for (int y = 0; y < V2_BLOCK_SIZE; y += 4) {
+        for (int y = 0; y < patchHeight; y += 4) {
             for (int x = 0; x < V2_BLOCK_SIZE; x += 4) {
                 int v = lumaAt(current, x0 + x, y0 + y);
                 curSamp[n++] = v;
@@ -649,7 +677,7 @@ static float stage4b_flowCoherence(
             for (int dx = -V2_FLOW_SEARCH_RADIUS; dx <= V2_FLOW_SEARCH_RADIUS; dx++) {
                 long sad = 0;
                 int si = 0;
-                for (int y = 0; y < V2_BLOCK_SIZE; y += 4) {
+                for (int y = 0; y < patchHeight; y += 4) {
                     for (int x = 0; x < V2_BLOCK_SIZE; x += 4) {
                         int ref = lumaAt(reference, x0 + x + dx, y0 + y + dy);
                         sad += std::abs(curSamp[si++] - ref);
@@ -741,7 +769,8 @@ static int stage5_behaviorClassification(
     
     // Check direction: approaching (toward center) vs passing (lateral)
     float centerX = V2_GRID_COLS / 2.0f;
-    float centerY = V2_GRID_ROWS / 2.0f;
+    // Preserve the behavioral calibration for the original seven rows.
+    float centerY = V2_POLICY_ROWS / 2.0f;
     
     float distFirst = std::sqrt((firstX - centerX) * (firstX - centerX) + 
                                 (firstY - centerY) * (firstY - centerY));
@@ -767,7 +796,7 @@ static int stage5_behaviorClassification(
     // proxy for proximity: a person right next to the car door fills 15-25%
     // of the block grid, while a distant pedestrian fills only 3-5%.
     // This is invariant to camera orientation and fisheye distortion.
-    float activeAreaFraction = (float)componentSize / V2_TOTAL_BLOCKS;
+    float activeAreaFraction = std::min(1.0f, (float)componentSize / V2_POLICY_BLOCKS);
     if (activeAreaFraction > 0.15f) {
         return THREAT_MEDIUM;
     }
@@ -1005,7 +1034,9 @@ static void processQuadrant(
     // salienceEnabled we PROBE such a frame (stages 3/4/4b below) and suppress it
     // only if the mass is diffuse or non-translating; a failed probe restores the
     // pre-probe state and takes this exact path, so it stays byte-identical.
-    float activeRatio = (float)activeCount / V2_TOTAL_BLOCKS;
+    // Coverage grows without relaxing the existing 18-block flash boundary.
+    // Clamp the externally logged fraction when all 80 cells are active.
+    float activeRatio = std::min(1.0f, (float)activeCount / V2_POLICY_BLOCKS);
     bool highMass = (activeRatio > 0.25f);
     bool salienceProbe = highMass && config->salienceEnabled != 0;
     if (highMass && !salienceProbe) {
@@ -1385,6 +1416,18 @@ Java_com_overdrive_app_surveillance_NativeMotion_processFrameV2(
     jobject configBuffer,
     jobject resultBuffer)
 {
+    const jlong expectedFrameBytes =
+            (jlong)V2_QUADRANT_WIDTH * 2 * V2_QUADRANT_HEIGHT * 2 * V2_BYTES_PER_PIXEL;
+    if (!frameBuffer || !configBuffer || !resultBuffer
+            || width != V2_QUADRANT_WIDTH * 2 || height != V2_QUADRANT_HEIGHT * 2
+            || env->GetDirectBufferCapacity(frameBuffer) < expectedFrameBytes
+            || env->GetDirectBufferCapacity(configBuffer) < (jlong)sizeof(PipelineConfigV2)
+            || env->GetDirectBufferCapacity(resultBuffer)
+                    < (jlong)(sizeof(QuadrantResultV2) * V2_NUM_QUADRANTS)) {
+        jclass invalidArgument = env->FindClass("java/lang/IllegalArgumentException");
+        if (invalidArgument) env->ThrowNew(invalidArgument, "Invalid motion frame or native buffer size");
+        return;
+    }
     const uint8_t* frame = (const uint8_t*)env->GetDirectBufferAddress(frameBuffer);
     if (!frame) {
         LOGE_V2("Invalid frame buffer");
@@ -1432,9 +1475,23 @@ Java_com_overdrive_app_surveillance_NativeMotion_getQuadrantResultSize(
     return (jint)sizeof(QuadrantResultV2);
 }
 
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_overdrive_app_surveillance_NativeMotion_getPipelineGeometryV2(
+    JNIEnv* env, jclass clazz)
+{
+    const jint geometry[] = {
+        V2_GEOMETRY_ABI, V2_QUADRANT_WIDTH, V2_QUADRANT_HEIGHT, V2_BLOCK_SIZE,
+        V2_GRID_COLS, V2_GRID_ROWS, V2_POLICY_ROWS,
+        (jint)offsetof(QuadrantResultV2, blockConfidence)
+    };
+    jintArray result = env->NewIntArray(8);
+    if (result) env->SetIntArrayRegion(result, 0, 8, geometry);
+    return result;
+}
+
 // Set per-quadrant ROI block mask from Java.
-// blockMask is a byte[70] array where 1=enabled, 0=disabled.
-// Passing null or empty array clears the ROI (all blocks enabled).
+// Accept current masks and legacy 70-cell masks (last row inherits row 6).
+// Passing null clears the ROI (all blocks enabled).
 extern "C" JNIEXPORT void JNICALL
 Java_com_overdrive_app_surveillance_NativeMotion_setQuadrantRoi(
     JNIEnv* env, jclass clazz,
@@ -1454,7 +1511,7 @@ Java_com_overdrive_app_surveillance_NativeMotion_setQuadrantRoi(
     }
     
     jsize len = env->GetArrayLength(blockMask);
-    if (len != V2_TOTAL_BLOCKS) {
+    if (len != V2_TOTAL_BLOCKS && len != V2_POLICY_BLOCKS) {
         LOGE_V2("Invalid ROI mask size: %d (expected %d)", len, V2_TOTAL_BLOCKS);
         return;
     }
@@ -1467,7 +1524,8 @@ Java_com_overdrive_app_surveillance_NativeMotion_setQuadrantRoi(
         QuadrantState& qs = g_pipeline.quadrants[quadrant];
         qs.hasCustomRoi = true;
         for (int i = 0; i < V2_TOTAL_BLOCKS; i++) {
-            qs.blockRoiMask[i] = (mask[i] != 0);
+            int source = i < len ? i : i - V2_GRID_COLS;
+            qs.blockRoiMask[i] = (mask[source] != 0);
         }
     }
     

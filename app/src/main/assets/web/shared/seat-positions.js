@@ -420,7 +420,7 @@ const SeatPositions = {
                 '<button class="btn btn-primary" data-act="apply"' + ((this.acc && !this.positioningBlocked) ? '' : ' disabled') + '>' +
                     this.esc(this.t('seatpos.apply', 'Apply')) + '</button>' +
                 '<div class="sp-menu-wrap">' +
-                    '<button class="btn sp-icon-btn" data-act="menu" aria-haspopup="true" aria-expanded="false">' +
+                    '<button class="btn sp-icon-btn" data-act="menu" aria-haspopup="true" aria-expanded="false" aria-label="' + this.esc(this.t('common.more', 'More')) + '">' +
                         this.ICONS.dots + '</button>' +
                     '<div class="sp-menu">' +
                         '<button data-act="useInAutomation">' + this.ICONS.link +

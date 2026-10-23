@@ -141,7 +141,8 @@ public final class GenAiChatWebSocket {
                         cancellation,
                         delta -> sendJson(new JSONObject()
                                 .put("type", "delta")
-                                .put("text", delta)));
+                                .put("text", delta)),
+                        true);
                 response.put("type", "done");
                 response.put("mode", snapshot.mode);
                 response.put("contextAttached", snapshot.hasContext());

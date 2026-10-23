@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "name": "Battery cell",
+  "size": "small",
+  "about": "The built-in Battery & range widget, rebuilt from the same parts you can use.",
+  "layers": [
+    { "type": "capsule", "name": "Cell", "x": 26, "y": 15, "w": 62, "h": 154, "level": "=soc / 100",
+      "color": "=ramp(soc, 0, glowDanger, 10, glowDanger, 18, glowWarn, 26, glowWarn, 34, glowAccent)", "motion": "liquid" },
+    { "type": "text", "name": "Label", "x": 110, "y": 61, "size": 15, "weight": 500, "text": "Range", "color": "text2" },
+    { "type": "text", "name": "Range", "x": 110, "y": 106.8, "size": 38, "weight": 600, "text": "{dist(ev_range_km)}", "unit": "=dist_unit", "color": "text", "motion": "number" },
+    { "type": "text", "name": "Status", "x": 110, "y": 134.6, "size": 15, "weight": 600,
+      "text": "=soc <= 10 ? fmt(soc) + '% · Very low' : soc <= 20 ? fmt(soc) + '% · Charge soon' : fmt(soc) + '%'",
+      "color": "=soc <= 10 ? danger : soc <= 20 ? warn : text2" }
+  ]
+}

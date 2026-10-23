@@ -29,7 +29,7 @@ public class GpsMonitor {
     private static final Object lock = new Object();
 
     // Primary cache file (daemon uid 2000 can write to /data/local/tmp)
-    private static final String CACHE_FILE = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/gps_cache.json");
+    private static final String CACHE_FILE = com.overdrive.app.util.ScratchRoot.path("gps_cache.json");
     
     // Secondary cache file (app data directory - read-only for daemon, written by LocationSidecarService)
     private static final String CACHE_FILE_APP = "/data/data/com.overdrive.app/files/gps_cache.json";
@@ -43,6 +43,9 @@ public class GpsMonitor {
     private volatile long lastLoggedAt = 0;
     private static final long LOG_INTERVAL_MS = 30_000;
     private static final long LIVE_SPEED_FIX_MAX_AGE_MS = 5_000L;
+    private static final long STALE_LOG_FIX_AGE_MS = 10_000L;
+    // When the current position (re)arrived without a fix time; 0 while fixes are stamped.
+    private volatile long unstampedSinceElapsed = 0L;
 
     // Cache-write throttle. The on-disk cache exists ONLY for restart recovery
     // (all live consumers read the in-memory immutable snapshot, which is always
@@ -56,6 +59,21 @@ public class GpsMonitor {
     private volatile long lastCacheWriteAt = 0;
     private volatile double lastCachedLat = 0.0;
     private volatile double lastCachedLng = 0.0;
+
+    // Field diagnostic for "GPS lost for every app after hours" (#321): when the car is driving
+    // but the provider has produced no fix for minutes, log the system location state once per
+    // episode. Silent while fixes flow.
+    private static final long STALE_CHECK_PERIOD_S = 60;
+    private static final long STALE_WHILE_DRIVING_MS = 180_000L;
+    private static final long STALE_RESUMED_MS = 60_000L;
+    private static final long STALE_REPORT_MIN_INTERVAL_MS = 30 * 60_000L;
+    private static final double STALE_DRIVING_SPEED_KMH = 15.0;
+    // A last fix taken this fast (~29 km/h) cannot be where the car later stopped.
+    private static final float STALE_FAST_FIX_SPEED_MS = 8.0f;
+    private java.util.concurrent.ScheduledExecutorService staleWatch;
+    private volatile long staleWatchStartedElapsed = 0L;
+    private long staleReportedAtElapsed = 0L;   // 0 = no open episode; staleWatch thread only
+    private long lastStaleReportElapsed = 0L;
 
     private GpsMonitor() {}
 
@@ -147,6 +165,113 @@ public class GpsMonitor {
         } catch (Exception e) {
             CameraDaemon.log(TAG + ": Failed to start sidecar: " + e.getMessage());
         }
+        startStaleWatch();
+    }
+
+    private synchronized void startStaleWatch() {
+        if (staleWatch != null) return;
+        staleWatchStartedElapsed = SystemClock.elapsedRealtime();
+        staleWatch = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "GpsStaleWatch");
+            t.setDaemon(true);
+            return t;
+        });
+        // try/catch: a throw would silently cancel the fixed-delay task for good.
+        staleWatch.scheduleWithFixedDelay(() -> {
+            try {
+                checkStaleWhileDriving();
+            } catch (Throwable t) {
+                CameraDaemon.log(TAG + ": stale-GPS check failed: " + t.getMessage());
+            }
+        }, STALE_CHECK_PERIOD_S, STALE_CHECK_PERIOD_S, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    private void checkStaleWhileDriving() {
+        GpsFixSnapshot fix = fixSnapshot;
+        long now = SystemClock.elapsedRealtime();
+        long fixAgeMs;
+        boolean noLiveFix = !fix.hasLocation() || fix.loadedFromCache;
+        if (noLiveFix) {
+            fixAgeMs = now - staleWatchStartedElapsed;   // no live fix since this daemon started
+        } else if (fix.fixElapsedMs > 0L) {
+            fixAgeMs = now - fix.fixElapsedMs;
+        } else {
+            // Lower bound: a replayed position has no fix time, and the keep-alive refreshes lastUpdate.
+            long since = unstampedSinceElapsed;
+            fixAgeMs = since > 0L ? now - since : 0L;
+        }
+        if (fixAgeMs < STALE_RESUMED_MS) {
+            if (staleReportedAtElapsed != 0L) {
+                CameraDaemon.log(TAG + ": GPS fixes resumed "
+                        + (now - staleReportedAtElapsed) / 1000 + "s after the stale report");
+                staleReportedAtElapsed = 0L;
+            }
+            return;
+        }
+        if (fixAgeMs < STALE_WHILE_DRIVING_MS || staleReportedAtElapsed != 0L) return;
+        if (lastStaleReportElapsed != 0L
+                && now - lastStaleReportElapsed < STALE_REPORT_MIN_INTERVAL_MS) {
+            return;
+        }
+        double speedKmh = Double.NaN;
+        try {
+            com.overdrive.app.byd.BydVehicleData data =
+                    com.overdrive.app.byd.BydDataCollector.getInstance().getData();
+            if (data != null) speedKmh = data.speedKmh;
+        } catch (Throwable ignored) {}
+        boolean driving = speedKmh >= STALE_DRIVING_SPEED_KMH;
+        boolean stoppedAfterFastFix = !driving && fix.hasLocation()
+                && fix.speed >= STALE_FAST_FIX_SPEED_MS;
+        if (!driving && !stoppedAfterFastFix) return;
+
+        staleReportedAtElapsed = now;
+        lastStaleReportElapsed = now;
+        CameraDaemon.log(TAG + ": no GPS fix for " + fixAgeMs / 1000 + "s"
+                + (noLiveFix ? " (none since daemon start)"
+                        : fix.fixElapsedMs <= 0L ? " (replayed position, fix time unknown)" : "")
+                + (driving ? " while driving at " + Math.round(speedKmh) + " km/h"
+                        : " while not driving; the last fix was taken at "
+                                + Math.round(fix.speed * 3.6f) + " km/h")
+                + " | location_mode=" + shellLine("settings get secure location_mode")
+                + " providers_allowed=" + shellLine("settings get secure location_providers_allowed"));
+        String dump = shellLine("dumpsys location 2>/dev/null"
+                + " | grep -iE 'location mode|location setting|enabled|provider:|last location|lastfixtime|mstarted|navigating|cn0'"
+                + " | head -40");
+        for (String line : dump.split("\n")) {
+            if (!line.trim().isEmpty()) CameraDaemon.log(TAG + ":   " + line.trim());
+        }
+    }
+
+    /** Runs a short shell pipeline (killed after 5 s) and returns its trimmed output. */
+    private static String shellLine(String command) {
+        try {
+            Process process = new ProcessBuilder("sh", "-c", command)
+                    .redirectErrorStream(true)
+                    .start();
+            Thread killer = new Thread(() -> {
+                try {
+                    if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        process.destroyForcibly();
+                    }
+                } catch (InterruptedException ignored) {}
+            }, "GpsStaleShellTimeout");
+            killer.setDaemon(true);
+            killer.start();
+            StringBuilder out = new StringBuilder();
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null && out.length() < 8_000) {
+                    out.append(line).append('\n');
+                }
+            } finally {
+                killer.interrupt();
+                process.destroy();
+            }
+            return out.toString().trim();
+        } catch (Exception e) {
+            return "?";
+        }
     }
 
     /**
@@ -176,7 +301,17 @@ public class GpsMonitor {
         GpsFixSnapshot fix = new GpsFixSnapshot(
                 lat, lng, speed, heading, accuracy, altitude, verticalAccuracy, altitudeIsMsl,
                 time, fixElapsedMs, false);
+        GpsFixSnapshot previous = this.fixSnapshot;
+        if (fixElapsedMs > 0L) {
+            unstampedSinceElapsed = 0L;
+        } else if (unstampedSinceElapsed == 0L
+                || previous.latitude != lat || previous.longitude != lng) {
+            unstampedSinceElapsed = SystemClock.elapsedRealtime();
+        }
         this.fixSnapshot = fix;
+        // altitude, grade and the elevation profile for the RoadSense widget
+        try { TerrainTracker.get().onFix(fix); } catch (Throwable ignored) { }
+        try { ParkedPosition.get().onFix(fix); } catch (Throwable ignored) { }
 
         // Persist to cache file — throttled (see CACHE_WRITE_MIN_MS). Live
         // consumers read the in-memory fields above; the disk cache is only for
@@ -198,8 +333,23 @@ public class GpsMonitor {
         long now = System.currentTimeMillis();
         if (fix.hasLocation() && now - lastLoggedAt >= LOG_INTERVAL_MS) {
             lastLoggedAt = now;
-            CameraDaemon.log(TAG + ": GPS: " + lat + ", " + lng + " (speed=" + speed + "m/s)");
+            long fixAge = fixAgeMs(fix);
+            String age = fixAge < 0L ? ", fixAge=unknown"
+                    : fixAge >= STALE_LOG_FIX_AGE_MS ? ", fixAge=" + fixAge / 1000 + "s" : "";
+            CameraDaemon.log(TAG + ": GPS: " + lat + ", " + lng + " (speed=" + speed + "m/s" + age + ")");
         }
+    }
+
+    /**
+     * Monotonic age of a fix in ms, or -1 when it carries no fix time (restored or replayed
+     * cache). The sidecar keep-alive re-sends a held fix with a fresh lastUpdate, so that is no age.
+     */
+    public static long fixAgeMs(GpsFixSnapshot fix) {
+        if (fix == null || !fix.hasLocation() || fix.loadedFromCache || fix.fixElapsedMs <= 0L) {
+            return -1L;
+        }
+        long age = SystemClock.elapsedRealtime() - fix.fixElapsedMs;
+        return age >= 0L ? age : -1L;
     }
 
     /**
@@ -357,6 +507,12 @@ public class GpsMonitor {
 
     public void stop() {
         isRunning = false;
+        synchronized (this) {
+            if (staleWatch != null) {
+                staleWatch.shutdownNow();
+                staleWatch = null;
+            }
+        }
         // Force a final flush so the freshest in-memory fix survives a clean
         // shutdown even if the last throttled write was skipped.
         saveToCache();

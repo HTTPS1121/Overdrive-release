@@ -40,11 +40,11 @@ final class DiLink5CameraSafety {
     private static final long COMMAND_TIMEOUT_MS = 750L;
 
     private static final String SESSION_MARKER_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_dilink5_camera_session");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_dilink5_camera_session");
     private static final String BLOCK_MARKER_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_dilink5_camera_blocked");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_dilink5_camera_blocked");
     private static final String RELEASE_MARKER_PATH =
-            com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/overdrive_dilink5_camera_release");
+            com.overdrive.app.util.ScratchRoot.path("overdrive_dilink5_camera_release");
     private static final File SESSION_MARKER =
             new File(SESSION_MARKER_PATH);
     private static final File BLOCK_MARKER =
@@ -286,8 +286,8 @@ final class DiLink5CameraSafety {
                 // so no other daemon instance is alive, and the kernel closed
                 // that process's DMA-BUF/socket fds. Any orphaned
                 // fast_cam_capture child is retired by the exact-path /proc
-                // sweep that runs before this preflight (and exits 125 on its
-                // own within 3 s once its consumer socket died). Treat the
+                // sweep that runs before this preflight (and stops its cameras
+                // and exits on its own once its consumer socket died). Treat the
                 // stale lease as an unclean release: record a foreign release
                 // fence so the cross-process reacquire cooldown gives the AIS
                 // server time to drop the dead client, then continue.

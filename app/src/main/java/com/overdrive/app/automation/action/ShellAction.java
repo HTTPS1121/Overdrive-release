@@ -117,7 +117,7 @@ public class ShellAction extends BaseAction {
             // force-kill a long-lived-stdout command (logcat, top, tail -f) so it
             // cannot park the AutomationQueue worker, then reap the child so
             // nothing accumulates across repeated autonomous fires.
-            final Process p = new ProcessBuilder("sh", "-c", cmd)
+            final Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd))
                     .redirectErrorStream(true)
                     .start();
             final java.io.InputStream is = p.getInputStream();

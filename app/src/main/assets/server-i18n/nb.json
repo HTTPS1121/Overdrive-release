@@ -235,7 +235,9 @@
       "check_update": "⬆️ Sjekk oppdatering",
       "backup": "💾 Backup",
       "stop": "⛔ Stopp",
-      "start": ":check_mark_knapp: Start"
+      "start": ":check_mark_knapp: Start",
+      "tunnel_switch": "🔁 Bytt til {0}",
+      "tunnel_run_both": "➕ Kjør begge"
     },
     "daemons": {
       "title": "🤖 *Daemons*\n\n"
@@ -274,7 +276,8 @@
       "not_running": "Jeg {0} kjører ikke.",
       "status_running": "{0}: ✅ Kjører",
       "action_usage": "Bruk: /daemon {0} starter stoppstatus",
-      "tunnel_url": "🌐 *Tunnel URL*\n{0}"
+      "tunnel_url": "🌐 *Tunnel URL*\n{0}",
+      "tunnel_conflict": "⚠️ {0} kjører allerede.\n\nVil du bytte til {1} (dette stopper {0}), eller kjøre begge tunnelene samtidig?"
     },
     "events": {
       "download_usage": "⚠️ Bruk: `/download <filename>`\nEksempel: `/download event_20260113_143022.mp4`",
@@ -594,10 +597,11 @@
     "locked": "Låst",
     "unlocked": "Opplåst",
     "unlock_source": "Opplåsingskilde",
-    "unlock_source_description": "Hvordan bilen sist ble låst opp.",
+    "unlock_source_description": "Nøkkelbrikke-knapp i 2 minutter etter at opplåsingsknappen på nøkkelbrikken er trykket, og resten av en kjøretur som startes innen den tiden; ellers Annet / ukjent.",
     "unlock_source_fob": "Nøkkelbrikke-knapp",
+    "unlock_source_none": "Annet / ukjent",
     "easy_entry": "Enkel inngang",
-    "easy_entry_description": "Om setets enkel-inngang-bevegelse er i ro, i bevegelse, eller har satt seg etter bevegelse.",
+    "easy_entry_description": "Førersetets enkel inngang-bevegelse etter opplåsing med nøkkelbrikken: i ro, i bevegelse, eller ferdig når det har stoppet (holdes i 1 minutt).",
     "easy_entry_idle": "I ro",
     "easy_entry_moving": "I bevegelse",
     "easy_entry_settled": "Ferdig",
@@ -691,6 +695,7 @@
     "blind_spot_description": "Om radarblindvarsler varsles for en side. Deksler med blindsted, endring av kjørebanen og advarsler om krysstrafikk. Varsler er kortfattede, så signalet holdes på i noen få sekunder etter den siste advarselen.",
     "side_left": "Venstre",
     "side_right": "Høyre",
+    "side_any": "Hvilken som helst side",
     "rain_probability": "Regn Sannsynlighet",
     "rain_probability_description": "Treghetssjanse (%) de neste timene, fra lokalt vær ved hjelp av GPS. Trenger en posisjonsbestemmelse og nettverk.",
     "speak": "Snakk inn tekst",
@@ -704,7 +709,7 @@
     "screenshot": "Ta skjermbilde",
     "screenshot_description": "Ta opp et skjermbilde av den valgte visningen.",
     "display": "Skjerm",
-    "display_head_unit": "Hode Enhet",
+    "display_head_unit": "Infotainmentsystem",
     "display_cluster": "Driver Cluster",
     "move_app_display": "Flytt appen til visning",
     "move_app_display_description": "Flytt en app til head-enheten eller driver-klyng-skjermen.",
@@ -916,7 +921,7 @@
     "camera_rear": "Bakre",
     "camera_left": "Venstre",
     "camera_right": "Høyre",
-    "display_headunit": "Hode enhet",
+    "display_headunit": "Infotainmentsystem",
     "position": "Posisjon",
     "pos_center": "Midtstilt",
     "pos_tr": "Øverst til høyre",

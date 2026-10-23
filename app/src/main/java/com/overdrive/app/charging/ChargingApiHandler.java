@@ -808,12 +808,10 @@ public class ChargingApiHandler {
                 } catch (Exception ignored) {}
                 try {
                     SohEstimator soh = database.getSohEstimator();
-                    if (soh != null && soh.hasDisplaySoh()) {
-                        double value = soh.getDisplaySoh();
-                        if (value > 0 && value <= 100) {
-                            sohPercent =
-                                    Math.round(value * 10.0) / 10.0;
-                        }
+                    double value = SohEstimator.getDisplaySohOrOem(soh);
+                    if (value > 0 && value <= 100) {
+                        sohPercent =
+                                Math.round(value * 10.0) / 10.0;
                     }
                 } catch (Exception ignored) {}
             }

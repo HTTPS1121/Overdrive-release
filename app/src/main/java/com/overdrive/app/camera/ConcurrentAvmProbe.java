@@ -64,6 +64,9 @@ public final class ConcurrentAvmProbe {
      */
     public static int runIfNeeded() {
         try {
+            if (com.overdrive.app.camera.camera2.Camera2Platform.isSelected()) {
+                return -1;
+            }
             if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()
                     || terminalCameraOpenRestart.get()
                     || com.overdrive.app.daemon.CameraDaemon

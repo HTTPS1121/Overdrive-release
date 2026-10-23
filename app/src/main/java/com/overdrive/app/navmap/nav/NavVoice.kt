@@ -81,6 +81,8 @@ class NavVoice(context: Context) {
      *
      * @param mute true to silence guidance, false to re-enable it
      */
+    fun isMuted(): Boolean = muted
+
     fun setMuted(mute: Boolean) {
         muted = mute
         if (mute) {

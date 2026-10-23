@@ -32,12 +32,14 @@ import java.util.Map;
  *   GET  /api/vehicle/state         — current door/window/trunk/lock state
  *   GET  /api/vehicle/cloud-status  — BYD Cloud connection status
  *   GET  /api/vehicle/cloud-lock    — cached cloud lock state (REST refresh if stale)
- *   POST /api/vehicle/lock          — CLOUD_ONLY, terminally confirmed
- *   POST /api/vehicle/unlock        — CLOUD_ONLY, terminally confirmed
+ *   POST /api/vehicle/lock          — SDK_FIRST on the local rail, cloud as confirmed fallback
+ *   POST /api/vehicle/unlock        — SDK_FIRST on the local rail, cloud as confirmed fallback
  *   POST /api/vehicle/trunk         — SDK first with safe cloud fallback when parked
  *   POST /api/vehicle/window        — area=0 open/close SDK_FIRST with cloud fallback
- *   POST /api/vehicle/flash         — CLOUD_ONLY, terminally confirmed
- *   POST /api/vehicle/find-car      — CLOUD_ONLY, terminally confirmed
+ *   POST /api/vehicle/flash         — SDK_FIRST on the local rail, cloud as confirmed fallback
+ *   POST /api/vehicle/find-car      — SDK_FIRST on the local rail, cloud as confirmed fallback
+ *   POST /api/vehicle/power-on      — SDK_ONLY, blocked unless parked and stationary
+ *   POST /api/vehicle/power-off     — SDK_ONLY, blocked unless parked and stationary
  *   POST /api/vehicle/climate       — power=SDK_FIRST with cloud fallback, set_temp/set_fan=SDK_ONLY
  *   GET  /api/vehicle/climate-schedule — BOOKINGAIR booking list (cloud reported)
  *   POST /api/vehicle/climate-schedule — BOOKINGAIR create/update/delete, CLOUD_ONLY
@@ -59,11 +61,103 @@ import java.util.Map;
 public class VehicleControlApiHandler {
 
     private static final DaemonLogger logger = DaemonLogger.getInstance("VehicleControlApi");
+
+    // DI5 ambient palette size, read over the app bridge off the poll thread (each bridge request
+    // starts the app's service). A known count is kept 10 minutes, an unknown one retried after 1;
+    // so is a missing car palette, for its first few reads.
+    private static volatile int diLink5AmbientColours = BydVehicleData.UNAVAILABLE;
+    private static volatile String[] diLink5AmbientCarPalette;
+    private static volatile int diLink5AmbientPaletteMisses;
+    private static final int DILINK5_AMBIENT_PALETTE_RETRIES = 5;
+    private static volatile long diLink5AmbientColoursReadAtMs = 0L;
+    private static final java.util.concurrent.atomic.AtomicBoolean diLink5AmbientColoursReading =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private static final long DILINK5_AMBIENT_COLOURS_TTL_MS = 10 * 60_000L;
+    private static final long DILINK5_AMBIENT_COLOURS_RETRY_MS = 60_000L;
+
+    /** The palette this DI5 car has; the 31-colour table until a read lands. */
+    private static String[] diLink5AmbientOptions() {
+        long now = android.os.SystemClock.elapsedRealtime();
+        long ttl = diLink5AmbientColours == BydVehicleData.UNAVAILABLE
+                || (diLink5AmbientCarPalette == null
+                        && diLink5AmbientPaletteMisses < DILINK5_AMBIENT_PALETTE_RETRIES)
+                ? DILINK5_AMBIENT_COLOURS_RETRY_MS : DILINK5_AMBIENT_COLOURS_TTL_MS;
+        if ((diLink5AmbientColoursReadAtMs == 0L || now - diLink5AmbientColoursReadAtMs > ttl)
+                && diLink5AmbientColoursReading.compareAndSet(false, true)) {
+            Thread reader = new Thread(() -> {
+                try {
+                    com.overdrive.app.byd.VehicleActuatorBridge.DiLink5AmbientColours read =
+                            com.overdrive.app.byd.VehicleActuatorBridge.readDiLink5AmbientColours(
+                                    BydDataCollector.getInstance().getRuntimeContext());
+                    if (read.palette != null && diLink5AmbientCarPalette == null) {
+                        logger.info("DI5 ambient palette reported by the car: "
+                                + String.join(",", read.palette));
+                    }
+                    // A read before the car body adapter binds carries no palette; keep the last one.
+                    if (read.palette != null) diLink5AmbientCarPalette = read.palette;
+                    if (read.count != BydVehicleData.UNAVAILABLE) diLink5AmbientColours = read.count;
+                    if (read.palette == null && read.count != BydVehicleData.UNAVAILABLE) {
+                        diLink5AmbientPaletteMisses++;
+                    }
+                } catch (Throwable t) {
+                    logger.debug("DI5 ambient palette read failed: " + t.getMessage());
+                } finally {
+                    diLink5AmbientColoursReadAtMs = android.os.SystemClock.elapsedRealtime();
+                    diLink5AmbientColoursReading.set(false);
+                }
+            }, "Di5AmbientPalette");
+            reader.setDaemon(true);
+            reader.start();
+        }
+        int count = diLink5AmbientColours;
+        if (count == 0 || count == 1) return new String[0];
+        String[] carPalette = diLink5AmbientCarPalette;
+        // An unknown count writes 1..31, so a 31-entry car palette still applies.
+        int fit = count == BydVehicleData.UNAVAILABLE ? 31 : count;
+        if (carPalette != null && carPalette.length == fit) return carPalette;
+        String[] palette = com.overdrive.app.byd.light.AmbientPalette.paletteFor(count, true);
+        return palette != null ? palette : LightConstants.AMBIENT_COLOURS;
+    }
     static final long IVI_REBOOT_GUARD_MS = 5L * 60_000L;
     private static final String IVI_REBOOT_BOOT_ID_KEY = "iviRebootGuardBootId";
     private static final String IVI_REBOOT_ELAPSED_KEY = "iviRebootGuardElapsedMs";
     private static final String BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
     private static final Object IVI_REBOOT_LOCK = new Object();
+
+    /** Upper bound for the assist-off status file; anything larger is treated as corrupt. */
+    private static final long DI5_ASSIST_OFF_STATUS_MAX_BYTES = 64L * 1024L;
+
+    /**
+     * GET /api/vehicle/di5-assist-off — diagnostics for the opt-in DiLink 5 assist-off profile.
+     * The applier runs in the app process and publishes its per-cycle status into the app's
+     * external files directory (the app UID cannot write the shell scratch root); this server
+     * runs in byd_cam_daemon and reads that file. Additive: nothing here is a capability verdict
+     * for other controls.
+     */
+    private static void handleDi5AssistOffStatus(OutputStream out) throws Exception {
+        JSONObject response = new JSONObject();
+        response.put("success", true);
+        JSONObject vehicle = com.overdrive.app.config.UnifiedConfigManager.getVehicle();
+        String modelId = vehicle.optString("modelId", "");
+        String modelSource = vehicle.optString("modelSource", "");
+        boolean di5Selected = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        response.put("profile",
+                com.overdrive.app.byd.assist.DiLink5AssistOffProfile.fromVehicle(vehicle).toJson());
+        response.put("modelId", modelId);
+        response.put("modelSource", modelSource);
+        response.put("modelConfirmed",
+                com.overdrive.app.byd.assist.DiLink5AssistOffGate.modelConfirmedForProfile(
+                        di5Selected, modelId, modelSource));
+        response.put("cameraMode",
+                com.overdrive.app.camera.dilink5.DiLink5Platform.currentActiveMode());
+        JSONObject status = com.overdrive.app.byd.assist.DiLink5AssistOffStatus
+                .readLatest(DI5_ASSIST_OFF_STATUS_MAX_BYTES);
+        response.put("status", status == null ? JSONObject.NULL : status);
+        response.put("statusFile",
+                com.overdrive.app.byd.assist.DiLink5AssistOffStatus.daemonReadCandidates()[0]
+                        .getPath());
+        HttpResponse.sendJson(out, response.toString());
+    }
 
     /** Upper bound for the lease status file; anything larger is treated as corrupt. */
     private static final long DI5_KEEPALIVE_STATUS_MAX_BYTES = 64L * 1024L;
@@ -99,6 +193,31 @@ public class VehicleControlApiHandler {
         HttpResponse.sendJson(out, response.toString());
     }
 
+    private static volatile String lastBackgroundAccessFailure;
+    private static volatile String lastBackgroundAccessResult;
+
+    /** The grant helpers log nowhere in this process; record an incomplete result once per change. */
+    private static void logDiLink5BackgroundAccess(JSONObject access) {
+        String failure = access.optBoolean("success", false) ? null : access.toString();
+        if (failure != null && !failure.equals(lastBackgroundAccessFailure)) {
+            logger.warn("DI5 background access incomplete: " + failure);
+        }
+        lastBackgroundAccessFailure = failure;
+        lastBackgroundAccessResult = access.toString();
+    }
+
+    /** A calibration log must stand alone: by the time it is sent, startup lines are often truncated. */
+    private static void logDiLink5CalibrationContext() {
+        Thread context = new Thread(() -> {
+            String access = lastBackgroundAccessResult;
+            logger.warn("DI5 cal context: background access "
+                    + (access != null ? access : "not requested since daemon start"));
+            KeymapApiHandler.logDiLink5A11yDiagnosticsSnapshot();
+        }, "Dilink5CalContext");
+        context.setDaemon(true);
+        context.start();
+    }
+
     public static boolean handle(String method, String path, String body, OutputStream out) throws Exception {
         String cleanPath = path.contains("?") ? path.substring(0, path.indexOf("?")) : path;
 
@@ -111,10 +230,31 @@ public class VehicleControlApiHandler {
         if (cleanPath.equals("/api/system/background-access")
                 && method.equals("POST")
                 && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
-            HttpResponse.sendJson(
-                    out,
-                    com.overdrive.app.daemon.AccSentryDaemon
-                            .applyBackgroundAccess().toString());
+            boolean startupAppVerified = false;
+            try {
+                startupAppVerified = body != null && !body.isEmpty()
+                        && new JSONObject(body).optBoolean("startupApp", false);
+            } catch (Exception ignored) {
+                // An empty or legacy body means the app did not verify the app-boot entry.
+            }
+            JSONObject access = com.overdrive.app.daemon.AccSentryDaemon
+                    .applyBackgroundAccess(startupAppVerified);
+            logDiLink5BackgroundAccess(access);
+            HttpResponse.sendJson(out, access.toString());
+            return true;
+        }
+
+        // POST /api/vehicle/di5-diag — app-process DiLink 5 diagnostics (that log is not uploadable).
+        if (cleanPath.equals("/api/vehicle/di5-diag") && method.equals("POST")) {
+            try {
+                JSONObject req = new JSONObject(body == null || body.isEmpty() ? "{}" : body);
+                String detail = req.optString("detail", "");
+                if (detail.length() > 300) detail = detail.substring(0, 300);
+                logger.info("DI5 diag " + req.optString("tag", "?") + ": " + detail);
+            } catch (Exception ignored) {
+                // Malformed report: nothing to record.
+            }
+            HttpResponse.sendJson(out, "{\"success\":true}");
             return true;
         }
 
@@ -126,9 +266,24 @@ public class VehicleControlApiHandler {
             return true;
         }
 
+        // GET /api/vehicle/di5-assist-off — diagnostics for the opt-in DiLink 5
+        // assist-off profile (status file published by the app process).
+        if (cleanPath.equals("/api/vehicle/di5-assist-off") && method.equals("GET")) {
+            handleDi5AssistOffStatus(out);
+            return true;
+        }
+
         // GET /api/vehicle/state
         if (cleanPath.equals("/api/vehicle/state") && method.equals("GET")) {
             handleGetState(out);
+            return true;
+        }
+
+        if (cleanPath.equals("/api/vehicle/local-control-diagnostics") && method.equals("GET")) {
+            JSONObject diagnostics = BydDataCollector.getInstance().getLocalControlDiagnostics();
+            logger.info("LocalControlCapabilities: " + diagnostics);
+            HttpResponse.sendJson(out, new JSONObject().put("success", true)
+                    .put("diagnostics", diagnostics).toString());
             return true;
         }
 
@@ -293,6 +448,13 @@ public class VehicleControlApiHandler {
             return true;
         }
 
+        // POST /api/vehicle/power-on | /api/vehicle/power-off
+        if ((cleanPath.equals("/api/vehicle/power-on") || cleanPath.equals("/api/vehicle/power-off"))
+                && method.equals("POST")) {
+            handleVehiclePower(out, cleanPath.endsWith("/power-on"));
+            return true;
+        }
+
         // POST /api/vehicle/battery-heat
         if (cleanPath.equals("/api/vehicle/battery-heat") && method.equals("POST")) {
             handleBatteryHeat(out, body);
@@ -381,6 +543,25 @@ public class VehicleControlApiHandler {
             handleClusterMirrorStatus(out);
             return true;
         }
+        // POST /api/vehicle/cluster-mirror-publish — re-broadcast the view-mirror Binder to the
+        // app when it cannot resolve the service from ServiceManager (DI5 shell uid is refused).
+        if (cleanPath.equals("/api/vehicle/cluster-mirror-publish") && method.equals("POST")) {
+            JSONObject response = new JSONObject();
+            response.put("success", com.overdrive.app.surveillance.ClusterViewMirrorService
+                    .publishToApp("app-request"));
+            response.put("registered", com.overdrive.app.surveillance.ClusterViewMirrorService
+                    .isRegistered());
+            HttpResponse.sendJson(out, response.toString());
+            return true;
+        }
+        // POST /api/vehicle/cluster-transport — { transport: auto|legacy|dilink5 }.
+        // Persists projection.clusterTransport; applies live only while no cast /
+        // map / legacy projection is active (otherwise a camera-service restart
+        // applies it, exactly like the camera-mode selector).
+        if (cleanPath.equals("/api/vehicle/cluster-transport") && method.equals("POST")) {
+            handleClusterTransport(out, body);
+            return true;
+        }
         // POST /api/vehicle/cluster-touch — { type: tap|swipe, sx,sy[,sx2,sy2,ms] } in
         // mirror-SURFACE px (NOT normalized); the relay inverts them to cluster px.
         if (cleanPath.equals("/api/vehicle/cluster-touch") && method.equals("POST")) {
@@ -439,18 +620,25 @@ public class VehicleControlApiHandler {
             // Distinguish "app no longer installed" (so the UI can say so + refresh the
             // picker) from a generic failure, before attempting the cast.
             boolean installed = com.overdrive.app.launcher.AppLauncher.isLaunchable(pkg);
+            // Route on the CLUSTER TRANSPORT, not the camera mode: DiLink 5.0
+            // firmware without the QCarCam library stays in "default" camera
+            // mode but must still cast through the DI5 container protocol.
             boolean diLink5 =
+                    com.overdrive.app.camera.dilink5.ClusterTransport.isDiLink5();
+            boolean diLink5Mode =
                     com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
             boolean diLink5Hardware =
                     com.overdrive.app.camera.dilink5.DiLink5Platform
                             .hasDiLink5CameraHardware();
-            boolean modeRequired = installed && diLink5Hardware && !diLink5;
+            boolean modeRequired =
+                    installed && diLink5Hardware && !diLink5Mode && !diLink5;
             boolean ok = false;
             if (installed && !modeRequired) {
                 ok = diLink5
                         ? com.overdrive.app.launcher.ClusterCast
                                 .startAndAwait(pkg, 60000L)
-                        : com.overdrive.app.launcher.ClusterCast.start(pkg);
+                        : com.overdrive.app.launcher.ClusterCast
+                                .startAfterSettle(pkg, 45000L);
             }
             response.put("success", ok);
             if (diLink5) {
@@ -458,14 +646,45 @@ public class VehicleControlApiHandler {
                         com.overdrive.app.launcher.ClusterCast.getStartPhase());
             }
             if (!ok) {
-                response.put("reason", !installed
-                        ? "not_installed"
-                        : (modeRequired
-                            ? "dilink5_mode_required"
-                            : "cast_failed"));
-                String detail = diLink5
+                String legacyVerdict = diLink5
+                        ? ""
+                        : com.overdrive.app.surveillance
+                                .ClusterProjectionController
+                                .legacyProtocolVerdict();
+                String di5Failure = diLink5
                         ? com.overdrive.app.launcher.ClusterCast.getLastStartFailure()
                         : "";
+                String reason;
+                if (!installed) {
+                    reason = "not_installed";
+                } else if (modeRequired) {
+                    reason = "dilink5_mode_required";
+                } else if (diLink5 && di5Failure != null
+                        && di5Failure.contains("reclaimed display")) {
+                    // An OEM cluster app (com.byd.sr / launchermap) kept
+                    // re-fronting itself on every shared surface we tried.
+                    reason = "oem_cluster_takeover";
+                } else if (com.overdrive.app.surveillance
+                        .ClusterProjectionController
+                        .LEGACY_VERDICT_UNAVAILABLE.equals(legacyVerdict)) {
+                    reason = "cluster_service_unavailable";
+                } else if (com.overdrive.app.surveillance
+                        .ClusterProjectionController
+                        .LEGACY_VERDICT_UNSUPPORTED.equals(legacyVerdict)) {
+                    reason = "legacy_protocol_rejected";
+                } else if (com.overdrive.app.surveillance
+                        .ClusterProjectionController
+                        .LEGACY_VERDICT_INDETERMINATE.equals(legacyVerdict)) {
+                    reason = "recovery_lockout";
+                } else {
+                    reason = "cast_failed";
+                }
+                response.put("reason", reason);
+                String detail = diLink5
+                        ? com.overdrive.app.launcher.ClusterCast.getLastStartFailure()
+                        : com.overdrive.app.surveillance
+                                .ClusterProjectionController
+                                .legacyProtocolVerdictDetail();
                 response.put("error", !installed
                         ? "app is not installed"
                         : (modeRequired
@@ -479,6 +698,79 @@ public class VehicleControlApiHandler {
             }
         } catch (Exception e) {
             logger.warn("cluster-cast failed: " + e.getMessage());
+            response.put("success", false);
+            response.put("error", e.getMessage());
+        }
+        HttpResponse.sendJson(out, response.toString());
+    }
+
+    /**
+     * Persist (and, when the cluster is idle, live-apply) the cluster transport
+     * override. The three-way value mirrors {@code projection.clusterTransport}:
+     * {@code auto} (firmware detection), {@code legacy}, {@code dilink5}.
+     *
+     * <p>Live application is refused while a cast, the cluster map, or a legacy
+     * projection is active: flipping the routing under a live session would
+     * split its start/stop across two different transports. The persisted value
+     * still lands, so the next camera-service restart applies it — the response
+     * says which of the two happened ({@code applied} vs {@code restartRequired}).
+     */
+    private static void handleClusterTransport(OutputStream out, String body)
+            throws Exception {
+        JSONObject response = new JSONObject();
+        try {
+            JSONObject req = (body == null || body.isEmpty())
+                    ? new JSONObject() : new JSONObject(body);
+            String requested = com.overdrive.app.camera.dilink5.ClusterTransport
+                    .normalizeConfigured(req.optString("transport", ""));
+            if (requested == null) {
+                response.put("success", false);
+                response.put("error",
+                        "transport must be auto, legacy or dilink5");
+                HttpResponse.sendJson(out, response.toString());
+                return;
+            }
+            java.util.Map<String, Object> values = new java.util.HashMap<>();
+            values.put(
+                    com.overdrive.app.camera.dilink5.ClusterTransport.CONFIG_KEY,
+                    requested);
+            boolean persisted =
+                    com.overdrive.app.config.UnifiedConfigManager.updateValues(
+                            com.overdrive.app.camera.dilink5.ClusterTransport
+                                    .CONFIG_SECTION,
+                            values);
+            if (!persisted) {
+                response.put("success", false);
+                response.put("error", "could not persist cluster transport");
+                HttpResponse.sendJson(out, response.toString());
+                return;
+            }
+            // Live apply only when nothing cluster-side is running on the
+            // CURRENT transport. ClusterCast/ClusterMapProjector route their
+            // isActive() through the current transport, and the idle check
+            // also covers a transient blind-spot open with no holder token.
+            boolean busy = com.overdrive.app.launcher.ClusterCast.isActive()
+                    || com.overdrive.app.navmap.ClusterMapProjector.isActive()
+                    || !com.overdrive.app.surveillance.ClusterProjectionController
+                            .isProjectionIdleStatic();
+            com.overdrive.app.camera.dilink5.ClusterTransport.Resolution resolved;
+            if (busy) {
+                resolved = com.overdrive.app.camera.dilink5.ClusterTransport
+                        .current();
+            } else {
+                resolved = com.overdrive.app.camera.dilink5.ClusterTransport
+                        .refresh();
+                logger.info("cluster transport override applied live: "
+                        + requested + " -> " + resolved);
+            }
+            response.put("success", true);
+            response.put("configured", requested);
+            response.put("applied", !busy);
+            response.put("restartRequired", busy);
+            response.put("clusterTransport", resolved.transport);
+            response.put("clusterTransportSource", resolved.source);
+        } catch (Exception e) {
+            logger.warn("cluster-transport failed: " + e.getMessage());
             response.put("success", false);
             response.put("error", e.getMessage());
         }
@@ -519,9 +811,21 @@ public class VehicleControlApiHandler {
             int l = req.optInt("l", 0), t = req.optInt("t", 0);
             int r = req.optInt("r", 0), b = req.optInt("b", 0);
             boolean commit = req.optBoolean("commit", true);
-            boolean applied = com.overdrive.app.launcher.ClusterCast.resize(l, t, r, b, commit);
+            com.overdrive.app.launcher.ClusterCast.ResizeResult result =
+                    com.overdrive.app.launcher.ClusterCast.resizeWithResult(
+                            l, t, r, b, commit, req.optString("package", ""));
             response.put("success", true);
-            response.put("applied", applied);
+            response.put("applied", result.applied);
+            if (result.deferred) response.put("deferred", true);
+            if (result.retryable) response.put("retryable", true);
+            if (result.blocked) response.put("blocked", true);
+            if (!result.mode.isEmpty()) response.put("mode", result.mode);
+            if (result.bounds != null && !result.bounds.isEmpty()) {
+                response.put("bounds", new JSONObject()
+                        .put("l", result.bounds.left).put("t", result.bounds.top)
+                        .put("r", result.bounds.right).put("b", result.bounds.bottom));
+            }
+            if (!result.reason.isEmpty()) response.put("reason", result.reason);
         } catch (Exception e) {
             logger.warn("cluster-resize failed: " + e.getMessage());
             response.put("success", false);
@@ -613,11 +917,53 @@ public class VehicleControlApiHandler {
             response.put("dilink5Hardware",
                     com.overdrive.app.camera.dilink5.DiLink5Platform
                             .hasDiLink5CameraHardware());
-            if (com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            com.overdrive.app.camera.dilink5.ClusterTransport.Resolution
+                    transport = com.overdrive.app.camera.dilink5
+                            .ClusterTransport.current();
+            response.put("clusterTransport", transport.transport);
+            response.put("clusterTransportSource", transport.source);
+            // The CONFIGURED override (auto/legacy/dilink5) so the Projection
+            // screen's transport control reflects the persisted choice, which
+            // may differ from the resolved transport until a service restart.
+            String configuredTransport = "auto";
+            try {
+                org.json.JSONObject projCfg =
+                        com.overdrive.app.config.UnifiedConfigManager.loadConfig()
+                                .optJSONObject(
+                                        com.overdrive.app.camera.dilink5
+                                                .ClusterTransport.CONFIG_SECTION);
+                String normalized = com.overdrive.app.camera.dilink5
+                        .ClusterTransport.normalizeConfigured(
+                                projCfg != null
+                                        ? projCfg.optString(
+                                                com.overdrive.app.camera.dilink5
+                                                        .ClusterTransport.CONFIG_KEY,
+                                                "auto")
+                                        : "auto");
+                if (normalized != null) configuredTransport = normalized;
+            } catch (Throwable ignored) {}
+            response.put("clusterTransportConfigured", configuredTransport);
+            if (transport.isDiLink5()) {
                 response.put("castPhase",
                         com.overdrive.app.launcher.ClusterCast.getStartPhase());
                 response.put("castError",
                         com.overdrive.app.launcher.ClusterCast.getLastStartFailure());
+            } else {
+                // Legacy transport: expose the recovery/protocol verdict so
+                // the UI can explain a block instead of a bare "cast failed"
+                // (unavailable / unsupported / indeterminate lockout).
+                response.put("legacyVerdict",
+                        com.overdrive.app.surveillance
+                                .ClusterProjectionController
+                                .legacyProtocolVerdict());
+                response.put("legacyVerdictDetail",
+                        com.overdrive.app.surveillance
+                                .ClusterProjectionController
+                                .legacyProtocolVerdictDetail());
+                response.put("legacyAdmissionBlocked",
+                        com.overdrive.app.surveillance
+                                .ClusterProjectionController
+                                .isLegacyProjectionAdmissionBlocked());
             }
             // WHICH package is on the cluster. The UI needs this because the resize box acts on the
             // CAST app, while the spinner reflects the user's next PICK — the two diverge as soon as
@@ -760,9 +1106,12 @@ public class VehicleControlApiHandler {
             }
         }
 
-        // Track which source authoritatively set LF so we can derive `overall`
-        // correctly when cloud is missing. -1 = no authoritative LF yet.
+        // Track which source authoritatively set the driver door so we can derive
+        // `overall` correctly when cloud is missing. -1 = no authoritative read yet.
+        // BYD's front-axis labels are driver-relative (see DoorEventNotifier), so the
+        // OTA "LF" getter is the DRIVER door; it is painted on the driver's side.
         int otaLf = -1;
+        String driverCell = isRightHandDrive() ? "rf" : "lf";
         int cloudOverall = -1;
         boolean cloudAvailable = false;
 
@@ -772,7 +1121,7 @@ public class VehicleControlApiHandler {
         try {
             android.content.Context ctx = com.overdrive.app.daemon.CameraDaemon.getAppContext();
             if (ctx != null) {
-                Object otaDevice = com.overdrive.app.byd.BydDeviceHelper.getDevice(
+                Object otaDevice = com.overdrive.app.byd.BydDeviceHelper.getPolledDevice(
                     "android.hardware.bydauto.ota.BYDAutoOtaDevice", ctx);
                 if (otaDevice != null) {
                     Object v = com.overdrive.app.byd.BydDeviceHelper.callGetter(
@@ -831,13 +1180,13 @@ public class VehicleControlApiHandler {
 
         // Merge: the live OTA read is the primary signal (same priority the
         // surveillance lock gate uses — OTA first, cloud secondary), so it
-        // always wins the LF cell, and an OTA "unlocked" also wins `overall`:
+        // always wins the driver's cell, and an OTA "unlocked" also wins `overall`:
         // the driver door being unlocked makes the vehicle unlocked no matter
         // what the (up to 5-min-old) cloud snapshot claims. Cloud keeps
         // `overall` only for states OTA cannot see — e.g. all-locked
         // confirmation or a REAR door left unlocked while LF is locked.
         if (otaLf != -1) {
-            doors.put("lf", otaLf);
+            doors.put(driverCell, otaLf);
             if (cloudAvailable) {
                 // Derive `overall` from the MERGED per-door cells, not from
                 // cloud's own unmerged view: cloud's LF cell can lag the OTA
@@ -1005,7 +1354,11 @@ public class VehicleControlApiHandler {
         if (data.ambientEnabled != BydVehicleData.UNAVAILABLE) {
             lights.put("ambientEnabled", data.ambientEnabled == 1);
         }
-        lights.put("ambientOptions", new JSONArray(LightConstants.AMBIENT_COLOURS));
+        if (data.readingLight != BydVehicleData.UNAVAILABLE) {
+            lights.put("readingLight", data.readingLight == 1);
+        }
+        lights.put("ambientOptions", new JSONArray(
+                diLink5 ? diLink5AmbientOptions() : LightConstants.AMBIENT_COLOURS));
         response.put("lights", lights);
 
         // ADAS
@@ -1216,6 +1569,10 @@ public class VehicleControlApiHandler {
         response.put("configured", config.isConfigured());
         response.put("verified", config.isVerified());
         response.put("enabled", config.enabled);
+        // Whether lock / unlock / flash / find-car have a local rail when no account is set up,
+        // and whether the vehicle-power tiles can be offered at all.
+        response.put("localRemoteKey", com.overdrive.app.byd.RemoteKeyControl.isAvailable(
+                com.overdrive.app.byd.BydDataCollector.getInstance().getRuntimeContext()));
         HttpResponse.sendJson(out, response.toString());
     }
 
@@ -1240,33 +1597,241 @@ public class VehicleControlApiHandler {
     }
 
     /**
-     * Lock the car via the terminally confirmed cloud routing path.
+     * Lock the car: local rail first, confirmed by the car's own local readback, cloud fallback.
      */
     private static void handleLock(OutputStream out) throws Exception {
-        CommandResult r = VehicleCommandRouter.getInstance()
-                .execute(new VehicleCommandRouter.LockCommand());
-        logger.info("Lock: routed result=" + r.outcome + " path=" + r.path);
-        HttpResponse.sendJson(out, routedResponse(r, "lock").toString());
+        logLocalControlDiagnostics();
+        HttpResponse.sendJson(out, routeDoorLockWithLocalConfirmation(
+                new VehicleCommandRouter.LockCommand(), "lock", true).toString());
     }
 
     /**
-     * Unlock the car via the routing layer.
+     * Unlock the car: local rail first, confirmed by the car's own local readback, cloud fallback.
      */
     private static void handleUnlock(OutputStream out) throws Exception {
-        CommandResult r = VehicleCommandRouter.getInstance()
-                .execute(new VehicleCommandRouter.UnlockCommand());
-        logger.info("Unlock: routed result=" + r.outcome + " path=" + r.path);
-        HttpResponse.sendJson(out, routedResponse(r, "unlock").toString());
+        logLocalControlDiagnostics();
+        HttpResponse.sendJson(out, routeDoorLockWithLocalConfirmation(
+                new VehicleCommandRouter.UnlockCommand(), "unlock", false).toString());
     }
 
     /**
-     * Find car (horn + lights) — cloud-only on this BYD generation.
+     * Dashboard Lock/Unlock (P5, 17 Oct): the LOCAL leg first ({@code executeSdkOnly}, today's
+     * SDK_FIRST first leg incl. the driving gate), then the car's OWN readback decides what the
+     * response says — never the frame's rc=0 / router SUCCESS alone (field: Seal log_W5CFRJFW
+     * reported SUCCESS in 0.5 s with no effect). Readbacks are local only — the Di5 gate ledger
+     * ({@code readDiLink5GateDoorLockEvidence}) or the legacy left-front getter
+     * ({@code readDoorLockState}) — through the proximity path's own loop
+     * ({@code DiLink5GateActuationPolicy.confirmByDistinctReadbacks}: two distinct target readbacks,
+     * 4 s typed / 8 s ota / 12 s carsvc window); cloud state never confirms anything.
+     *
+     * <p>Local leg accepted but unconfirmed and the {@code cloudFallback} setting on → ONE cloud
+     * command through the router's cloud leg ({@code executeCloudOnly}, bounded by the command's
+     * cloud timeout), then a second LOCAL window cut to the decision budget. Local leg refused →
+     * the cloud leg regardless of the setting (today's SDK_FIRST behaviour, J12). The verdict comes
+     * from the pure table {@code DiLink5GateActuationPolicy.manualDoorLockVerdict}; {@code success}
+     * is set from that verdict only. {@code BLOCKED_DRIVING} from the local leg returns today's
+     * routed response unchanged.
+     */
+    private static JSONObject routeDoorLockWithLocalConfirmation(VehicleCommand cmd, String action,
+                                                                 boolean lock) throws Exception {
+        long started = android.os.SystemClock.elapsedRealtime();
+        String logPrefix = lock ? "Lock: routed result=" : "Unlock: routed result=";
+        int target = lock ? BydDataCollector.DOOR_STATE_LOCK : BydDataCollector.DOOR_STATE_UNLOCK;
+        boolean diLink5 = com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected();
+        BydDataCollector collector = BydDataCollector.getInstance();
+        VehicleCommandRouter router = VehicleCommandRouter.getInstance();
+        JSONObject remoteAccess = com.overdrive.app.remoteaccess.RemoteAccessSettings.read();
+
+        CommandResult sdk = router.executeSdkOnly(cmd);
+        if (sdk.outcome == VehicleCommandRouter.Outcome.BLOCKED_DRIVING) {
+            logger.info(logPrefix + sdk.outcome + " path=" + sdk.path
+                    + " confirmation=none outcome=blocked_driving");
+            return routedResponse(sdk, action);
+        }
+        boolean sdkAccepted = sdk.outcome == VehicleCommandRouter.Outcome.SUCCESS;
+        // The rail the car is read back on: Di5 → the proximity path's actuation-rail rule over the
+        // gate ledger (carsvc when the ledger holds nothing fresh but that rail is enabled, so its
+        // dump burst runs); non-Di5 → none (typed 4 s window over the legacy getter).
+        com.overdrive.app.byd.DiLink5LockRail rail = diLink5 ? dashboardActuationRail(collector, remoteAccess) : null;
+        com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.Confirmation first = null;
+        if (sdkAccepted) {
+            first = confirmDoorLockLocally(collector, diLink5, rail, target,
+                    com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.confirmationWindowMs(rail));
+        }
+        boolean cloudFallbackOn = com.overdrive.app.remoteaccess.RemoteAccessSettings.cloudFallback(remoteAccess);
+        // ONE cloud leg: after a refused local leg always (today's SDK_FIRST), after an accepted but
+        // unconfirmed one only with the switch on; never after a local confirmation.
+        boolean cloudLegDue = !sdkAccepted || (cloudFallbackOn
+                && first != com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.Confirmation.CONFIRMED);
+        CommandResult cloud = null;
+        com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.Confirmation second = null;
+        if (cloudLegDue) {
+            cloud = router.executeCloudOnly(cmd);
+            if (cloud.outcome == VehicleCommandRouter.Outcome.SUCCESS) {
+                second = confirmDoorLockLocally(collector, diLink5, rail, target,
+                        com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.cloudFallbackSecondWindowMs(
+                                rail, started, android.os.SystemClock.elapsedRealtime()));
+            }
+        }
+        com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.DoorLockVerdict verdict =
+                com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.manualDoorLockVerdict(
+                        sdk.outcome.name(), first, cloudFallbackOn,
+                        cloud == null ? null : cloud.outcome.name(), second,
+                        cloud != null && cloud.error instanceof java.util.concurrent.TimeoutException,
+                        cloud != null && cloud.outcome != VehicleCommandRouter.Outcome.SUCCESS
+                                ? cloudOnlineStateLabel() : "unknown");
+        long latencyMs = android.os.SystemClock.elapsedRealtime() - started;
+        CommandResult lastLeg = cloud != null ? cloud : sdk;
+        JSONObject response = doorLockResponse(verdict, lastLeg, action, latencyMs);
+        logger.info(logPrefix + lastLeg.outcome + " path=" + response.optString("path")
+                + " confirmation=" + verdict.confirmation() + " outcome=" + verdict.outcome
+                + " latencyMs=" + latencyMs + " sdk=" + sdk.outcome
+                + " firstReadback=" + (first == null ? "none" : first.name())
+                + " cloud=" + (cloud == null ? "not_run" : cloud.outcome.name())
+                + " secondReadback=" + (second == null ? "none" : second.name())
+                + (rail == null ? "" : " rail=" + rail.tag()));
+        return response;
+    }
+
+    /**
+     * Di5: the rail the dashboard confirms on — the proximity path's rule ({@code ota} when it holds
+     * fresh valid evidence, else the gate's selected rail); {@code carsvc} when the ledger holds
+     * nothing fresh right now but that rail is enabled (its dumps need the burst to flow); null
+     * (typed window) otherwise.
+     */
+    private static com.overdrive.app.byd.DiLink5LockRail dashboardActuationRail(BydDataCollector collector,
+                                                                                JSONObject remoteAccess) {
+        com.overdrive.app.byd.DiLink5LockRail rail =
+                com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.preferredActuationRail(
+                        collector.readDiLink5GateDoorLockEvidence(),
+                        collector.readDiLink5GateDoorLockEvidenceFor(com.overdrive.app.byd.DiLink5LockRail.OTA));
+        if (rail == null && com.overdrive.app.remoteaccess.RemoteAccessSettings.di5LockRails(remoteAccess)
+                .contains(com.overdrive.app.byd.DiLink5LockRail.CARSVC)) {
+            rail = com.overdrive.app.byd.DiLink5LockRail.CARSVC;
+        }
+        return rail;
+    }
+
+    /**
+     * One LOCAL confirmation window of the dashboard path — the proximity loop reused, not copied:
+     * two distinct target readbacks within {@code windowMs} confirm (350 ms poll). Di5 reads the gate
+     * ledger (carsvc gets a dump burst for the window); non-Di5 reads today's legacy getter stamped
+     * with its read time. Never cloud state. A window of 0 or less is UNCONFIRMED without a read.
+     */
+    private static com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.Confirmation confirmDoorLockLocally(
+            BydDataCollector collector, boolean diLink5, com.overdrive.app.byd.DiLink5LockRail rail, int target,
+            long windowMs) throws InterruptedException {
+        if (windowMs <= 0L) return com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.Confirmation.UNCONFIRMED;
+        if (rail == com.overdrive.app.byd.DiLink5LockRail.CARSVC) collector.requestDiLink5CarSvcLockBurst(windowMs);
+        return com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.confirmByDistinctReadbacks(
+                diLink5 ? collector::readDiLink5GateDoorLockEvidence
+                        : () -> com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.legacyReadback(
+                                collector.readDoorLockState(), android.os.SystemClock.elapsedRealtime()),
+                target, windowMs, android.os.SystemClock::elapsedRealtime, Thread::sleep);
+    }
+
+    /** The BYD cloud's reported {@code onlineState} for the failure label only; never gates or confirms. */
+    private static String cloudOnlineStateLabel() {
+        try {
+            return com.overdrive.app.byd.cloud.BydCloudDataProvider.getInstance().getStatusJson()
+                    .optString("onlineState", "unknown");
+        } catch (Throwable ignored) {
+            return "unknown";
+        }
+    }
+
+    /**
+     * Response of the dashboard Lock/Unlock: the {@link #routedResponse} keys ({@code success},
+     * {@code commandSuccess}, {@code path}, {@code latencyMs}, {@code message}, {@code outcome},
+     * {@code action}, {@code error} when not successful) plus {@code confirmation}
+     * ({@code local} | {@code none}). {@code success} comes from the verdict alone. A pass-through
+     * verdict ({@code rate_limited}, {@code blocked_driving}) reports the producing leg's router
+     * result exactly as today, with {@code confirmation=none} and the total latency.
+     */
+    private static JSONObject doorLockResponse(
+            com.overdrive.app.remoteaccess.DiLink5GateActuationPolicy.DoorLockVerdict verdict,
+            CommandResult lastLeg, String action, long latencyMs) {
+        JSONObject resp;
+        if (verdict.passThrough()) {
+            resp = routedResponse(lastLeg, action);
+        } else {
+            resp = new JSONObject();
+            String message = Messages.get("vehicle_control." + verdict.baseKey) + verdict.suffix;
+            try {
+                resp.put("success", verdict.success);
+                resp.put("commandSuccess", verdict.success);
+                resp.put("path", verdict.path);
+                resp.put("message", message);
+                resp.put("outcome", verdict.outcome);
+                resp.put("action", action);
+                if (!verdict.success) resp.put("error", message);
+            } catch (Exception ignored) {}
+        }
+        try {
+            resp.put("latencyMs", latencyMs);
+            resp.put("confirmation", verdict.confirmation());
+        } catch (Exception ignored) {}
+        return resp;
+    }
+
+    /**
+     * Find car (horn + lights) — local rail first, cloud fallback. Refused while moving.
      */
     private static void handleFindCar(OutputStream out) throws Exception {
         CommandResult r = VehicleCommandRouter.getInstance()
                 .execute(new VehicleCommandRouter.FindCarCommand());
         logger.info("FindCar: routed result=" + r.outcome + " path=" + r.path);
         HttpResponse.sendJson(out, routedResponse(r, "find-car").toString());
+    }
+
+    private static void handleVehiclePower(OutputStream out, boolean on) throws Exception {
+        logLocalControlDiagnostics();
+        long started = android.os.SystemClock.elapsedRealtime();
+        BydDataCollector collector = BydDataCollector.getInstance();
+        String generation = com.overdrive.app.camera.dilink5.DiLink5Platform
+                .currentActiveModeGeneration();
+        int before = collector.readPowerLevelNow();
+        CommandResult r = VehicleCommandRouter.getInstance().execute(on
+                ? new VehicleCommandRouter.VehiclePowerOnCommand()
+                : new VehicleCommandRouter.VehiclePowerOffCommand());
+        JSONObject response = routedResponse(r, on ? "power-on" : "power-off");
+        boolean confirmed = false;
+        int after = before;
+        if (r.outcome == VehicleCommandRouter.Outcome.SUCCESS) {
+            VehiclePowerConfirmation.Result readback = VehiclePowerConfirmation.await(on, 5_000L,
+                    collector::readPowerLevelNow,
+                    () -> com.overdrive.app.camera.dilink5.DiLink5Platform
+                            .matchesActiveModeGeneration(generation),
+                    android.os.SystemClock::elapsedRealtime, Thread::sleep);
+            confirmed = readback.confirmed;
+            after = readback.readback;
+            response.put("success", confirmed).put("commandSuccess", confirmed)
+                    .put("confirmation", confirmed ? "local" : "none")
+                    .put("outcome", confirmed ? "success" : "unconfirmed");
+            String message = r.displayMessage + (confirmed ? " · confirmed by the car"
+                    : " · vehicle power change not confirmed by the car");
+            response.put("message", message);
+            if (!confirmed) response.put("error", message);
+        }
+        response.put("powerBefore", before).put("powerAfter", after)
+                .put("latencyMs", android.os.SystemClock.elapsedRealtime() - started);
+        logger.info("VehiclePower: on=" + on + " result=" + r.outcome + " path=" + r.path
+                + " confirmation=" + (confirmed ? "local" : "none")
+                + " outcome=" + response.optString("outcome")
+                + " before=" + before + " after=" + after);
+        HttpResponse.sendJson(out, response.toString());
+    }
+
+    private static void logLocalControlDiagnostics() {
+        int sdk = android.os.Build.VERSION.SDK_INT;
+        if (sdk < 31 || sdk > 34) return;
+        try {
+            logger.info("LocalControlCapabilities: "
+                    + BydDataCollector.getInstance().getLocalControlDiagnostics());
+        } catch (RuntimeException | LinkageError unavailable) {
+            logger.info("LocalControlCapabilities: unavailable ("
+                    + unavailable.getClass().getSimpleName() + ")");
+        }
     }
 
     /**
@@ -1362,9 +1927,17 @@ public class VehicleControlApiHandler {
             JSONObject req = new JSONObject(body);
             if (req.has("action")) {
                 String action = jsonString(req, "action");
+                if ("rain_close_on".equals(action) || "rain_close_off".equals(action)) {
+                    CommandResult rr = VehicleCommandRouter.getInstance().execute(
+                            new VehicleCommandRouter.RainCloseWindowCommand(
+                                    "rain_close_on".equals(action)));
+                    logger.info("Window: " + action + " " + rr.outcome + " path=" + rr.path);
+                    HttpResponse.sendJson(out, routedResponse(rr, action).toString());
+                    return;
+                }
                 if (!"vent".equals(action)) {
                     response.put("success", false);
-                    response.put("error", "window action must be vent");
+                    response.put("error", "window action must be vent, rain_close_on or rain_close_off");
                     HttpResponse.sendJson(out, response.toString());
                     return;
                 }
@@ -1693,6 +2266,10 @@ public class VehicleControlApiHandler {
                 case "sync_off": cmd = new VehicleCommandRouter.AcTemperatureSyncCommand(false); break;
                 case "fan_only_on":  cmd = new VehicleCommandRouter.FanOnlyModeCommand(true);  break;
                 case "fan_only_off": cmd = new VehicleCommandRouter.FanOnlyModeCommand(false); break;
+                case "max_cool_on":  cmd = new VehicleCommandRouter.AcMaxCoolingCommand(true);  break;
+                case "max_cool_off": cmd = new VehicleCommandRouter.AcMaxCoolingCommand(false); break;
+                case "purify_on":  cmd = new VehicleCommandRouter.AirPurifyCommand(true);  break;
+                case "purify_off": cmd = new VehicleCommandRouter.AirPurifyCommand(false); break;
                 case "steering_heat_on":  cmd = new VehicleCommandRouter.SteeringWheelHeatCommand(true);  break;
                 case "steering_heat_off": cmd = new VehicleCommandRouter.SteeringWheelHeatCommand(false); break;
                 case "recirculate_on":  cmd = new VehicleCommandRouter.AcRecirculationCommand(true);  break;   // recirculation
@@ -2044,6 +2621,24 @@ public class VehicleControlApiHandler {
                     return;
                 }
                 cmd = new VehicleCommandRouter.LightsCommand(enabled.booleanValue());
+            } else if ("ambientColour".equals(target) && req.has("rgb")) {
+                // Any colour; the collector writes the nearest one this car's palette has.
+                int rgb = com.overdrive.app.byd.light.AmbientPalette.parseRgb(
+                        req.optString("rgb", null));
+                if (rgb <= 0) {
+                    response.put("success", false);
+                    response.put("error", "ambientColour rgb must be a non-black #RRGGBB colour");
+                    HttpResponse.sendJson(out, response.toString());
+                    return;
+                }
+                String zone = req.has("zone") ? jsonString(req, "zone") : "both";
+                if (!"front".equals(zone) && !"rear".equals(zone) && !"both".equals(zone)) {
+                    response.put("success", false);
+                    response.put("error", "ambientColour zone must be front, rear, or both");
+                    HttpResponse.sendJson(out, response.toString());
+                    return;
+                }
+                cmd = VehicleCommandRouter.AmbientColourCommand.rgb(rgb, zone);
             } else if ("ambientColour".equals(target)) {
                 Integer value = jsonInteger(req, "value");
                 if (value == null || value.intValue() < 1 || value.intValue() > 31) {
@@ -2088,6 +2683,19 @@ public class VehicleControlApiHandler {
                     return;
                 }
                 cmd = new VehicleCommandRouter.AmbientMusicModeCommand(enabled.booleanValue());
+            } else if ("turnSignalLeft".equals(target) || "turnSignalRight".equals(target)) {
+                Boolean enabled = jsonBoolean(req, "enable");
+                if (enabled == null) {
+                    response.put("success", false);
+                    response.put("error", "enable must be boolean");
+                    HttpResponse.sendJson(out, response.toString());
+                    return;
+                }
+                cmd = new VehicleCommandRouter.TurnSignalCommand(
+                        "turnSignalLeft".equals(target)
+                                ? com.overdrive.app.byd.BydDataCollector.TURN_SIGNAL_LEFT
+                                : com.overdrive.app.byd.BydDataCollector.TURN_SIGNAL_RIGHT,
+                        enabled.booleanValue());
             } else if ("headlightLevel".equals(target)) {
                 // REJECT out of range rather than let the setter clamp it: a request for 50 was
                 // clamped to 11 and answered success:true, so the caller was told a level it never
@@ -2110,6 +2718,11 @@ public class VehicleControlApiHandler {
             logger.info("Lights: target=" + target + " " + r.outcome);
             JSONObject resp = routedResponse(r, "lights");
             resp.put("target", target);
+            if (cmd instanceof VehicleCommandRouter.AmbientColourCommand
+                    && ((VehicleCommandRouter.AmbientColourCommand) cmd).rgb >= 0) {
+                int written = ((VehicleCommandRouter.AmbientColourCommand) cmd).resultColour;
+                if (written >= 1 && written <= 31) resp.put("colour", written);
+            }
             HttpResponse.sendJson(out, resp.toString());
         } catch (Exception e) {
             logger.warn("Light command failed: " + e.getMessage());
@@ -2169,6 +2782,14 @@ public class VehicleControlApiHandler {
             CommandResult r = VehicleCommandRouter.getInstance().execute(cmd);
             logger.info("Adas: target=" + target + " enable=" + enabled + " mode=" + mode
                     + " " + r.outcome);
+            // DI5 has no verified speed-limit-warning write yet; this tile starts on-car calibration.
+            if ("speedLimitWarning".equals(target)
+                    && r.outcome != VehicleCommandRouter.Outcome.SUCCESS
+                    && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                com.overdrive.app.byd.dilink5.Dilink5CalibrationRecorder.start(
+                        BydDataCollector.getInstance().getRuntimeContext());
+                logDiLink5CalibrationContext();
+            }
             JSONObject resp = routedResponse(r, "adas");
             resp.put("target", target);
             if (enabled != null) resp.put("enable", enabled.booleanValue());
@@ -2289,6 +2910,17 @@ public class VehicleControlApiHandler {
         try {
             JSONObject req = new JSONObject(body);
             String target = jsonString(req, "target");
+            // The voice assistant's media-session control (state / pause / resume of the session
+            // that is actually playing). Its own reply shape; every other target is unchanged.
+            if ("media_session".equals(target)) {
+                HttpResponse.sendJson(out, MediaSessionControl.handle(req).toString());
+                return;
+            }
+            // The voice assistant's hold of the head unit's own assistant duck (state / duck / release).
+            if ("media_duck".equals(target)) {
+                HttpResponse.sendJson(out, MediaDuckControl.handle(req).toString());
+                return;
+            }
             // Volume is an ABSOLUTE step index (0..stream max, ~40 for media on this head
             // unit — matching the car's own volume button), NOT a 0-100 percentage; its
             // upper bound is the real stream max, enforced by clamping in
@@ -2402,6 +3034,11 @@ public class VehicleControlApiHandler {
                 ok = routed.outcome == VehicleCommandRouter.Outcome.SUCCESS;
             } else if (isBrightness) {
                 ok = BydDataCollector.getInstance().setInfotainmentBrightness(value);
+            } else if (isClusterBrightness
+                    && com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+                CommandResult routed = VehicleCommandRouter.getInstance().execute(
+                        new VehicleCommandRouter.DriverDisplayBrightnessCommand(value));
+                ok = routed.outcome == VehicleCommandRouter.Outcome.SUCCESS;
             } else if (isClusterBrightness) {
                 ok = BydDataCollector.getInstance().setDriverDisplayBrightness(value);
             } else if (isHudBrightness) {
@@ -2475,7 +3112,15 @@ public class VehicleControlApiHandler {
      * { "kind":"toast"|"dialog", "message":"…", ["title":"…"], ["button":"OK"],
      *   ["duration":"short"|"long"], ["position":"top"|"center"|"bottom"],
      *   ["severity":"info"|"warning"|"alert"], ["timeoutSec":N] }.
-     * Fire-and-forget dispatch; returns as soon as the launch is queued.
+     *
+     * <p>Acknowledged dispatch: waits (bounded, see {@code MessageOverlayController})
+     * for the app process to report whether the message actually reached the screen, and
+     * returns {@code success:false} with the real reason when it did not. This used to be
+     * fire-and-forget — the {@code am} launch was queued and {@code success:true} returned —
+     * so an app-side refusal (overlay permission gate, service not started) was invisible:
+     * the 2026-09-23 field log shows nine "Show toast" automation runs, every one logged as
+     * dispatched, none seen by the driver. The automation engine reads this body
+     * ({@code ApiAction.responseSucceeded}) so the action now fails and logs the reason.
      */
     private static void handleMessage(OutputStream out, String body) throws Exception {
         JSONObject response = new JSONObject();
@@ -2503,26 +3148,39 @@ public class VehicleControlApiHandler {
             String severity =
                     com.overdrive.app.communication.RemoteCommunicationPolicy
                             .normalizeSeverity(req.optString("severity", "info"));
-            boolean ok;
+            com.overdrive.app.byd.MessageOverlayController.DisplayResult result;
             if ("dialog".equalsIgnoreCase(kind)) {
-                ok = com.overdrive.app.byd.MessageOverlayController.showDialog(
+                result = com.overdrive.app.byd.MessageOverlayController.showDialogAcknowledged(
                         req.optString("title", ""),
                         message,
                         req.optString("button", "OK"),
                         severity,
                         req.optInt("timeoutSec", 0));
             } else {
-                ok = com.overdrive.app.byd.MessageOverlayController.showToast(
+                result = com.overdrive.app.byd.MessageOverlayController.showToastAcknowledged(
                         message,
                         req.optString("duration", "short"),
                         req.optString("position", "bottom"),
                         severity);
             }
-            response.put("success", ok);
+            response.put("success", result.displayed);
             response.put("renderedKind", kind);
             response.put("downgraded",
                     "dialog".equals(requestedKind) && !"dialog".equals(kind));
-            if (!ok) response.put("error", "message is required");
+            if (!result.displayed) {
+                logger.warn("message not displayed (" + kind + "): " + result.reason);
+                response.put("error", result.reason);
+            } else if (result.isDegraded()) {
+                // The styled toast fallback preserved the requested presentation. Keep its
+                // cause in the log so a permission/window problem remains visible.
+                logger.warn("message displayed via fallback (" + kind + "): " + result.reason);
+                response.put("warning", result.reason);
+            } else {
+                // Acknowledged by the app process after WindowManager.addView succeeded — the
+                // one line that proves the message reached the screen (replaces the old
+                // fire-and-forget "dispatched" line, which proved nothing).
+                logger.info("message displayed (" + kind + ")");
+            }
             HttpResponse.sendJson(out, response.toString());
         } catch (Exception e) {
             logger.warn("message failed: " + e.getMessage());
@@ -2585,8 +3243,8 @@ public class VehicleControlApiHandler {
                         } else {
                             new ProcessBuilder(
                                     "sh", "-c",
-                                    "sleep 1; svc power reboot >/dev/null 2>&1 & "
-                                            + "sleep 2; reboot >/dev/null 2>&1")
+                                    com.overdrive.app.util.ScratchRoot.remap("sleep 1; svc power reboot >/dev/null 2>&1 & "
+                                            + "sleep 2; reboot >/dev/null 2>&1"))
                                     .start();
                             response.put("success", true);
                             response.put("message", "IVI reboot requested");
@@ -2785,7 +3443,7 @@ public class VehicleControlApiHandler {
     /** Run a shell command as the daemon (UID 2000), bounded so a hang can't park us. */
     private static boolean runDetachedShell(String cmd) {
         try {
-            Process p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+            Process p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)).redirectErrorStream(true).start();
             // Bound the wait; screencap on a big panel can take ~1s, nav is instant.
             boolean done = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
             if (!done) { p.destroyForcibly(); return false; }
@@ -2796,6 +3454,53 @@ public class VehicleControlApiHandler {
         }
     }
 
+    /**
+     * Same shell as {@link #runDetachedShell}, but returns stdout+stderr (capped at
+     * {@code capBytes}, drained past the cap so the child never blocks on a full pipe), or null
+     * on failure or timeout. Used for {@code dumpsys media_session}.
+     */
+    public static String runShellCapture(String cmd, long timeoutMs, int capBytes) {
+        Process p = null;
+        try {
+            p = new ProcessBuilder("sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd))
+                    .redirectErrorStream(true).start();
+            final java.io.InputStream in = p.getInputStream();
+            final java.io.ByteArrayOutputStream captured = new java.io.ByteArrayOutputStream();
+            Thread reader = new Thread(() -> {
+                byte[] buf = new byte[4096];
+                try {
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                        synchronized (captured) {
+                            int room = capBytes - captured.size();
+                            if (room > 0) captured.write(buf, 0, Math.min(n, room));
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }, "VehicleShellCapture");
+            reader.setDaemon(true);
+            reader.start();
+            boolean done = p.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (!done) p.destroyForcibly();
+            reader.join(300);
+            if (!done) return null;
+            synchronized (captured) {
+                return new String(captured.toByteArray(), StandardCharsets.UTF_8);
+            }
+        } catch (Exception e) {
+            logger.warn("runShellCapture failed: " + e.getMessage());
+            return null;
+        } finally {
+            if (p != null) {
+                try {
+                    p.destroy();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
     /** Minimal shell single-quote wrap for a component/package token. */
     private static String shellQuote(String s) {
         return "'" + s.replace("'", "'\\''") + "'";
@@ -2803,7 +3508,7 @@ public class VehicleControlApiHandler {
 
     // Audio library dir (mirror of AudioApiHandler.AUDIO_DIR) — where uploaded
     // sounds picked by the "Play Audio" action live. A "name" payload resolves here.
-    private static final String AUDIO_LIBRARY_DIR = com.overdrive.app.util.DaemonStorage.rebase("/data/local/tmp/.overdrive/audio");
+    private static final String AUDIO_LIBRARY_DIR = com.overdrive.app.util.ScratchRoot.path(".overdrive/audio");
 
     /**
      * Play an uploaded sound (by library {@code name}) or an explicit {@code path} on
@@ -3017,9 +3722,9 @@ public class VehicleControlApiHandler {
      * play/pause action's underlying media codes only where a fixed intent is known; the
      * "play_pause" action keeps the toggle keycode (85) since it is an explicit toggle
      * request. Codes match the OEM vehicle-control app (mediaNext=87, mediaPrevious=88). Returns false on
-     * unknown key.
+     * unknown key. Package-visible for {@link MediaSessionControl}'s last-resort delivery.
      */
-    private static boolean dispatchMediaKey(String key) {
+    static boolean dispatchMediaKey(String key) {
         int code;
         switch (key == null ? "" : key.trim().toLowerCase()) {
             case "play_pause":
@@ -3824,6 +4529,16 @@ public class VehicleControlApiHandler {
      * — `message` is a localized user-facing string,
      * — `commandSuccess` mirrors `success` so legacy UI branches still work.
      */
+    /** Same setting and default as DoorEventNotifier: anything but "lhd" is right-hand drive. */
+    private static boolean isRightHandDrive() {
+        try {
+            return !"lhd".equalsIgnoreCase(com.overdrive.app.config.UnifiedConfigManager
+                    .getVehicle().optString("driveSide", "rhd"));
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
     static JSONObject routedResponse(CommandResult r, String action) {
         JSONObject resp = new JSONObject();
         try {

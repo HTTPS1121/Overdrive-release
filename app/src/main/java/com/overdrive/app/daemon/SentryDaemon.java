@@ -44,11 +44,11 @@ public class SentryDaemon {
     /** bg_datacache */
     private static String SERVICE_BG_DATACACHE() { return Safe.s("m84QJmAGTQpH+XP36MaDpA=="); }
     /** /data/local/tmp */
-    private static String PATH_DATA_LOCAL_TMP() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("vuaMjrmBGBFh07qqnUuL8w==")); }
+    private static String PATH_DATA_LOCAL_TMP() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("vuaMjrmBGBFh07qqnUuL8w==")); }
     /** /data/data/com.android.providers.settings */
     private static String PATH_DATA_SYSTEM_SETTINGS() { return Safe.s("4FWGV7tPhe9614nkUCor4bnqFPfssDPoiHYPJxgenGAPG3xCP+0Cb2Hm04LZxNNJ"); }
     /** /data/local/tmp/sentry_daemon.pid */
-    private static String PATH_SENTRY_PID() { return com.overdrive.app.util.DaemonStorage.rebase(Safe.s("ZHx6IP38aGV/Q7iMCCcxzy1lsQShZtcRseW7dNE1si25na89IOT5cRwBuRuJBcXS")); }
+    private static String PATH_SENTRY_PID() { return com.overdrive.app.util.ScratchRoot.path(Safe.s("ZHx6IP38aGV/Q7iMCCcxzy1lsQShZtcRseW7dNE1si25na89IOT5cRwBuRuJBcXS")); }
     /** svc wifi enable */
     private static String CMD_WIFI_ENABLE() { return Safe.s("GzzLDvODRsKARkPOXEZeIA=="); }
     /** cmd wifi set-wifi-enabled enabled */
@@ -59,6 +59,7 @@ public class SentryDaemon {
     private static Context appContext = null;
     
     public static void main(String[] args) {
+        com.overdrive.app.util.ScratchRoot.bootstrapFromEnv();
         int myUid = android.os.Process.myUid();
         
         // Configure DaemonLogger for daemon context (enable stdout for app_process)
@@ -681,7 +682,7 @@ public class SentryDaemon {
     
     private static String execShell(String cmd) {
         try {
-            Process process = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            Process process = Runtime.getRuntime().exec(new String[]{"sh", "-c", com.overdrive.app.util.ScratchRoot.remap(cmd)});
             process.waitFor();
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             StringBuilder output = new StringBuilder();
@@ -954,10 +955,12 @@ public class SentryDaemon {
         execShell("pm grant " + APP_PKG() + " android.permission.ACCESS_COARSE_LOCATION");
         execShell("pm grant " + APP_PKG() + " android.permission.ACCESS_BACKGROUND_LOCATION");
         
-        // Allow background location via appops
-        execShell("appops set " + APP_PKG() + " ACCESS_FINE_LOCATION allow");
-        execShell("appops set " + APP_PKG() + " ACCESS_COARSE_LOCATION allow");
-        execShell("appops set " + APP_PKG() + " ACCESS_BACKGROUND_LOCATION allow");
+        // Allow background location via appops (DiLink 5: appops rejects these names, skip them).
+        if (!com.overdrive.app.camera.dilink5.DiLink5Platform.isSelected()) {
+            execShell("appops set " + APP_PKG() + " ACCESS_FINE_LOCATION allow");
+            execShell("appops set " + APP_PKG() + " ACCESS_COARSE_LOCATION allow");
+            execShell("appops set " + APP_PKG() + " ACCESS_BACKGROUND_LOCATION allow");
+        }
         
         // Allow background operation
         execShell("appops set " + APP_PKG() + " RUN_IN_BACKGROUND allow");

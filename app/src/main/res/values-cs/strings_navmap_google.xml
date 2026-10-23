@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="navmap_google_layers_cd">Vrstvy mapy</string>
+    <string name="navmap_google_type_default">Mapa Google</string>
+    <string name="navmap_google_type_satellite">Satelitní</string>
+    <string name="navmap_google_type_hybrid">Hybridní</string>
+    <string name="navmap_google_type_terrain">Terén</string>
+    <string name="navmap_google_type_overdrive">Mapa OverDrive</string>
+    <string name="navmap_google_traffic">Aktuální doprava</string>
+    <string name="navmap_google_traffic_on">Aktuální doprava zapnuta</string>
+    <string name="navmap_google_traffic_off">Aktuální doprava vypnuta</string>
+    <string name="navmap_google_traffic_paused">Aktuální doprava pozastavena do %1$s (bezplatný denní limit)</string>
+    <string name="navmap_google_map_paused">Mapa Google pozastavena do %1$s (bezplatný denní limit)</string>
+    <string name="navmap_google_map_unavailable">Mapa Google není k dispozici, zobrazuje se mapa OverDrive</string>
+    <string name="navmap_google_key_problem">Problém s klíčem pro Google Maps. Zkontrolujte nastavení RoadSense.</string>
+    <string name="navmap_google_route_key_problem">Směrování Google odmítlo klíč. Zkontrolujte nastavení RoadSense.</string>
+    <string name="navmap_google_route_limit">Dnešní limit směrování Google je vyčerpán</string>
+    <string name="navmap_google_arrived">Dorazili jste do cíle</string>
+    <string name="navmap_google_traffic_delay">+%1$s kvůli provozu</string>
+    <string name="navmap_google_no_delays">Bez dopravních zdržení</string>
+    <string name="navmap_google_faster_route">Nalezena rychlejší trasa, ušetří %1$s</string>
+    <string name="navmap_google_faster_route_switch">Přepnout</string>
+    <string name="navmap_google_routes_by_google">Trasy poskytuje Google</string>
+    <string name="navmap_google_routing_provided_by">Směrování zajišťuje %1$s</string>
+    <string name="navmap_google_place_failed">Toto místo se nepodařilo otevřít</string>
+    <string name="navmap_google_finding_place">Hledání místa…</string>
+</resources>
