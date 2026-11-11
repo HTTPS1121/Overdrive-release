@@ -8,8 +8,10 @@ import android.media.MediaMuxer;
 
 import com.overdrive.app.logging.DaemonLogger;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -17,6 +19,7 @@ import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -69,6 +72,8 @@ public final class AvmByteCallbackProbe {
     private static final int ENCODER_IFRAME_INTERVAL = 1;
     /** Frames buffered between HAL callback and worker. Dropping oldest is preferred over stalling the HAL. */
     private static final int FRAME_QUEUE_DEPTH = 3;
+    // Batch raw fallback writes on the worker thread; MP4 uses MediaMuxer.
+    private static final int RAW_WRITE_BUFFER_BYTES = 2 * 1024 * 1024;
     /** Hard cap on raw NV21 frames per combo to bound disk usage.
      *  At 5120×960 NV21 = 7.4 MB/frame → 60 frames = 444 MB max per combo. */
     private static final int MAX_RAW_FRAMES_PER_COMBO = 60;
@@ -450,13 +455,45 @@ public final class AvmByteCallbackProbe {
         private long firstPtsUs = -1;
         private File mp4Tmp;
         private File mp4Final;
-        private FileOutputStream rawOut;
+        private OutputStream rawOut;
         private File rawTmp;
         private File rawFinal;
         private boolean encoderInitAttempted;
 
         private final LinkedBlockingQueue<byte[]> frameQueue =
             new LinkedBlockingQueue<>(FRAME_QUEUE_DEPTH);
+        // Bounded reuse: queued frames + worker frame + one callback in flight.
+        // A frame is returned only after its consumer has finished reading it.
+        private static final int FRAME_POOL_CAPACITY = FRAME_QUEUE_DEPTH + 2;
+        private final ArrayBlockingQueue<byte[]> freeFrames =
+            new ArrayBlockingQueue<>(FRAME_POOL_CAPACITY);
+        private int allocatedFrames;
+        private final Object framePoolLock = new Object();
+
+        private byte[] acquireFrame(int length) {
+            synchronized (framePoolLock) {
+                byte[] frame;
+                while ((frame = freeFrames.poll()) != null) {
+                    if (frame.length == length) return frame;
+                    allocatedFrames--; // Dimensions changed: discard old allocation.
+                }
+                if (allocatedFrames >= FRAME_POOL_CAPACITY) return null;
+                allocatedFrames++;
+            }
+            try {
+                return new byte[length];
+            } catch (OutOfMemoryError error) {
+                synchronized (framePoolLock) { allocatedFrames--; }
+                throw error;
+            }
+        }
+
+        private void recycleFrame(byte[] frame) {
+            if (frame == null || frame == EOS_SENTINEL) return;
+            synchronized (framePoolLock) {
+                if (!freeFrames.offer(frame)) allocatedFrames--;
+            }
+        }
         private Thread worker;
 
         FrameCollector(int cameraId, int viewIndex, File probeDir) {
@@ -487,7 +524,7 @@ public final class AvmByteCallbackProbe {
             }
             if (!delivered) {
                 // Queue still full and worker isn't draining → drop oldest, retry once.
-                frameQueue.poll();
+                recycleFrame(frameQueue.poll());
                 delivered = frameQueue.offer(EOS_SENTINEL);
             }
             if (!delivered) {
@@ -512,8 +549,12 @@ public final class AvmByteCallbackProbe {
                 while (true) {
                     byte[] nv21 = frameQueue.poll(200, TimeUnit.MILLISECONDS);
                     if (nv21 == EOS_SENTINEL) break;
-                    if (Thread.currentThread().isInterrupted()) break;
+                    if (Thread.currentThread().isInterrupted()) {
+                        recycleFrame(nv21);
+                        break;
+                    }
                     if (nv21 == null) continue;
+                    try {
                     if (!encoderInitAttempted && width > 0 && height > 0) {
                         encoderInitAttempted = true;
                         if (!tryInitEncoder()) {
@@ -523,8 +564,7 @@ public final class AvmByteCallbackProbe {
                     }
                     if (encoder != null) {
                         try {
-                            byte[] nv12 = nv21ToNv12(nv21, width, height);
-                            feedEncoder(nv12);
+                            feedEncoder(nv21);
                             drainEncoder(false);
                         } catch (Throwable t) {
                             logger.warn("Encoder runtime error cam=" + cameraId
@@ -538,6 +578,9 @@ public final class AvmByteCallbackProbe {
                     } else if (rawOut != null) {
                         writeRaw(nv21);
                     }
+                    } finally {
+                        recycleFrame(nv21);
+                    }
                 }
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
@@ -547,6 +590,8 @@ public final class AvmByteCallbackProbe {
             } finally {
                 // Worker-thread-only finalization. encoder/muxer/raw are owned by us.
                 finalizeOutputs();
+                byte[] pending;
+                while ((pending = frameQueue.poll()) != null) recycleFrame(pending);
             }
         }
 
@@ -597,13 +642,16 @@ public final class AvmByteCallbackProbe {
                     return null;
                 }
                 int copyLen = Math.min(data.length, bufSize);
-                byte[] copy = new byte[copyLen];
-                System.arraycopy(data, 0, copy, 0, copyLen);
+                // Prefer a recycled frame; if all buffers are in flight, drop
+                // rather than allocate without bound or stall the HAL callback.
+                byte[] copy = acquireFrame(copyLen);
                 frameCount = seen;
+                if (copy == null) return null;
+                System.arraycopy(data, 0, copy, 0, copyLen);
                 if (!frameQueue.offer(copy)) {
                     // Queue full — drop oldest, push newest.
-                    frameQueue.poll();
-                    frameQueue.offer(copy);
+                    recycleFrame(frameQueue.poll());
+                    if (!frameQueue.offer(copy)) recycleFrame(copy);
                 }
             } catch (Throwable t) {
                 logger.warn("invoke error cam=" + cameraId + " view="
@@ -718,7 +766,8 @@ public final class AvmByteCallbackProbe {
                 if (rawTmp.exists()) {
                     try { rawTmp.delete(); } catch (Throwable ignored) {}
                 }
-                rawOut = new FileOutputStream(rawTmp);
+                rawOut = new BufferedOutputStream(
+                    new FileOutputStream(rawTmp), RAW_WRITE_BUFFER_BYTES);
                 outputPath = rawFinal.getAbsolutePath();
                 encoderUsed = false;
                 logger.info("Raw NV21 dump: " + outputPath);
@@ -740,7 +789,7 @@ public final class AvmByteCallbackProbe {
             }
         }
 
-        private void feedEncoder(byte[] nv12) {
+        private void feedEncoder(byte[] nv21) {
             int idx = encoder.dequeueInputBuffer(50_000);
             if (idx < 0) return;
             ByteBuffer buf = encoder.getInputBuffer(idx);
@@ -749,8 +798,24 @@ public final class AvmByteCallbackProbe {
                 return;
             }
             buf.clear();
-            int writable = Math.min(nv12.length, buf.capacity());
-            buf.put(nv12, 0, writable);
+            int ySize = width * height;
+            int frameSize = ySize + ySize / 2;
+            int writable;
+            if (nv21.length >= frameSize && buf.remaining() >= frameSize) {
+                // Write Y directly into MediaCodec's owned input buffer. Convert
+                // interleaved VU to UV in place without an intermediate NV12 array.
+                buf.put(nv21, 0, ySize);
+                for (int i = ySize; i < frameSize; i += 2) {
+                    buf.put(nv21[i + 1]);
+                    buf.put(nv21[i]);
+                }
+                writable = frameSize;
+            } else {
+                // Preserve the previous truncated/undersized-frame behavior.
+                byte[] nv12 = nv21ToNv12(nv21, width, height);
+                writable = Math.min(nv12.length, buf.remaining());
+                buf.put(nv12, 0, writable);
+            }
             long nowUs = System.nanoTime() / 1_000L;
             if (firstPtsUs < 0) firstPtsUs = nowUs;
             encoder.queueInputBuffer(idx, 0, writable, nowUs - firstPtsUs, 0);

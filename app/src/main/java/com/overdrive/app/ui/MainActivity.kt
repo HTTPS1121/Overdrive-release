@@ -286,7 +286,8 @@ open class MainActivity : AppCompatActivity() {
             // Generate device ID early - this syncs to file for daemon compatibility
             // Must happen BEFORE any daemon starts
             val deviceId = com.overdrive.app.util.DeviceIdGenerator.generateDeviceId(this)
-            android.util.Log.i("MainActivity", "Device ID initialized: $deviceId")
+
+            android.util.Log.i("MainActivity", "Device ID initialized: " + redactDeviceIdForLog(deviceId))
 
             // Apply BYD whitelist (ACC + data cache) to prevent background killing
             // CRITICAL: Run on background thread to avoid blocking UI on boot
@@ -999,6 +1000,11 @@ open class MainActivity : AppCompatActivity() {
         appUpdater = updater
         updater.checkForUpdate(object : com.overdrive.app.updater.AppUpdater.UpdateCallback {
             override fun onUpdateAvailable(currentVersion: String, newVersion: String, releaseNotes: String) {
+                if (currentVersion.trim() == newVersion.trim()) {
+                    logsViewModel.debug("Update", "Suppressed update offer with identical version ($currentVersion)")
+                    updater.close()
+                    return
+                }
                 // Don't close updater here — performAppUpdate will use it.
                 com.overdrive.app.updater.UpdateDialog.showUpdateAvailable(
                     this@MainActivity, currentVersion, newVersion, releaseNotes,
@@ -1091,6 +1097,12 @@ open class MainActivity : AppCompatActivity() {
         updater.checkForUpdate(object : com.overdrive.app.updater.AppUpdater.UpdateCallback {
             override fun onUpdateAvailable(currentVersion: String, newVersion: String, releaseNotes: String) {
                 if (!isCurrentManualUpdateCheck(checkGeneration)) {
+                    updater.close()
+                    return
+                }
+                if (currentVersion.trim() == newVersion.trim()) {
+                    logsViewModel.debug("Update", "Suppressed manual update offer with identical version ($currentVersion)")
+                    Toast.makeText(this@MainActivity, getString(R.string.toast_app_up_to_date, currentVersion), Toast.LENGTH_LONG).show()
                     updater.close()
                     return
                 }
@@ -5209,3 +5221,7 @@ open class MainActivity : AppCompatActivity() {
         private const val EXTRA_MINIMIZE_ON_START = "minimize_on_start"
     }
 }
+
+/** SECURITY (V60-05): never log the raw device ID — it is the credential-cipher key seed. */
+fun redactDeviceIdForLog(did: String?): String =
+    if (did.isNullOrEmpty() || did.length <= 8) "****" else did.take(4) + "…" + did.takeLast(4) + " (redacted)"

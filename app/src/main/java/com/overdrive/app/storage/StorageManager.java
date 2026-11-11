@@ -2165,6 +2165,11 @@ public class StorageManager {
      *
      * @return true if a card is physically present in the SD slot
      */
+    // Reuse the immutable sysfs card-entry pattern across kernel fallback probes.
+    // The MMC/eMMC distinction is still made by reading each candidate's type file.
+    private static final java.util.regex.Pattern MMC_CARD_ENTRY =
+            java.util.regex.Pattern.compile("mmc\\d+:[0-9a-fA-F]+");
+
     private boolean isSdCardPhysicallyPresent() {
         // Signal 1 (vendor prop, EXPECTED bus-agnostic + SD-specific): the BYD
         // firmware's own SD-slot occupancy flag. Intended to cover SCSI/USB-
@@ -2201,7 +2206,7 @@ public class StorageManager {
                         File[] children = host.listFiles();
                         if (children == null) continue;
                         for (File child : children) {
-                            if (!child.getName().matches("mmc\\d+:[0-9a-fA-F]+")) continue;
+                            if (!MMC_CARD_ENTRY.matcher(child.getName()).matches()) continue;
                             // Discriminate external SD from internal eMMC via the
                             // card `type` sysfs node: "SD"/"SDIO" = removable card,
                             // "MMC" = soldered eMMC.
@@ -9746,9 +9751,10 @@ public class StorageManager {
             // ("recordings" -> dvr_/replay_, "surveillance" -> thumb_); null
             // otherwise so no listing cost is added for categories without them.
             // Same ownership rule as findAuxiliarySiblings.
-            java.util.Map<String, List<File>> auxIndex =
-                    (auxPrefixes.length > 0) ? buildAuxiliaryIndex(dir, auxPrefixes) : null;
-            if (auxIndex != null) auxPass.indexByDir.put(auxPass.key(category, dir), auxIndex);
+            // Build the auxiliary index only if an eligible anchor needs it.
+            // Empty directories, wrong-category files and duplicate anchors must
+            // not trigger another full FUSE directory enumeration.
+            java.util.Map<String, List<File>> auxIndex = null;
             for (File f : files) {
                 String name = f.getName();
                 // Anchor gate. Use nameMatchesCategoryPrefix (primary OR auxiliary
@@ -9774,6 +9780,10 @@ public class StorageManager {
                 if (!seenNames.add(name)) continue;
                 allFiles.add(f);
                 currentSize += anchorLength;
+                if (auxPrefixes.length > 0 && auxIndex == null) {
+                    auxIndex = buildAuxiliaryIndex(dir, auxPrefixes);
+                    auxPass.indexByDir.put(auxPass.key(category, dir), auxIndex);
+                }
                 // Add sidecar bytes to the running total so we measure the
                 // same on-disk footprint we'd actually free by deleting the
                 // anchor + its sidecars below. Two sidecar shapes:
