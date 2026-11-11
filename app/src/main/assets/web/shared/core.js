@@ -1023,18 +1023,33 @@ BYD.core = {
      * Start clock update (if element exists)
      */
     startClock() {
+        // The clock displays hours and minutes, so updating every second
+        // causes 60x more DOM lookups and date formatting than necessary.
+        if (this.clockStarted) { return; }
+        this.clockStarted = true;
+        const self = this;
         const update = () => {
-            const el = document.getElementById('currentTime');
-            if (el) {
-                el.textContent = new Date().toLocaleTimeString(BYD.i18n.getLang(), {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    hour12: false
-                });
+            if (!document.hidden) {
+                const el = document.getElementById('currentTime');
+                if (el) {
+                    const time = new Date().toLocaleTimeString(BYD.i18n.getLang(), {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                    if (el.textContent !== time) { el.textContent = time; }
+                }
             }
+            // Align the next wakeup with the next minute boundary.
+            self.clockTimer = setTimeout(update, 60000 - (Date.now() % 60000) + 20);
         };
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                clearTimeout(self.clockTimer);
+                update();
+            }
+        });
         update();
-        setInterval(update, 1000);
     },
 
     /**
@@ -1527,10 +1542,15 @@ BYD.core = {
         if (!netEl) return;
 
         const net = status.network;
+        // Status is polled frequently; avoid reparsing identical SVG/HTML and
+        // invalidating layout when the connection details are unchanged.
+        const setHtml = (el, html) => {
+            if (el && el.innerHTML !== html) el.innerHTML = html;
+        };
         if (!net) {
             netEl.textContent = '--';
             netEl.className = 'status-value';
-            if (netIcon) netIcon.innerHTML = this._wifiSvg();
+            setHtml(netIcon, this._wifiSvg());
             return;
         }
 
@@ -1538,20 +1558,20 @@ BYD.core = {
             const ssid = net.ssid || BYD.i18n.t('status.wifi');
             const ip = net.ip || '';
             // Show SSID on first line, IP smaller below
-            netEl.innerHTML = '<span class="net-ssid">' + this._esc(ssid) + '</span>' +
-                (ip ? '<span class="net-ip">' + this._esc(ip) + '</span>' : '');
+            setHtml(netEl, '<span class="net-ssid">' + this._esc(ssid) + '</span>' +
+                (ip ? '<span class="net-ip">' + this._esc(ip) + '</span>' : ''));
             netEl.className = 'status-value on net-info';
-            if (netIcon) netIcon.innerHTML = this._wifiSvg();
+            setHtml(netIcon, this._wifiSvg());
         } else if (net.type === 'cellular') {
             const ip = net.ip || '';
-            netEl.innerHTML = '<span class="net-ssid">' + this._esc(BYD.i18n.t('status.mobile_data')) + '</span>' +
-                (ip ? '<span class="net-ip">' + this._esc(ip) + '</span>' : '');
+            setHtml(netEl, '<span class="net-ssid">' + this._esc(BYD.i18n.t('status.mobile_data')) + '</span>' +
+                (ip ? '<span class="net-ip">' + this._esc(ip) + '</span>' : ''));
             netEl.className = 'status-value on net-info';
-            if (netIcon) netIcon.innerHTML = this._cellSvg();
+            setHtml(netIcon, this._cellSvg());
         } else {
             netEl.textContent = BYD.i18n.t('status.no_network');
             netEl.className = 'status-value off';
-            if (netIcon) netIcon.innerHTML = this._wifiOffSvg();
+            setHtml(netIcon, this._wifiOffSvg());
         }
     },
 

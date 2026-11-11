@@ -214,6 +214,8 @@ public final class HighResPreviewSampler {
         0f, 0f, 0f, 1f,
     };
     private final Object texMatrixLock = new Object();
+    // Used only on the sampler GL thread; avoid a new float[16] per preview.
+    private final float[] renderTexMatrix = new float[16];
     private volatile int cameraLayout = 0;  // 0=4-strip, 1=full-frame, 3=corner remap
 
     private int fbo = -1;
@@ -225,6 +227,8 @@ public final class HighResPreviewSampler {
     private ByteBuffer readBuffer;
     private byte[] scratchRgba;
     private int[] argbPixels;
+    // Sampler-thread-owned; reused until the FBO dimensions change.
+    private Bitmap jpegBitmap;
     private final boolean isTexture2D;
     private volatile Object sourceLock;
     private volatile SourceGuard sourceGuard;
@@ -360,6 +364,7 @@ public final class HighResPreviewSampler {
             readBuffer.order(ByteOrder.nativeOrder());
             scratchRgba = new byte[rgbaBytes];
             argbPixels = new int[width * height];
+            jpegBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             fboWidth = width;
             fboHeight = height;
         } catch (Throwable t) {
@@ -597,11 +602,10 @@ public final class HighResPreviewSampler {
                 GLES20.glUniform1f(uOffsetLoc, offsetValue);
             }
             if (uTexMatrixLoc >= 0) {
-                float[] m = new float[16];
                 synchronized (texMatrixLock) {
-                    System.arraycopy(currentTexMatrix, 0, m, 0, 16);
+                    System.arraycopy(currentTexMatrix, 0, renderTexMatrix, 0, 16);
                 }
-                GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, m, 0);
+                GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, renderTexMatrix, 0);
             }
             if (uApaModeLoc >= 0) {
                 GLES20.glUniform1f(uApaModeLoc, (float) apaModeOverride);
@@ -668,15 +672,14 @@ public final class HighResPreviewSampler {
                 }
             }
 
-            Bitmap bmp = Bitmap.createBitmap(argbPixels, width, height,
-                    Bitmap.Config.ARGB_8888);
-            try {
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                bmp.compress(Bitmap.CompressFormat.JPEG, 85, out);
-                return out.toByteArray();
-            } finally {
-                bmp.recycle();
+            // Reuse the mutable bitmap instead of allocating one per preview.
+            // All renderAndEncode calls run serially on the sampler thread.
+            jpegBitmap.setPixels(argbPixels, 0, width, 0, 0, width, height);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            if (!jpegBitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)) {
+                return null;
             }
+            return out.toByteArray();
         } catch (Throwable t) {
             logger.warn("renderAndEncode failed " + width + "x" + height
                     + ": " + t.getMessage());
@@ -701,6 +704,10 @@ public final class HighResPreviewSampler {
         readBuffer = null;
         scratchRgba = null;
         argbPixels = null;
+        if (jpegBitmap != null) {
+            jpegBitmap.recycle();
+            jpegBitmap = null;
+        }
         fboWidth = 0;
         fboHeight = 0;
     }
