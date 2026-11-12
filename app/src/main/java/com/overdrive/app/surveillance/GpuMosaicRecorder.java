@@ -35,6 +35,10 @@ public class GpuMosaicRecorder {
     
     // EGL and OpenGL state
     private EGLCore eglCore;
+    // GL object names are valid only in their owning EGL context. Retain the
+    // exact owner so encoder-surface reinitialization can reuse these objects
+    // without carrying names into a replacement context.
+    private EGLCore glResourcesEglCore;
     private EGLSurface encoderSurface;
     private Surface encoderInputSurface;
     
@@ -517,6 +521,27 @@ public class GpuMosaicRecorder {
      * @param encoder Hardware encoder that provides the input surface
      */
     public void init(EGLCore eglCore, HardwareEventRecorderGpu encoder) {
+        // GL programs and textures survive encoder-surface replacement only
+        // when the exact EGLCore owner is unchanged. On context replacement,
+        // invalidate old names without deleting them through the new context;
+        // the old EGL owner is responsible for tearing down its context.
+        boolean sameGlContext = eglCore != null && glResourcesEglCore == eglCore;
+        if (!sameGlContext) {
+            if (glResourcesEglCore != null) {
+                logger.info("EGLCore changed; rebuilding recorder GL resources");
+            }
+            programId = 0;
+            overlayProgramId = 0;
+            overlayTextureId = 0;
+            overlayTextureInitialized = false;
+            overlayTextureReady = false;
+            vertexBuffer = null;
+            texCoordBuffer = null;
+            overlayVertexBuffer = null;
+            overlayTexCoordBuffer = null;
+            glResourcesEglCore = eglCore;
+        }
+
         // Release old resources if reinitializing
         if (this.encoderSurface != null && this.eglCore != null) {
             this.eglCore.destroySurface(this.encoderSurface);
@@ -645,87 +670,113 @@ public class GpuMosaicRecorder {
         // Create EGL surface from encoder surface (with RECORDABLE flag)
         encoderSurface = eglCore.createWindowSurface(encoderInputSurface);
         
-        // Compile shaders and create program (fragment shader is profile-baked)
-        programId = GlUtil.createProgram(VERTEX_SHADER, fragmentShader);
+        // Compile the profile-baked mosaic shader only when this EGL context
+        // does not already own a linked program. Replacing the encoder input
+        // Surface does not invalidate a program in the same context.
         if (programId == 0) {
-            throw new RuntimeException("Failed to create shader program");
-        }
-        
-        // Get attribute and uniform locations
-        aPositionLocation = GLES20.glGetAttribLocation(programId, "aPosition");
-        aTexCoordLocation = GLES20.glGetAttribLocation(programId, "aTexCoord");
-        uCameraTexLocation = GLES20.glGetUniformLocation(programId, "uCameraTex");
-        uApaModeLocation = GLES20.glGetUniformLocation(programId, "uApaMode");
-        uTexMatrixLocation = GLES20.glGetUniformLocation(programId, "uTexMatrix");
-        uApplyManualYFlipLocation = GLES20.glGetUniformLocation(programId, "uApplyManualYFlip");
-        uProducerForFrontLocation = GLES20.glGetUniformLocation(programId, "uProducerForFront");
-        uProducerForRightLocation = GLES20.glGetUniformLocation(programId, "uProducerForRight");
-        uProducerForRearLocation  = GLES20.glGetUniformLocation(programId, "uProducerForRear");
-        uProducerForLeftLocation  = GLES20.glGetUniformLocation(programId, "uProducerForLeft");
-        uFlipForFrontLocation = GLES20.glGetUniformLocation(programId, "uFlipForFront");
-        uFlipForRightLocation = GLES20.glGetUniformLocation(programId, "uFlipForRight");
-        uFlipForRearLocation  = GLES20.glGetUniformLocation(programId, "uFlipForRear");
-        uFlipForLeftLocation  = GLES20.glGetUniformLocation(programId, "uFlipForLeft");
-        uRedMaskStrengthLocation = GLES20.glGetUniformLocation(programId, "uRedMaskStrength");
-        uApaCenterInsetLocation = GLES20.glGetUniformLocation(programId, "uApaCenterInset");
-        uRectifyK1Location = GLES20.glGetUniformLocation(programId, "uRectifyK1");
-        uRectifyK2Location = GLES20.glGetUniformLocation(programId, "uRectifyK2");
-        uRectifyAspectLocation = GLES20.glGetUniformLocation(programId, "uRectifyAspect");
-        uRecordLayoutLocation = GLES20.glGetUniformLocation(programId, "uRecordLayout");
-        uWindshieldTexLocation = GLES20.glGetUniformLocation(programId, "uWindshieldTex");
-        uWindshieldReadyLocation = GLES20.glGetUniformLocation(programId, "uWindshieldReady");
-
-        GlUtil.checkGlError("glGetLocation");
-        
-        // Create vertex buffers
-        vertexBuffer = GlUtil.createFloatBuffer(VERTEX_COORDS);
-        texCoordBuffer = GlUtil.createFloatBuffer(TEX_COORDS);
-        
-        // --- Overlay GL resource initialization ---
-        overlayProgramId = GlUtil.createProgram(OVERLAY_VERTEX_SHADER, OVERLAY_FRAGMENT_SHADER);
-        if (overlayProgramId == 0) {
-            logger.error("Failed to create overlay shader program - overlay disabled");
-            overlayEnabled = false;
-        } else {
-            overlayAPositionLoc = GLES20.glGetAttribLocation(overlayProgramId, "aPosition");
-            overlayATexCoordLoc = GLES20.glGetAttribLocation(overlayProgramId, "aTexCoord");
-            overlayUTextureLoc = GLES20.glGetUniformLocation(overlayProgramId, "uTexture");
-            
-            // Generate overlay texture
-            int[] texIds = new int[1];
-            GLES20.glGenTextures(1, texIds, 0);
-            overlayTextureId = texIds[0];
-            
-            // Overlay quad: top 160px of 1920px frame
-            // NDC Y: +1.0 (top) down to +1.0 - 0.1667 = +0.8333
-            float[] overlayVertexCoords = {
-                -1.0f,  0.8333f,
-                 1.0f,  0.8333f,
-                -1.0f,  1.0f,
-                 1.0f,  1.0f
-            };
-            // Tex coords flipped Y for correct orientation
-            float[] overlayTexCoords = {
-                0.0f, 1.0f,
-                1.0f, 1.0f,
-                0.0f, 0.0f,
-                1.0f, 0.0f
-            };
-            overlayVertexBuffer = GlUtil.createFloatBuffer(overlayVertexCoords);
-            overlayTexCoordBuffer = GlUtil.createFloatBuffer(overlayTexCoords);
-
-            // On an encoder REINIT (init() re-run on an existing recorder, e.g.
-            // a mid-recording quality/codec change), tear down the prior renderer
-            // first — stop+join its raster worker and recycle its bitmaps — so we
-            // don't orphan a 2Hz daemon thread + ~0.8MB of bitmaps per reinit.
-            if (overlayRenderer != null) {
-                overlayRenderer.stopWorker();
-                overlayRenderer.release();
+            programId = GlUtil.createProgram(VERTEX_SHADER, fragmentShader);
+            if (programId == 0) {
+                throw new RuntimeException("Failed to create shader program");
             }
-            // Create bitmap renderer
-            overlayRenderer = new OverlayBitmapRenderer();
-            overlayTextureInitialized = false;
+
+            // Get attribute and uniform locations for this linked program.
+            aPositionLocation = GLES20.glGetAttribLocation(programId, "aPosition");
+            aTexCoordLocation = GLES20.glGetAttribLocation(programId, "aTexCoord");
+            uCameraTexLocation = GLES20.glGetUniformLocation(programId, "uCameraTex");
+            uApaModeLocation = GLES20.glGetUniformLocation(programId, "uApaMode");
+            uTexMatrixLocation = GLES20.glGetUniformLocation(programId, "uTexMatrix");
+            uApplyManualYFlipLocation = GLES20.glGetUniformLocation(programId, "uApplyManualYFlip");
+            uProducerForFrontLocation = GLES20.glGetUniformLocation(programId, "uProducerForFront");
+            uProducerForRightLocation = GLES20.glGetUniformLocation(programId, "uProducerForRight");
+            uProducerForRearLocation  = GLES20.glGetUniformLocation(programId, "uProducerForRear");
+            uProducerForLeftLocation  = GLES20.glGetUniformLocation(programId, "uProducerForLeft");
+            uFlipForFrontLocation = GLES20.glGetUniformLocation(programId, "uFlipForFront");
+            uFlipForRightLocation = GLES20.glGetUniformLocation(programId, "uFlipForRight");
+            uFlipForRearLocation  = GLES20.glGetUniformLocation(programId, "uFlipForRear");
+            uFlipForLeftLocation  = GLES20.glGetUniformLocation(programId, "uFlipForLeft");
+            uRedMaskStrengthLocation = GLES20.glGetUniformLocation(programId, "uRedMaskStrength");
+            uApaCenterInsetLocation = GLES20.glGetUniformLocation(programId, "uApaCenterInset");
+            uRectifyK1Location = GLES20.glGetUniformLocation(programId, "uRectifyK1");
+            uRectifyK2Location = GLES20.glGetUniformLocation(programId, "uRectifyK2");
+            uRectifyAspectLocation = GLES20.glGetUniformLocation(programId, "uRectifyAspect");
+            uRecordLayoutLocation = GLES20.glGetUniformLocation(programId, "uRecordLayout");
+            uWindshieldTexLocation = GLES20.glGetUniformLocation(programId, "uWindshieldTex");
+            uWindshieldReadyLocation = GLES20.glGetUniformLocation(programId, "uWindshieldReady");
+
+            GlUtil.checkGlError("glGetLocation");
+        } else {
+            logger.info("Reusing mosaic shader program for encoder reinitialization");
         }
+
+        // Immutable client-side quad geometry is independent of the encoder
+        // EGLSurface. Keep the direct buffers for same-context reinitialization.
+        if (vertexBuffer == null) {
+            vertexBuffer = GlUtil.createFloatBuffer(VERTEX_COORDS);
+        }
+        if (texCoordBuffer == null) {
+            texCoordBuffer = GlUtil.createFloatBuffer(TEX_COORDS);
+        }
+
+        // The bitmap renderer is session-owned rather than a GL resource.
+        // Stop/join its worker before recycling its bitmaps on every reinit.
+        if (overlayRenderer != null) {
+            overlayRenderer.stopWorker();
+            overlayRenderer.release();
+            overlayRenderer = null;
+        }
+
+        // Retain the overlay program and texture object when the EGLCore is
+        // unchanged. The shader is static; its locations remain valid.
+        if (overlayProgramId == 0) {
+            overlayProgramId = GlUtil.createProgram(OVERLAY_VERTEX_SHADER, OVERLAY_FRAGMENT_SHADER);
+            if (overlayProgramId == 0) {
+                logger.error("Failed to create overlay shader program - overlay disabled");
+                overlayEnabled = false;
+            } else {
+                overlayAPositionLoc = GLES20.glGetAttribLocation(overlayProgramId, "aPosition");
+                overlayATexCoordLoc = GLES20.glGetAttribLocation(overlayProgramId, "aTexCoord");
+                overlayUTextureLoc = GLES20.glGetUniformLocation(overlayProgramId, "uTexture");
+            }
+        } else {
+            logger.info("Reusing telemetry overlay shader program");
+        }
+
+        if (overlayProgramId != 0) {
+            if (overlayTextureId == 0) {
+                int[] texIds = new int[1];
+                GLES20.glGenTextures(1, texIds, 0);
+                overlayTextureId = texIds[0];
+                overlayTextureInitialized = false;
+            }
+
+            // Static overlay quad geometry is also reusable.
+            if (overlayVertexBuffer == null) {
+                float[] overlayVertexCoords = {
+                    -1.0f,  0.8333f,
+                     1.0f,  0.8333f,
+                    -1.0f,  1.0f,
+                     1.0f,  1.0f
+                };
+                overlayVertexBuffer = GlUtil.createFloatBuffer(overlayVertexCoords);
+            }
+            if (overlayTexCoordBuffer == null) {
+                float[] overlayTexCoords = {
+                    0.0f, 1.0f,
+                    1.0f, 1.0f,
+                    0.0f, 0.0f,
+                    1.0f, 0.0f
+                };
+                overlayTexCoordBuffer = GlUtil.createFloatBuffer(overlayTexCoords);
+            }
+
+            // OverlayBitmapRenderer always uses a fixed 1280x80 bitmap. Its
+            // replacement can upload with texSubImage2D into retained storage.
+            overlayRenderer = new OverlayBitmapRenderer();
+        }
+
+        // Do not display stale telemetry from the previous encoder session.
+        // Keep overlayTextureInitialized unchanged on a same-context reinit.
+        overlayTextureReady = false;
 
         // Start the off-GL-thread raster worker if the overlay is already active
         // at init time. The 3 overlay setters run at recorder-CONFIG time (before
@@ -1107,10 +1158,16 @@ public class GpuMosaicRecorder {
             consecutiveSurfaceErrors = 0;  // Reset on success
         } catch (RuntimeException e) {
             consecutiveSurfaceErrors++;
-            if (consecutiveSurfaceErrors >= SURFACE_ERROR_REINIT_THRESHOLD) {
-                logger.error("Encoder surface dead after " + consecutiveSurfaceErrors +
-                    " consecutive errors, requesting reinit");
+            boolean isBadSurface = e.getMessage() != null && e.getMessage().contains("0x300d");
+            if (isBadSurface || consecutiveSurfaceErrors >= SURFACE_ERROR_REINIT_THRESHOLD) {
+                logger.error("Encoder surface dead (" + (isBadSurface ? "EGL_BAD_SURFACE" : consecutiveSurfaceErrors + " consecutive errors") +
+                    "), requesting reinit");
                 needsReinit = true;
+                if (encoderSurface != null && eglCore != null) {
+                    try {
+                        eglCore.destroySurface(encoderSurface);
+                    } catch (Throwable ignored) {}
+                }
                 encoderSurface = null;  // Prevent further attempts
                 return;
             }
@@ -2115,6 +2172,14 @@ public class GpuMosaicRecorder {
         }
         overlayTextureReady = false;
         overlayTextureInitialized = false;
+
+        // release() is terminal for this recorder. Clear context ownership and
+        // Java direct-buffer references so a later init rebuilds from scratch.
+        glResourcesEglCore = null;
+        vertexBuffer = null;
+        texCoordBuffer = null;
+        overlayVertexBuffer = null;
+        overlayTexCoordBuffer = null;
         
         if (encoderSurface != null) {
             eglCore.destroySurface(encoderSurface);
@@ -2224,6 +2289,10 @@ public class GpuMosaicRecorder {
             // on-device-unverified) helper can't regress the proven standard
             // path; unify once verified on-device.
             "vec2 rectifyTile(vec2 t) {\n" +
+            // With the default zero-strength setting, dewarp is an identity
+            // transform. Return the original coordinate without per-fragment
+            // dot products, reciprocals, aspect correction, or clamping.
+            "    if (uRectifyK1 == 0.0 && uRectifyK2 == 0.0) return t;\n" +
             "    vec2 nxy = t * 2.0 - 1.0;\n" +
             "    vec2 nxyAspect = vec2(nxy.x, nxy.y * uRectifyAspect);\n" +
             "    float r2 = dot(nxyAspect, nxyAspect);\n" +
@@ -2359,7 +2428,10 @@ public class GpuMosaicRecorder {
             // 0.25-wide column of the producer strip — a single-precision
             // jitter at r² near 0 cannot push us into the neighbouring
             // quadrant.
-            "        vec2 nxy = vec2(localX / 0.25, localY) * 2.0 - 1.0;\n" + // -1..+1 in tile units
+            "        if (uRectifyK1 == 0.0 && uRectifyK2 == 0.0) {\n" +
+            "            samplePos = vec2(stripOffsetX + localX, localY);\n" +
+            "        } else {\n" +
+            "            vec2 nxy = vec2(localX / 0.25, localY) * 2.0 - 1.0;\n" + // -1..+1 in tile units
             // Aspect-correct radial: compute r² in true tile-pixel space
             // by squashing the y-axis by the tile aspect (height / width
             // < 1 for landscape). This keeps iso-distortion lines
@@ -2390,6 +2462,7 @@ public class GpuMosaicRecorder {
             "        vec2 camUV = srcTile * 0.5 + 0.5;\n" +
             "        camUV = clamp(camUV, vec2(0.0), vec2(1.0));\n" +
             "        samplePos = vec2(stripOffsetX + camUV.x * 0.25, camUV.y);\n" +
+            "        }\n" +
             "    }\n" +
             "    vec4 src = texture2D(uCameraTex, samplePos);\n" +
             // Shared red-overlay suppression. See GlUtil.RED_MASK_GLSL.

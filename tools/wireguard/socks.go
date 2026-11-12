@@ -116,7 +116,7 @@ func (s *socksServer) serve(ln net.Listener) error {
 		// The accept-loop fix only survives EMFILE; the cap keeps the daemon
 		// away from the fd limit in the first place (a direct SOCKS session
 		// costs two fds, a tunnel session one).
-		if s.max > 0 && s.active.Load() >= s.max {
+		if !s.reserveConnection() {
 			_ = c.Close()
 			s.rejected.Add(1)
 			if time.Since(lastLog) >= acceptLogEvery {
@@ -131,12 +131,30 @@ func (s *socksServer) serve(ln net.Listener) error {
 			}
 			return
 		}
-		s.active.Add(1)
 		go func() {
 			defer s.active.Add(-1)
 			s.handle(c)
 		}()
 	})
+}
+
+// reserveConnection atomically enforces the connection cap even when
+// multiple accept loops share the same server. A rejected connection does
+// not change the active count.
+func (s *socksServer) reserveConnection() bool {
+	if s.max <= 0 {
+		s.active.Add(1)
+		return true
+	}
+	for {
+		active := s.active.Load()
+		if active >= s.max {
+			return false
+		}
+		if s.active.CompareAndSwap(active, active+1) {
+			return true
+		}
+	}
 }
 
 func (s *socksServer) handle(c net.Conn) {
@@ -158,15 +176,21 @@ func (s *socksServer) handle(c net.Conn) {
 		}
 	}
 	if !noAuth {
-		_, _ = c.Write([]byte{socksVersion, 0xff})
+		_ = writeAll(c, []byte{socksVersion, 0xff})
 		return
 	}
-	if _, err := c.Write([]byte{socksVersion, 0}); err != nil {
+	if err := writeAll(c, []byte{socksVersion, 0}); err != nil {
 		return
 	}
 
 	var req [4]byte
 	if _, err := io.ReadFull(c, req[:]); err != nil || req[0] != socksVersion {
+		return
+	}
+	// RFC 1928 requires the request's reserved byte to be zero.
+	// Reject malformed requests before parsing or dialing their destination.
+	if req[2] != 0 {
+		reply(c, repGeneralFailure)
 		return
 	}
 	if req[1] != cmdConnect {
@@ -257,9 +281,27 @@ func validHost(h string) bool {
 	return true
 }
 
+// writeAll sends the entire protocol message, including when a writer reports
+// a short write without an error. A zero-progress write must not spin forever.
+func writeAll(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if n < 0 || n > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
 func reply(w io.Writer, code byte) error {
-	_, err := w.Write([]byte{socksVersion, code, 0, atypIPv4, 0, 0, 0, 0, 0, 0})
-	return err
+	return writeAll(w, []byte{socksVersion, code, 0, atypIPv4, 0, 0, 0, 0, 0, 0})
 }
 
 func errToReply(err error) byte {
@@ -282,6 +324,11 @@ func errToReply(err error) byte {
 // half-closing would keep both sockets and both goroutines forever.
 var pipeIdle = exposeIdle
 
+// Reuse transfer buffers across SOCKS sessions to reduce allocation churn.
+var pipeBuffers = sync.Pool{New: func() interface{} {
+	return make([]byte, 32*1024)
+}}
+
 // pipe copies in both directions until both are done, then closes both
 // connections. A finished direction half-closes its destination when
 // possible. A write error means the destination is gone, so both conns are
@@ -296,11 +343,14 @@ func pipe(a, b net.Conn) {
 	wg.Add(2)
 	cp := func(dst, src net.Conn) {
 		defer wg.Done()
-		buf := make([]byte, 32*1024)
+		buf := pipeBuffers.Get().([]byte)
+		defer pipeBuffers.Put(buf)
 		for {
 			n, err := src.Read(buf)
 			if n > 0 {
-				if _, werr := dst.Write(buf[:n]); werr != nil {
+				// A short write without an error must not silently drop data.
+				written, werr := dst.Write(buf[:n])
+				if werr != nil || written != n {
 					_ = a.Close()
 					_ = b.Close()
 					return
@@ -342,7 +392,7 @@ func dialViaConnect(ctx context.Context, proxy, target string) (net.Conn, error)
 		_ = c.SetDeadline(dl)
 	}
 	req := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n"
-	if _, err := io.WriteString(c, req); err != nil {
+	if err := writeAll(c, []byte(req)); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -357,12 +407,31 @@ func dialViaConnect(ctx context.Context, proxy, target string) (net.Conn, error)
 		c.Close()
 		return nil, fmt.Errorf("upstream proxy: CONNECT %s: %s", target, resp.Status)
 	}
-	if br.Buffered() > 0 {
-		// Nothing may follow the response before we send; a proxy that does
-		// so is broken, and dropping those bytes would corrupt the stream.
-		c.Close()
-		return nil, errors.New("upstream proxy: unexpected data after CONNECT response")
-	}
 	_ = c.SetDeadline(time.Time{})
+	if br.Buffered() > 0 {
+		// ReadResponse may have read tunnel bytes beyond the CONNECT headers.
+		// Preserve those bytes before reading directly from the connection.
+		return &bufferedConn{Conn: c, reader: br}, nil
+	}
 	return c, nil
+}
+
+// bufferedConn preserves data already read by the HTTP response parser.
+// Other net.Conn operations (including deadlines) pass
+// through to the underlying connection.
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+// Keep TCP half-close behavior when the buffered wrapper is used.
+func (c *bufferedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
 }
