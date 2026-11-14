@@ -16,6 +16,14 @@ BYD.events = {
     pageSize: 12,
     totalPages: 1,
     
+    // Watched state is stored on the daemon, not in per-browser localStorage.
+    // Mark only after a clip actually plays for 2.5 seconds. The server
+    // fingerprints the file so a new clip at the same path stays unwatched.
+    _WATCHED_AFTER_MS: 2500,
+    _watchActiveKey: null,
+    _watchTimer: null,
+    _watchListenersReady: false,
+
     // Multi-select state
     selectMode: false,
     selectedFiles: new Set(),
@@ -78,6 +86,8 @@ BYD.events = {
     // the dashcam zoom rects). Mirrors ZoomableVideoView.Layout on native.
     _layout: 'standard',
     _quadrantWired: false,
+    _playerLifecycleWired: false,
+    _externalRecordingKey: null,
     _QUADRANT_LS_KEY: 'byd.events.quadrant',
     _QUADRANT_VALID: ['all', 'front', 'right', 'rear', 'left'],
 
@@ -127,6 +137,48 @@ BYD.events = {
         } catch (e) {
             return false;
         }
+    },
+
+    /**
+     * Mount the shared player lifecycle on any page that includes video-player.js.
+     * Events and Parking use the same modal, controls, quadrant handling and cleanup.
+     */
+    initPlayer() {
+        if (this._playerLifecycleWired) return;
+        const modal = document.getElementById('videoModal');
+        const player = document.getElementById('videoPlayer');
+        if (!modal || !player) return;
+
+        this.wireQuadrantBar();
+        document.addEventListener('keydown', (e) => {
+            if (!modal.classList.contains('active')) return;
+            if (e.key === 'Escape') {
+                this.closeVideo();
+                return;
+            }
+            const tag = (e.target && e.target.tagName) || '';
+            const isFormTarget = /^(input|textarea|select)$/i.test(tag) ||
+                (e.target && e.target.isContentEditable);
+            if (isFormTarget || e.altKey || e.ctrlKey || e.metaKey) return;
+            if (e.key === '0') this.setQuadrant('all');
+            else if (e.key === '1') this.setQuadrant('front');
+            else if (e.key === '2') this.setQuadrant('right');
+            else if (e.key === '3') this.setQuadrant('rear');
+            else if (e.key === '4') this.setQuadrant('left');
+        });
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) this.closeVideo();
+        });
+
+        const calendar = document.getElementById('calendarPopup');
+        const updateOverflow = () => {
+            const calendarOpen = calendar && calendar.classList.contains('active');
+            document.body.style.overflow = modal.classList.contains('active') || calendarOpen ? 'hidden' : '';
+        };
+        const observer = new MutationObserver(updateOverflow);
+        observer.observe(modal, { attributes: true, attributeFilter: ['class'] });
+        if (calendar) observer.observe(calendar, { attributes: true, attributeFilter: ['class'] });
+        this._playerLifecycleWired = true;
     },
 
     /**
@@ -554,6 +606,7 @@ BYD.events = {
         await this.loadDatesWithRecordings();
         await this.loadStorageStats();
         await this.loadRecordings();
+        this.initPlayer();
 
         // Deep-link from a notification.
         //   - If the recording is finalized (in this.recordings): open the player.
@@ -574,37 +627,10 @@ BYD.events = {
             }
         }
         
-        // Wire the quadrant zoom selector once. The buttons are static in
-        // events.html; we install delegated click handlers + restore the
-        // last-chosen quadrant from localStorage. Subsequent playVideo
-        // calls just re-apply the persisted choice without re-binding.
-        this.wireQuadrantBar();
         this.wirePlaceSearch();
 
         document.addEventListener('keydown', (e) => {
-            // Quadrant hotkeys while the player modal is open. Mirrors the
-            // numeric pad layout of the AVM cameras: 0 = all, then 1-4 walk
-            // Front, Right, Rear, Left. Skip when the focus is on a form
-            // input — typing "1" in a search box must not zoom the player.
-            const tag = (e.target && e.target.tagName) || '';
-            const isFormTarget = /^(input|textarea|select)$/i.test(tag) ||
-                (e.target && e.target.isContentEditable);
-            const modalOpen = document.getElementById('videoModal').classList.contains('active');
-            if (modalOpen && !isFormTarget && !e.altKey && !e.ctrlKey && !e.metaKey) {
-                if (e.key === '0') { this.setQuadrant('all'); return; }
-                if (e.key === '1') { this.setQuadrant('front'); return; }
-                if (e.key === '2') { this.setQuadrant('right'); return; }
-                if (e.key === '3') { this.setQuadrant('rear'); return; }
-                if (e.key === '4') { this.setQuadrant('left'); return; }
-            }
-            if (e.key === 'Escape') {
-                this.closeVideo();
-                this.closeCalendar();
-            }
-        });
-        
-        document.getElementById('videoModal').addEventListener('click', (e) => {
-            if (e.target.id === 'videoModal') this.closeVideo();
+            if (e.key === 'Escape') this.closeCalendar();
         });
         
         document.getElementById('calendarPopup').addEventListener('click', (e) => {
@@ -612,15 +638,12 @@ BYD.events = {
         });
         
         const calendarPopup = document.getElementById('calendarPopup');
-        const videoModal = document.getElementById('videoModal');
-        
         const observer = new MutationObserver(() => {
-            const isOpen = calendarPopup.classList.contains('active') || videoModal.classList.contains('active');
-            document.body.style.overflow = isOpen ? 'hidden' : '';
+            const videoModal = document.getElementById('videoModal');
+            const videoOpen = videoModal && videoModal.classList.contains('active');
+            document.body.style.overflow = calendarPopup.classList.contains('active') || videoOpen ? 'hidden' : '';
         });
-        
-        observer.observe(calendarPopup, { attributes: true });
-        observer.observe(videoModal, { attributes: true });
+        observer.observe(calendarPopup, { attributes: true, attributeFilter: ['class'] });
 
         // Stop inflight polling when the page is unloaded or hidden — without
         // this, setInterval keeps firing in the background after the user
@@ -679,6 +702,10 @@ BYD.events = {
 
     /** Idempotent stop — safe to call multiple times. */
     stopInflightPolling() {
+        // Invalidate any request already in flight; its response must not
+        // mutate a newly started polling session.
+        this._inflightPollGeneration = (this._inflightPollGeneration || 0) + 1;
+        this._inflightPollRequestPending = false;
         if (this.inflightPollHandle) {
             clearInterval(this.inflightPollHandle);
             this.inflightPollHandle = null;
@@ -1355,15 +1382,33 @@ BYD.events = {
 
     startInflightPolling() {
         this.stopInflightPolling();
+        // setInterval does not wait for an async callback. If the local
+        // recording-status request takes longer than the polling interval,
+        // overlapping requests can accumulate on a slow head unit.
+        this._inflightPollRequestPending = false;
+        const pollGeneration = (this._inflightPollGeneration || 0) + 1;
+        this._inflightPollGeneration = pollGeneration;
         this.inflightPollHandle = setInterval(async () => {
+            if (pollGeneration !== this._inflightPollGeneration) return;
             if (!this.inflightFilename) {
                 this.stopInflightPolling();
                 return;
             }
+            if (this._inflightPollRequestPending) return;
+
+            this._inflightPollRequestPending = true;
             try {
+                const filename = this.inflightFilename;
                 const res = await fetch('/api/recordings/inflight/' +
-                    encodeURIComponent(this.inflightFilename));
+                    encodeURIComponent(filename));
+                if (!res.ok) throw new Error('Inflight status HTTP ' + res.status);
                 const data = await res.json();
+                // Ignore a late response if the tracked recording changed while
+                // this request was in flight.
+                if (filename !== this.inflightFilename) return;
+                if (!data || typeof data.inflight !== 'boolean') {
+                    throw new Error('Invalid inflight status response');
+                }
                 if (!data.inflight) {
                     // Rename finished. Clear the placeholder, reload the list
                     // so the freshly-renamed file appears in its proper slot,
@@ -1388,6 +1433,10 @@ BYD.events = {
                 }
             } catch (e) {
                 // Network blip — keep polling, don't bail.
+            } finally {
+                if (pollGeneration === this._inflightPollGeneration) {
+                    this._inflightPollRequestPending = false;
+                }
             }
         }, 2000);
     },
@@ -1694,7 +1743,7 @@ BYD.events = {
             const thumbMeta = (rec.duration ? '<span class="duration-badge">' + rec.duration + '</span>' : '') +
                 (rec.sizeFormatted ? '<span>' + rec.sizeFormatted + '</span>' : '');
 
-            return dayHead + '<div class="recording-card' + (isSelected ? ' selected' : '') + (sevClass ? ' ' + sevClass : '') + '" data-recording-key="' + this._esc(recordingKey) + '" data-filename="' + this._esc(rec.filename) + '" onclick="' + this._esc(cardClick) + '">' +
+            return dayHead + '<div class="recording-card' + (isSelected ? ' selected' : '') + (sevClass ? ' ' + sevClass : '') + (rec.watched ? ' watched' : '') + '" data-recording-key="' + this._esc(recordingKey) + '" data-filename="' + this._esc(rec.filename) + '" onclick="' + this._esc(cardClick) + '">' +
                 checkbox +
                 '<div class="recording-thumbnail" id="' + thumbId + '" data-thumb="' + thumbUrl + '">' +
                 '<div class="thumb-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg></div>' +
@@ -1787,20 +1836,125 @@ BYD.events = {
         container.innerHTML = '<div class="thumb-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg><span>' + BYD.i18n.t('events.no_preview') + '</span></div><div class="play-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>';
     },
     
+    _cancelWatchedTimer() {
+        if (this._watchTimer !== null) clearTimeout(this._watchTimer);
+        this._watchTimer = null;
+    },
+
+    _bindWatchedTracking(player) {
+        if (this._watchListenersReady) return;
+        this._watchListenersReady = true;
+        const schedule = () => {
+            const key = this._watchActiveKey;
+            if (!key || this._watchTimer !== null || document.hidden) return;
+            const rec = this.findRecording(key);
+            if (!rec || rec.watched || !rec.id) return;
+            // Start the threshold only when playback genuinely begins;
+            // opening the modal, buffering, or seeking alone does not count.
+            this._watchTimer = setTimeout(() => {
+                this._watchTimer = null;
+                if (this._watchActiveKey !== key || document.hidden
+                        || player.paused || player.seeking || player.readyState < 2) return;
+                this._persistWatched(rec, key);
+            }, this._WATCHED_AFTER_MS);
+        };
+        player.addEventListener('playing', schedule);
+        // Seeking may end without firing `playing` again when playback was
+        // uninterrupted. Start a fresh threshold after the seek finishes.
+        player.addEventListener('seeked', schedule);
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) this._cancelWatchedTimer();
+            else if (!player.paused && !player.seeking) schedule();
+        });
+        ['pause', 'waiting', 'seeking', 'ended', 'emptied'].forEach(type => {
+            player.addEventListener(type, () => this._cancelWatchedTimer());
+        });
+    },
+
+    async _persistWatched(rec, key) {
+        if (this._watchActiveKey !== key || rec.watched) return;
+        // Do not issue repeated requests while this one is in flight.
+        this._watchActiveKey = null;
+        try {
+            const response = await fetch('/api/recordings/id/' + encodeURIComponent(rec.id)
+                    + '/watched', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sizeBytes: rec.size, mp4Mtime: rec.mp4Mtime })
+            });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            const result = await response.json();
+            if (!result.success) throw new Error('Watched status not saved');
+            rec.watched = true;
+            // The list may have been reloaded while the POST was in flight.
+            const current = this.findRecording(key);
+            if (current && current.id === rec.id && current.size === rec.size
+                    && current.mp4Mtime === rec.mp4Mtime) current.watched = true;
+            if (current && current.id === rec.id && current.size === rec.size
+                    && current.mp4Mtime === rec.mp4Mtime) {
+                document.querySelectorAll('.recording-card[data-recording-key]').forEach(card => {
+                    if (card.dataset.recordingKey === key) card.classList.add('watched');
+                });
+            }
+        } catch (error) {
+            // Keep the card unwatched on write failure. Reopening the clip
+            // can retry; never claim persistence that did not succeed.
+            console.warn('[events] Unable to persist watched state:', error);
+        }
+    },
+
     playVideo(recordingKey) {
         const rec = this.findRecording(recordingKey);
         if (!rec) return;
-        
+        this.openRecording(rec);
+    },
+
+    /** Open a daemon-provided recording from another page using this exact player. */
+    playExternalRecording(recording) {
+        if (!recording || typeof recording.filename !== 'string' ||
+                !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.mp4$/i.test(recording.filename)) return false;
+        const id = String(recording.id || '');
+        if (id && !/^[a-f0-9]{32}$/i.test(id)) return false;
+        const videoUrl = id ? '/video/id/' + id : '/video/' + recording.filename;
+        const eventUrl = id ? '/api/events/id/' + id : '/api/events/' + recording.filename;
+        if (recording.videoUrl && recording.videoUrl !== videoUrl) return false;
+        if (recording.eventUrl && recording.eventUrl !== eventUrl) return false;
+
+        this.initPlayer();
+        if (!this._playerLifecycleWired) return false;
+        if (this._externalRecordingKey) {
+            const previousKey = this._externalRecordingKey;
+            this.recordings = this.recordings.filter(r => this.recordingKey(r) !== previousKey);
+        }
+        const rec = Object.assign({}, recording, {
+            videoUrl: videoUrl,
+            eventUrl: eventUrl,
+            dateFormatted: recording.dateFormatted || '',
+            timeFormatted: recording.timeFormatted || '',
+            sizeFormatted: recording.sizeFormatted || '',
+            watched: recording.watched !== false
+        });
+        const key = this.recordingKey(rec);
+        this.recordings.push(rec);
+        this._externalRecordingKey = key;
+        this.openRecording(rec);
+        return true;
+    },
+
+    openRecording(rec) {
         document.getElementById('videoTitle').textContent = rec.filename;
-        document.getElementById('videoDate').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ' + rec.dateFormatted;
-        document.getElementById('videoTime').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> ' + rec.timeFormatted;
-        document.getElementById('videoSize').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> ' + rec.sizeFormatted;
+        document.getElementById('videoDate').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ' + (rec.dateFormatted || '');
+        document.getElementById('videoTime').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> ' + (rec.timeFormatted || '');
+        document.getElementById('videoSize').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> ' + (rec.sizeFormatted || '');
         
         const downloadBtn = document.getElementById('downloadBtn');
         downloadBtn.href = rec.videoUrl;
         downloadBtn.download = rec.filename;
         
         const player = document.getElementById('videoPlayer');
+        this._cancelWatchedTimer();
+        this._watchActiveKey = rec.watched ? null : this.recordingKey(rec);
+        this._bindWatchedTracking(player);
         player.setAttribute('playsinline', '');
         player.setAttribute('webkit-playsinline', '');
         player.src = rec.videoUrl;
@@ -1859,6 +2013,8 @@ BYD.events = {
     },
     
     closeVideo() {
+        this._cancelWatchedTimer();
+        this._watchActiveKey = null;
         const player = document.getElementById('videoPlayer');
         player.pause();
         player.src = '';
@@ -1878,6 +2034,11 @@ BYD.events = {
         this._lastMutedState = null;
         // SOTA: Clean up timeline
         this.destroyTimeline();
+        if (this._externalRecordingKey) {
+            const externalKey = this._externalRecordingKey;
+            this.recordings = this.recordings.filter(r => this.recordingKey(r) !== externalKey);
+            this._externalRecordingKey = null;
+        }
     },
     
     downloadVideo(recordingKey) {
@@ -2182,7 +2343,7 @@ BYD.events = {
             }
         } catch (e) {
             // Best-effort marker overlay; no events file is fine.
-            console.debug('No timeline data for', filename);
+            console.debug('No timeline data for', recording.filename);
         }
     },
 

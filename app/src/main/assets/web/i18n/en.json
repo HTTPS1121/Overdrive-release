@@ -43,6 +43,7 @@
     "surveillance": "Surveillance",
     "recordings": "Recordings",
     "performance": "Performance",
+    "module_faults": "Module Faults",
     "abrp": "ABRP",
     "mqtt": "MQTT",
     "trips": "Trips",
@@ -1218,7 +1219,14 @@
     "tariff_fallback_global": "Charges outside every tariff use {rate}/kWh.",
     "tariff_auto_hint": "Saved. Charges within {radius} m of here will use this tariff automatically.",
     "tariff_label_placeholder": "Home",
-    "per_kwh_unit": "/kWh"
+    "per_kwh_unit": "/kWh",
+    "filter_location": "Location",
+    "filter_all_locations": "All locations",
+    "filter_location_hint": "Add location tariffs in Settings to filter by place.",
+    "copy_summary": "Copy summary",
+    "summary_copied": "Summary copied",
+    "summary_copy_failed": "Could not copy",
+    "no_sessions_location": "No sessions at this location in the selected period"
   },
   "trip": {
     "tab_trips": "Trips",
@@ -3058,7 +3066,18 @@
     "soc_will_appear": "SOC history will appear once data is collected",
     "soc_current_label": "Current Battery Level",
     "soc_history_will_build": "History will build over time",
-    "page_header_short": "Performance"
+    "page_header_short": "Performance",
+    "card_system_cpu": "System CPU",
+    "card_system_ram": "System RAM",
+    "card_overdrive_app": "OverDrive app",
+    "cpu_per_core_prefix": "Per-core (top)",
+    "system_ram_basis": "Used = total − available; reclaimable cache is excluded.",
+    "app_memory_basis": "PSS includes a proportional share of shared memory. Native and Java heap are separate app-local measurements, so these figures are not expected to add up.",
+    "card_app_pss": "OverDrive PSS",
+    "process_scope_hint": "These rows are per-process, not device totals. CPU is per-core (100% = one fully busy core; multi-core processes can exceed 100%). RAM % is each process's share of total RAM; Resident is its resident memory.",
+    "col_cpu_per_core": "CPU / core",
+    "col_ram_percent": "RAM %",
+    "system_cpu_basis": "Whole device · all cores combined (0–100%)."
   },
   "update": {
     "check_for_updates": "Check for Updates",
@@ -3123,7 +3142,10 @@
   },
   "logs": {
     "section_title": "Diagnostics",
-    "section_sub": "Hit a bug? Send a daemon's log here — you'll get a short code, then share it with us on Discord, GitHub Issues or WhatsApp and tell us what went wrong.",
+    "section_sub": "Choose the log that best matches the issue. If you're unsure, send Camera first; for remote-access problems, also send the tunnel you use.",
+    "when_to_send": "Send this log when: ",
+    "component_unavailable": "Component details are unavailable in this app version.",
+    "send_when_unavailable": "Send this log when the problem involves this service.",
     "send": "Send",
     "uploading": "Uploading…",
     "upload_failed": "Upload failed",
@@ -3388,6 +3410,7 @@
     "popup_radius": "<b>{name}</b><br>{meters}m radius"
   },
   "liveview": {
+    "actions": "Actions",
     "cameras": "Cameras",
     "location": "Location",
     "live": "Live",
@@ -3412,7 +3435,13 @@
     "deterrent_confirm_ok": "Activate",
     "deterrent_horn_sent": "Horn and lights activated",
     "deterrent_flash_sent": "Lights flashed",
-    "deterrent_failed": "Could not send the command"
+    "deterrent_failed": "Could not send the command",
+    "unlock_confirm_title": "Unlock the car?",
+    "unlock_confirm_body": "This will unlock your vehicle's doors.",
+    "trunk_open_confirm_title": "Open the trunk?",
+    "trunk_open_confirm_body": "This will open the vehicle's trunk.",
+    "trunk_close_confirm_title": "Close the trunk?",
+    "trunk_close_confirm_body": "Check that the trunk area is clear before closing."
   },
   "map": {
     "your_vehicle": "Your Vehicle",
@@ -6717,5 +6746,32 @@
     "time_minutes": "{n} min ago",
     "time_hours": "{n} h ago",
     "time_days": "{n} days ago"
+  },
+  "moduleFaults": {
+    "page_title": "Module Faults",
+    "page_subtitle": "Read-only overview of vehicle warnings currently exposed by BYD telemetry.",
+    "scope_title": "Partial diagnostic coverage",
+    "scope_body": "This first version reads existing TPMS, 12V battery and charging-state indicators. It does not read stored ECU diagnostic trouble codes (DTCs), and it does not send CAN/UDS commands, clear faults, reset modules or change vehicle settings.",
+    "refresh": "Refresh readings",
+    "copy_report": "Copy report",
+    "loading": "Reading available vehicle telemetry…",
+    "load_error": "Could not load vehicle diagnostic indicators.",
+    "last_updated": "Last updated",
+    "status_warning": "Warning reported",
+    "status_clear": "No warning reported",
+    "status_partial": "Partial data",
+    "status_unavailable": "Unavailable",
+    "status_not_scanned": "Not scanned",
+    "warning_modules": "Warnings",
+    "clear_modules": "No warning reported",
+    "partial_modules": "Partial",
+    "unavailable_modules": "Unavailable",
+    "not_scanned_modules": "Not scanned",
+    "empty": "No readings are available yet. Make sure the vehicle is awake and try refreshing.",
+    "dtc_note": "A BYD-capable workshop diagnostic tool is still required for full ECU DTC coverage, including brakes, airbags, steering, ADAS and traction-battery modules.",
+    "copied": "Diagnostic report copied to clipboard.",
+    "copy_failed": "Could not copy the report.",
+    "fallback_module_name": "Module",
+    "fallback_reading_name": "Reading"
   }
 }

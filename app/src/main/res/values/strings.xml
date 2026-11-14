@@ -1065,7 +1065,8 @@
     <string name="settings_overlay_replay_subtitle">Show the CLIP badge: green while a replay records, blue for 5s once saved, red when it fails. Appears only when a replay binding or automation exists.</string>
     <string name="settings_overlay_roadsense_title">RoadSense overlay</string>
     <string name="settings_overlay_roadsense_subtitle">Show the floating RoadSense pill and hazard card while RoadSense is enabled.</string>
-    <string name="settings_overlay_chip_opacity">Chip transparency</string>
+    <string name="settings_overlay_chip_opacity">Chip visibility</string>
+    <string name="settings_overlay_chip_opacity_subtitle">Higher = more prominent. Range 10 to 100 (percent shown at right).</string>
     <string name="settings_overlay_chip_opacity_value">%1$d%%</string>
     <string name="settings_overlay_icon_opacity">Icon transparency</string>
     <string name="settings_overlay_icon_opacity_value">%1$d%%</string>
@@ -1301,6 +1302,8 @@
     <string name="diagnostics_section_traffic">Traffic monitor</string>
     <string name="diagnostics_section_camera_probe">Camera probe</string>
     <string name="diagnostics_section_battery">Battery health</string>
+    <string name="diagnostics_section_module_faults">Module faults</string>
+    <string name="diagnostics_module_faults_summary">View available vehicle-reported warnings (partial coverage)</string>
     <string name="diagnostics_section_daemon_storage">Daemon storage</string>
 
     <!-- Diagnostics "Vehicle setup" card: read-only detected vs configured summary -->

@@ -13,6 +13,7 @@ import com.overdrive.app.surveillance.HardwareEventRecorderGpu;
 
 import org.json.JSONObject;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -27,8 +28,13 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -49,14 +55,31 @@ public class HttpServer {
 
     private static final String WEB_ROOT = com.overdrive.app.util.ScratchRoot.path("web");
     private final int port;
-    private ServerSocket serverSocket;
+    // stop() runs on a different thread from start()/accept(); volatile is
+    // required so it always closes the currently published listener socket.
+    private volatile ServerSocket serverSocket;
     private volatile boolean running = true;
 
     /** Consecutive bind failures, reset on a successful bind. */
     private int bindFailures;
 
-    // Thread Pool to prevent server clogging (max 32 concurrent connections)
-    private final ExecutorService threadPool = Executors.newFixedThreadPool(32);
+    // Bound both active handlers and accepted-but-not-yet-serviced sockets.
+    // Executors.newFixedThreadPool(32) limits workers but uses an unbounded
+    // LinkedBlockingQueue, allowing slow clients to accumulate sockets/Fds.
+    private static final int HTTP_WORKER_THREADS = 32;
+    private static final int HTTP_PENDING_CONNECTIONS = 64;
+    private final ExecutorService threadPool = new ThreadPoolExecutor(
+            HTTP_WORKER_THREADS,
+            HTTP_WORKER_THREADS,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(HTTP_PENDING_CONNECTIONS),
+            Executors.defaultThreadFactory(),
+            new ThreadPoolExecutor.AbortPolicy());
+    // Track queued as well as running sockets so stop() can close every accepted
+    // connection, including tasks removed from the executor queue by shutdownNow.
+    private final Object clientLock = new Object();
+    private final Set<Socket> clientSockets = new HashSet<>();
 
     /** Pending-connection backlog for the listening socket (see run loop). */
     static final int LISTEN_BACKLOG = 128;
@@ -65,41 +88,65 @@ public class HttpServer {
         this.port = port;
     }
 
-    /**
-     * Extracts web assets from APK to filesystem.
-     * Call this during initialization with a valid AssetManager.
-     */
+    // Re-extracting the entire bundled web UI (including translations and the 3D
+    // model) on every daemon restart causes avoidable flash writes and startup
+    // stalls. A completed extraction is reusable until the installed APK changes.
+    // The stamp is committed LAST: a failed/aborted extraction cannot mark an
+    // incomplete web tree as current. The external overlay icons are checked too.
+    private static final String WEB_ASSET_STAMP = ".overdrive-apk-assets-v1";
+
+    /** Compatibility entry point without an APK identity: always refresh. */
     public static void extractWebAssets(AssetManager assetManager) {
+        extractWebAssets(assetManager, null);
+    }
+
+    /**
+     * Extract APK web assets once per APK installation, not once per daemon start.
+     * A missing/changed APK identity or incomplete extraction uses the original
+     * full-refresh path. The APK path comes from the daemon's own classpath.
+     */
+    public static synchronized void extractWebAssets(AssetManager assetManager, String apkPath) {
         if (assetManager == null) {
             CameraDaemon.log("AssetManager is null, skipping web asset extraction");
             return;
         }
-        
+
+        String expectedStamp = apkAssetStamp(apkPath);
         try {
             File webRoot = new File(WEB_ROOT);
+            boolean cacheHit = expectedStamp != null
+                    && webAssetCacheValid(webRoot, expectedStamp);
+            if (cacheHit) {
+                CameraDaemon.log("Reusing existing web assets (APK unchanged)");
+            } else {
+                // APK changed, the extracted files were removed, or the last
+                // extraction did not finish. Keep the existing full-refresh path.
+                if (webRoot.exists()) {
+                    deleteRecursive(webRoot);
+                    CameraDaemon.log("Deleted existing web assets for fresh extraction");
+                }
+                if (!webRoot.mkdirs() && !webRoot.isDirectory()) {
+                    throw new java.io.IOException("Cannot create web assets directory: " + webRoot);
+                }
             
-            // Always delete and recreate to ensure fresh files on app update
-            if (webRoot.exists()) {
-                deleteRecursive(webRoot);
-                CameraDaemon.log("Deleted existing web assets for fresh extraction");
-            }
-            webRoot.mkdirs();
-            
-            // Extract web/local and web/shared directories
-            extractAssetDir(assetManager, "web/local", new File(WEB_ROOT, "local"));
-            extractAssetDir(assetManager, "web/shared", new File(WEB_ROOT, "shared"));
-            // Extract i18n catalogs (one JSON per supported locale).
-            // The web/i18n directory is created by the NLLB translation pipeline
-            // — at minimum web/i18n/en.json must exist for the runtime to load.
-            extractAssetDir(assetManager, "web/i18n", new File(WEB_ROOT, "i18n"));
-            // Extract server-side i18n catalogs (Messages.java lookup source).
-            // Kept distinct from web/i18n so the HTTP /i18n/ route doesn't accidentally
-            // expose internal error keys, and the two catalogs can diverge if needed.
-            extractAssetDir(assetManager, "server-i18n", new File(WEB_ROOT, "server-i18n"));
+                // Extract web/local and web/shared directories
+                extractAssetDir(assetManager, "web/local", new File(WEB_ROOT, "local"));
+                extractAssetDir(assetManager, "web/shared", new File(WEB_ROOT, "shared"));
+                // Extract i18n catalogs (one JSON per supported locale).
+                // The web/i18n directory is created by the NLLB translation pipeline
+                // — at minimum web/i18n/en.json must exist for the runtime to load.
+                extractAssetDir(assetManager, "web/i18n", new File(WEB_ROOT, "i18n"));
+                // Extract server-side i18n catalogs (Messages.java lookup source).
+                // Kept distinct from web/i18n so the HTTP /i18n/ route doesn't accidentally
+                // expose internal error keys, and the two catalogs can diverge if needed.
+                extractAssetDir(assetManager, "server-i18n", new File(WEB_ROOT, "server-i18n"));
 
-            // Extract overlay icons for telemetry overlay
-            extractAssetDir(assetManager, "overlay", new File(com.overdrive.app.util.ScratchRoot.path("overlay")));
+                // Extract overlay icons for telemetry overlay
+                extractAssetDir(assetManager, "overlay", new File(com.overdrive.app.util.ScratchRoot.path("overlay")));
             
+            }
+
+            // Validate external crypto tables on every boot, even on a web cache hit.
             // Extract BYD cloud crypto tables — re-extract whenever the cache
             // is missing or fails magic/size validation, so a stale or
             // truncated /data/local/tmp file from a prior build can't poison
@@ -133,12 +180,73 @@ public class HttpServer {
                 CameraDaemon.log("Could not extract BYD WBSK tables: " + e.getMessage());
             }
             
-            CameraDaemon.log("Web assets extracted to " + WEB_ROOT);
+            // Publish the stamp only after all web catalogs and overlay icons
+            // were extracted successfully. A crash before rename will cause
+            // the next daemon start to retry the full extraction.
+            if (!cacheHit && expectedStamp != null) {
+                writeWebAssetStamp(webRoot, expectedStamp);
+            }
+            if (!cacheHit) CameraDaemon.log("Web assets extracted to " + WEB_ROOT);
         } catch (Exception e) {
             CameraDaemon.log("Failed to extract web assets: " + e.getMessage());
         }
     }
-    
+
+    /** Hash APK metadata, not APK contents (hashing the APK defeats this optimization). */
+    private static String apkAssetStamp(String apkPath) {
+        if (apkPath == null || apkPath.isEmpty()) return null;
+        try {
+            File apk = new File(apkPath);
+            if (!apk.isFile() || apk.length() <= 0L || apk.lastModified() <= 0L) return null;
+            String identity = "v1\n" + apk.getCanonicalPath() + "\n"
+                    + apk.length() + "\n" + apk.lastModified();
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(
+                    identity.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(Character.forDigit((b >>> 4) & 0x0f, 16));
+                hex.append(Character.forDigit(b & 0x0f, 16));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            CameraDaemon.log("Could not identify APK assets; extracting normally: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean webAssetCacheValid(File webRoot, String expectedStamp) {
+        // Representative files from every extraction root, including the overlay
+        // outside WEB_ROOT, detect missing trees even when a stale stamp remains.
+        if (!new File(webRoot, "local/index.html").isFile()
+                || !new File(webRoot, "shared/app-shell.js").isFile()
+                || !new File(webRoot, "i18n/en.json").isFile()
+                || !new File(webRoot, "server-i18n/en.json").isFile()
+                || !new File(com.overdrive.app.util.ScratchRoot.path("overlay"),
+                        "seat-belt.png").isFile()) {
+            return false;
+        }
+        File marker = new File(webRoot, WEB_ASSET_STAMP);
+        if (!marker.isFile()) return false;
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(
+                new FileInputStream(marker), java.nio.charset.StandardCharsets.UTF_8))) {
+            return expectedStamp.equals(in.readLine()) && in.readLine() == null;
+        } catch (java.io.IOException ignored) {
+            return false;
+        }
+    }
+
+    private static void writeWebAssetStamp(File webRoot, String stamp) throws java.io.IOException {
+        File marker = new File(webRoot, WEB_ASSET_STAMP);
+        File pending = new File(webRoot, WEB_ASSET_STAMP + ".tmp");
+        try (FileOutputStream out = new FileOutputStream(pending)) {
+            out.write((stamp + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.getFD().sync();
+        }
+        if (!pending.renameTo(marker)) {
+            throw new java.io.IOException("Cannot finalize web asset stamp: " + marker);
+        }
+    }
+
     private static void deleteRecursive(File file) {
         if (file.isDirectory()) {
             File[] children = file.listFiles();
@@ -202,20 +310,60 @@ public class HttpServer {
                 // browser demultiplexed into N loopback connections) easily
                 // exceeds 10 pending connects and the kernel drops the SYNs.
                 // The kernel caps this at somaxconn.
-                serverSocket = new ServerSocket(port, LISTEN_BACKLOG, InetAddress.getByName("0.0.0.0"));
-                serverSocket.setReuseAddress(true);
+                ServerSocket boundSocket = new ServerSocket();
+                // SO_REUSEADDR must be configured before bind(); setting it on
+                // an already-bound ServerSocket does not affect this listener.
+                boundSocket.setReuseAddress(true);
+                boundSocket.bind(new java.net.InetSocketAddress(
+                        InetAddress.getByName("0.0.0.0"), port), LISTEN_BACKLOG);
+                // Publish the newly-bound listener under the same lock used by
+                // stop(). If shutdown won while bind() was in progress, close
+                // this local socket instead of publishing it after stop() has
+                // already checked the field.
+                synchronized (clientLock) {
+                    if (!running) {
+                        try { boundSocket.close(); } catch (Exception ignored) {}
+                        break;
+                    }
+                    serverSocket = boundSocket;
+                }
                 bindFailures = 0;
                 CameraDaemon.log("HTTP server listening on 0.0.0.0:" + port);
 
-                while (running && CameraDaemon.isRunning() && !serverSocket.isClosed()) {
+                while (running && CameraDaemon.isRunning() && !boundSocket.isClosed()) {
                     try {
-                        Socket client = serverSocket.accept();
+                        Socket client = boundSocket.accept();
                         // (Removed per-accept "HTTP client:" log — it fired for
                         // EVERY request including the blind-spot overlay's 250ms
                         // /api/stream/turn poll, flooding the daemon log. The
                         // per-request line below already records real requests and
                         // now skips the high-frequency polling endpoints.)
-                        threadPool.execute(() -> handleClient(client));
+                        boolean accepted = false;
+                        synchronized (clientLock) {
+                            if (running) {
+                                clientSockets.add(client);
+                                try {
+                                    threadPool.execute(() -> {
+                                        try {
+                                            handleClient(client);
+                                        } finally {
+                                            synchronized (clientLock) {
+                                                clientSockets.remove(client);
+                                            }
+                                        }
+                                    });
+                                    accepted = true;
+                                } catch (RejectedExecutionException rejected) {
+                                    clientSockets.remove(client);
+                                }
+                            }
+                        }
+                        if (!accepted) {
+                            try { client.close(); } catch (Exception ignored) {}
+                            if (running) {
+                                CameraDaemon.log("WARN: HTTP client capacity reached; rejected connection");
+                            }
+                        }
                     } catch (java.net.SocketException e) {
                         if (running) {
                             CameraDaemon.log("WARN: HTTP socket error: " + e.getMessage());
@@ -249,13 +397,28 @@ public class HttpServer {
     }
 
     public void stop() {
-        running = false;
+        // Serialize the stop transition with accept-and-submit. Once running is
+        // false no newly accepted socket can escape the cleanup snapshot below.
+        synchronized (clientLock) {
+            running = false;
+            // Close the listener as part of the stop transition so accept()
+            // wakes immediately. The bind/publish path uses this same lock.
+            try {
+                ServerSocket listener = serverSocket;
+                if (listener != null) listener.close();
+            } catch (Exception ignored) {}
+        }
+        // Give upgraded WebSocket handlers their existing close path before
+        // force-closing the remaining HTTP sockets.
         RemoteCommunicationWebSocket.stopActive("Communication server stopped");
         CabinAudioWebSocket.stopActive("Communication server stopped");
         GenAiVoiceWebSocket.stopActive("GenAI server stopped");
-        try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (Exception e) {}
+        synchronized (clientLock) {
+            for (Socket client : clientSockets) {
+                try { client.close(); } catch (Exception ignored) {}
+            }
+            clientSockets.clear();
+        }
         threadPool.shutdownNow();
     }
 
@@ -370,15 +533,17 @@ public class HttpServer {
     }
 
     private void handleClient(Socket client) {
+        OutputStream out = null;
         try {
             client.setSoTimeout(15000);
-            // Force UTF-8 so the body byte-count loop below is deterministic.
-            // The platform default on Android is UTF-8 anyway, but pinning it
-            // here removes the implicit dependency on the JVM property.
-            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream(), "UTF-8"));
-            OutputStream out = new BufferedOutputStream(client.getOutputStream());
+            // Read network-controlled request lines/headers as bounded bytes,
+            // without letting BufferedReader.readLine() allocate indefinitely.
+            // Reuse this same stream for the body: no header-byte read-ahead is lost.
+            BufferedInputStream input = new BufferedInputStream(client.getInputStream(), 8192);
+            HttpRequestHead head = new HttpRequestHead(input);
+            out = new BufferedOutputStream(client.getOutputStream());
 
-            String requestLine = reader.readLine();
+            String requestLine = head.readRequestLine();
             if (requestLine == null) {
                 client.close();
                 return;
@@ -403,7 +568,7 @@ public class HttpServer {
                     return;
                 }
                 hasProxyProtocol = true;
-                requestLine = reader.readLine();
+                requestLine = head.readRequestLine();
                 if (requestLine == null) {
                     client.close();
                     return;
@@ -431,7 +596,7 @@ public class HttpServer {
 
             // Parse headers
             String line;
-            int contentLength = 0;
+            HttpRequestHead.Framing framing = new HttpRequestHead.Framing();
             String websocketKey = null;
             String upgradeHeader = null;
             String websocketProtocolHeader = null;
@@ -455,11 +620,10 @@ public class HttpServer {
             // X-Forwarded-Host. Captured here so isPwaOrigin can match it.
             String forwardedHostHeader = null;
 
-            while ((line = reader.readLine()) != null && !line.isEmpty()) {
-                String lower = line.toLowerCase();
-                if (lower.startsWith("content-length:")) {
-                    contentLength = Integer.parseInt(line.substring(15).trim());
-                } else if (lower.startsWith("sec-websocket-key:")) {
+            while (!(line = head.readHeaderLine()).isEmpty()) {
+                framing.accept(line);
+                String lower = line.toLowerCase(java.util.Locale.ROOT);
+                if (lower.startsWith("sec-websocket-key:")) {
                     websocketKey = line.substring(18).trim();
                 } else if (lower.startsWith("upgrade:")) {
                     upgradeHeader = line.substring(8).trim();
@@ -517,58 +681,17 @@ public class HttpServer {
                 }
             }
             
-            // Read POST body if present
-            // SOTA: Loop read for large payloads (e.g., base64 image uploads)
-            // BufferedReader.read() may return fewer chars than requested in a single call
-            // Default hard cap 16 MB — the largest legitimate generic payload is a
-            // base64-encoded 8 MB asset (~10.7 MB). Above this we 413 instead of
-            // letting an attacker allocate arbitrary heap on the daemon process.
-            //
-            // EXCEPTIONS:
-            // - Backup imports allow 32 MB for trip-history bundles.
-            // - The audio-library upload accepts short video clips (48 MB max,
-            // see AudioApiHandler.MAX_AUDIO_BYTES) as a base64 JSON body (~64 MB) — raise
-            // the cap to 72 MB for JUST that one endpoint so a legitimate clip isn't
-            // pre-rejected here, while every other endpoint keeps the tight 16 MB cap.
-            // The body is still buffered then decoded (peak ~200 MB transient for a
-            // 48 MB clip), which is safe on this head unit; a materially larger limit
-            // would require a stream-to-disk upload rewrite rather than this bump.
+            int contentLength = framing.contentLength();
+            // Validate the requested allocation before consuming any body bytes.
+            // The decoder reads at most Content-Length raw bytes and handles
+            // multi-byte UTF-8 across chunk boundaries without re-encoding each
+            // character chunk to guess how many wire bytes were consumed.
             final int maxBodyBytes = maxBodyBytesForRequestLine(requestLine);
-            String body = null;
             if (contentLength > maxBodyBytes) {
                 HttpResponse.sendError(out, 413, "Payload too large");
-                client.close();
                 return;
             }
-            if (contentLength > 0) {
-                // Content-Length is in BYTES per RFC 7230. BufferedReader is a
-                // character stream — UTF-8 multi-byte chars (e.g. "₹" = U+20B9
-                // = 3 bytes but 1 char) decode 1:1 into Java chars, so reading
-                // `contentLength` chars on a body containing non-ASCII would
-                // block forever waiting for chars that will never come (the
-                // browser already sent the full byte count, but it represents
-                // fewer chars). Loop until the UTF-8 byte count of what we've
-                // accumulated equals the declared Content-Length.
-                //
-                // Headers are guaranteed ASCII (HTTP/1.1 spec) so the
-                // BufferedReader.readLine() loop above is unaffected.
-                int CHUNK = Math.min(contentLength, 4096);
-                char[] bodyChars = new char[CHUNK];
-                // Reserve only the bounded read chunk. Content-Length is untrusted;
-                // let the accumulator grow as body characters actually arrive.
-                StringBuilder sb = new StringBuilder(CHUNK);
-                int bytesAccumulated = 0;
-                while (bytesAccumulated < contentLength) {
-                    int read = reader.read(bodyChars, 0, CHUNK);
-                    if (read == -1) break;  // EOF
-                    sb.append(bodyChars, 0, read);
-                    // Encode just the chars read this iteration to count their
-                    // UTF-8 byte length. Cheaper than re-encoding the whole
-                    // accumulator each tick.
-                    bytesAccumulated += new String(bodyChars, 0, read).getBytes("UTF-8").length;
-                }
-                body = sb.toString();
-            }
+            String body = HttpRequestHead.readUtf8Body(input, contentLength);
 
             String[] parts = requestLine.split(" ");
             if (parts.length < 2) {
@@ -816,6 +939,10 @@ public class HttpServer {
                 if (!serveStaticFile(out, "local/performance.html")) {
                     HttpResponse.sendError(out, 404, "performance.html not found");
                 }
+            } else if (path.equals("/module-faults.html") || path.equals("/module-faults")) {
+                if (!serveStaticFile(out, "local/module-faults.html")) {
+                    HttpResponse.sendError(out, 404, "module-faults.html not found");
+                }
             } else if (path.equals("/remote-dev-view.html") || path.equals("/remote-dev-view")) {
                 if (!serveStaticFile(out, "local/remote-dev-view.html")) {
                     HttpResponse.sendError(out, 404, "remote-dev-view.html not found");
@@ -954,6 +1081,13 @@ public class HttpServer {
                 HttpResponse.sendHtml(out, "<html><head><meta http-equiv='refresh' content='0;url=/'></head></html>");
             } else {
                 HttpResponse.sendError(out, 404, "Not Found");
+            }
+        } catch (HttpRequestHead.HeadException e) {
+            // Fail before authentication/routing: do not echo attacker-supplied
+            // header values or request targets in this response.
+            if (out != null) {
+                try { HttpResponse.sendError(out, e.status, e.getMessage()); }
+                catch (Exception ignored) { /* peer may have disconnected */ }
             }
         } catch (Exception e) {
             CameraDaemon.log("HTTP error: " + e.getMessage());
@@ -1422,6 +1556,12 @@ public class HttpServer {
         // Dedicated remote voice/message control surface.
         if (path.startsWith("/api/communicate/")) {
             return RemoteCommunicationApiHandler.handle(method, path, body, out);
+        }
+
+        // Read-only module-fault overview. This consumes existing BYD telemetry only;
+        // it does not issue ECU diagnostic requests or mutate vehicle state.
+        if (path.equals("/api/diagnostics/module-faults")) {
+            return ModuleFaultsApiHandler.handle(method, path, out);
         }
 
         // Vehicle Control API + the parked/cooldown-guarded IVI reboot action.

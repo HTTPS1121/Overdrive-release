@@ -302,7 +302,46 @@ public class ChargingFrontendContractTest {
                 "'Energy estimated'"));
         assertTrue(charging.contains(
                 "this._t('charge.not_measured', 'Not measured')"));
-        assertTrue(html.contains("charging.js?v=46"));
+        assertTrue(html.contains("charging.js?v=47"));
+    }
+
+    @Test
+    public void sessionsTabSupportsLocationTariffFilterAndCopySummary() throws IOException {
+        String charging = readRepositoryFile(
+                "app/src/main/assets/web/shared/charging.js");
+        String html = readRepositoryFile(
+                "app/src/main/assets/web/local/charging.html");
+        String english = readRepositoryFile(
+                "app/src/main/assets/web/i18n/en.json");
+
+        assertTrue(html.contains("id=\"sessionLocationFilter\""));
+        assertTrue(html.contains("id=\"copyLocationSummaryBtn\""));
+        assertTrue(charging.contains("locationTariffFilter"));
+        assertTrue(charging.contains("_resolveInCircleTariffId"));
+        assertTrue(charging.contains("_sessionTariffOwner"));
+        assertTrue(charging.contains("_applyLocationFilteredSessionSummary"));
+        assertTrue(charging.contains("copyLocationSummary"));
+        assertTrue(charging.contains("_copyTextFallback"));
+        assertTrue(english.contains("\"filter_all_locations\""));
+        assertTrue(english.contains("\"copy_summary\""));
+    }
+
+    @Test
+    public void sessionFiltersAndDetailNavStayStickyUnderSectionTabs()
+            throws IOException {
+        String html = readRepositoryFile(
+                "app/src/main/assets/web/local/charging.html");
+
+        assertTrue(html.contains("#sessionFilters"));
+        assertTrue(html.contains("position: -webkit-sticky"));
+        assertTrue(html.contains("position: sticky"));
+        assertTrue(html.contains(".ch-detail-nav"));
+        assertTrue(html.contains("body.charging-detail-open .ch-detail-nav"));
+        assertTrue(html.contains("background: var(--page)"));
+        assertTrue(html.contains(
+                "body.charging-page .main-content > .page-body"));
+        assertTrue(html.contains("body.charging-page .app-layout"));
+        assertTrue(html.contains("overflow: visible"));
     }
 
     @Test

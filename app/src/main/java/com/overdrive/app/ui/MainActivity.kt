@@ -109,6 +109,12 @@ open class MainActivity : AppCompatActivity() {
     // onDestroy() — prevents the periodic update check from leaking the
     // activity instance after recreate.
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // Reuse one Activity-owned worker for the legacy SOH/reset actions. Creating
+    // a newSingleThreadExecutor per dialog/action left its core thread alive after
+    // each task completed; repeated visits accumulated idle threads.
+    private val actionIoExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "MainActivity-ActionIO").apply { isDaemon = true }
+    }
     private var updateCheckRunnable: Runnable? = null
 
     // True while a system-driven boot/update launch is being moved behind
@@ -286,7 +292,8 @@ open class MainActivity : AppCompatActivity() {
             // Generate device ID early - this syncs to file for daemon compatibility
             // Must happen BEFORE any daemon starts
             val deviceId = com.overdrive.app.util.DeviceIdGenerator.generateDeviceId(this)
-            android.util.Log.i("MainActivity", "Device ID initialized: $deviceId")
+
+            android.util.Log.i("MainActivity", "Device ID initialized: " + redactDeviceIdForLog(deviceId))
 
             // Apply BYD whitelist (ACC + data cache) to prevent background killing
             // CRITICAL: Run on background thread to avoid blocking UI on boot
@@ -999,6 +1006,11 @@ open class MainActivity : AppCompatActivity() {
         appUpdater = updater
         updater.checkForUpdate(object : com.overdrive.app.updater.AppUpdater.UpdateCallback {
             override fun onUpdateAvailable(currentVersion: String, newVersion: String, releaseNotes: String) {
+                if (currentVersion.trim() == newVersion.trim()) {
+                    logsViewModel.debug("Update", "Suppressed update offer with identical version ($currentVersion)")
+                    updater.close()
+                    return
+                }
                 // Don't close updater here — performAppUpdate will use it.
                 com.overdrive.app.updater.UpdateDialog.showUpdateAvailable(
                     this@MainActivity, currentVersion, newVersion, releaseNotes,
@@ -1091,6 +1103,12 @@ open class MainActivity : AppCompatActivity() {
         updater.checkForUpdate(object : com.overdrive.app.updater.AppUpdater.UpdateCallback {
             override fun onUpdateAvailable(currentVersion: String, newVersion: String, releaseNotes: String) {
                 if (!isCurrentManualUpdateCheck(checkGeneration)) {
+                    updater.close()
+                    return
+                }
+                if (currentVersion.trim() == newVersion.trim()) {
+                    logsViewModel.debug("Update", "Suppressed manual update offer with identical version ($currentVersion)")
+                    Toast.makeText(this@MainActivity, getString(R.string.toast_app_up_to_date, currentVersion), Toast.LENGTH_LONG).show()
                     updater.close()
                     return
                 }
@@ -4170,9 +4188,7 @@ open class MainActivity : AppCompatActivity() {
      * The properties file contains only estimator internals and must not be displayed.
      */
     private fun showBatteryHealthDialog() {
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-
-        executor.execute {
+        actionIoExecutor.execute {
             var sohPercent = "--"
             var source = "--"
             var method = "--"
@@ -4288,6 +4304,7 @@ open class MainActivity : AppCompatActivity() {
             val finalFrameMismatch = frameMismatch
 
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 val dialogView = layoutInflater.inflate(R.layout.dialog_battery_health, null)
 
                 // Populate fields
@@ -4430,8 +4447,7 @@ open class MainActivity : AppCompatActivity() {
      * and dismiss the dialog so a re-open paints the corrected numbers.
      */
     private fun applyObservedNominal(observedKwh: Double, onComplete: () -> Unit) {
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-        executor.execute {
+        actionIoExecutor.execute {
             var ok = false
             var errMsg: String? = null
             try {
@@ -4458,6 +4474,7 @@ open class MainActivity : AppCompatActivity() {
             }
 
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (ok) {
                     Toast.makeText(this,
                         getString(R.string.toast_soh_observed_value_saved, observedKwh),
@@ -4516,8 +4533,7 @@ open class MainActivity : AppCompatActivity() {
      * The daemon's SohEstimator will detect the missing file and re-seed.
      */
     private fun performSohReset() {
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-        executor.execute {
+        actionIoExecutor.execute {
             try {
                 // Use daemon API (daemon owns the file, has write permissions)
                 val conn = com.overdrive.app.util.DaemonHttpClient.open(
@@ -4529,6 +4545,7 @@ open class MainActivity : AppCompatActivity() {
                 
                 if (responseCode == 200) {
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         Toast.makeText(this, getString(R.string.toast_soh_reset_success), Toast.LENGTH_LONG).show()
                         logsViewModel.info("SOH", "SOH estimation reset by user")
                     }
@@ -4537,6 +4554,7 @@ open class MainActivity : AppCompatActivity() {
                     val sohFile = java.io.File(com.overdrive.app.util.ScratchRoot.path("abrp_soh_estimate.properties"))
                     val deleted = if (sohFile.exists()) sohFile.delete() else true
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         if (deleted) {
                             Toast.makeText(this, getString(R.string.toast_soh_reset_success), Toast.LENGTH_LONG).show()
                         } else {
@@ -4546,6 +4564,7 @@ open class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     Toast.makeText(this, getString(R.string.toast_soh_reset_failed_with_message, e.message ?: ""), Toast.LENGTH_SHORT).show()
                 }
             }
@@ -4634,8 +4653,7 @@ open class MainActivity : AppCompatActivity() {
         categories: List<String>,
         labels: Map<String, String>
     ) {
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-        executor.execute {
+        actionIoExecutor.execute {
             try {
                 val payload = org.json.JSONObject().apply {
                     put("categories", org.json.JSONArray(categories))
@@ -4656,6 +4674,7 @@ open class MainActivity : AppCompatActivity() {
 
                 val data = try { org.json.JSONObject(body) } catch (e: Exception) { null }
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     if (data != null && data.optBoolean("success", false)) {
                         val results = data.optJSONObject("results")
                         val lines = StringBuilder()
@@ -4688,6 +4707,7 @@ open class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     Toast.makeText(this, getString(R.string.toast_reset_failed_with_error, e.message ?: ""), Toast.LENGTH_LONG).show()
                 }
             }
@@ -4932,6 +4952,7 @@ open class MainActivity : AppCompatActivity() {
         }
         // Remove log listener
         if (!remoteDevSession) LogManager.setLogListener(null)
+        actionIoExecutor.shutdownNow()
         // Tear down the onboarding overlay + its ACC receiver (mirrors the auth-callback
         // teardown below — any guard cleared only in a callback needs a destroy path).
         onboardingHost?.dismiss()
@@ -5209,3 +5230,7 @@ open class MainActivity : AppCompatActivity() {
         private const val EXTRA_MINIMIZE_ON_START = "minimize_on_start"
     }
 }
+
+/** SECURITY (V60-05): never log the raw device ID — it is the credential-cipher key seed. */
+fun redactDeviceIdForLog(did: String?): String =
+    if (did.isNullOrEmpty() || did.length <= 8) "****" else did.take(4) + "…" + did.takeLast(4) + " (redacted)"

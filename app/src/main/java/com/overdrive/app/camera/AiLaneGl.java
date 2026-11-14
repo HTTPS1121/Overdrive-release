@@ -199,7 +199,7 @@ public final class AiLaneGl {
 
         final java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
         final Throwable[] failure = new Throwable[1];
-        handler.post(() -> {
+        boolean initPosted = handler.post(() -> {
             try {
                 aiCore = EGLCore.createShared(parentCore);
                 // Pbuffer is just a 1x1 dummy — we never present to it; all
@@ -210,25 +210,86 @@ public final class AiLaneGl {
             } catch (Throwable t) {
                 failure[0] = t;
                 logger.error("AI-lane GL init failed: " + t.getMessage());
+                // Construction may have succeeded far enough to allocate an
+                // EGL context or pbuffer. Release those objects on this GL
+                // thread before reporting initialization failure.
+                cleanupGlContextOnHandlerThread();
             } finally {
                 ready.countDown();
             }
         });
+        if (!initPosted) {
+            running.set(false);
+            stopFailedStartThread();
+            throw new IllegalStateException("AiLaneGl initialization task could not be posted");
+        }
 
         try {
             if (!ready.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
                 running.set(false);
+                cleanupAfterFailedStart();
                 throw new IllegalStateException("AiLaneGl init timed out");
             }
         } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
             running.set(false);
+            cleanupAfterFailedStart();
+            Thread.currentThread().interrupt();
             throw new IllegalStateException("AiLaneGl init interrupted", ie);
         }
         if (failure[0] != null) {
             running.set(false);
+            stopFailedStartThread();
             throw new RuntimeException("AiLaneGl init failed", failure[0]);
         }
+    }
+
+    /**
+     * Releases partially initialized EGL objects. Must run on the AI GL
+     * handler thread, where the context and pbuffer were created.
+     */
+    private void cleanupGlContextOnHandlerThread() {
+        if (aiCore != null) {
+            try { aiCore.makeNothingCurrent(); } catch (Throwable ignored) {}
+            if (aiPbuffer != null) {
+                try { aiCore.destroySurface(aiPbuffer); } catch (Throwable ignored) {}
+                aiPbuffer = null;
+            }
+            try { aiCore.release(); } catch (Throwable ignored) {}
+            aiCore = null;
+        }
+    }
+
+    /**
+     * Initialization may time out while its GL task is still executing.
+     * Queue cleanup behind that task so it cannot race EGL construction,
+     * then stop and join the worker.
+     */
+    private void cleanupAfterFailedStart() {
+        final android.os.Handler h = handler;
+        if (h != null && thread != null && thread.isAlive()) {
+            final java.util.concurrent.CountDownLatch cleaned =
+                    new java.util.concurrent.CountDownLatch(1);
+            if (h.post(() -> {
+                try { cleanupGlContextOnHandlerThread(); }
+                finally { cleaned.countDown(); }
+            })) {
+                try { cleaned.await(3, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            }
+        }
+        stopFailedStartThread();
+    }
+
+    /** Stops a worker created by start() when initialization did not succeed. */
+    private void stopFailedStartThread() {
+        final android.os.HandlerThread worker = thread;
+        if (worker != null) {
+            worker.quitSafely();
+            try { worker.join(1500); }
+            catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        }
+        handler = null;
+        thread = null;
     }
 
     /**
@@ -310,13 +371,18 @@ public final class AiLaneGl {
                 // Even though we skip readback, still let the foveated mailbox
                 // drain — the foveated cropper has its own 150ms throttle and
                 // is what carries event-correlated work.
-                serviceFoveated(textureId);
-                // GPU-barrier before releasing the lock on THIS exit path too:
-                // serviceFoveated can sample the OES texture, so its draw must
-                // complete before the encoder can rebind/free the buffer.
-                gpuSampleBarrier();
+                // The fence is needed only if a foveated crop actually
+                // submitted GL work. An idle tick must not synchronize the GPU.
+                if (serviceFoveated(textureId)) {
+                    gpuSampleBarrier();
+                }
                 return;
             }
+
+            // Track submitted GL work, not whether a CPU-side result was
+            // returned. The async PBO readback can return null after issuing
+            // an OES-sampling draw, which still requires the lifetime barrier.
+            boolean sampledCameraTexture = false;
 
             // PASS A — mosaic 640×480 readback for V2 motion + actor pipeline.
             // PBO + fence-sync inside readPixelsDirect makes this non-blocking
@@ -329,6 +395,9 @@ public final class AiLaneGl {
                 if (sentry != null && sentry.isActive()
                         && downscaler != null && aiLaneWorker != null) {
                     if (!aiLaneWorker.isBusy()) {
+                        // Set before invoking: an exception or null result does
+                        // not establish that no GPU commands were queued.
+                        sampledCameraTexture = true;
                         byte[] smallFrame = downscaler.readPixelsDirect(textureId);
                         if (smallFrame != null) {
                             // Lazy-wire foveated cropper into the sentry on
@@ -362,7 +431,7 @@ public final class AiLaneGl {
             // PASS B — service the foveated mailbox. Inside the lock: it samples
             // the same OES texture (foveated crop binds GL_TEXTURE_EXTERNAL_OES),
             // so it must be serialized against updateTexImage/release too.
-            serviceFoveated(textureId);
+            sampledCameraTexture |= serviceFoveated(textureId);
 
             // CRASH FIX (GPU-timeline barrier): the OES-sampling draws above only
             // QUEUE GPU work; the Java lock serializes CPU command ISSUANCE, not
@@ -373,8 +442,11 @@ public final class AiLaneGl {
             // The barrier forces THIS lane's sample to COMPLETE on the GPU before
             // we release camLock, so the encoder can never recycle a buffer that's
             // still being read. See gpuSampleBarrier() for why a fence (not a full
-            // glFinish) is used.
-            gpuSampleBarrier();
+            // glFinish) is used. No fence is needed when neither pass submitted
+            // any OES-sampling draw (e.g. no pending crop and worker busy).
+            if (sampledCameraTexture) {
+                gpuSampleBarrier();
+            }
         }
     }
 
@@ -424,15 +496,15 @@ public final class AiLaneGl {
         }
     }
 
-    private void serviceFoveated(int textureId) {
-        if (sentry == null || !sentry.isActive()) return;
-        // No GPU-job gate needed: YOLO runs on CPU now, so foveated
-        // glReadPixels (PBO async path) doesn't compete with TFLite's
-        // OpenCL queue.
+    private boolean serviceFoveated(int textureId) {
+        if (sentry == null || !sentry.isActive()) return false;
+        // True means a crop was ATTEMPTED, not necessarily completed. On
+        // exceptions, the draw may already be queued and still needs a fence.
         try {
-            sentry.serviceFoveatedRequestsOnGlThread();
+            return sentry.serviceFoveatedRequestsOnGlThread();
         } catch (Throwable t) {
             logger.warn("Foveated service error: " + t.getMessage());
+            return true; // Conservatively preserve the GPU lifetime barrier.
         }
     }
 

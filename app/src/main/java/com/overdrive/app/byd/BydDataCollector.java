@@ -159,7 +159,7 @@ public class BydDataCollector {
     private volatile Boolean acChargingCurrentLimitSupported;
     private static final int DILINK5_PRESSURE_UNIT_FEATURE_ID = 4208;
     private static final long DILINK5_TYRE_MAX_AGE_MS = 15_000L;
-    private static final long DILINK5_TYRE_TEMPERATURE_MAX_AGE_MS = 120_000L;
+    private static final long DILINK5_TYRE_TEMPERATURE_MAX_AGE_MS = 600_000L;
     private static final long DILINK5_COMMAND_CONFIRM_TIMEOUT_MS = 2_500L;
     private volatile int dilink5PressureUnit = BydVehicleData.UNAVAILABLE;
     private final java.util.concurrent.atomic.AtomicLongArray
@@ -640,12 +640,30 @@ public class BydDataCollector {
         BydVehicleData current = snapshot.get();
         if (!isDiLink5BridgeConsumer()) return current;
         long nowElapsed = SystemClock.elapsedRealtime();
-        if (!isDiLink5AutomationSnapshotFresh(nowElapsed, diLink5BridgeReceivedAtElapsedMs)) {
-            return withDiLink5CarSvcCpd(
-                    withDiLink5CarSvcSoc(clearStaleDiLink5VehicleFields(current), nowElapsed));
+        boolean bridgeFresh = isDiLink5AutomationSnapshotFresh(nowElapsed, diLink5BridgeReceivedAtElapsedMs);
+        if (!bridgeFresh) {
+            return withDiLink5CarSvcDaemonOverlay(
+                    withDiLink5CarSvcCpd(
+                            withDiLink5CarSvcSoc(clearStaleDiLink5VehicleFields(current), nowElapsed)),
+                    nowElapsed,
+                    false);
         }
-        return withDiLink5CarSvcCpd(current != null && !isUsablePolledSoc(current.socPercent, true)
-                ? withDiLink5CarSvcSoc(current, nowElapsed) : current);
+        return withDiLink5CarSvcDaemonOverlay(
+                withDiLink5CarSvcCpd(current != null && !isUsablePolledSoc(current.socPercent, true)
+                        ? withDiLink5CarSvcSoc(current, nowElapsed) : current),
+                nowElapsed,
+                true);
+    }
+
+    private BydVehicleData withDiLink5CarSvcDaemonOverlay(
+            BydVehicleData data, long nowElapsedMs, boolean bridgeFresh) {
+        if (data == null) return null;
+        int fallbackLock = bridgeFresh
+                && (diLink5DoorLockState == DOOR_STATE_UNLOCK || diLink5DoorLockState == DOOR_STATE_LOCK)
+                        ? diLink5DoorLockState
+                        : BydVehicleData.UNAVAILABLE;
+        return CarSvcTelemetry.applyCachedDaemonOverlay(
+                data, nowElapsedMs, DILINK5_CARSVC_CHARGING_MAX_AGE_MS, fallbackLock);
     }
 
     /**
@@ -3438,6 +3456,52 @@ public class BydDataCollector {
     }
 
     private String lastSummaryHash = "";
+    // Fast path for unchanged poll summaries: formatting seven floating-point values
+    // on every poll creates temporary objects even when no log entry is emitted.
+    private boolean hasLastSummaryValues;
+    private double lastSummarySoc;
+    private double lastSummary12v;
+    private double lastSummaryHighTemp;
+    private double lastSummaryLowTemp;
+    private double lastSummaryAvgTemp;
+    private double lastSummaryHighVoltage;
+    private double lastSummaryLowVoltage;
+    private java.util.Locale lastSummaryLocale;
+
+    private void logChangedPollSummary(BydVehicleData d) {
+        if (d == null) return;
+        java.util.Locale locale = java.util.Locale.getDefault();
+        if (hasLastSummaryValues && locale.equals(lastSummaryLocale)
+                && Double.compare(d.socPercent, lastSummarySoc) == 0
+                && Double.compare(d.voltage12v, lastSummary12v) == 0
+                && Double.compare(d.highCellTempC, lastSummaryHighTemp) == 0
+                && Double.compare(d.lowCellTempC, lastSummaryLowTemp) == 0
+                && Double.compare(d.avgCellTempC, lastSummaryAvgTemp) == 0
+                && Double.compare(d.highCellVoltage, lastSummaryHighVoltage) == 0
+                && Double.compare(d.lowCellVoltage, lastSummaryLowVoltage) == 0) {
+            return;
+        }
+        // Keep the original rounded-string comparison: a raw sensor change that
+        // rounds to the same displayed value must not produce another log entry.
+        String hash = String.format(locale, "%.1f|%.2f|%.1f/%.1f/%.1f|%.3f/%.3f",
+                d.socPercent, d.voltage12v, d.highCellTempC, d.lowCellTempC,
+                d.avgCellTempC, d.highCellVoltage, d.lowCellVoltage);
+        if (!hash.equals(lastSummaryHash)) {
+            logger.info("Data changed: SOC=" + d.socPercent + "% 12V=" + d.voltage12v + "V" +
+                    " Temp=" + d.highCellTempC + "/" + d.lowCellTempC + "/" + d.avgCellTempC + "°C" +
+                    " CellV=" + d.highCellVoltage + "/" + d.lowCellVoltage + "V");
+            lastSummaryHash = hash;
+        }
+        lastSummarySoc = d.socPercent;
+        lastSummary12v = d.voltage12v;
+        lastSummaryHighTemp = d.highCellTempC;
+        lastSummaryLowTemp = d.lowCellTempC;
+        lastSummaryAvgTemp = d.avgCellTempC;
+        lastSummaryHighVoltage = d.highCellVoltage;
+        lastSummaryLowVoltage = d.lowCellVoltage;
+        lastSummaryLocale = locale;
+        hasLastSummaryValues = true;
+    }
 
     // ==================== RoadSense fast dynamics poll ====================
     // RoadSense needs brake/accel/gear event-aligned to ~200 ms jolts (R-PERF-4),
@@ -4702,22 +4766,14 @@ public class BydDataCollector {
             t.setDaemon(true);
             return t;
         });
-        pollScheduler.scheduleAtFixedRate(() -> {
+        // A broad HAL sweep can exceed its interval on slow head units.
+        // Leave an idle gap instead of running overdue sweeps back-to-back.
+        // The separate fast/event-driven telemetry paths are unchanged.
+        pollScheduler.scheduleWithFixedDelay(() -> {
             try {
                 if (!collectAllFromScheduler(schedulerGeneration)) return;
                 // Log when data actually changes
-                BydVehicleData d = snapshot.get();
-                if (d != null) {
-                    String hash = String.format("%.1f|%.2f|%.1f/%.1f/%.1f|%.3f/%.3f",
-                        d.socPercent, d.voltage12v, d.highCellTempC, d.lowCellTempC, d.avgCellTempC,
-                        d.highCellVoltage, d.lowCellVoltage);
-                    if (!hash.equals(lastSummaryHash)) {
-                        logger.info("Data changed: SOC=" + d.socPercent + "% 12V=" + d.voltage12v + "V" +
-                            " Temp=" + d.highCellTempC + "/" + d.lowCellTempC + "/" + d.avgCellTempC + "°C" +
-                            " CellV=" + d.highCellVoltage + "/" + d.lowCellVoltage + "V");
-                        lastSummaryHash = hash;
-                    }
-                }
+                logChangedPollSummary(snapshot.get());
             } catch (Throwable t) {
                 logger.debug("Poll error: " + t.getMessage());
             }
@@ -5263,21 +5319,13 @@ public class BydDataCollector {
                 t.setDaemon(true);
                 return t;
             });
-            pollScheduler.scheduleAtFixedRate(() -> {
+            // A broad HAL sweep can exceed its interval on slow head units.
+            // Leave an idle gap instead of running overdue sweeps back-to-back.
+            // The separate fast/event-driven telemetry paths are unchanged.
+            pollScheduler.scheduleWithFixedDelay(() -> {
                 try {
                     if (!collectAllFromScheduler(schedulerGeneration)) return;
-                    BydVehicleData d = snapshot.get();
-                    if (d != null) {
-                        String hash = String.format("%.1f|%.2f|%.1f/%.1f/%.1f|%.3f/%.3f",
-                            d.socPercent, d.voltage12v, d.highCellTempC, d.lowCellTempC, d.avgCellTempC,
-                            d.highCellVoltage, d.lowCellVoltage);
-                        if (!hash.equals(lastSummaryHash)) {
-                            logger.info("Data changed: SOC=" + d.socPercent + "% 12V=" + d.voltage12v + "V" +
-                                " Temp=" + d.highCellTempC + "/" + d.lowCellTempC + "/" + d.avgCellTempC + "°C" +
-                                " CellV=" + d.highCellVoltage + "/" + d.lowCellVoltage + "V");
-                            lastSummaryHash = hash;
-                        }
-                    }
+                    logChangedPollSummary(snapshot.get());
                 } catch (Throwable t) {
                     logger.debug("Poll error: " + t.getMessage());
                 }
@@ -7265,16 +7313,37 @@ public class BydDataCollector {
 
     /** @return the cell voltage in V, or NaN if unavailable/out-of-range. */
     private double collectStatVoltage(BydVehicleData.Builder b, int featureId, String which) {
-        // Same as collectStatTemp, including the INT-FIRST ladder — getIntValue below reads
-        // BYDAutoEventValue.intValue, so the probe must request the width it will extract.
-        // (This method already rejects raw <= 0, so it degraded safely even before that fix.)
+        // Try INT-FIRST ladder first (mV integers on legacy trims), then fall back to
+        // float/double EventValue extraction on DiLink 5 trims where get(int[], double/float)
+        // populates doubleValue in either V (1.0..5.0) or mV (1000.0..5000.0).
+        double volts = Double.NaN;
         Object val = BydDeviceHelper.callGetProbing(statisticDevice, featureId, true);
-        if (val == null) return Double.NaN;
-        int raw = BydDeviceHelper.getIntValue(val);
-        if (raw == BydFeatureIds.BMS_UNAVAILABLE || raw == BydFeatureIds.INVALID_VALUE
-            || raw == BydFeatureIds.INVALID_VALUE_2 || raw == Integer.MIN_VALUE || raw <= 0) return Double.NaN;
-        double volts = raw / 1000.0;
-        if (volts < 1.0 || volts > 5.0) return Double.NaN;
+        if (val != null) {
+            int raw = BydDeviceHelper.getIntValue(val);
+            if (raw != BydFeatureIds.BMS_UNAVAILABLE
+                    && raw != BydFeatureIds.INVALID_VALUE
+                    && raw != BydFeatureIds.INVALID_VALUE_2
+                    && raw != Integer.MIN_VALUE
+                    && raw > 0) {
+                double candidate = raw / 1000.0;
+                if (candidate >= 1.0 && candidate <= 5.0) {
+                    volts = candidate;
+                }
+            }
+        }
+        if (Double.isNaN(volts)) {
+            Object dblVal = BydDeviceHelper.callGetProbing(statisticDevice, featureId, false);
+            if (dblVal != null) {
+                double rawDbl = BydDeviceHelper.getDoubleValue(dblVal);
+                if (Double.isFinite(rawDbl) && rawDbl > 0.0) {
+                    double candidate = rawDbl >= 100.0 ? rawDbl / 1000.0 : rawDbl;
+                    if (candidate >= 1.0 && candidate <= 5.0) {
+                        volts = candidate;
+                    }
+                }
+            }
+        }
+        if (Double.isNaN(volts)) return Double.NaN;
         switch (which) {
             case "high": b.highCellVoltage(volts); break;
             case "low": b.lowCellVoltage(volts); break;
@@ -8813,7 +8882,8 @@ public class BydDataCollector {
                         .chargingRestTimeMinutes(BydVehicleData.UNAVAILABLE);
             }
             if (carSvcCharging && Double.isFinite(observation.powerKw)) {
-                b.chargingPowerKw(observation.powerKw);
+                b.chargingPowerKw(observation.powerKw)
+                        .chargingPowerAtMs(System.currentTimeMillis());
             }
             if (carSvcCharging
                     && observation.restHours != BydVehicleData.UNAVAILABLE) {
@@ -9883,7 +9953,14 @@ public class BydDataCollector {
             ensureDeviceContext(powerDevice);
             
             Object mcu = BydDeviceHelper.callGetter(powerDevice, "getMcuStatus");
-            if (mcu instanceof Number) b.mcuStatus(((Number) mcu).intValue());
+            if (mcu instanceof Number) {
+                int mcuVal = ((Number) mcu).intValue();
+                if (mcuVal >= 0 && mcuVal < 65535
+                        && mcuVal != BydFeatureIds.INVALID_VALUE
+                        && mcuVal != BydFeatureIds.INVALID_VALUE_2) {
+                    b.mcuStatus(mcuVal);
+                }
+            }
             // NOTE: getBatteryRemainPowerEV() intentionally NOT called here.
             // On PHEVs (Sealion 6 DM-i), the PowerDevice EV subsystem returns stale kWh
             // values when the ICE is running. We rely on Statistic/Bodywork paths for
@@ -11260,6 +11337,10 @@ public class BydDataCollector {
                 // is a no-op on firmwares that don't expose the getter.
                 if (!dilink5) pollPerWheelTyreTemp(i);
             }
+            if (dilink5 && adapterReady) {
+                pollDiLink5TyreTemperatureOnce(
+                        tyreDevice, tyreTemperatureCache, diLink5TyreTemperatureAt, nowElapsed);
+            }
             b.tyrePressure(pressures);
             b.tyrePressureState(pressureStates);
             b.tyreAirLeakState(airLeakStates);
@@ -11302,9 +11383,10 @@ public class BydDataCollector {
                 b.tyreTemperatureState(temperatureState);
             }
 
-            // DI5 per-wheel temperature is event-backed through
-            // onTyreTemperatureValueChanged (0-based wheel index). Older SDKs
-            // additionally use the battery callback/getter and instrument IDs.
+            // DI5 per-wheel temperature uses 1-based wheel areas (1..4) via
+            // getTyreArea() + getTyreTemperatureValue(area) and
+            // onTyreTemperatureValueChanged. Older SDKs additionally use the
+            // battery callback/getter and instrument IDs.
 
             logTyreAlertsIfChanged(pressures, pressureStates, airLeakStates, signalStates,
                     dilink5 || sys instanceof Number ? systemState : Integer.MIN_VALUE,
@@ -11313,6 +11395,44 @@ public class BydDataCollector {
         } catch (Exception e) {
             logger.debug("collectTyre error: " + e.getMessage());
         }
+    }
+
+    /**
+     * On DiLink 5, {@code getTyreTemperatureValue(area)} ignores {@code area} and
+     * returns the shared temperature of whichever wheel {@code getTyreArea()} (1..4)
+     * last reported. Read {@code getTyreArea()} and the value together once per
+     * refresh (confirming {@code getTyreArea()} did not rotate mid-call) instead of
+     * looping 1..4, which would copy one wheel's reading onto all four tyres.
+     */
+    static boolean pollDiLink5TyreTemperatureOnce(
+            Object tyreDevice,
+            int[] cache,
+            java.util.concurrent.atomic.AtomicLongArray timestamps,
+            long nowElapsed) {
+        if (tyreDevice == null || cache == null || cache.length < 4 || timestamps == null) {
+            return false;
+        }
+        Object areaObj = BydDeviceHelper.callGetter(tyreDevice, "getTyreArea");
+        if (!(areaObj instanceof Number)) return false;
+        int area = ((Number) areaObj).intValue();
+        if (area < 1 || area > 4) return false;
+
+        Object wheelTemp = BydDeviceHelper.callGetter(
+                tyreDevice, "getTyreTemperatureValue", area);
+        Object areaAfter = BydDeviceHelper.callGetter(tyreDevice, "getTyreArea");
+        if (areaAfter instanceof Number && ((Number) areaAfter).intValue() != area) {
+            return false;
+        }
+        if (!(wheelTemp instanceof Number)) return false;
+        int tempC = (int) Math.round(((Number) wheelTemp).doubleValue());
+        if (!isValidTyreTemperatureC(tempC) || tempC == 0) return false;
+
+        int idx = area - 1;
+        synchronized (cache) {
+            cache[idx] = tempC;
+        }
+        timestamps.set(idx, nowElapsed);
+        return true;
     }
 
     // Last-seen tyre alert state — change-only logging so a developing slow leak
@@ -12120,12 +12240,13 @@ public class BydDataCollector {
                     && args.length >= 2) {
                 int wheel = ((Number) args[0]).intValue();
                 int tempC = ((Number) args[1]).intValue();
-                if (wheel < 0 || wheel > 3 || !isValidTyreTemperatureC(tempC)) return;
+                if (wheel < 1 || wheel > 4 || !isValidTyreTemperatureC(tempC)) return;
+                int wheelIdx = wheel - 1;
                 synchronized (tyreTemperatureCache) {
-                    tyreTemperatureCache[wheel] = tempC;
+                    tyreTemperatureCache[wheelIdx] = tempC;
                 }
                 diLink5TyreTemperatureAt.set(
-                        wheel, SystemClock.elapsedRealtime());
+                        wheelIdx, SystemClock.elapsedRealtime());
                 BydVehicleData current = snapshot.get();
                 if (current != null) {
                     publishNonChargingSnapshot(current.toBuilder()
@@ -12743,11 +12864,15 @@ public class BydDataCollector {
             logger.debug("collectStatisticExtended drivingTime error: " + e.getMessage());
         }
 
-        // Key battery level
+        // Key battery level (on DiLink 5, 0 indicates key not sampled / out of range,
+        // not a depleted CR2032 cell)
         try {
             Object keyBatt = BydDeviceHelper.callGetter(statisticDevice, "getKeyBatteryLevel");
             if (keyBatt instanceof Number) {
-                b.keyBatteryLevel(((Number) keyBatt).intValue());
+                int keyVal = ((Number) keyBatt).intValue();
+                if ((isDiLink5Vehicle() ? keyVal > 0 : keyVal >= 0) && keyVal < 255) {
+                    b.keyBatteryLevel(keyVal);
+                }
             }
         } catch (Exception e) {
             logger.debug("collectStatisticExtended keyBattery error: " + e.getMessage());
@@ -18994,13 +19119,16 @@ public class BydDataCollector {
         boolean valid = isValidAcChargingCurrentLimitState(rawState);
         Boolean supported = resolveAcChargingCurrentLimitSupport(
                 BydVehicleData.UNAVAILABLE, rawState, acChargingCurrentLimitSupported);
-        if (supported == null && chargingDevice != null) {
+        if (supported == null) {
             supported = Boolean.TRUE;
             acChargingCurrentLimitSupported = Boolean.TRUE;
         } else if (valid) {
             acChargingCurrentLimitSupported = supported;
         }
-        boolean available = Boolean.TRUE.equals(supported) && (chargingDevice != null || valid);
+        // In the daemon process that serves the web UI / status API, chargingDevice is null
+        // because BYD HAL singletons are only acquired in the main app process. On DiLink 5,
+        // availability must remain true so driver selection controls are unblocked.
+        boolean available = Boolean.TRUE.equals(supported);
         return new AcChargingCurrentLimitStatus(
                 supported, available, BydVehicleData.UNAVAILABLE,
                 valid ? rawState : BydVehicleData.UNAVAILABLE);
@@ -23820,7 +23948,7 @@ public class BydDataCollector {
     public boolean setOperationMode(int mode) {
         if (!invokeModeSetterForReadback(energyDevice, "setOperationMode", mode)) return false;
 
-        long deadline = SystemClock.elapsedRealtime() + DRIVE_MODE_APPLY_TIMEOUT_MS;
+        long deadline = SystemClock.elapsedRealtime() + getDriveModeApplyTimeoutMs();
         boolean answered = false;
         int raw = -1;
         int surface = -1;
@@ -23860,7 +23988,13 @@ public class BydDataCollector {
         return false;
     }
 
-    private static final long DRIVE_MODE_APPLY_TIMEOUT_MS = 1500L;
+    private static final long DRIVE_MODE_APPLY_TIMEOUT_MS_LEGACY = 1500L;
+    private static final long DRIVE_MODE_APPLY_TIMEOUT_MS_DILINK5 = 4000L;
+    private static long getDriveModeApplyTimeoutMs() {
+        return isDiLink5Vehicle()
+                ? DRIVE_MODE_APPLY_TIMEOUT_MS_DILINK5
+                : DRIVE_MODE_APPLY_TIMEOUT_MS_LEGACY;
+    }
     private static final long DRIVE_MODE_APPLY_POLL_MS = 50L;
 
     /** Public setter enum -> the same normalized live axis used by triggers. */
@@ -24003,21 +24137,30 @@ public class BydDataCollector {
             } catch (Exception e) {
                 logger.debug("setDriveConfig lookup failed: " + e.getMessage());
             }
+            if (m == null) {
+                try {
+                    // DiLink 5 (Qualcomm SA8155P / DiLink 100) SettingAdapterManager / BYDAutoSettingDevice OEM spelling: setDrvingMode(int)
+                    m = settingDevice.getClass().getMethod("setDrvingMode", int.class);
+                } catch (NoSuchMethodException ignored) {
+                } catch (Exception e) {
+                    logger.debug("setDrvingMode lookup failed: " + e.getMessage());
+                }
+            }
             if (m != null) {
                 try {
                     if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
                     Object r = m.invoke(settingDevice, apiMode);
-                    logger.info("setDriveConfig(" + apiMode + ") return=" + r);
+                    logger.info("setDriveMode(" + m.getName() + ", " + apiMode + ") return=" + r);
                     if (awaitDriveMode(configMode)) {
                         logger.info("setDriveConfigMode(" + configMode
-                                + "): setDriveConfig(" + apiMode + ") confirmed");
+                                + "): " + m.getName() + "(" + apiMode + ") confirmed");
                         return true;
                     }
                     logger.warn("setDriveConfigMode(" + configMode
-                            + "): setDriveConfig(" + apiMode
+                            + "): " + m.getName() + "(" + apiMode
                             + ") returned but no drive-mode axis confirmed it");
                 } catch (Exception e) {
-                    logger.debug("setDriveConfig(apiMode=" + apiMode + ") failed: " + e.getMessage());
+                    logger.debug("setDriveMode(" + (m != null ? m.getName() : "null") + ", apiMode=" + apiMode + ") failed: " + e.getMessage());
                 }
             }
         }
@@ -24062,7 +24205,7 @@ public class BydDataCollector {
     }
 
     private boolean awaitDriveMode(int configMode) {
-        long deadline = SystemClock.elapsedRealtime() + DRIVE_MODE_APPLY_TIMEOUT_MS;
+        long deadline = SystemClock.elapsedRealtime() + getDriveModeApplyTimeoutMs();
         do {
             int energyMode = readEnergyAxisDriveMode();
             int settingMode = readDriveConfigRaw();
@@ -24096,7 +24239,7 @@ public class BydDataCollector {
             if (VehicleActuatorBridge.isDiLink5RequestExpired()) return false;
             Object r = m.invoke(energyDevice, mode);
             logger.info("setRoadSurfaceMode(" + mode + ") return=" + r);
-            long deadline = SystemClock.elapsedRealtime() + DRIVE_MODE_APPLY_TIMEOUT_MS;
+            long deadline = SystemClock.elapsedRealtime() + getDriveModeApplyTimeoutMs();
             int seen;
             do {
                 seen = readRoadSurfaceMode(energyDevice);

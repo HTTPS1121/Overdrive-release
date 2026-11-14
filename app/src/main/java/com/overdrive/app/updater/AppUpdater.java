@@ -957,6 +957,19 @@ public class AppUpdater {
                         return;
                     }
 
+                    // DOWNGRADE PROTECTION:
+                    // If the running build has a strictly newer numeric version than the remote
+                    // release on the same channel (e.g. running 60.1, remote is 60.0), suppress
+                    // the offer. A passive update check must never offer a downgrade as a "newer" build.
+                    if (!remoteNumeric.isEmpty() && !installedNumeric.isEmpty()
+                            && isNewerVersion(remoteNumeric, installedNumeric)) {
+                        Log.i(TAG, "Installed version " + installedNumeric
+                                + " is newer than remote " + remoteNumeric
+                                + " — suppressing downgrade offer");
+                        runCallback(() -> callback.onNoUpdate(currentVersion));
+                        return;
+                    }
+
                     // Update detection: compare asset updated_at timestamp only.
                     // Version comparison is unreliable since versionName may not be bumped
                     // when the APK is replaced on the same release tag.
@@ -1049,6 +1062,33 @@ public class AppUpdater {
                     Log.i(TAG, "Channel: " + channel + ", Current: " + currentVersion +
                             ", Remote: " + remoteVersion + ", APK updated: " + updatedAt +
                             ", Last installed: " + lastInstalledTimestamp);
+
+                    // EQUAL-VERSION AUTO-HEALING & SUPPRESSION:
+                    // If the remote version is identical to the running version
+                    // on the same channel (e.g. both braveheart-v60.1), this is NOT a
+                    // newer update for the user. It happens either because:
+                    // 1) The user installed this build out-of-band (sideload, adb, OTA)
+                    //    so lastInstalledTimestamp in /data/local/tmp was never updated,
+                    // 2) Or upstream re-uploaded the APK/touched the rolling release
+                    //    with the same version number.
+                    // Offering an update with identical current/remote strings
+                    // ("v60.1 -> v60.1") makes no sense and spams the user with a
+                    // redundant dialog. Reconcile the local timestamp baseline silently
+                    // and report onNoUpdate.
+                    boolean isSameVersion = remoteVersion.equals(currentVersion)
+                            || (!remoteNumeric.isEmpty() && !installedNumeric.isEmpty()
+                                    && remoteNumeric.equals(installedNumeric));
+                    if (apkUpdated && isSameVersion) {
+                        saveLastUpdateTimestamp(channel, updatedAt);
+                        if (appInstallTime > 0) {
+                            saveInstallTimeBaseline(context, channel, appInstallTime);
+                        }
+                        Log.i(TAG, "Build already running (" + currentVersion
+                                + ") — reconciled timestamp baseline: " + updatedAt
+                                + ", suppressing same-version offer");
+                        runCallback(() -> callback.onNoUpdate(currentVersion));
+                        return;
+                    }
 
                     if (apkUpdated) {
                         runCallback(() -> callback.onUpdateAvailable(
@@ -2205,17 +2245,12 @@ public class AppUpdater {
         // never a broad overdrive_config* / *.json glob.
         script.append("rm -f /data/local/tmp/overdrive_config.json.tmp.* "
                 + com.overdrive.app.util.ScratchRoot.path("overdrive_config.json.bak.tmp") + " 2>/dev/null\n");
-        // Clear only machine-written CORE markers. Pre-existing UI/Telegram
-        // markers are durable manual stop intent and survive the update.
-        // POST_UPDATE_FILE / UPDATE_IN_PROGRESS_FILE stay in place; the new
-        // process consumes them via UpdateLifecycle.
-        script.append("for S in /data/local/tmp/camera_daemon.disabled "
-                + com.overdrive.app.util.ScratchRoot.path("acc_sentry_daemon.disabled;") + " do\n");
-        script.append("  R=$(head -1 \"$S\" 2>/dev/null)\n");
-        script.append("  case \"$R\" in 'disabled for update'*|"
-                + "'disabled by stopAllDaemons sweep'*|'disabled by killDaemon'*) "
-                + "rm -f \"$S\" 2>/dev/null;; esac\n");
-        script.append("done\n");
+        // Keep core daemon sentinels (acc_sentry_daemon.disabled / camera_daemon.disabled)
+        // intact during pm install so shell watchdogs do NOT respawn background daemons
+        // while the APK is being uninstalled and reinstalled. Respawning while the app is dead
+        // triggers catastrophic system_server Binder exhaustion deadlocks via broadcast timeouts.
+        // UpdateLifecycle.hardResetDaemons() clears these machine-written markers post-update
+        // once the newly installed app is booted and ready to service IPC/broadcasts.
         script.append("sleep 2\n");
         // Step 4: install. `pm install -r -d` allows downgrades (-d) so a
         // bad release doesn't strand the user, and replaces the existing app

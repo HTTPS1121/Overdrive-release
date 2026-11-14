@@ -34,6 +34,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - AccMonitor: Sentry mode when ACC goes off
  */
 public class CameraDaemon {
+    /** SECURITY (V60-05): never log the raw DID — it is the CredentialCipher key seed. */
+    static String redactDid(String did) {
+        if (did == null || did.length() <= 8) return "****";
+        return did.substring(0, 4) + "…" + did.substring(did.length() - 4) + " (redacted)";
+    }
+
 
     private static final String TAG = "CameraDaemon";
 
@@ -748,7 +754,7 @@ public class CameraDaemon {
         generateDeviceId();
 
         log("Output dir: " + outputDir);
-        log("Device ID: " + deviceId);
+        log("Device ID: " + redactDid(deviceId));
 
         // Camera scan disabled — opening/closing all camera IDs can briefly
         // disrupt the BYD dashcam. Camera ID is auto-detected in GpuSurveillancePipeline.init()
@@ -4745,8 +4751,10 @@ public class CameraDaemon {
                         apkAssets = mgr;
                         log("AssetManager created from APK: " + apkPath);
 
-                        // Extract web assets for HTTP server
-                        HttpServer.extractWebAssets(assetManager);
+                        // Reuse the extracted web UI across daemon restarts when
+                        // the installed APK has not changed. An APK update or
+                        // interrupted extraction still triggers a full refresh.
+                        HttpServer.extractWebAssets(assetManager, apkPath);
                     } else {
                         log("Failed to add asset path (cookie=0)");
                     }
@@ -10162,7 +10170,7 @@ public class CameraDaemon {
                 reader.close();
                 if (fileId != null && !fileId.isEmpty() && fileId.startsWith("byd-")) {
                     deviceId = fileId;
-                    log("Device ID loaded from file: " + deviceId);
+                    log("Device ID loaded from file: " + redactDid(deviceId));
                     return;
                 }
             }
@@ -10186,7 +10194,7 @@ public class CameraDaemon {
         }
         deviceId = hex.toString();
         saveDeviceId(deviceId);
-        log("Device ID generated randomly: " + deviceId);
+        log("Device ID generated randomly: " + redactDid(deviceId));
     }
 
     private static void saveDeviceId(String id) {

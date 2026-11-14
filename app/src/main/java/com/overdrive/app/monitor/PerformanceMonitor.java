@@ -80,10 +80,14 @@ public class PerformanceMonitor {
     // Lets the freq-ratio fallback tag its estimate honestly (issue #173).
     // Sampler-thread-confined (collectMetrics runs on a single scheduler task).
     private boolean lastGpuMaxFreqWasReal = false;
-    // Cache the resolved sysfs path once we find one that returns valid data,
-    // so we don't pay 4× File.exists() every second forever.
+    // Cache the resolved busy-counter path, including a confirmed missing path.
+    // The kernel's sysfs topology is stable for the daemon's lifetime.
     private java.io.File resolvedGpuBusyFile = null;
+    private boolean gpuBusyPathAbsent = false;
     private boolean gpuBusyResolutionLogged = false;
+    // Resolve the GPU devfreq directory once instead of enumerating sysfs on
+    // every dashboard sample. null = unresolved, sentinel = no matching GPU.
+    private java.io.File[] gpuDevfreqDevices = null;
 
     // Cache the resolved CPU/GPU thermal-zone /temp paths. The original code
     // re-scanned up to 30 thermal_zone* dirs — opening + reading the /type file
@@ -139,7 +143,11 @@ public class PerformanceMonitor {
             return t;
         });
         
-        scheduler.scheduleAtFixedRate(this::collectMetrics, 0, SAMPLE_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        // A sysfs/proc sweep can exceed the sample interval on slower BYD head units.
+        // Fixed-rate scheduling immediately runs missed samples back-to-back,
+        // keeping the sampler busy instead of giving the UI/camera time to run.
+        // Fixed-delay guarantees a full idle interval after each sweep.
+        scheduler.scheduleWithFixedDelay(this::collectMetrics, 0, SAMPLE_INTERVAL_MS, TimeUnit.MILLISECONDS);
         logger.info("Performance monitoring started");
     }
     
@@ -440,10 +448,16 @@ public class PerformanceMonitor {
             // Auto-detect GPU via /sys/class/devfreq/.
             // Modern kernels expose GPU as a generic 'devfreq' device — works
             // on MediaTek, Snapdragon, Exynos.
-            java.io.File devfreqDir = new java.io.File("/sys/class/devfreq/");
-            if (devfreqDir.exists() && devfreqDir.isDirectory()) {
-                java.io.File[] devices = devfreqDir.listFiles();
-                if (devices != null) {
+            java.io.File[] devices = gpuDevfreqDevices;
+            if (devices == null) {
+                java.io.File[] discovered = new java.io.File("/sys/class/devfreq/").listFiles();
+                if (discovered == null) discovered = new java.io.File[0];
+                // Cache the directory listing; frequency and load are still
+                // read live so thermal/governor changes remain visible.
+                gpuDevfreqDevices = discovered;
+                devices = discovered;
+            }
+            if (devices.length > 0) {
                     for (java.io.File device : devices) {
                         String name = device.getName().toLowerCase();
                         if (name.contains("kgsl") ||   // Adreno (Qualcomm)
@@ -473,7 +487,6 @@ public class PerformanceMonitor {
                             if (snapshot.gpuFreqMhz > 0) break;
                         }
                     }
-                }
             }
 
             // Legacy kgsl freq path if devfreq didn't yield one.
@@ -494,7 +507,9 @@ public class PerformanceMonitor {
             // failed the monotonicity check and bled through to the freq-ratio
             // fallback, which inflates at idle (governor parks at ~257/650 MHz
             // → ~40% baseline) and pegs near 100% on any burst.
-            if (snapshot.gpuUsagePercent == 0) {
+            // A measured 0% means the GPU is idle, not that the reading failed.
+            // Only probe the next sysfs source when the prior source is unavailable.
+            if ("unavailable".equals(snapshot.gpuUsageSource)) {
                 java.io.File gpuBusyFile = resolveGpuBusyFile();
                 if (gpuBusyFile != null) {
                     try (BufferedReader br = new BufferedReader(new FileReader(gpuBusyFile))) {
@@ -542,7 +557,7 @@ public class PerformanceMonitor {
             // If still no usage, estimate from frequency ratio. This is what
             // the original code did and what the user is used to seeing —
             // governor's clock ratio, not real busy time, but always populated.
-            if (snapshot.gpuUsagePercent == 0 && snapshot.gpuFreqMhz > 0) {
+            if ("unavailable".equals(snapshot.gpuUsageSource) && snapshot.gpuFreqMhz > 0) {
                 double maxFreq = readGpuMaxFrequency();
                 if (maxFreq > 0) {
                     snapshot.gpuUsagePercent = Math.min(100, (snapshot.gpuFreqMhz / maxFreq) * 100);
@@ -617,12 +632,15 @@ public class PerformanceMonitor {
      */
     private java.io.File resolveGpuBusyFile() {
         if (resolvedGpuBusyFile != null) return resolvedGpuBusyFile;
+        if (gpuBusyPathAbsent) return null;
 
         // Single canonical kgsl path — matches pre-session behavior. Probing
         // alternates risked promoting an unrelated counter (e.g. one that
         // resets per-read) over the freq-ratio fallback the user is used to.
         java.io.File f = new java.io.File("/sys/class/kgsl/kgsl-3d0/gpu_busy");
-        if (f.exists() && f.canRead()) {
+        if (!f.exists()) {
+            gpuBusyPathAbsent = true;
+        } else if (f.canRead()) {
             try (BufferedReader br = new BufferedReader(new FileReader(f))) {
                 String line = br.readLine();
                 if (line != null) {
@@ -657,17 +675,25 @@ public class PerformanceMonitor {
     }
     
     /**
-     * Robust single-line file reader - strips non-numeric chars for parsing
+     * Read the leading non-negative integer from a sysfs value, ignoring
+     * optional suffixes such as "%" or "@frequency".
      */
     private long readLongFromFile(java.io.File file) {
         if (!file.exists() || !file.canRead()) return -1;
         try (BufferedReader br = new BufferedReader(new FileReader(file))) {
             String line = br.readLine();
             if (line == null) return -1;
-            // Scrub non-numeric characters (handles "45 %" or "45@1000")
-            String numOnly = line.replaceAll("[^0-9]", "").trim();
-            if (numOnly.isEmpty()) return -1;
-            return Long.parseLong(numOnly);
+            // Read the leading number only. Concatenating every digit would
+            // misread "45@1000" as 451000; a negative value is not valid data.
+            String value = line.trim();
+            int end = 0;
+            while (end < value.length()) {
+                char c = value.charAt(end);
+                if (c < '0' || c > '9') break;
+                end++;
+            }
+            if (end == 0) return -1;
+            return Long.parseLong(value.substring(0, end));
         } catch (Exception e) {
             return -1;
         }

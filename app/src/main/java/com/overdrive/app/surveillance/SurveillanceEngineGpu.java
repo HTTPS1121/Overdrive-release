@@ -28,6 +28,7 @@ public class SurveillanceEngineGpu {
     private long lastMotionTime = 0;
     // volatile: read cross-thread by hasActiveMotion() (RMM control thread) to
     // drive the parked-idle fps ramp. Written only on the motion thread.
+    private volatile String finalDeterrentSummary = "";
     private volatile long firstMotionTime = 0;  // When sustained motion started (for duration check)
 
     // Parked-idle throttle keyframe pulse: last time we forced an IDR while idle.
@@ -2120,17 +2121,18 @@ public class SurveillanceEngineGpu {
      * simultaneously, they're serviced round-robin across consecutive
      * render frames.
      */
-    public void serviceFoveatedRequestsOnGlThread() {
+    /** Returns true if a crop was attempted (and could have queued GPU work). */
+    public boolean serviceFoveatedRequestsOnGlThread() {
         FoveatedCropper cropper = this.foveatedCropper;
         int texId = this.cameraTextureId;
-        if (cropper == null || texId < 0 || !cropper.isInitialized()) return;
+        if (cropper == null || texId < 0 || !cropper.isInitialized()) return false;
 
         // SOTA throttle: even with double-buffered async readback, the row pack
         // + Y-flip costs ~3 ms per call on Adreno 610. Capping to one service
         // per 150 ms keeps total per-frame GL cost predictable across the
         // entire event window.
         long nowNs = System.nanoTime();
-        if (nowNs - lastFoveatedServiceNs < FOVEATED_SERVICE_INTERVAL_NS) return;
+        if (nowNs - lastFoveatedServiceNs < FOVEATED_SERVICE_INTERVAL_NS) return false;
 
         // Snapshot the requests under the lock, then service at most one per
         // call. Round-robin via a per-instance cursor so no quadrant starves.
@@ -2149,7 +2151,7 @@ public class SurveillanceEngineGpu {
                 }
             }
         }
-        if (qToServe < 0) return;
+        if (qToServe < 0) return false;
 
         lastFoveatedServiceNs = nowNs;
 
@@ -2162,11 +2164,11 @@ public class SurveillanceEngineGpu {
             result = cropper.crop(texId, qToServe, cx, cy);
         } catch (Throwable t) {
             logger.warn("Foveated crop (GL inline) failed: " + t.getMessage());
-            return;
+            return true; // A draw may already have been queued.
         }
         if (result == null || result.rgb == null || result.quadrant < 0
                 || result.quadrant >= FOVEATED_NUM_QUADRANTS) {
-            return;
+            return true; // Async crop can return null after a GPU submission.
         }
         // Deep-copy: cropper.rgb is a pointer to its shared internal buffer;
         // the next service call will overwrite it. The copy is 1.2 MB —
@@ -2183,6 +2185,7 @@ public class SurveillanceEngineGpu {
                 result.width, result.height,
                 result.mapAx, result.mapBx, result.mapAy, result.mapBy,
                 result.hasAffine(), result.captureNanos));
+        return true;
     }
 
     private int foveatedRoundRobin = 0;
@@ -8545,7 +8548,7 @@ public class SurveillanceEngineGpu {
                     if (enc != null) durationSec = enc.getLastFinalizedDurationSec();
                 } catch (Throwable ignored) {}
                 String label = threat != null ? Actor.groupLabel(threat.classGroup) : null;
-                TelegramNotifier.notifyVideoRecorded(videoPath, label, durationSec);
+                TelegramNotifier.notifyVideoRecorded(videoPath, label, durationSec, finalDeterrentSummary);
             } else {
                 logger.debug("Surveillance video upload skipped — clip path unresolved/missing");
             }
@@ -8562,7 +8565,7 @@ public class SurveillanceEngineGpu {
                 String label = threat != null ? Actor.groupLabel(threat.classGroup) : null;
                 TelegramNotifier.notifyVideoRecorded(
                         oemFinalizedClip.getPath(), label,
-                        oemFinalizedClip.getDurationSeconds());
+                        oemFinalizedClip.getDurationSeconds(), finalDeterrentSummary);
             }
         } catch (Throwable t) {
             logger.debug("Telegram OEM surveillance video send failed: " + t.getMessage());
@@ -9452,6 +9455,24 @@ public class SurveillanceEngineGpu {
             data.put("vehicleCount", vehicles);
             data.put("bikeCount", bikes);
             data.put("animalCount", animals);
+            // Include only deterrents that reached their successful execution
+            // point. Web Push and the final Telegram video caption share this verdict.
+            org.json.JSONObject deterrents =
+                    com.overdrive.app.notifications.DeterrentNotificationStatus.consume();
+            java.util.List<String> firedDeterrents = new java.util.ArrayList<>();
+            if (deterrents.has("screenDeterrentFired")) {
+                data.put("screenDeterrentFired", true);
+                firedDeterrents.add("Screen deterrent");
+            }
+            if (deterrents.has("cloudDeterrentFired")) {
+                data.put("cloudDeterrentFired", true);
+                firedDeterrents.add("Cloud deterrent");
+            }
+            finalDeterrentSummary = firedDeterrents.isEmpty() ? ""
+                    : "Deterrent fired: " + android.text.TextUtils.join(" + ", firedDeterrents);
+            if (!finalDeterrentSummary.isEmpty()) {
+                body = body + " · " + finalDeterrentSummary;
+            }
             if (closest != null && closest != Actor.Proximity.UNKNOWN) {
                 data.put("closestProximity", closest.name());
             }

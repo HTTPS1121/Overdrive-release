@@ -362,6 +362,9 @@ public class PanoramicCameraGpu {
     };
 
     // Render loop
+    // Reuse the same callback for every frame. Recreating the bound method
+    // reference for every Handler.post can allocate on the camera GL path.
+    private final Runnable renderLoopCallback = this::renderLoop;
     private HandlerThread glThread;
     private Handler glHandler;
     private volatile boolean running = false;
@@ -442,6 +445,9 @@ public class PanoramicCameraGpu {
     // requested (HAL clamp; e.g. user requests 30, HAL emits ~26).
     private volatile float measuredFps = 0f;
     private long lastFrameTime = 0;
+    // Monotonic timestamp of an actual newly bound camera frame. Keep this
+    // separate from lastFrameTime, which also has watchdog/open-path writes.
+    private volatile long lastCameraFrameElapsedMs = 0L;
     private volatile long lastCameraStartTime = 0;
     // DiLink 4: track last error-restart so we can throttle tight reopen
     // loops when the HAL keeps emitting event=8. oem-parity: 60 s, not 30 s.
@@ -1961,7 +1967,7 @@ public class PanoramicCameraGpu {
                         this.aiCameraStateRef = aiCameraState;
                         running = true;
                         // Start render loop
-                        glHandler.post(this::renderLoop);
+                        glHandler.post(renderLoopCallback);
                         // Start watchdog
                         startWatchdog();
                         published = true;
@@ -5466,6 +5472,11 @@ public class PanoramicCameraGpu {
             return;
         }
 
+        // A new handle must prove that it has delivered a frame of its own;
+        // never let a timestamp from the previous camera session satisfy the
+        // live-secondary fast path during a later ACC transition.
+        lastCameraFrameElapsedMs = 0L;
+
         // Cold-open invariant: every path that creates the primary AVMCamera
         // handle (initial start, ACC reopen, HAL-error restart, yield
         // reacquire, and auto-probe) routes through this one method.
@@ -6302,13 +6313,32 @@ public class PanoramicCameraGpu {
         "}";
 
     private boolean ensureProbeResources() {
-        if (probeFbo != 0) return true;
+        if (probeFbo != 0 && probeColorTex != 0 && probeProgram != 0) return true;
+
+        // Retire any partial state left by an earlier failed initialization.
+        deleteProbeResources(probeProgram, probeFbo, probeColorTex);
+        probeProgram = 0;
+        probeFbo = 0;
+        probeColorTex = 0;
+        probeAPosLoc = -1;
+        probeATexLoc = -1;
+        probeUTexSamplerLoc = -1;
+        probeUTexMatrixLoc = -1;
+
+        int createdTexture = 0;
+        int createdFbo = 0;
+        int createdProgram = 0;
+        boolean committed = false;
         try {
-            // 1x1 RGBA8 color attachment.
+            // Build into local handles. Nothing becomes visible to the probe
+            // until every resource has been created and validated.
             int[] tex = new int[1];
             android.opengl.GLES20.glGenTextures(1, tex, 0);
-            probeColorTex = tex[0];
-            android.opengl.GLES20.glBindTexture(android.opengl.GLES20.GL_TEXTURE_2D, probeColorTex);
+            createdTexture = tex[0];
+            if (createdTexture == 0) {
+                throw new IllegalStateException("probe texture allocation returned 0");
+            }
+            android.opengl.GLES20.glBindTexture(android.opengl.GLES20.GL_TEXTURE_2D, createdTexture);
             android.opengl.GLES20.glTexImage2D(android.opengl.GLES20.GL_TEXTURE_2D, 0,
                 android.opengl.GLES20.GL_RGBA, 1, 1, 0,
                 android.opengl.GLES20.GL_RGBA, android.opengl.GLES20.GL_UNSIGNED_BYTE, null);
@@ -6316,27 +6346,33 @@ public class PanoramicCameraGpu {
                 android.opengl.GLES20.GL_TEXTURE_MIN_FILTER, android.opengl.GLES20.GL_LINEAR);
             android.opengl.GLES20.glTexParameteri(android.opengl.GLES20.GL_TEXTURE_2D,
                 android.opengl.GLES20.GL_TEXTURE_MAG_FILTER, android.opengl.GLES20.GL_LINEAR);
-            android.opengl.GLES20.glBindTexture(android.opengl.GLES20.GL_TEXTURE_2D, 0);
 
             int[] fbo = new int[1];
             android.opengl.GLES20.glGenFramebuffers(1, fbo, 0);
-            probeFbo = fbo[0];
-            android.opengl.GLES20.glBindFramebuffer(android.opengl.GLES20.GL_FRAMEBUFFER, probeFbo);
+            createdFbo = fbo[0];
+            if (createdFbo == 0) {
+                throw new IllegalStateException("probe framebuffer allocation returned 0");
+            }
+            android.opengl.GLES20.glBindFramebuffer(android.opengl.GLES20.GL_FRAMEBUFFER, createdFbo);
             android.opengl.GLES20.glFramebufferTexture2D(android.opengl.GLES20.GL_FRAMEBUFFER,
                 android.opengl.GLES20.GL_COLOR_ATTACHMENT0,
-                android.opengl.GLES20.GL_TEXTURE_2D, probeColorTex, 0);
+                android.opengl.GLES20.GL_TEXTURE_2D, createdTexture, 0);
             int status = android.opengl.GLES20.glCheckFramebufferStatus(android.opengl.GLES20.GL_FRAMEBUFFER);
-            android.opengl.GLES20.glBindFramebuffer(android.opengl.GLES20.GL_FRAMEBUFFER, 0);
             if (status != android.opengl.GLES20.GL_FRAMEBUFFER_COMPLETE) {
-                logger.warn("probe FBO not complete: " + status);
-                return false;
+                throw new IllegalStateException("probe FBO not complete: " + status);
             }
 
-            probeProgram = GlUtil.createProgram(PROBE_VS, PROBE_FS);
-            probeAPosLoc = android.opengl.GLES20.glGetAttribLocation(probeProgram, "aPos");
-            probeATexLoc = android.opengl.GLES20.glGetAttribLocation(probeProgram, "aTex");
-            probeUTexSamplerLoc = android.opengl.GLES20.glGetUniformLocation(probeProgram, "uTex");
-            probeUTexMatrixLoc = android.opengl.GLES20.glGetUniformLocation(probeProgram, "uTexMatrix");
+            createdProgram = GlUtil.createProgram(PROBE_VS, PROBE_FS);
+            if (createdProgram == 0) {
+                throw new IllegalStateException("probe shader program creation failed");
+            }
+            int aPosLoc = android.opengl.GLES20.glGetAttribLocation(createdProgram, "aPos");
+            int aTexLoc = android.opengl.GLES20.glGetAttribLocation(createdProgram, "aTex");
+            int uTexSamplerLoc = android.opengl.GLES20.glGetUniformLocation(createdProgram, "uTex");
+            int uTexMatrixLoc = android.opengl.GLES20.glGetUniformLocation(createdProgram, "uTexMatrix");
+            if (aPosLoc < 0 || aTexLoc < 0 || uTexSamplerLoc < 0 || uTexMatrixLoc < 0) {
+                throw new IllegalStateException("probe shader is missing required attributes or uniforms");
+            }
 
             // Full-screen quad. NDC pos + UV (0..1).
             probeQuadVerts.put(new float[]{
@@ -6346,12 +6382,49 @@ public class PanoramicCameraGpu {
                  1f,  1f,  1f, 1f,
             }).position(0);
 
+            // Publish all handles together only after successful setup.
+            probeColorTex = createdTexture;
+            probeFbo = createdFbo;
+            probeProgram = createdProgram;
+            probeAPosLoc = aPosLoc;
+            probeATexLoc = aTexLoc;
+            probeUTexSamplerLoc = uTexSamplerLoc;
+            probeUTexMatrixLoc = uTexMatrixLoc;
+            createdTexture = 0;
+            createdFbo = 0;
+            createdProgram = 0;
+            committed = true;
+
             logger.info("dilink4 OES pixel probe initialized");
             return true;
         } catch (Throwable t) {
             logger.warn("ensureProbeResources failed: " + t.getMessage());
-            probeFbo = 0;
             return false;
+        } finally {
+            android.opengl.GLES20.glBindFramebuffer(android.opengl.GLES20.GL_FRAMEBUFFER, 0);
+            android.opengl.GLES20.glBindTexture(android.opengl.GLES20.GL_TEXTURE_2D, 0);
+            if (!committed) {
+                deleteProbeResources(createdProgram, createdFbo, createdTexture);
+                probeProgram = 0;
+                probeFbo = 0;
+                probeColorTex = 0;
+                probeAPosLoc = -1;
+                probeATexLoc = -1;
+                probeUTexSamplerLoc = -1;
+                probeUTexMatrixLoc = -1;
+            }
+        }
+    }
+
+    private void deleteProbeResources(int program, int fbo, int texture) {
+        if (program != 0) {
+            android.opengl.GLES20.glDeleteProgram(program);
+        }
+        if (fbo != 0) {
+            android.opengl.GLES20.glDeleteFramebuffers(1, new int[]{fbo}, 0);
+        }
+        if (texture != 0) {
+            android.opengl.GLES20.glDeleteTextures(1, new int[]{texture}, 0);
         }
     }
 
@@ -6758,8 +6831,10 @@ public class PanoramicCameraGpu {
                 lane.submit(new EncoderLane.Frame(
                     camSlot,
                     slotTex,
+                    camRing.generationOf(camSlot),
                     wsUsable ? decoupledLastWsSlot : -1,
                     wsUsable ? decoupledWsRing.textureOf(decoupledLastWsSlot) : 0,
+                    wsUsable ? decoupledWsRing.generationOf(decoupledLastWsSlot) : -1,
                     wsUsable,
                     currentFrameTimestampNs,
                     cameraFrameSeq.get()));
@@ -6985,6 +7060,7 @@ public class PanoramicCameraGpu {
             long stageAfterAcquireNs = System.nanoTime();
             frameCounter++;
             lastFrameTime = System.currentTimeMillis();
+            lastCameraFrameElapsedMs = android.os.SystemClock.elapsedRealtime();
             firstFrameReceived = true;
             consecutiveContentionStalls = 0;  // Frames flowing — clear stall counter
             consecutiveZeroFrameRestarts = 0; // Real frame arrived — reopen succeeded; clear escalation counter
@@ -7620,7 +7696,7 @@ public class PanoramicCameraGpu {
             // where no new image is ready) still re-posts the loop. Without
             // this, the GL thread stops iterating and the watchdog kills us.
             if (running) {
-                glHandler.post(this::renderLoop);
+                glHandler.post(renderLoopCallback);
             }
         }
     }
@@ -10180,6 +10256,34 @@ public class PanoramicCameraGpu {
     // Sticky stop verdict — see stop(). Never cleared; only a process restart
     // (which replaces the instance) lifts it.
     private volatile boolean stopVerdictWedged = false;
+
+    /**
+     * Returns true only when the OEM camera service reports another camera
+     * owner AND this instance is still receiving recent frames as a secondary
+     * consumer. In that state, releasing the handle again would unnecessarily
+     * interrupt a working feed and repeat the ACC-ON handover.
+     */
+    public boolean hasLiveNativeSharedCamera() {
+        if (!running || cameraObj == null || cameraCoordinator == null) {
+            return false;
+        }
+
+        long frameTimeMs = lastCameraFrameElapsedMs;
+        long frameAgeMs = android.os.SystemClock.elapsedRealtime() - frameTimeMs;
+        if (frameTimeMs <= 0L || frameAgeMs < 0L || frameAgeMs > 2000L) {
+            return false;
+        }
+
+        String nativeCameraUser = cameraCoordinator.queryCurrentCameraUser();
+        if (nativeCameraUser == null) {
+            return false;
+        }
+
+        logger.info("Live shared AVM feed confirmed (native owner="
+                + nativeCameraUser + ", frameAge=" + frameAgeMs + "ms)");
+        return true;
+    }
+
     /**
      * Releases and reopens the AVMCamera without tearing down the GL pipeline.
      *
@@ -10253,6 +10357,33 @@ public class PanoramicCameraGpu {
             // the wait — close+log above can already have spent >1s.
             lastGlThreadHeartbeat = System.currentTimeMillis();
 
+            // Start the existing legacy AVC/HAL warmup while the OEM camera
+            // ownership handoff is in progress. The cold-open boundary below
+            // calls the same shared warmup gate; it coalesces with this worker
+            // and reuses its completed result. This overlaps the required HAL
+            // settle time without removing or shortening that safety delay.
+            if (legacyOpenAttempt) {
+                Thread warmupThread = new Thread(() -> {
+                    try {
+                        boolean warmed = AvcHalWarmup.warmupBeforeColdOpen(
+                                () -> running
+                                        && restartInProgress.get()
+                                        && !CameraDaemon.isProcessRestartPending());
+                        if (!warmed) {
+                            logger.info("Concurrent AVC HAL warmup cancelled; "
+                                    + "cold-open boundary will re-check");
+                        }
+                    } catch (Throwable warmupError) {
+                        logger.warn("Concurrent AVC HAL warmup failed; "
+                                + "cold-open boundary will retry: "
+                                + warmupError.getMessage());
+                    }
+                }, "AvcHalWarmup-Handoff");
+                warmupThread.setDaemon(true);
+                warmupThread.start();
+                logger.info("Started AVC HAL warmup alongside camera handoff");
+            }
+
             // registerCameraUser is DISABLED — the event-driven branch below is
             // dead. Kept for reference; do NOT re-enable without re-validating
             // the IBYDCameraUser yield/reacquire path end-to-end.
@@ -10274,15 +10405,16 @@ public class PanoramicCameraGpu {
             // GL watchdog heartbeat — otherwise a long single sleep on this
             // (daemon) thread can race the GL thread mid-updateTexImage and
             // make timeSinceHeartbeat exceed the threshold.
-            logger.info("Polling fallback (maxWait=" + maxWaitMs + "ms)");
-            final long minWaitMs = 3000;
-            sleepWithHeartbeat(minWaitMs);
+            // Do not spend a fixed three seconds before the first ownership
+            // probe. Poll immediately; retain the full bounded wait for devices
+            // whose native camera startup is slower or whose service is absent.
+            logger.info("Polling fallback immediately (maxWait=" + maxWaitMs + "ms)");
 
             if (cameraCoordinator != null && cameraCoordinator.isRegistered()) {
                 long deadline = (legacyOpenAttempt
                         ? android.os.SystemClock.elapsedRealtime()
                         : System.currentTimeMillis())
-                        + (maxWaitMs - minWaitMs);
+                        + maxWaitMs;
                 boolean nativeAppDetected = false;
 
                 while ((legacyOpenAttempt
@@ -10301,7 +10433,7 @@ public class PanoramicCameraGpu {
                     logger.info("Native app not detected after polling — reopening");
                 }
             } else {
-                long remainingWait = maxWaitMs - minWaitMs;
+                long remainingWait = maxWaitMs;
                 logger.info("No service available — fixed delay (" + remainingWait + "ms)");
                 sleepWithHeartbeat(remainingWait);
             }
