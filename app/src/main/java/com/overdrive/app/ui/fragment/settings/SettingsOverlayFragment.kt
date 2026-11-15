@@ -176,7 +176,7 @@ class SettingsOverlayFragment : Fragment() {
         size.value = StatusOverlayIconAppearance.snapSizeSliderValue(sizeDp)
         applyingStatusOverlayConfig = false
         renderChipOpacity(chipOpacityPct)
-        renderOpacity(100 - opacityPct)
+        renderOpacity(StatusOverlayIconAppearance.sliderTransparencyFromStoredOpacity(opacityPct))
         renderSize(sizeDp)
 
         chipOpacity.addOnChangeListener { _, value, fromUser ->
@@ -190,10 +190,11 @@ class SettingsOverlayFragment : Fragment() {
             }
         }
         opacity.addOnChangeListener { _, value, fromUser ->
-            renderOpacity(value.toInt())
+            val transparency = StatusOverlayIconAppearance.clampSliderTransparency(value.toInt())
+            renderOpacity(transparency)
             if (fromUser) {
                 val stored = StatusOverlayIconAppearance.storedOpacityFromSliderTransparency(
-                    value.toInt()
+                    transparency
                 )
                 StatusOverlayService.previewIconOpacity(stored)
                 if (opacity.isPressed.not()) {
@@ -350,7 +351,9 @@ class SettingsOverlayFragment : Fragment() {
                 if (saveGeneration != iconOpacitySaveGeneration) return@writeInt
                 applyingStatusOverlayConfig = true
                 opacitySlider?.value = StatusOverlayIconAppearance.snapOpacitySliderValue(previous)
-                renderOpacity(100 - previous)
+                renderOpacity(
+                    StatusOverlayIconAppearance.sliderTransparencyFromStoredOpacity(previous)
+                )
                 StatusOverlayService.clearIconOpacityPreview()
                 applyingStatusOverlayConfig = false
             }

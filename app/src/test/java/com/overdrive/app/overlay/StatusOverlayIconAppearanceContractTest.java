@@ -22,6 +22,29 @@ public class StatusOverlayIconAppearanceContractTest {
     }
 
     @Test
+    public void iconTransparencySliderTracksLabelSemantics() {
+        assertEquals(0, StatusOverlayIconAppearance.sliderTransparencyFromStoredOpacity(100));
+        assertEquals(80, StatusOverlayIconAppearance.sliderTransparencyFromStoredOpacity(20));
+        assertEquals(100, StatusOverlayIconAppearance.storedOpacityFromSliderTransparency(0));
+        assertEquals(20, StatusOverlayIconAppearance.storedOpacityFromSliderTransparency(80));
+        assertEquals(60, StatusOverlayIconAppearance.sliderTransparencyFromStoredOpacity(40));
+        assertEquals(40, StatusOverlayIconAppearance.storedOpacityFromSliderTransparency(60));
+    }
+
+    @Test
+    public void raisingTransparencyDecreasesStoredOpacity() {
+        int prevStored = StatusOverlayIconAppearance.storedOpacityFromSliderTransparency(0);
+        for (int transparency = 5; transparency <= 80; transparency += 5) {
+            int stored = StatusOverlayIconAppearance.storedOpacityFromSliderTransparency(
+                    transparency);
+            assertTrue(
+                    "higher transparency must lower stored icon opacity",
+                    stored <= prevStored);
+            prevStored = stored;
+        }
+    }
+
+    @Test
     public void iconSizeStoredTwelveToThirtyTwo() {
         assertEquals(12, StatusOverlayIconAppearance.clampStoredSizeDp(8));
         assertEquals(32, StatusOverlayIconAppearance.clampStoredSizeDp(40));
@@ -54,6 +77,16 @@ public class StatusOverlayIconAppearanceContractTest {
                 "app/src/main/res/layout/fragment_settings_overlay.xml");
         assertTrue(layout.contains("sliderOverlayIconOpacity"));
         assertTrue(layout.contains("sliderOverlayIconSize"));
+        assertTrue(layout.contains("android:valueFrom=\"0\""));
+        assertTrue(layout.contains("android:valueTo=\"80\""));
+    }
+
+    @Test
+    public void settingsInvertsIconTransparencyForPersistedOpacity() throws Exception {
+        String fragment = readRepositoryFile(
+                "app/src/main/java/com/overdrive/app/ui/fragment/settings/SettingsOverlayFragment.kt");
+        assertTrue(fragment.contains("sliderTransparencyFromStoredOpacity"));
+        assertTrue(fragment.contains("storedOpacityFromSliderTransparency"));
     }
 
     private static String readRepositoryFile(String relativePath) throws Exception {
