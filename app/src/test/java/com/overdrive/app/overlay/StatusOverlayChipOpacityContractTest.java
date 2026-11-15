@@ -47,7 +47,8 @@ public class StatusOverlayChipOpacityContractTest {
         String fragment = readRepositoryFile(
                 "app/src/main/java/com/overdrive/app/ui/fragment/settings/SettingsOverlayFragment.kt");
         assertTrue(fragment.contains("sliderOverlayIconOpacity"));
-        assertTrue(fragment.contains("persistInt(\"iconOpacity\""));
+        assertTrue(fragment.contains("storedOpacityFromSliderTransparency"));
+        assertTrue(fragment.contains("previewIconOpacity"));
         assertTrue(fragment.contains("chipOpacitySaveGeneration"));
         assertTrue(fragment.contains("previewChipOpacity"));
     }
